@@ -187,3 +187,17 @@ log "Visit: http://${HOST_IP}:${PORT}/"
 log "Rebuild anytime with: rebuild"
 warn "If you want to run docker without sudo, log out and log back in (or reboot)."
 warn "If 'rebuild' isn't found immediately, run: source $SHELL_RC"
+
+echo
+warn "A reboot is recommended to ensure all changes take effect."
+if [[ -t 0 ]]; then
+  read -r -p "Reboot now? (y/N): " REBOOT_ANSWER
+  if [[ "$REBOOT_ANSWER" =~ ^[Yy]$ ]]; then
+    log "Rebooting..."
+    sudo reboot
+  else
+    warn "Skipping reboot. Please reboot later if anything doesn't work."
+  fi
+else
+  warn "Non-interactive shell detected (e.g. curl | bash). Please reboot manually."
+fi
