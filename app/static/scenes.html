@@ -1,0 +1,261 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Analysis Scenes</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 24px; background:#fafafa; }
+    h1 { margin-top: 0; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    button { padding: 10px 14px; border-radius: 10px; border: 1px solid #ddd; background: black; color: white; cursor: pointer; font-weight: 700; }
+    button.secondary { background:#fff; color:#000; }
+    button.danger { background:#fff; color:#b00020; border-color:#f2b8b5; }
+    .status { margin-top:12px; padding:10px 12px; border-radius:10px; display:none; }
+    .ok { display:block; background:#e8fff0; border:1px solid #95e2b0; }
+    .err { display:block; background:#ffecec; border:1px solid #ff9b9b; }
+
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(360px,1fr)); gap:14px; margin-top:14px; }
+    .card { background:#fff; border:1px solid #e5e5e5; border-radius:14px; padding:14px; box-shadow:0 6px 18px rgba(0,0,0,0.06); }
+    label { display:block; font-size:12px; font-weight:800; margin:10px 0 6px; }
+    input, select, textarea {
+      width:100%; box-sizing:border-box;
+      border:1px solid #ddd; border-radius:12px; padding:10px 12px;
+      font-size:13px; background:#fff;
+    }
+    textarea { min-height: 100px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .hint { color:#666; font-size:12px; margin-top:6px; }
+    code { background:#f4f4f4; padding:2px 6px; border-radius:8px; }
+  </style>
+</head>
+<body>
+  <h1>Analysis Scenes</h1>
+  <div class="row">
+    <button id="newBtn">+ New Scene</button>
+    <button class="secondary" id="reloadBtn">Reload</button>
+    <button class="secondary" id="saveBtn">Save</button>
+    <a href="/" style="margin-left:auto; text-decoration:none; font-weight:700; color:#000;">Home</a>
+    <a href="/automations.html" style="text-decoration:none; font-weight:700; color:#000;">Automations</a>
+    <a href="/docs.html" style="text-decoration:none; font-weight:700; color:#000;">Docs</a>
+  </div>
+
+  <div id="status" class="status"></div>
+  <div class="hint">
+    Scenes are referenced from automations with: <code>{"type":"analyze","scene_id":"..."}</code>
+  </div>
+
+  <div id="grid" class="grid"></div>
+
+<script>
+let scenes = [];
+const grid = document.getElementById("grid");
+const status = document.getElementById("status");
+
+function ok(msg){ status.className="status ok"; status.textContent=msg; }
+function err(msg){ status.className="status err"; status.textContent=msg; }
+
+function uid(prefix="scene") {
+  return prefix + "-" + Math.random().toString(16).slice(2) + "-" + Date.now();
+}
+
+async function apiGet(path){
+  const res = await fetch(path);
+  if(!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+async function apiPost(path, body){
+  const res = await fetch(path, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  if(!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function render(){
+  grid.innerHTML = "";
+  if(!scenes.length){
+    grid.innerHTML = `<div class="card"><b>No scenes yet.</b><div class="hint">Click “New Scene”.</div></div>`;
+    return;
+  }
+
+  scenes.forEach((s, i) => {
+    s.snapshots = s.snapshots || {};
+    const card = document.createElement("div");
+    card.className = "card";
+
+    card.innerHTML = `
+      <div class="row" style="justify-content:space-between;">
+        <div>
+          <b>${s.name || "Unnamed Scene"}</b>
+          <div class="hint"><code>${s.id}</code></div>
+        </div>
+        <label style="display:flex; align-items:center; gap:8px; font-weight:700;">
+          <input type="checkbox" ${s.enabled !== false ? "checked" : ""} data-i="${i}" data-k="enabled">
+          Enabled
+        </label>
+      </div>
+
+      <label>Name</label>
+      <input type="text" value="${s.name || ""}" data-i="${i}" data-k="name">
+
+      <label>Scene ID</label>
+      <input type="text" value="${s.id}" data-i="${i}" data-k="id">
+
+      <label>Camera IP</label>
+      <input type="text" value="${s.camera_ip || ""}" placeholder="172.16.0.100" data-i="${i}" data-k="camera_ip">
+
+      <label>Channel</label>
+      <input type="number" value="${s.channel || 1}" min="1" data-i="${i}" data-k="channel">
+
+      <label>Snapshot count</label>
+      <input type="number" value="${s.snapshots.count ?? 5}" min="1" max="20" data-i="${i}" data-k="snapshots.count">
+
+      <div class="row">
+        <div style="flex:1;">
+          <label>Before seconds</label>
+          <input type="number" value="${s.snapshots.before_seconds ?? 5}" min="0" max="120" data-i="${i}" data-k="snapshots.before_seconds">
+        </div>
+        <div style="flex:1;">
+          <label>After seconds</label>
+          <input type="number" value="${s.snapshots.after_seconds ?? 20}" min="0" max="300" data-i="${i}" data-k="snapshots.after_seconds">
+        </div>
+      </div>
+
+      <label>Selection strategy</label>
+      <select data-i="${i}" data-k="snapshots.strategy">
+        ${["evenly_spread","latest","earliest"].map(opt => `
+          <option value="${opt}" ${(s.snapshots.strategy || "evenly_spread") === opt ? "selected" : ""}>${opt}</option>
+        `).join("")}
+      </select>
+
+      <label>Model</label>
+      <input type="text" value="${s.model || "gpt-5.1"}" data-i="${i}" data-k="model">
+
+      <label>Prompt</label>
+      <textarea data-i="${i}" data-k="prompt" placeholder="Describe what the model should do...">${s.prompt || ""}</textarea>
+
+      <div class="row" style="margin-top:12px;">
+        <button class="secondary" data-test="${i}">Test</button>
+        <button class="danger" data-del="${i}">Delete</button>
+      </div>
+
+      <div class="hint">
+        Test uses a fake event. For a real alarm it will use the alarm timestamp and pick snapshots in window.
+      </div>
+    `;
+
+    grid.appendChild(card);
+  });
+
+  // wiring inputs
+  document.querySelectorAll("input[data-k], textarea[data-k], select[data-k]").forEach(el => {
+    el.oninput = (e) => {
+      const i = Number(e.target.dataset.i);
+      const k = e.target.dataset.k;
+      setKey(scenes[i], k, e.target.type === "checkbox" ? e.target.checked : e.target.value);
+    };
+    el.onchange = el.oninput;
+  });
+
+  // delete
+  document.querySelectorAll("button[data-del]").forEach(btn => {
+    btn.onclick = (e) => {
+      const i = Number(e.target.dataset.del);
+      if(!confirm("Delete this scene?")) return;
+      scenes.splice(i, 1);
+      render();
+      ok("Deleted (not saved yet). Click Save.");
+    };
+  });
+
+  // test
+  document.querySelectorAll("button[data-test]").forEach(btn => {
+    btn.onclick = async (e) => {
+      const i = Number(e.target.dataset.test);
+      const scene = scenes[i];
+
+      const fakeEvent = {
+        id: "test-event-" + Date.now(),
+        timestamp: new Date().toISOString(),
+        camera_ip: scene.camera_ip,
+        channel: scene.channel,
+        code: "FaceDetection",
+        action: "Start"
+      };
+
+      try {
+        const result = await apiPost(`/api/scenes/test/${scene.id}`, fakeEvent);
+        ok("Test run complete ✅ Check output in dev console (F12)");
+        console.log("Scene test result:", result);
+      } catch (ex) {
+        err("Test failed: " + ex.message);
+      }
+    };
+  });
+}
+
+function setKey(obj, keyPath, value){
+  const parts = keyPath.split(".");
+  let cur = obj;
+  for(let i=0; i<parts.length-1; i++){
+    const p = parts[i];
+    if(!cur[p] || typeof cur[p] !== "object") cur[p] = {};
+    cur = cur[p];
+  }
+  const last = parts[parts.length-1];
+
+  // coerce numbers
+  if (value !== "" && ["channel","snapshots.count","snapshots.before_seconds","snapshots.after_seconds"].includes(keyPath)) {
+    value = Number(value);
+  }
+  cur[last] = value;
+}
+
+async function load(){
+  try{
+    scenes = await apiGet("/api/scenes");
+    if(!Array.isArray(scenes)) scenes = [];
+    scenes.forEach(s => {
+      s.id = s.id || uid();
+      s.name = s.name || "New Scene";
+      if (s.enabled === undefined) s.enabled = true;
+      s.snapshots = s.snapshots || {count:5, before_seconds:5, after_seconds:20, strategy:"evenly_spread"};
+      s.model = s.model || "gpt-5.1";
+      s.prompt = s.prompt || "";
+    });
+    render();
+    ok("Loaded ✅");
+  } catch(ex){
+    err("Load failed: " + ex.message);
+  }
+}
+
+async function save(){
+  try{
+    await apiPost("/api/scenes", scenes);
+    ok("Saved ✅");
+    await load();
+  } catch(ex){
+    err("Save failed: " + ex.message);
+  }
+}
+
+document.getElementById("newBtn").onclick = () => {
+  scenes.unshift({
+    id: uid(),
+    name: "New Scene",
+    enabled: true,
+    camera_ip: "",
+    channel: 1,
+    snapshots: { count: 5, before_seconds: 5, after_seconds: 20, strategy: "evenly_spread" },
+    model: "gpt-5.1",
+    prompt: "Analyze the frames. Return JSON with flag, category, reason."
+  });
+  render();
+  ok("Created new scene (not saved yet).");
+};
+document.getElementById("reloadBtn").onclick = load;
+document.getElementById("saveBtn").onclick = save;
+
+load();
+</script>
+</body>
+</html>

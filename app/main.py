@@ -2,6 +2,7 @@ from fastapi import FastAPI, Body, HTTPException
 from fastapi.staticfiles import StaticFiles
 from config import load_settings, save_settings
 from automations import load_automations, save_automations, handle_event
+from analyze import load_scenes, save_scenes, run_scene
 import subprocess
 import os
 import sys
@@ -80,6 +81,21 @@ def test_automation(event: dict = Body(...)):
     handle_event(event)
     return {"ok": True}
 #---------------------------------automations.py--------------------------------#
+
+#----------------------------------analyze.py----------------------------------#
+@app.get("/api/scenes")
+def get_scenes():
+    return load_scenes()
+
+@app.post("/api/scenes")
+def update_scenes(new_scenes: list = Body(...)):
+    save_scenes(new_scenes)
+    return {"ok": True}
+
+@app.post("/api/scenes/test/{scene_id}")
+def test_scene(scene_id: str, event: dict = Body(...)):
+    return run_scene(scene_id, event)
+#----------------------------------analyze.py----------------------------------#
 
 # mount static LAST
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

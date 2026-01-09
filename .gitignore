@@ -39,16 +39,11 @@ uploads/*
 !uploads/.gitkeep
 *.log
 
-# If you want to keep the folders but not their contents,
-# consider removing the above lines and using:
-# data/*
-# uploads/*
-# !data/.gitkeep
-# !uploads/.gitkeep
-
 # -------------------------
 # Secrets / env files
 # -------------------------
+secrets/
+*.env
 .env
 .env.*
 *.pem

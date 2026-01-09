@@ -21,8 +21,9 @@ log "Stopping/removing existing container (if any): $CONTAINER_NAME..."
 $DOCKER stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
 $DOCKER rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
-log "Creating data directory at $HOME/sei-raspi/data..."
+log "Creating data and uploads directories..."
 mkdir -p "$HOME/sei-raspi/data"
+mkdir -p "$HOME/sei-raspi/uploads"
 
 log "Starting container on ports $PORT (web) and $ALARM_PORT (alarms)..."
 $DOCKER run -d \
@@ -31,6 +32,8 @@ $DOCKER run -d \
   -p "$PORT:$PORT" \
   -p "$ALARM_PORT:$ALARM_PORT" \
   -v "$HOME/sei-raspi/data:/app/data" \
+  -v "$HOME/sei-raspi/uploads:/app/uploads" \
+  --env-file "$HOME/sei-raspi/secrets/openai.env"
   -e PYTHONUNBUFFERED=1 \
   "$IMAGE_NAME"
 

@@ -4,6 +4,7 @@ import re
 import requests
 from pathlib import Path
 from datetime import datetime
+from analyze import run_scene
 
 AUTOMATIONS_PATH = Path("data/automations.json")
 RUNS_PATH = Path("data/automation_runs.jsonl")
@@ -116,7 +117,15 @@ def run_action(action: dict, event: dict):
         except Exception as e:
             return {"ok": False, "type": "webhook", "error": str(e)}
 
-    return {"ok": False, "type": t, "error": "Unknown action type"}
+    if t == "analyze":
+        scene_id = action.get("scene_id")
+        if not scene_id:
+            return {"ok": False, "type": "analyze", "error": "Missing scene_id"}
+
+        result = run_scene(scene_id, event)
+        return {"ok": result.get("ok", False), "type": "analyze", "scene_id": scene_id, "result": result}
+
+        return {"ok": False, "type": t, "error": "Unknown action type"}
 
 # ------------------
 # Main entry point
