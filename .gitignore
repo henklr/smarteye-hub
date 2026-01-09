@@ -33,8 +33,10 @@ ENV/
 # -------------------------
 # App runtime data
 # -------------------------
-data/
-uploads/
+data/*
+uploads/*
+!data/.gitkeep
+!uploads/.gitkeep
 *.log
 
 # If you want to keep the folders but not their contents,
