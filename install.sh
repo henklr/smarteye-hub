@@ -10,6 +10,7 @@ REPO_URL="https://github.com/henklr/sei-raspi.git"
 IMAGE_NAME="sei-raspi"
 CONTAINER_NAME="sei-raspi"
 PORT="${PORT:-8000}"   # Allow override: PORT=1234 ./install.sh
+ALARM_PORT="${ALARM_PORT:-15000}"
 
 # Determine if we should use sudo for docker
 DOCKER="docker"
@@ -85,74 +86,33 @@ else
   git clone "$REPO_URL" "$APP_DIR"
 fi
 
-log "Building Docker image (this may take a while on Raspberry Pi)..."
-$DOCKER build --pull -t "$IMAGE_NAME" "$APP_DIR"
-
-# Stop old container if running
-if $DOCKER ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-  log "Stopping and removing existing container..."
-  $DOCKER stop "$CONTAINER_NAME" >/dev/null || true
-  $DOCKER rm "$CONTAINER_NAME" >/dev/null || true
-fi
-
-log "Starting container on port $PORT..."
-$DOCKER run -d \
-  --name "$CONTAINER_NAME" \
-  --restart unless-stopped \
-  -p "$PORT:$PORT" \
-  "$IMAGE_NAME"
+log "Running rebuild (build + start)..."
+chmod +x "$APP_DIR/rebuild" "$APP_DIR/start"
+"$APP_DIR/rebuild"
 
 # ---------------------------------------------------------------------
-# Install rebuild helper script + ensure ~/bin is on PATH
+# Install rebuild helper script (symlink to repo) + ensure ~/bin is on PATH
 # ---------------------------------------------------------------------
-log "Installing helper script: rebuild..."
+log "Installing helper script: rebuild (symlink to repo)..."
 
 BIN_DIR="$HOME/bin"
-REBUILD_SCRIPT="$BIN_DIR/rebuild"
-
 mkdir -p "$BIN_DIR"
 
-cat > "$REBUILD_SCRIPT" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
+REPO_REBUILD="$APP_DIR/rebuild"
+BIN_REBUILD="$BIN_DIR/rebuild"
 
-APP_DIR="$HOME/sei-raspi"
-IMAGE_NAME="sei-raspi"
-CONTAINER_NAME="sei-raspi"
-PORT="${PORT:-8000}"
+if [[ ! -f "$REPO_REBUILD" ]]; then
+  warn "No rebuild script found at $REPO_REBUILD"
+  warn "Make sure your repo contains a rebuild script at that path."
+else
+  chmod +x "$REPO_REBUILD"
 
-log()  { echo -e "\033[1;32m[rebuild]\033[0m $*"; }
-warn() { echo -e "\033[1;33m[warn]\033[0m  $*"; }
+  # Replace existing file/symlink safely
+  rm -f "$BIN_REBUILD"
+  ln -s "$REPO_REBUILD" "$BIN_REBUILD"
 
-DOCKER="docker"
-if ! groups "$USER" | grep -q "\bdocker\b"; then
-  DOCKER="sudo docker"
-  warn "User '$USER' is not in the docker group — using sudo for docker."
+  log "Rebuild script linked: $BIN_REBUILD -> $REPO_REBUILD"
 fi
-
-log "Changing to $APP_DIR..."
-cd "$APP_DIR"
-
-log "Building Docker image: $IMAGE_NAME..."
-$DOCKER build --pull -t "$IMAGE_NAME" .
-
-log "Stopping/removing container (if it exists): $CONTAINER_NAME..."
-$DOCKER rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-
-log "Starting container on port $PORT..."
-$DOCKER run -d \
-  --name "$CONTAINER_NAME" \
-  --restart unless-stopped \
-  -p "$PORT:$PORT" \
-  "$IMAGE_NAME"
-
-log "Done."
-log "Check: $DOCKER ps"
-log "Logs:  $DOCKER logs -f $CONTAINER_NAME"
-EOF
-
-chmod +x "$REBUILD_SCRIPT"
-log "Rebuild script installed at: $REBUILD_SCRIPT"
 
 log "Ensuring $HOME/bin is on PATH..."
 
