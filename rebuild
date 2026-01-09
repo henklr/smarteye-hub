@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="$HOME/sei-raspi"
+IMAGE_NAME="sei-raspi"
+CONTAINER_NAME="sei-raspi"
+PORT="${PORT:-8000}"
+
+log()  { echo -e "\033[1;32m[rebuild]\033[0m $*"; }
+warn() { echo -e "\033[1;33m[warn]\033[0m  $*"; }
+
+# Use sudo docker if user isn't in docker group
+DOCKER="docker"
+if ! groups "$USER" | grep -q "\bdocker\b"; then
+  DOCKER="sudo docker"
+  warn "User '$USER' is not in the docker group — using sudo for docker."
+fi
+
+log "Changing to $APP_DIR..."
+cd "$APP_DIR"
+
+log "Building Docker image: $IMAGE_NAME..."
+$DOCKER build --pull -t "$IMAGE_NAME" .
+
+log "Stopping/removing container (if it exists): $CONTAINER_NAME..."
+$DOCKER rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+log "Starting container on port $PORT..."
+$DOCKER run -d \
+  --name "$CONTAINER_NAME" \
+  --restart unless-stopped \
+  -p "$PORT:$PORT" \
+  "$IMAGE_NAME"
+
+log "Done."
+log "Check: $DOCKER ps"
+log "Logs:  $DOCKER logs -f $CONTAINER_NAME"

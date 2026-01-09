@@ -102,9 +102,88 @@ $DOCKER run -d \
   -p "$PORT:$PORT" \
   "$IMAGE_NAME"
 
+# ---------------------------------------------------------------------
+# Install rebuild helper script + ensure ~/bin is on PATH
+# ---------------------------------------------------------------------
+log "Installing helper script: rebuild..."
+
+BIN_DIR="$HOME/bin"
+REBUILD_SCRIPT="$BIN_DIR/rebuild"
+
+mkdir -p "$BIN_DIR"
+
+cat > "$REBUILD_SCRIPT" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="$HOME/sei-raspi"
+IMAGE_NAME="sei-raspi"
+CONTAINER_NAME="sei-raspi"
+PORT="${PORT:-8000}"
+
+log()  { echo -e "\033[1;32m[rebuild]\033[0m $*"; }
+warn() { echo -e "\033[1;33m[warn]\033[0m  $*"; }
+
+DOCKER="docker"
+if ! groups "$USER" | grep -q "\bdocker\b"; then
+  DOCKER="sudo docker"
+  warn "User '$USER' is not in the docker group — using sudo for docker."
+fi
+
+log "Changing to $APP_DIR..."
+cd "$APP_DIR"
+
+log "Building Docker image: $IMAGE_NAME..."
+$DOCKER build --pull -t "$IMAGE_NAME" .
+
+log "Stopping/removing container (if it exists): $CONTAINER_NAME..."
+$DOCKER rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+log "Starting container on port $PORT..."
+$DOCKER run -d \
+  --name "$CONTAINER_NAME" \
+  --restart unless-stopped \
+  -p "$PORT:$PORT" \
+  "$IMAGE_NAME"
+
+log "Done."
+log "Check: $DOCKER ps"
+log "Logs:  $DOCKER logs -f $CONTAINER_NAME"
+EOF
+
+chmod +x "$REBUILD_SCRIPT"
+log "Rebuild script installed at: $REBUILD_SCRIPT"
+
+log "Ensuring $HOME/bin is on PATH..."
+
+SHELL_RC=""
+if [[ -n "${BASH_VERSION:-}" ]]; then
+  SHELL_RC="$HOME/.bashrc"
+elif [[ -n "${ZSH_VERSION:-}" ]]; then
+  SHELL_RC="$HOME/.zshrc"
+else
+  SHELL_RC="$HOME/.profile"
+fi
+
+if ! grep -q 'export PATH="$HOME/bin:$PATH"' "$SHELL_RC" 2>/dev/null; then
+  echo '' >> "$SHELL_RC"
+  echo '# Add user bin to PATH' >> "$SHELL_RC"
+  echo 'export PATH="$HOME/bin:$PATH"' >> "$SHELL_RC"
+  warn "Added \$HOME/bin to PATH in $SHELL_RC"
+else
+  log "\$HOME/bin is already on PATH in $SHELL_RC"
+fi
+
+# Make it available immediately in this script session
+export PATH="$HOME/bin:$PATH"
+
+# ---------------------------------------------------------------------
+
 HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 HOST_IP="${HOST_IP:-127.0.0.1}"
 
 log "Done!"
 log "Visit: http://${HOST_IP}:${PORT}/"
+log "Rebuild anytime with: rebuild"
 warn "If you want to run docker without sudo, log out and log back in (or reboot)."
+warn "If 'rebuild' isn't found immediately, run: source $SHELL_RC"
