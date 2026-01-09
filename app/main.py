@@ -5,7 +5,6 @@ import os
 import sys
 
 app = FastAPI()
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 alarm_proc = None
 
@@ -19,10 +18,7 @@ def start_alarm_listener():
     alarm_proc = subprocess.Popen(
         [sys.executable, alarm_path],
         cwd=base_dir,
-        stdout=None,
-        stderr=None,
     )
-
     print("[MAIN] Alarm listener process started")
 
 @app.on_event("shutdown")
@@ -39,3 +35,6 @@ def stop_alarm_listener():
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+# mount static LAST
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
