@@ -1,0 +1,64 @@
+# -------------------------
+# Python
+# -------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+pip-wheel-metadata/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# -------------------------
+# App runtime data
+# -------------------------
+data/
+uploads/
+*.log
+
+# If you want to keep the folders but not their contents,
+# consider removing the above lines and using:
+# data/*
+# uploads/*
+# !data/.gitkeep
+# !uploads/.gitkeep
+
+# -------------------------
+# Secrets / env files
+# -------------------------
+.env
+.env.*
+*.pem
+*.key
+
+# -------------------------
+# Docker
+# -------------------------
+*.tar
+docker-compose.override.yml
+
+# -------------------------
+# OS files
+# -------------------------
+Thumbs.db
