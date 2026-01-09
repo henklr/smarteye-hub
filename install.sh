@@ -9,26 +9,46 @@ APP_DIR="$HOME/sei-raspi"
 REPO_URL="https://github.com/henklr/sei-raspi.git"
 IMAGE_NAME="sei-raspi"
 CONTAINER_NAME="sei-raspi"
-PORT="8000"
+PORT="${PORT:-8000}"   # Allow override: PORT=1234 ./install.sh
+
+# Determine if we should use sudo for docker
+DOCKER="docker"
+if ! groups "$USER" | grep -q "\bdocker\b"; then
+  DOCKER="sudo docker"
+fi
 
 log "Updating system..."
 sudo apt update
 
 log "Installing prerequisites..."
-sudo apt install -y ca-certificates curl gnupg git
+sudo apt install -y ca-certificates curl gnupg git lsb-release
 
 # Install Docker only if it isn't already installed
 if ! command -v docker >/dev/null 2>&1; then
   log "Docker not found. Installing Docker..."
 
+  OS_ID="$(. /etc/os-release && echo "$ID")"
+  CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+  ARCH="$(dpkg --print-architecture)"
+
+  # Raspbian uses Debian repo
+  if [[ "$OS_ID" == "raspbian" ]]; then
+    DOCKER_DIST="debian"
+  else
+    DOCKER_DIST="$OS_ID"
+  fi
+
+  log "Detected OS: $OS_ID ($CODENAME), Arch: $ARCH"
+  log "Setting Docker repo: $DOCKER_DIST"
+
   sudo install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  curl -fsSL "https://download.docker.com/linux/${DOCKER_DIST}/gpg" | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
   log "Adding Docker repository..."
   echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-    $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+    "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DIST} \
+    ${CODENAME} stable" | \
     sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
   sudo apt update
@@ -39,6 +59,13 @@ fi
 
 log "Enabling Docker to start on boot..."
 sudo systemctl enable --now docker
+
+log "Verifying Docker..."
+if ! sudo docker run --rm hello-world >/dev/null 2>&1; then
+  warn "Docker test failed. Try: sudo docker run hello-world"
+else
+  log "Docker OK."
+fi
 
 # Add current user to docker group (won’t take effect until new login)
 if ! groups "$USER" | grep -q "\bdocker\b"; then
@@ -58,23 +85,26 @@ else
   git clone "$REPO_URL" "$APP_DIR"
 fi
 
-log "Building Docker image..."
-sudo docker build -t "$IMAGE_NAME" "$APP_DIR"
+log "Building Docker image (this may take a while on Raspberry Pi)..."
+$DOCKER build --pull -t "$IMAGE_NAME" "$APP_DIR"
 
 # Stop old container if running
-if sudo docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+if $DOCKER ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
   log "Stopping and removing existing container..."
-  sudo docker stop "$CONTAINER_NAME" >/dev/null || true
-  sudo docker rm "$CONTAINER_NAME" >/dev/null || true
+  $DOCKER stop "$CONTAINER_NAME" >/dev/null || true
+  $DOCKER rm "$CONTAINER_NAME" >/dev/null || true
 fi
 
 log "Starting container on port $PORT..."
-sudo docker run -d \
+$DOCKER run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \
   -p "$PORT:$PORT" \
   "$IMAGE_NAME"
 
+HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+HOST_IP="${HOST_IP:-127.0.0.1}"
+
 log "Done!"
-log "Visit: http://$(hostname -I | awk '{print $1}'):$PORT/"
+log "Visit: http://${HOST_IP}:${PORT}/"
 warn "If you want to run docker without sudo, log out and log back in (or reboot)."
