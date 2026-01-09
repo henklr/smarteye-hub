@@ -1,8 +1,0 @@
-{
-  "alarm_listener": {
-    "only_start_events": true,
-    "log_raw_payload": false,
-    "listen_host": "0.0.0.0",
-    "listen_port": 15000
-  }
-}
