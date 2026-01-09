@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Automations</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 24px; }
+    textarea { width: 100%; height: 520px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; padding: 12px; border-radius: 12px; border: 1px solid #ccc; }
+    button { padding: 10px 14px; border-radius: 10px; border: none; background: black; color: white; cursor: pointer; }
+    .row { display:flex; gap:12px; margin-top:12px; flex-wrap: wrap; }
+    .status { margin-top: 12px; padding: 10px; border-radius: 10px; display:none; }
+    .ok { display:block; background:#e8fff0; border:1px solid #95e2b0; }
+    .err { display:block; background:#ffecec; border:1px solid #ff9b9b; }
+    a { color: black; }
+  </style>
+</head>
+<body>
+  <h1>Automations</h1>
+  <p><a href="/">← Back</a></p>
+
+  <p><b>trigger → conditions → actions</b>.</p>
+  <p>Edit the JSON below to define your automations. See the <a href="/docs.html#automations">documentation</a> for details on the format.</p>
+  
+  <textarea id="editor"></textarea>
+
+  <div class="row">
+    <button id="reload">Reload</button>
+    <button id="save">Save</button>
+    <button id="test">Send Test Event</button>
+  </div>
+
+  <div id="status" class="status"></div>
+
+<script>
+const editor = document.getElementById("editor");
+const status = document.getElementById("status");
+
+function ok(msg) { status.className = "status ok"; status.textContent = msg; }
+function err(msg) { status.className = "status err"; status.textContent = msg; }
+
+async function loadAutomations() {
+  try {
+    const res = await fetch("/api/automations");
+    const data = await res.json();
+    editor.value = JSON.stringify(data, null, 2);
+    ok("Loaded automations ✅");
+  } catch (e) {
+    err("Failed to load automations: " + e);
+  }
+}
+
+async function saveAutomations() {
+  try {
+    const parsed = JSON.parse(editor.value);
+    const res = await fetch("/api/automations", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(parsed)
+    });
+    if (!res.ok) throw new Error(await res.text());
+    ok("Saved ✅");
+  } catch (e) {
+    err("Save failed: " + e.message);
+  }
+}
+
+async function sendTestEvent() {
+  const event = {
+    id: "test-event-1",
+    action: "Start",
+    code: "FaceDetection",
+    camera_ip: "172.16.0.100",
+    locale_time: new Date().toISOString()
+  };
+  try {
+    const res = await fetch("/api/automations/test", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(event)
+    });
+    if (!res.ok) throw new Error(await res.text());
+    ok("Sent test event ✅ (check docker logs + automation_runs.jsonl)");
+  } catch (e) {
+    err("Test failed: " + e.message);
+  }
+}
+
+document.getElementById("reload").onclick = loadAutomations;
+document.getElementById("save").onclick = saveAutomations;
+document.getElementById("test").onclick = sendTestEvent;
+
+loadAutomations();
+</script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Body, HTTPException
 from fastapi.staticfiles import StaticFiles
 from config import load_settings, save_settings
+from automations import load_automations, save_automations, handle_event
 import subprocess
 import os
 import sys
@@ -43,6 +44,8 @@ def shutdown():
 def health():
     return {"status": "ok"}
 
+#--------------------------------settings.py----------------------------------#
+
 @app.get("/api/settings")
 def get_settings():
     return load_settings()
@@ -60,6 +63,23 @@ def restart_alarm_listener():
         return {"ok": True, "message": "Alarm listener restarted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+#----------------------------------settings.py----------------------------------#
+
+#---------------------------------automations.py--------------------------------#
+@app.get("/api/automations")
+def get_automations():
+    return load_automations()
+
+@app.post("/api/automations")
+def update_automations(new_automations: list = Body(...)):
+    save_automations(new_automations)
+    return {"ok": True}
+
+@app.post("/api/automations/test")
+def test_automation(event: dict = Body(...)):
+    handle_event(event)
+    return {"ok": True}
+#---------------------------------automations.py--------------------------------#
 
 # mount static LAST
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

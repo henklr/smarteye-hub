@@ -102,6 +102,10 @@ def process_payload(payload: bytes, addr):
 
         print(f"[ALARM] Logged: {action} {code} seq={event_seq} ip={ip}", flush=True)
 
+        from automations import handle_event
+        handle_event(event)
+
+
     except Exception as e:
         print(f"[ALARM] Failed to parse/log alarm JSON: {e}", flush=True)
 
