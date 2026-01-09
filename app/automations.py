@@ -115,12 +115,6 @@ def run_action(action: dict, event: dict):
             return {"ok": resp.ok, "type": "webhook", "status": resp.status_code, "text": resp.text[:300]}
         except Exception as e:
             return {"ok": False, "type": "webhook", "error": str(e)}
-    
-    if t == "analyze":
-        msg = f"Analyzing event {event.get('code')} from {event.get('camera_ip')}"
-        print(f"[AUTO] {msg}", flush=True)
-        return {"ok": True, "type": "analyze", "message": msg}
-
 
     return {"ok": False, "type": t, "error": "Unknown action type"}
 
