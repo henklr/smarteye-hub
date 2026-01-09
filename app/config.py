@@ -6,25 +6,42 @@ SETTINGS_PATH = Path("data/settings.json")
 DEFAULT_SETTINGS = {
     "alarm_listener": {
         "only_start_events": True,
-        "log_raw_payload": True,
-        "max_payload_bytes": 131072,  # protect against huge payloads
+        "log_raw_payload": False,
         "listen_host": "0.0.0.0",
-        "listen_port": 15000
+        "listen_port": 15000,
+        "max_payload_bytes": 131072
     }
 }
 
-def load_settings():
+def merge_settings(user: dict) -> dict:
+    merged = DEFAULT_SETTINGS.copy()
+    merged["alarm_listener"] = {
+        **DEFAULT_SETTINGS["alarm_listener"],
+        **(user.get("alarm_listener", {}) or {})
+    }
+    return merged
+
+def load_settings() -> dict:
+    user = {}
     if SETTINGS_PATH.exists():
         try:
             with SETTINGS_PATH.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            # deep merge defaults with file values
-            settings = DEFAULT_SETTINGS.copy()
-            settings["alarm_listener"] = {
-                **DEFAULT_SETTINGS["alarm_listener"],
-                **data.get("alarm_listener", {})
-            }
-            return settings
+                user = json.load(f) or {}
         except Exception:
-            return DEFAULT_SETTINGS
-    return DEFAULT_SETTINGS
+            user = {}
+
+    settings = merge_settings(user)
+
+    # Ensure file exists (so UI always has something to edit)
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with SETTINGS_PATH.open("w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+
+    return settings
+
+def save_settings(new_settings: dict) -> dict:
+    settings = merge_settings(new_settings)
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with SETTINGS_PATH.open("w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+    return settings
