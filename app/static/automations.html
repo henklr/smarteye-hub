@@ -285,6 +285,7 @@
 
 <script>
 let automations = [];
+let scenes = []; // loaded from /api/scenes
 let mode = localStorage.getItem("automation_mode") || "builder"; // "builder" | "json"
 
 const statusEl = document.getElementById("status");
@@ -295,6 +296,17 @@ const editorEl = document.getElementById("editor");
 const toggleModeBtn = document.getElementById("toggleModeBtn");
 const modeBadge = document.getElementById("modeBadge");
 
+async function loadScenes() {
+  try {
+    const res = await fetch("/api/scenes");
+    if (!res.ok) throw new Error(await res.text());
+    scenes = await res.json();
+    if (!Array.isArray(scenes)) scenes = [];
+  } catch (e) {
+    scenes = []; // fallback: empty list
+    console.warn("Failed to load scenes:", e);
+  }
+}
 function setOk(msg) {
   statusEl.className = "status ok";
   statusEl.textContent = msg;
@@ -508,7 +520,7 @@ function renderBuilder() {
 
           <label>Type</label>
           <select data-i="${i}" data-ai="${ai}" data-key="type" class="actField">
-            ${["log","webhook"].map(t => `<option value="${t}" ${t===type ? "selected" : ""}>${t}</option>`).join("")}
+            ${["log","webhook","analyze"].map(t => `<option value="${t}" ${t===type ? "selected" : ""}>${t}</option>`).join("")}
           </select>
 
           <div class="actFields"></div>
@@ -524,7 +536,7 @@ function renderBuilder() {
             <textarea data-i="${i}" data-ai="${ai}" data-key="message" class="actField"
               placeholder="Face detected on {{camera_ip}} at {{locale_time}}">${escapeHtml(act.message ?? "")}</textarea>
           `;
-        } else {
+        } else if (type === "webhook") {
           fieldsEl.innerHTML = `
             <div class="miniRow">
               <div>
@@ -543,6 +555,25 @@ function renderBuilder() {
               placeholder='{"text":"Alarm {{code}} from {{camera_ip}}"}'>${escapeHtml(act.payload_json ?? JSON.stringify(act.payload ?? {}, null, 2))}</textarea>
             <div class="hint">Payload supports templates. Must be valid JSON.</div>
           `;
+        } else if (type === "analyze") {
+        const currentSceneId = act.scene_id || "";
+
+        fieldsEl.innerHTML = `
+          <label>Scene</label>
+          <select data-i="${i}" data-ai="${ai}" data-key="scene_id" class="actField">
+            <option value="">(select scene)</option>
+            ${scenes.map(s => `
+              <option value="${s.id}" ${s.id === currentSceneId ? "selected" : ""}>
+                ${s.name ? s.name + " — " : ""}${s.id}
+              </option>
+            `).join("")}
+          </select>
+
+          <div class="hint">
+            Scenes are configured in <a href="/scenes.html">Scenes</a>.
+            Automation will run analysis and receive JSON result.
+          </div>
+        `;
         }
       });
     }
@@ -600,17 +631,25 @@ function wireBuilderEvents() {
       const key = e.target.dataset.key;
 
       if (key === "type") {
-        automations[i].actions[ai].type = e.target.value;
-        if (e.target.value === "log") {
+        const newType = e.target.value;
+        automations[i].actions[ai].type = newType;
+
+        if (newType === "log") {
           automations[i].actions[ai] = { type: "log", message: "" };
-        } else {
+        } else if (newType === "webhook") {
           automations[i].actions[ai] = {
             type: "webhook",
             url: "",
             method: "POST",
             payload_json: "{}"
           };
+        } else if (newType === "analyze") {
+          automations[i].actions[ai] = {
+            type: "analyze",
+            scene_id: ""
+          };
         }
+
         renderBuilder();
       }
       clearStatus();
@@ -752,7 +791,10 @@ document.getElementById("saveBtn").onclick = saveAutomations;
 document.getElementById("newBtn").onclick = newAutomation;
 document.getElementById("testBtn").onclick = sendTestEvent;
 
-loadAutomations();
+(async () => {
+  await loadScenes();
+  await loadAutomations();
+})();
 </script>
 </body>
 </html>

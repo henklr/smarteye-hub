@@ -137,23 +137,21 @@ def encode_image_data_url(path: Path) -> str:
 # ---------------------------
 
 def run_scene(scene_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    event must include:
-      - camera_ip
-      - channel
-      - timestamp or locale_time
-    """
     scene = get_scene(scene_id)
-    if not scene.get("enabled", True):
-        return {"ok": False, "error": "Scene disabled"}
 
-    # Determine alarm time
+    print(f"[ANALYZE] ===== RUN SCENE =====")
+    print(f"[ANALYZE] scene_id={scene_id} name={scene.get('name')} enabled={scene.get('enabled', True)}")
+
+    if not scene.get("enabled", True):
+        print("[ANALYZE] Scene disabled -> skipping")
+        return {"ok": False, "error": "Scene disabled", "scene_id": scene_id}
+
     alarm_time_str = event.get("timestamp") or event.get("locale_time")
     if not alarm_time_str:
+        print("[ANALYZE] ERROR: Event missing timestamp/locale_time")
         raise ValueError("Event missing timestamp or locale_time")
 
-    # Accept either ISO or "YYYY-mm-dd HH:MM:SS"
-    alarm_time = None
+    # Parse alarm time
     try:
         alarm_time = datetime.fromisoformat(alarm_time_str.replace("Z",""))
     except Exception:
@@ -168,17 +166,31 @@ def run_scene(scene_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
     after_s = int(snap_cfg.get("after_seconds", 20))
     strategy = snap_cfg.get("strategy", "evenly_spread")
 
-    # Find + pick snapshots
+    print(f"[ANALYZE] event time={alarm_time_str} parsed={alarm_time}")
+    print(f"[ANALYZE] camera_ip={camera_ip} channel={channel}")
+    print(f"[ANALYZE] snapshot settings: count={count} before={before_s}s after={after_s}s strategy={strategy}")
+
     all_snaps = find_snapshots(camera_ip, channel, alarm_time, before_s, after_s)
     selected = pick_snapshots(strategy, all_snaps, count)
 
+    print(f"[ANALYZE] found snapshots total={len(all_snaps)} selected={len(selected)}")
+    if selected:
+        for p in selected:
+            print(f"[ANALYZE] selected -> {p}")
+
     if not selected:
-        return {"ok": False, "error": "No snapshots found", "scene_id": scene_id}
+        print("[ANALYZE] No snapshots found -> skipping model call")
+        result = {"ok": False, "error": "No snapshots found", "scene_id": scene_id}
+        print("[ANALYZE] RESULT:", json.dumps(result, indent=2, ensure_ascii=False))
+        return result
 
     prompt = scene.get("prompt", "Analyze these frames. Return JSON.")
     model = scene.get("model", DEFAULT_MODEL)
 
-    # Build content: user text + images
+    print(f"[ANALYZE] model={model}")
+    print(f"[ANALYZE] prompt preview:\n{prompt[:500]}")
+    print("[ANALYZE] sending request to OpenAI...")
+
     metadata = {
         "scene_id": scene_id,
         "scene_name": scene.get("name"),
@@ -195,6 +207,8 @@ def run_scene(scene_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
     for p in selected:
         content.append({"type": "input_image", "image_url": encode_image_data_url(p)})
 
+    client = get_client() if "get_client" in globals() else OpenAI()
+
     response = client.responses.create(
         model=model,
         input=[{"role": "user", "content": content}],
@@ -202,12 +216,13 @@ def run_scene(scene_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     text = response.output_text
+
     try:
         parsed = json.loads(text)
     except Exception:
         parsed = {"raw_output": text}
 
-    return {
+    out = {
         "ok": True,
         "scene_id": scene_id,
         "scene_name": scene.get("name"),
@@ -219,3 +234,8 @@ def run_scene(scene_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         "model": model,
         "result": parsed,
     }
+
+    print("[ANALYZE] RESULT:", json.dumps(out, indent=2, ensure_ascii=False))
+    print(f"[ANALYZE] ===== DONE =====")
+
+    return out

@@ -66,8 +66,8 @@ def process_payload(payload: bytes, addr):
     print(f"\n[ALARM] Connection from {addr}", flush=True)
 
     # Print raw full payload (optional)
-    print("[ALARM] Full request:", flush=True)
-    print(payload.decode(errors="ignore"), flush=True)
+    #print("[ALARM] Full request:", flush=True)
+    #print(payload.decode(errors="ignore"), flush=True)
 
     # Try to parse JSON
     try:
@@ -104,7 +104,6 @@ def process_payload(payload: bytes, addr):
 
         from automations import handle_event
         handle_event(event)
-
 
     except Exception as e:
         print(f"[ALARM] Failed to parse/log alarm JSON: {e}", flush=True)
