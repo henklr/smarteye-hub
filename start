@@ -21,12 +21,16 @@ log "Stopping/removing existing container (if any): $CONTAINER_NAME..."
 $DOCKER stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
 $DOCKER rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
+log "Creating data directory at $HOME/sei-raspi/data..."
+mkdir -p "$HOME/sei-raspi/data"
+
 log "Starting container on ports $PORT (web) and $ALARM_PORT (alarms)..."
 $DOCKER run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \
   -p "$PORT:$PORT" \
   -p "$ALARM_PORT:$ALARM_PORT" \
+  -v "$HOME/sei-raspi/data:/app/data" \
   -e PYTHONUNBUFFERED=1 \
   "$IMAGE_NAME"
 
