@@ -33,7 +33,7 @@ $DOCKER run -d \
   -p "$ALARM_PORT:$ALARM_PORT" \
   -v "$HOME/sei-raspi/data:/app/data" \
   -v "$HOME/sei-raspi/uploads:/app/uploads" \
-  --env-file "$HOME/sei-raspi/secrets/openai.env"
+  --env-file "$HOME/sei-raspi/secrets/openai.env" \
   -e PYTHONUNBUFFERED=1 \
   "$IMAGE_NAME"
 
