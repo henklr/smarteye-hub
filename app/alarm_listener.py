@@ -12,7 +12,6 @@ ONLY_START_EVENTS = settings["only_start_events"]
 LOG_RAW_PAYLOAD = settings["log_raw_payload"]
 HOST = settings["listen_host"]
 PORT = settings["listen_port"]
-MAX_PAYLOAD_BYTES = settings["max_payload_bytes"]
 
 EVENTS_PATH = Path("data/events.jsonl")
 EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)

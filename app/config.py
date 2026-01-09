@@ -8,8 +8,7 @@ DEFAULT_SETTINGS = {
         "only_start_events": True,
         "log_raw_payload": False,
         "listen_host": "0.0.0.0",
-        "listen_port": 15000,
-        "max_payload_bytes": 131072
+        "listen_port": 15000
     }
 }
 
