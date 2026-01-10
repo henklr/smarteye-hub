@@ -11,7 +11,7 @@ APP_PARENT="$(dirname "$APP_DIR")"    # e.g. /home/rh
 UPLOAD_DIR="${UPLOAD_DIR:-$APP_DIR/uploads}"
 
 # Chroot root for SFTP (must be root-owned and not writable)
-CHROOT_DIR="${CHROOT_DIR:-$APP_DIR/sftp-root}"
+CHROOT_DIR="${CHROOT_DIR:-/srv/sei-sftp/chroot}"
 CHROOT_UPLOAD_DIR="$CHROOT_DIR/uploads"
 
 # Use /dev/tty for reliable prompting even if script is piped
@@ -104,9 +104,9 @@ echo "$SFTP_USER:$SFTP_PASSWORD" | sudo chpasswd
 
 # Ensure directories exist
 log "Creating upload directories..."
-sudo mkdir -p "$UPLOAD_DIR"
-sudo mkdir -p "$CHROOT_DIR"
 sudo mkdir -p "$CHROOT_UPLOAD_DIR"
+sudo chown root:root "$CHROOT_DIR"
+sudo chmod 755 "$CHROOT_DIR"
 
 # Ensure chroot path components are not group/world writable (OpenSSH requirement)
 log "Ensuring chroot path components are not group/world-writable..."
