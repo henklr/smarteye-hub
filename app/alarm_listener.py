@@ -77,19 +77,16 @@ def process_payload(payload: bytes, addr):
             return
 
         action = alarm.get("Action")
-        code = alarm.get("Code")
         data = alarm.get("Data", {}) or {}
-        event_seq = data.get("EventSeq")
-        ip = data.get("IP")
-        locale_time = data.get("LocaleTime")
 
         if ONLY_START_EVENTS and action != "Start":
             print(f"[ALARM] Ignoring Action={action} (ONLY_START_EVENTS enabled)", flush=True)
             return
 
-        from events import record_and_dispatch
+        from events import record_and_dispatch_alarm
 
-        event = record_and_dispatch(alarm)
+        event = record_and_dispatch_alarm(alarm)
+
         if not event:
             print("[ALARM] Failed to record/dispatch event", flush=True)
             return

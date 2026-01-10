@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional
 
 from openai import OpenAI
 
-client = OpenAI()
+#client = OpenAI()
 
 UPLOAD_ROOT = Path("uploads")
 SCENES_PATH = Path("data/scenes.json")
@@ -137,19 +137,40 @@ def encode_image_data_url(path: Path) -> str:
 # ---------------------------
 
 def run_scene(scene_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+    from events import record_and_dispatch_analysis
+
     scene = get_scene(scene_id)
 
     print(f"[ANALYZE] ===== RUN SCENE =====")
     print(f"[ANALYZE] scene_id={scene_id} name={scene.get('name')} enabled={scene.get('enabled', True)}")
 
     if not scene.get("enabled", True):
-        print("[ANALYZE] Scene disabled -> skipping")
-        return {"ok": False, "error": "Scene disabled", "scene_id": scene_id}
+        out = {
+            "ok": False,
+            "scene_id": scene_id,
+            "scene_name": scene.get("name"),
+            "error": "Scene disabled",
+            "camera_ip": scene.get("camera_ip") or event.get("camera_ip"),
+            "channel": int(scene.get("channel") or event.get("channel") or 1),
+            "alarm_time": event.get("timestamp") or event.get("locale_time"),
+        }
+        record_and_dispatch_analysis(event, out)
+        return out
+
 
     alarm_time_str = event.get("timestamp") or event.get("locale_time")
     if not alarm_time_str:
-        print("[ANALYZE] ERROR: Event missing timestamp/locale_time")
-        raise ValueError("Event missing timestamp or locale_time")
+        out = {
+            "ok": False,
+            "scene_id": scene_id,
+            "scene_name": scene.get("name"),
+            "error": "Event missing timestamp/locale_time",
+            "camera_ip": scene.get("camera_ip") or event.get("camera_ip"),
+            "channel": int(scene.get("channel") or event.get("channel") or 1),
+            "alarm_time": None,
+        }
+        record_and_dispatch_analysis(event, out)
+        return out
 
     # Parse alarm time
     try:
@@ -159,6 +180,9 @@ def run_scene(scene_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
 
     camera_ip = scene.get("camera_ip") or event.get("camera_ip")
     channel = int(scene.get("channel") or event.get("channel") or 1)
+
+    prompt = scene.get("prompt", "Analyze these frames. Return JSON.")
+    model = scene.get("model", DEFAULT_MODEL)
 
     snap_cfg = scene.get("snapshots", {}) or {}
     count = int(snap_cfg.get("count", 5))
@@ -179,13 +203,23 @@ def run_scene(scene_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             print(f"[ANALYZE] selected -> {p}")
 
     if not selected:
-        print("[ANALYZE] No snapshots found -> skipping model call")
-        result = {"ok": False, "error": "No snapshots found", "scene_id": scene_id}
-        print("[ANALYZE] RESULT:", json.dumps(result, indent=2, ensure_ascii=False))
-        return result
+        out = {
+            "ok": False,
+            "scene_id": scene_id,
+            "scene_name": scene.get("name"),
+            "error": "No snapshots found",
+            "camera_ip": camera_ip,
+            "channel": channel,
+            "alarm_time": alarm_time_str,
+            "snapshot_count": 0,
+            "snapshots": [],
+            "model": model,
+            "result": None,
+        }
 
-    prompt = scene.get("prompt", "Analyze these frames. Return JSON.")
-    model = scene.get("model", DEFAULT_MODEL)
+        print("[ANALYZE] RESULT:", json.dumps(out, indent=2, ensure_ascii=False))
+        record_and_dispatch_analysis(event, out)
+        return out
 
     print(f"[ANALYZE] model={model}")
     print(f"[ANALYZE] prompt preview:\n{prompt[:500]}")
@@ -207,7 +241,7 @@ def run_scene(scene_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
     for p in selected:
         content.append({"type": "input_image", "image_url": encode_image_data_url(p)})
 
-    client = get_client() if "get_client" in globals() else OpenAI()
+    client = OpenAI()
 
     response = client.responses.create(
         model=model,
@@ -237,5 +271,7 @@ def run_scene(scene_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
 
     print("[ANALYZE] RESULT:", json.dumps(out, indent=2, ensure_ascii=False))
     print(f"[ANALYZE] ===== DONE =====")
+
+    record_and_dispatch_analysis(event, out)
 
     return out
