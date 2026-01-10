@@ -5,24 +5,9 @@ log()  { echo -e "\033[1;32m[sftp_setup]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[warn]\033[0m  $*"; }
 err()  { echo -e "\033[1;31m[error]\033[0m $*" >&2; }
 
-# Where your uploads should land on the host
-APP_DIR="${APP_DIR:-$HOME/sei-raspi}"
-APP_PARENT="$(dirname "$APP_DIR")"    # e.g. /home/rh
-UPLOAD_DIR="${UPLOAD_DIR:-$APP_DIR/uploads}"
-
-# Chroot root for SFTP (must be root-owned and not writable)
-CHROOT_DIR="${CHROOT_DIR:-/srv/sei-sftp/chroot}"
-CHROOT_UPLOAD_DIR="$CHROOT_DIR/uploads"
-
-# Use /dev/tty for reliable prompting even if script is piped
 TTY="/dev/tty"
 
 require_tty() {
-  if [[ ! -t 0 && ! -t 1 ]]; then
-    err "No interactive terminal detected. Run this script directly in a terminal."
-    err "Example: bash $APP_DIR/sftp_setup.sh"
-    exit 1
-  fi
   if [[ ! -e "$TTY" ]]; then
     err "/dev/tty not available; cannot prompt interactively."
     exit 1
@@ -68,6 +53,18 @@ prompt_password() {
 
 require_tty
 
+# Host-side uploads directory (Docker will use this)
+APP_DIR="${APP_DIR:-$HOME/sei-raspi}"
+UPLOAD_DIR="${UPLOAD_DIR:-$APP_DIR/uploads}"
+
+# Chroot is system-owned (avoids /home permission issues)
+CHROOT_DIR="${CHROOT_DIR:-/srv/sei-sftp/chroot}"
+CHROOT_UPLOAD_DIR="$CHROOT_DIR/uploads"
+
+# Group-based match avoids overwriting config per user
+SFTP_GROUP="${SFTP_GROUP:-sftpusers}"
+SSHD_SNIPPET="${SSHD_SNIPPET:-/etc/ssh/sshd_config.d/90-sftp-chroot.conf}"
+
 log "Installing OpenSSH server (for SFTP)..."
 sudo apt update
 sudo apt install -y openssh-server
@@ -77,11 +74,34 @@ echo > "$TTY"
 log "SFTP account setup (interactive)"
 SFTP_USER="${SFTP_USER:-$(prompt_user "Enter SFTP username")}"
 SFTP_PASSWORD="$(prompt_password)"
-SFTP_GROUP="${SFTP_GROUP:-$SFTP_USER}"
 
 log "Using SFTP user: $SFTP_USER"
-log "Uploads will go to: $UPLOAD_DIR"
+log "Uploads will go to (host): $UPLOAD_DIR"
 log "Chroot root: $CHROOT_DIR"
+log "SFTP group: $SFTP_GROUP"
+
+# Ensure uploads dir exists
+log "Ensuring host upload directory exists..."
+sudo mkdir -p "$UPLOAD_DIR"
+
+# Ensure chroot exists (must be root-owned and not writable)
+log "Ensuring chroot directory exists..."
+sudo mkdir -p "$CHROOT_UPLOAD_DIR"
+sudo chown root:root "$CHROOT_DIR"
+sudo chmod 755 "$CHROOT_DIR"
+
+# Bind-mount uploads into chroot (/uploads inside SFTP)
+log "Bind-mounting uploads into chroot..."
+if ! mountpoint -q "$CHROOT_UPLOAD_DIR"; then
+  sudo mount --bind "$UPLOAD_DIR" "$CHROOT_UPLOAD_DIR"
+fi
+
+# Persist bind mount
+FSTAB_LINE="$UPLOAD_DIR $CHROOT_UPLOAD_DIR none bind 0 0"
+if ! grep -qF "$FSTAB_LINE" /etc/fstab; then
+  echo "$FSTAB_LINE" | sudo tee -a /etc/fstab >/dev/null
+  log "Persisted bind mount in /etc/fstab"
+fi
 
 # Create group if needed
 if ! getent group "$SFTP_GROUP" >/dev/null; then
@@ -98,73 +118,48 @@ else
   sudo usermod -s /usr/sbin/nologin "$SFTP_USER"
 fi
 
-# Set password reliably (avoid passwd)
+# Ensure user is in group (important if user existed already)
+sudo usermod -aG "$SFTP_GROUP" "$SFTP_USER"
+
+# Set password reliably
 log "Setting password for $SFTP_USER..."
 echo "$SFTP_USER:$SFTP_PASSWORD" | sudo chpasswd
 
-# Ensure directories exist
-log "Creating upload directories..."
-sudo mkdir -p "$CHROOT_UPLOAD_DIR"
-sudo chown root:root "$CHROOT_DIR"
-sudo chmod 755 "$CHROOT_DIR"
-
-# Ensure chroot path components are not group/world writable (OpenSSH requirement)
-log "Ensuring chroot path components are not group/world-writable..."
-sudo chmod go-w "$APP_PARENT" || true
-sudo chmod go-w "$APP_DIR"    || true
-sudo chmod go-w "$CHROOT_DIR" || true
-
-# Chroot directory must be root-owned and not writable by anyone but root
-log "Fixing chroot directory permissions (OpenSSH requirement)..."
-sudo chown root:root "$CHROOT_DIR"
-sudo chmod 755 "$CHROOT_DIR"
-
-# Upload dir must be writable by SFTP user
+# Host upload dir should be writable by SFTP user
 log "Setting upload dir ownership..."
 sudo chown "$SFTP_USER:$SFTP_GROUP" "$UPLOAD_DIR"
 sudo chmod 755 "$UPLOAD_DIR"
 
-# Bind-mount host uploads folder into chroot so the user sees /uploads
-log "Bind-mounting $UPLOAD_DIR -> $CHROOT_UPLOAD_DIR ..."
-if ! mountpoint -q "$CHROOT_UPLOAD_DIR"; then
-  sudo mount --bind "$UPLOAD_DIR" "$CHROOT_UPLOAD_DIR"
-fi
+# IMPORTANT: remove any old per-user snippets that force /home/... chroot
+# (This prevents regression / "Connection reset" issues)
+log "Removing legacy SFTP sshd snippets (if any)..."
+sudo rm -f /etc/ssh/sshd_config.d/sei-sftp.conf
+sudo rm -f /etc/ssh/sshd_config.d/sei-sftp-*.conf
 
-# Persist bind mount
-FSTAB_LINE="$UPLOAD_DIR $CHROOT_UPLOAD_DIR none bind 0 0"
-if ! grep -qF "$FSTAB_LINE" /etc/fstab; then
-  echo "$FSTAB_LINE" | sudo tee -a /etc/fstab >/dev/null
-  log "Persisted bind mount in /etc/fstab"
-fi
-
-# Write sshd config snippet
-SSHD_SNIPPET="/etc/ssh/sshd_config.d/sei-sftp.conf"
-log "Writing SSHD SFTP config snippet: $SSHD_SNIPPET"
-sudo tee "$SSHD_SNIPPET" >/dev/null <<EOF
-# SFTP-only config for $SFTP_USER
-Match User $SFTP_USER
+# Write group-based sshd config (only once)
+if [[ ! -f "$SSHD_SNIPPET" ]]; then
+  log "Writing SSHD SFTP group config snippet: $SSHD_SNIPPET"
+  sudo tee "$SSHD_SNIPPET" >/dev/null <<EOF
+Match Group $SFTP_GROUP
     ChrootDirectory $CHROOT_DIR
     ForceCommand internal-sftp
     X11Forwarding no
     AllowTcpForwarding no
     PermitTunnel no
 EOF
+else
+  log "SSHD snippet already exists: $SSHD_SNIPPET (not overwriting)"
+fi
 
 log "Validating sshd config..."
 sudo sshd -t
 
-PERMS="$(stat -c "%A" "$APP_PARENT")"
-if [[ "${PERMS:5:1}" == "w" || "${PERMS:8:1}" == "w" ]]; then
-  err "$APP_PARENT has group/other write enabled ($PERMS). Chroot will fail."
-  sudo ls -ld "$APP_PARENT"
-  exit 1
-fi
-
-log "Chroot path verification:"
-sudo namei -l "$CHROOT_DIR"
-
 log "Restarting SSH service..."
 sudo systemctl restart ssh
+
+# Verify effective config for this user
+log "Verifying effective config for user $SFTP_USER..."
+sudo sshd -T -C user="$SFTP_USER",host=localhost,addr=127.0.0.1 | grep -i chroot || true
 
 echo > "$TTY"
 log "✅ SFTP setup complete!"
