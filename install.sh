@@ -1,167 +1,130 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-log()  { echo -e "\033[1;32m[setup]\033[0m $*"; }
+log()  { echo -e "\033[1;32m[sftp_setup]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[warn]\033[0m  $*"; }
 err()  { echo -e "\033[1;31m[error]\033[0m $*" >&2; }
 
-APP_DIR="$HOME/sei-raspi"
-REPO_URL="https://github.com/henklr/sei-raspi.git"
-IMAGE_NAME="sei-raspi"
-CONTAINER_NAME="sei-raspi"
-PORT="${PORT:-8000}"   # Allow override: PORT=1234 ./install.sh
-ALARM_PORT="${ALARM_PORT:-15000}"
+# Where your uploads should land on the host
+APP_DIR="${APP_DIR:-$HOME/sei-raspi}"
+UPLOAD_DIR="${UPLOAD_DIR:-$APP_DIR/uploads}"
 
-# Determine if we should use sudo for docker
-DOCKER="docker"
-if ! groups "$USER" | grep -q "\bdocker\b"; then
-  DOCKER="sudo docker"
-fi
+# Chroot root for SFTP (must be root-owned and not writable)
+CHROOT_DIR="${CHROOT_DIR:-$APP_DIR/sftp-root}"
+CHROOT_UPLOAD_DIR="$CHROOT_DIR/uploads"
 
-log "Updating system..."
+prompt_user() {
+  local v=""
+  while [[ -z "$v" ]]; do
+    read -r -p "$1: " v
+  done
+  echo "$v"
+}
+
+prompt_password() {
+  local p1="" p2=""
+  while true; do
+    read -r -s -p "SFTP password: " p1; echo
+    read -r -s -p "Retype password: " p2; echo
+    if [[ -z "$p1" ]]; then
+      warn "Password cannot be empty."
+    elif [[ "$p1" != "$p2" ]]; then
+      warn "Passwords do not match. Try again."
+    else
+      echo "$p1"
+      return 0
+    fi
+  done
+}
+
+log "Installing OpenSSH server (for SFTP)..."
 sudo apt update
+sudo apt install -y openssh-server
+sudo systemctl enable --now ssh
 
-log "Installing prerequisites..."
-sudo apt install -y ca-certificates curl gnupg git lsb-release
+# Ask user for SFTP login details
+echo
+log "SFTP account setup (interactive)"
+SFTP_USER="${SFTP_USER:-$(prompt_user "SFTP username")}"
+SFTP_PASSWORD="$(prompt_password)"
+SFTP_GROUP="${SFTP_GROUP:-$SFTP_USER}"
 
-# Install Docker only if it isn't already installed
-if ! command -v docker >/dev/null 2>&1; then
-  log "Docker not found. Installing Docker..."
+log "Using SFTP user: $SFTP_USER"
+log "Uploads will go to: $UPLOAD_DIR"
+log "Chroot root: $CHROOT_DIR"
 
-  OS_ID="$(. /etc/os-release && echo "$ID")"
-  CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
-  ARCH="$(dpkg --print-architecture)"
-
-  # Raspbian uses Debian repo
-  if [[ "$OS_ID" == "raspbian" ]]; then
-    DOCKER_DIST="debian"
-  else
-    DOCKER_DIST="$OS_ID"
-  fi
-
-  log "Detected OS: $OS_ID ($CODENAME), Arch: $ARCH"
-  log "Setting Docker repo: $DOCKER_DIST"
-
-  sudo install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL "https://download.docker.com/linux/${DOCKER_DIST}/gpg" | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  sudo chmod a+r /etc/apt/keyrings/docker.gpg
-
-  log "Adding Docker repository..."
-  echo \
-    "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DIST} \
-    ${CODENAME} stable" | \
-    sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-  sudo apt update
-  sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-else
-  log "Docker is already installed. Skipping install."
+# Create group if needed
+if ! getent group "$SFTP_GROUP" >/dev/null; then
+  log "Creating group: $SFTP_GROUP"
+  sudo groupadd "$SFTP_GROUP"
 fi
 
-log "Enabling Docker to start on boot..."
-sudo systemctl enable --now docker
-
-log "Verifying Docker..."
-if ! sudo docker run --rm hello-world >/dev/null 2>&1; then
-  warn "Docker test failed. Try: sudo docker run hello-world"
+# Create user if needed
+if ! id "$SFTP_USER" >/dev/null 2>&1; then
+  log "Creating SFTP-only user: $SFTP_USER"
+  sudo useradd -m -g "$SFTP_GROUP" -s /usr/sbin/nologin "$SFTP_USER"
 else
-  log "Docker OK."
+  log "User $SFTP_USER already exists."
+  # Ensure correct shell
+  sudo usermod -s /usr/sbin/nologin "$SFTP_USER"
 fi
 
-# Add current user to docker group (won’t take effect until new login)
-if ! groups "$USER" | grep -q "\bdocker\b"; then
-  log "Adding user '$USER' to docker group..."
-  sudo usermod -aG docker "$USER"
-  warn "Docker group membership will apply AFTER you log out and log back in (or reboot)."
-else
-  log "User '$USER' is already in docker group."
+# Set password reliably (avoids passwd TTY issues)
+log "Setting password for $SFTP_USER..."
+echo "$SFTP_USER:$SFTP_PASSWORD" | sudo chpasswd
+
+# Ensure directories exist
+log "Creating upload directories..."
+sudo mkdir -p "$UPLOAD_DIR"
+sudo mkdir -p "$CHROOT_DIR"
+sudo mkdir -p "$CHROOT_UPLOAD_DIR"
+
+# Chroot directory must be root-owned and not writable
+log "Fixing chroot directory permissions (OpenSSH requirement)..."
+sudo chown root:root "$CHROOT_DIR"
+sudo chmod 755 "$CHROOT_DIR"
+
+# Upload dir must be writable by SFTP user
+log "Setting upload dir ownership..."
+sudo chown "$SFTP_USER:$SFTP_GROUP" "$UPLOAD_DIR"
+sudo chmod 755 "$UPLOAD_DIR"
+
+# Bind-mount host uploads folder into chroot so the user sees /uploads
+log "Bind-mounting $UPLOAD_DIR -> $CHROOT_UPLOAD_DIR ..."
+if ! mountpoint -q "$CHROOT_UPLOAD_DIR"; then
+  sudo mount --bind "$UPLOAD_DIR" "$CHROOT_UPLOAD_DIR"
 fi
 
-# Clone or update repo
-if [ -d "$APP_DIR/.git" ]; then
-  log "Repo already exists at $APP_DIR. Pulling latest changes..."
-  git -C "$APP_DIR" pull
-else
-  log "Cloning repo into $APP_DIR..."
-  git clone "$REPO_URL" "$APP_DIR"
+# Persist bind mount
+FSTAB_LINE="$UPLOAD_DIR $CHROOT_UPLOAD_DIR none bind 0 0"
+if ! grep -qF "$FSTAB_LINE" /etc/fstab; then
+  echo "$FSTAB_LINE" | sudo tee -a /etc/fstab >/dev/null
+  log "Persisted bind mount in /etc/fstab"
 fi
 
-log "Running rebuild (build + start)..."
-chmod +x "$APP_DIR/rebuild" "$APP_DIR/start"
-"$APP_DIR/rebuild"
+# Write sshd config snippet
+SSHD_SNIPPET="/etc/ssh/sshd_config.d/sei-sftp.conf"
+log "Writing SSHD SFTP config snippet: $SSHD_SNIPPET"
+sudo tee "$SSHD_SNIPPET" >/dev/null <<EOF
+# SFTP-only config for $SFTP_USER
+Match User $SFTP_USER
+    ChrootDirectory $CHROOT_DIR
+    ForceCommand internal-sftp
+    X11Forwarding no
+    AllowTcpForwarding no
+    PermitTunnel no
+EOF
 
-log "Running SFTP setup..."
-chmod +x "$APP_DIR/sftp_setup.sh"
-"$APP_DIR/sftp_setup.sh"
+log "Validating sshd config..."
+sudo sshd -t
 
-# ---------------------------------------------------------------------
-# Install rebuild helper script (symlink to repo) + ensure ~/bin is on PATH
-# ---------------------------------------------------------------------
-log "Installing helper script: rebuild (symlink to repo)..."
-
-BIN_DIR="$HOME/bin"
-mkdir -p "$BIN_DIR"
-
-REPO_REBUILD="$APP_DIR/rebuild"
-BIN_REBUILD="$BIN_DIR/rebuild"
-
-if [[ ! -f "$REPO_REBUILD" ]]; then
-  warn "No rebuild script found at $REPO_REBUILD"
-  warn "Make sure your repo contains a rebuild script at that path."
-else
-  chmod +x "$REPO_REBUILD"
-
-  # Replace existing file/symlink safely
-  rm -f "$BIN_REBUILD"
-  ln -s "$REPO_REBUILD" "$BIN_REBUILD"
-
-  log "Rebuild script linked: $BIN_REBUILD -> $REPO_REBUILD"
-fi
-
-log "Ensuring $HOME/bin is on PATH..."
-
-SHELL_RC=""
-if [[ -n "${BASH_VERSION:-}" ]]; then
-  SHELL_RC="$HOME/.bashrc"
-elif [[ -n "${ZSH_VERSION:-}" ]]; then
-  SHELL_RC="$HOME/.zshrc"
-else
-  SHELL_RC="$HOME/.profile"
-fi
-
-if ! grep -q 'export PATH="$HOME/bin:$PATH"' "$SHELL_RC" 2>/dev/null; then
-  echo '' >> "$SHELL_RC"
-  echo '# Add user bin to PATH' >> "$SHELL_RC"
-  echo 'export PATH="$HOME/bin:$PATH"' >> "$SHELL_RC"
-  warn "Added \$HOME/bin to PATH in $SHELL_RC"
-else
-  log "\$HOME/bin is already on PATH in $SHELL_RC"
-fi
-
-# Make it available immediately in this script session
-export PATH="$HOME/bin:$PATH"
-
-# ---------------------------------------------------------------------
-
-HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-HOST_IP="${HOST_IP:-127.0.0.1}"
-
-log "Done!"
-log "Visit: http://${HOST_IP}:${PORT}/"
-log "Rebuild anytime with: rebuild"
-warn "If you want to run docker without sudo, log out and log back in (or reboot)."
-warn "If 'rebuild' isn't found immediately, run: source $SHELL_RC"
+log "Restarting SSH service..."
+sudo systemctl restart ssh
 
 echo
-warn "A reboot is recommended to ensure all changes take effect."
-if [[ -t 0 ]]; then
-  read -r -p "Reboot now? (y/N): " REBOOT_ANSWER
-  if [[ "$REBOOT_ANSWER" =~ ^[Yy]$ ]]; then
-    log "Rebooting..."
-    sudo reboot
-  else
-    warn "Skipping reboot. Please reboot later if anything doesn't work."
-  fi
-else
-  warn "Non-interactive shell detected (e.g. curl | bash). Please reboot manually."
-fi
+log "✅ SFTP setup complete!"
+log "Login: $SFTP_USER"
+log "SFTP root (chroot): /"
+log "Upload path inside SFTP: /uploads"
+log "Host upload path: $UPLOAD_DIR"
+log "Connect with: sftp $SFTP_USER@<pi-ip>"
