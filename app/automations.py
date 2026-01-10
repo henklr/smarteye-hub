@@ -15,7 +15,7 @@ DEFAULT_AUTOMATIONS = [
         "id": "log-face-detection",
         "name": "Log Face Detection Start",
         "enabled": True,
-        "trigger": {"event_code": "FaceDetection", "action": "Start"},
+        "triggers": [{"event_code": "FaceDetection", "action": "Start"}],
         "conditions": [],
         "actions": [
             {"type": "log", "message": "Face detected on {{camera_ip}} at {{locale_time}}"}
@@ -30,12 +30,37 @@ def ensure_automations_file():
 def load_automations():
     ensure_automations_file()
     with AUTOMATIONS_PATH.open("r", encoding="utf-8") as f:
-        return json.load(f)
+        automations = json.load(f)
+    return [normalize_automation(a) for a in (automations or [])]
 
 def save_automations(automations):
     AUTOMATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
     with AUTOMATIONS_PATH.open("w", encoding="utf-8") as f:
         json.dump(automations, f, indent=2)
+
+def normalize_automation(a: dict) -> dict:
+    """
+    Backward compatible migration:
+    - If "trigger" exists and "triggers" doesn't, convert to triggers list.
+    """
+    a = dict(a)
+
+    if "triggers" not in a or a["triggers"] is None:
+        if a.get("trigger"):
+            a["triggers"] = [a["trigger"]]
+        else:
+            a["triggers"] = []
+
+    # Keep old key optional
+    if "trigger" in a:
+        del a["trigger"]
+
+    # Ensure lists exist
+    a["conditions"] = a.get("conditions") or []
+    a["actions"] = a.get("actions") or []
+    a["enabled"] = bool(a.get("enabled", False))
+
+    return a
 
 def log_run(run_obj):
     RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -71,16 +96,35 @@ def check_condition(cond: dict, event: dict) -> bool:
         return field in event and event[field] is not None
     return False
 
+def trigger_matches(trigger: dict, event: dict) -> bool:
+    if not trigger:
+        return False
+
+    code = trigger.get("event_code")
+    action = trigger.get("action")
+
+    if code and code != event.get("code"):
+        return False
+    if action and action != event.get("action"):
+        return False
+
+    return True
+
 def matches_automation(automation: dict, event: dict) -> bool:
     if not automation.get("enabled", False):
         return False
 
-    trig = automation.get("trigger", {}) or {}
-    if trig.get("event_code") and trig["event_code"] != event.get("code"):
-        return False
-    if trig.get("action") and trig["action"] != event.get("action"):
+    triggers = automation.get("triggers") or []
+
+    # If no triggers, don't match
+    if not triggers:
         return False
 
+    # OR logic: any trigger matches
+    if not any(trigger_matches(t, event) for t in triggers):
+        return False
+
+    # Conditions (AND logic)
     for cond in automation.get("conditions", []) or []:
         if not check_condition(cond, event):
             return False
@@ -125,7 +169,7 @@ def run_action(action: dict, event: dict):
         result = run_scene(scene_id, event)
         return {"ok": result.get("ok", False), "type": "analyze", "scene_id": scene_id, "result": result}
 
-        return {"ok": False, "type": t, "error": "Unknown action type"}
+    return {"ok": False, "type": t, "error": "Unknown action type"}
 
 # ------------------
 # Main entry point
