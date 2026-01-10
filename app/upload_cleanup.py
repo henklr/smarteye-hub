@@ -113,9 +113,9 @@ def cleanup():
 
     uploads_dir = get_upload_dir()
 
-    print(f"[CLEANUP] Upload dir: {uploads_dir}", flush=True)
-    print(f"[CLEANUP] Threshold: {cfg['max_total_mb']} MB", flush=True)
-    print(f"[CLEANUP] Min file age: {min_age}s", flush=True)
+    #print(f"[CLEANUP] Upload dir: {uploads_dir}", flush=True)
+    #print(f"[CLEANUP] Threshold: {cfg['max_total_mb']} MB", flush=True)
+    #print(f"[CLEANUP] Min file age: {min_age}s", flush=True)
 
     if not acquire_lock():
         return
@@ -130,7 +130,7 @@ def cleanup():
         total_size = sum(size for _, _, size in files)
         total_mb = total_size / (1024 * 1024)
 
-        print(f"[CLEANUP] Found {len(files)} files. Total size: {total_mb:.2f} MB", flush=True)
+        print(f"[CLEANUP] Found {len(files)} files in {uploads_dir}. Total size: {total_mb:.2f} MB. Threshold: {cfg['max_total_mb']} MB", flush=True)
 
         if total_size <= max_total_bytes:
             print("[CLEANUP] ✅ No cleanup needed.", flush=True)
@@ -150,11 +150,14 @@ def cleanup():
                 path.unlink()
                 freed += size
                 deleted += 1
-                print(f"[CLEANUP] Deleted: {path} ({size / (1024*1024):.2f} MB)", flush=True)
             except Exception as e:
                 print(f"[CLEANUP] ⚠️ Failed to delete {path}: {e}", flush=True)
 
-        print(f"[CLEANUP] ✅ Deleted {deleted} files. Freed {freed / (1024*1024):.2f} MB", flush=True)
+        print(
+            f"[CLEANUP] ✅ Deleted {deleted} files, freed {freed / (1024*1024):.2f} MB "
+            f"(new total: {(total_size - freed) / (1024*1024):.2f} MB)",
+            flush=True
+        )
 
         if delete_empty_dirs:
             remove_empty_dirs(uploads_dir)
