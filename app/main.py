@@ -33,14 +33,39 @@ def stop_alarm_process():
             alarm_proc.kill()
         print("[MAIN] Alarm listener process stopped", flush=True)
 
+cleanup_proc = None
+
+def start_cleanup_scheduler():
+    global cleanup_proc
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    scheduler_path = os.path.join(base_dir, "cleanup_scheduler.py")
+
+    cleanup_proc = subprocess.Popen(
+        [sys.executable, scheduler_path],
+        cwd=base_dir,
+    )
+    print("[MAIN] Cleanup scheduler started", flush=True)
+
+def stop_cleanup_scheduler():
+    global cleanup_proc
+    if cleanup_proc and cleanup_proc.poll() is None:
+        cleanup_proc.terminate()
+        try:
+            cleanup_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cleanup_proc.kill()
+        print("[MAIN] Cleanup scheduler stopped", flush=True)
+
 @app.on_event("startup")
 def startup():
     start_alarm_process()
+    start_cleanup_scheduler()
 
 @app.on_event("shutdown")
 def shutdown():
     stop_alarm_process()
-
+    stop_cleanup_scheduler()
+    
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
