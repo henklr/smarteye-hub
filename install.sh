@@ -90,6 +90,10 @@ log "Running rebuild (build + start)..."
 chmod +x "$APP_DIR/rebuild" "$APP_DIR/start"
 "$APP_DIR/rebuild"
 
+log "Running SFTP setup..."
+chmod +x "$APP_DIR/sftp_setup.sh"
+"$APP_DIR/sftp_setup.sh"
+
 # ---------------------------------------------------------------------
 # Install rebuild helper script (symlink to repo) + ensure ~/bin is on PATH
 # ---------------------------------------------------------------------
