@@ -107,7 +107,13 @@ sudo mkdir -p "$UPLOAD_DIR"
 sudo mkdir -p "$CHROOT_DIR"
 sudo mkdir -p "$CHROOT_UPLOAD_DIR"
 
-# Chroot directory must be root-owned and not writable
+# Ensure parent dirs are not group/world writable (required for ChrootDirectory)
+log "Ensuring chroot path components are not group/world-writable..."
+sudo chmod go-w "$HOME"   || true
+sudo chmod go-w "$APP_DIR" || true
+sudo chmod go-w "$CHROOT_DIR" || true
+
+# Chroot directory must be root-owned and not writable by anyone but root
 log "Fixing chroot directory permissions (OpenSSH requirement)..."
 sudo chown root:root "$CHROOT_DIR"
 sudo chmod 755 "$CHROOT_DIR"
