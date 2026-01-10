@@ -13,10 +13,28 @@ UPLOAD_DIR="${UPLOAD_DIR:-$APP_DIR/uploads}"
 CHROOT_DIR="${CHROOT_DIR:-$APP_DIR/sftp-root}"
 CHROOT_UPLOAD_DIR="$CHROOT_DIR/uploads"
 
+# Use /dev/tty for reliable prompting even if script is piped
+TTY="/dev/tty"
+
+require_tty() {
+  if [[ ! -t 0 && ! -t 1 ]]; then
+    err "No interactive terminal detected. Run this script directly in a terminal."
+    err "Example: bash $APP_DIR/sftp_setup.sh"
+    exit 1
+  fi
+  if [[ ! -e "$TTY" ]]; then
+    err "/dev/tty not available; cannot prompt interactively."
+    exit 1
+  fi
+}
+
 prompt_user() {
+  local prompt="$1"
   local v=""
   while [[ -z "$v" ]]; do
-    read -r -p "$1: " v
+    echo -n "$prompt: " > "$TTY"
+    read -r v < "$TTY" || true
+    v="${v//[$'\r\n']}"
   done
   echo "$v"
 }
@@ -24,8 +42,18 @@ prompt_user() {
 prompt_password() {
   local p1="" p2=""
   while true; do
-    read -r -s -p "SFTP password: " p1; echo
-    read -r -s -p "Retype password: " p2; echo
+    echo -n "SFTP password: " > "$TTY"
+    stty -echo < "$TTY"
+    read -r p1 < "$TTY" || true
+    stty echo < "$TTY"
+    echo > "$TTY"
+
+    echo -n "Retype password: " > "$TTY"
+    stty -echo < "$TTY"
+    read -r p2 < "$TTY" || true
+    stty echo < "$TTY"
+    echo > "$TTY"
+
     if [[ -z "$p1" ]]; then
       warn "Password cannot be empty."
     elif [[ "$p1" != "$p2" ]]; then
@@ -37,15 +65,16 @@ prompt_password() {
   done
 }
 
+require_tty
+
 log "Installing OpenSSH server (for SFTP)..."
 sudo apt update
 sudo apt install -y openssh-server
 sudo systemctl enable --now ssh
 
-# Ask user for SFTP login details
-echo
+echo > "$TTY"
 log "SFTP account setup (interactive)"
-SFTP_USER="${SFTP_USER:-$(prompt_user "SFTP username")}"
+SFTP_USER="${SFTP_USER:-$(prompt_user "Enter SFTP username")}"
 SFTP_PASSWORD="$(prompt_password)"
 SFTP_GROUP="${SFTP_GROUP:-$SFTP_USER}"
 
@@ -65,11 +94,10 @@ if ! id "$SFTP_USER" >/dev/null 2>&1; then
   sudo useradd -m -g "$SFTP_GROUP" -s /usr/sbin/nologin "$SFTP_USER"
 else
   log "User $SFTP_USER already exists."
-  # Ensure correct shell
   sudo usermod -s /usr/sbin/nologin "$SFTP_USER"
 fi
 
-# Set password reliably (avoids passwd TTY issues)
+# Set password reliably (avoid passwd)
 log "Setting password for $SFTP_USER..."
 echo "$SFTP_USER:$SFTP_PASSWORD" | sudo chpasswd
 
@@ -121,7 +149,7 @@ sudo sshd -t
 log "Restarting SSH service..."
 sudo systemctl restart ssh
 
-echo
+echo > "$TTY"
 log "✅ SFTP setup complete!"
 log "Login: $SFTP_USER"
 log "SFTP root (chroot): /"
