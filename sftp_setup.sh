@@ -152,6 +152,9 @@ EOF
 log "Validating sshd config..."
 sudo sshd -t
 
+log "Chroot path permission check:"
+sudo namei -l "$CHROOT_DIR"
+
 log "Restarting SSH service..."
 sudo systemctl restart ssh
 
