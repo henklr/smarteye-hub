@@ -7,6 +7,7 @@ err()  { echo -e "\033[1;31m[error]\033[0m $*" >&2; }
 
 # Where your uploads should land on the host
 APP_DIR="${APP_DIR:-$HOME/sei-raspi}"
+APP_PARENT="$(dirname "$APP_DIR")"    # e.g. /home/rh
 UPLOAD_DIR="${UPLOAD_DIR:-$APP_DIR/uploads}"
 
 # Chroot root for SFTP (must be root-owned and not writable)
@@ -107,10 +108,10 @@ sudo mkdir -p "$UPLOAD_DIR"
 sudo mkdir -p "$CHROOT_DIR"
 sudo mkdir -p "$CHROOT_UPLOAD_DIR"
 
-# Ensure parent dirs are not group/world writable (required for ChrootDirectory)
+# Ensure chroot path components are not group/world writable (OpenSSH requirement)
 log "Ensuring chroot path components are not group/world-writable..."
-sudo chmod go-w "$HOME"   || true
-sudo chmod go-w "$APP_DIR" || true
+sudo chmod go-w "$APP_PARENT" || true
+sudo chmod go-w "$APP_DIR"    || true
 sudo chmod go-w "$CHROOT_DIR" || true
 
 # Chroot directory must be root-owned and not writable by anyone but root
@@ -152,7 +153,14 @@ EOF
 log "Validating sshd config..."
 sudo sshd -t
 
-log "Chroot path permission check:"
+PERMS="$(stat -c "%A" "$APP_PARENT")"
+if [[ "${PERMS:5:1}" == "w" || "${PERMS:8:1}" == "w" ]]; then
+  err "$APP_PARENT has group/other write enabled ($PERMS). Chroot will fail."
+  sudo ls -ld "$APP_PARENT"
+  exit 1
+fi
+
+log "Chroot path verification:"
 sudo namei -l "$CHROOT_DIR"
 
 log "Restarting SSH service..."
