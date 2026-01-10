@@ -241,7 +241,7 @@
     <div>
       <h1>Automations</h1>
       <div class="subtitle">
-        Trigger → Conditions → Actions (Home Assistant style)
+        Conditions → Actions
         &nbsp; <span id="modeBadge" class="modeBadge">Builder Mode</span>
       </div>
     </div>
@@ -349,23 +349,8 @@ function normalize() {
     a.name = a.name || "New automation";
     a.enabled = a.enabled !== false;
 
-    // Ensure conditions/actions exist
     a.conditions = a.conditions || [];
     a.actions = a.actions || [];
-
-    // ✅ Backwards compat: migrate triggers -> conditions
-    const triggers = a.triggers || (a.trigger ? [a.trigger] : []);
-    if (triggers.length) {
-      for (const t of triggers) {
-        if (t.event_code) a.conditions.push({ field: "code", op: "equals", value: t.event_code });
-        if (t.action) a.conditions.push({ field: "action", op: "equals", value: t.action });
-      }
-    }
-
-    // ✅ Remove legacy keys
-    delete a.trigger;
-    delete a.triggers;
-    delete a.trigger_conditions;
   });
 }
 
