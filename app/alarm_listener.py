@@ -87,23 +87,14 @@ def process_payload(payload: bytes, addr):
             print(f"[ALARM] Ignoring Action={action} (ONLY_START_EVENTS enabled)", flush=True)
             return
 
-        event = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "camera_ip": ip,
-            "action": action,
-            "code": code,
-            "event_seq": event_seq,
-            "locale_time": locale_time,
-            "raw": alarm,
-        }
+        from events import record_and_dispatch
 
-        with EVENTS_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        event = record_and_dispatch(alarm)
+        if not event:
+            print("[ALARM] Failed to record/dispatch event", flush=True)
+            return
 
-        print(f"[ALARM] Logged: {action} {code} seq={event_seq} ip={ip}", flush=True)
-
-        from automations import handle_event
-        handle_event(event)
+        print(f"[ALARM] Logged: {event['action']} {event['code']} seq={event['event_seq']} ip={event['camera_ip']}", flush=True)
 
     except Exception as e:
         print(f"[ALARM] Failed to parse/log alarm JSON: {e}", flush=True)
