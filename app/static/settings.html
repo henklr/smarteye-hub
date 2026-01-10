@@ -73,6 +73,28 @@
     
     <div id="status" class="status"></div>
   </div>
+  <div class="card">
+    <h2>Upload Cleanup</h2>
+
+    <div class="row">
+      <input type="checkbox" id="upload_cleanup_enabled">
+      <label for="upload_cleanup_enabled" style="margin:0;">Enable upload cleanup</label>
+    </div>
+
+    <label for="upload_max_total_mb">Max total size (MB)</label>
+    <input type="number" id="upload_max_total_mb" min="1" step="1">
+
+    <label for="upload_min_file_age_seconds">Min file age before deletion (seconds)</label>
+    <input type="number" id="upload_min_file_age_seconds" min="0" step="1">
+
+    <label for="upload_interval_seconds">Cleanup interval (seconds)</label>
+    <input type="number" id="upload_interval_seconds" min="5" step="1">
+
+    <div class="row">
+      <input type="checkbox" id="upload_delete_empty_dirs">
+      <label for="upload_delete_empty_dirs" style="margin:0;">Delete empty folders</label>
+    </div>
+  </div>
 
   <script>
     const statusEl = document.getElementById("status");
@@ -99,6 +121,13 @@
         document.getElementById("listen_host").value = al.listen_host ?? "0.0.0.0";
         document.getElementById("listen_port").value = al.listen_port ?? 15000;
 
+        const uc = settings.upload_cleanup || {};
+        document.getElementById("upload_cleanup_enabled").checked = uc.enabled ?? true;
+        document.getElementById("upload_max_total_mb").value = uc.max_total_mb ?? 4096;
+        document.getElementById("upload_min_file_age_seconds").value = uc.min_file_age_seconds ?? 60;
+        document.getElementById("upload_interval_seconds").value = uc.interval_seconds ?? 60;
+        document.getElementById("upload_delete_empty_dirs").checked = uc.delete_empty_dirs ?? true;
+
         setStatusOk("Settings loaded.");
       } catch (e) {
         setStatusErr("Error: " + e.message);
@@ -114,6 +143,13 @@
             log_raw_payload: document.getElementById("log_raw_payload").checked,
             listen_host: document.getElementById("listen_host").value.trim(),
             listen_port: parseInt(document.getElementById("listen_port").value, 10)
+          },
+          upload_cleanup: {
+            enabled: document.getElementById("upload_cleanup_enabled").checked,
+            max_total_mb: parseInt(document.getElementById("upload_max_total_mb").value, 10),
+            min_file_age_seconds: parseInt(document.getElementById("upload_min_file_age_seconds").value, 10),
+            interval_seconds: parseInt(document.getElementById("upload_interval_seconds").value, 10),
+            delete_empty_dirs: document.getElementById("upload_delete_empty_dirs").checked
           }
         };
 

@@ -9,6 +9,13 @@ DEFAULT_SETTINGS = {
         "log_raw_payload": False,
         "listen_host": "0.0.0.0",
         "listen_port": 15000
+    },
+    "upload_cleanup": {
+        "enabled": True,
+        "max_total_mb": 4096,
+        "min_file_age_seconds": 60,
+        "interval_seconds": 60,
+        "delete_empty_dirs": True
     }
 }
 
@@ -17,6 +24,10 @@ def merge_settings(user: dict) -> dict:
     merged["alarm_listener"] = {
         **DEFAULT_SETTINGS["alarm_listener"],
         **(user.get("alarm_listener", {}) or {})
+    }
+    merged["upload_cleanup"] = {
+        **DEFAULT_SETTINGS["upload_cleanup"],
+        **(user.get("upload_cleanup", {}) or {})
     }
     return merged
 
