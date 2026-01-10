@@ -348,14 +348,24 @@ function normalize() {
     a.id = a.id || uid("auto");
     a.name = a.name || "New automation";
     a.enabled = a.enabled !== false;
-    // Backwards compat: migrate trigger -> triggers[]
-    if (!a.triggers) {
-      if (a.trigger) a.triggers = [a.trigger];
-      else a.triggers = [{ event_code: "", action: "" }];
-    }
-    delete a.trigger;
+
+    // Ensure conditions/actions exist
     a.conditions = a.conditions || [];
     a.actions = a.actions || [];
+
+    // ✅ Backwards compat: migrate triggers -> conditions
+    const triggers = a.triggers || (a.trigger ? [a.trigger] : []);
+    if (triggers.length) {
+      for (const t of triggers) {
+        if (t.event_code) a.conditions.push({ field: "code", op: "equals", value: t.event_code });
+        if (t.action) a.conditions.push({ field: "action", op: "equals", value: t.action });
+      }
+    }
+
+    // ✅ Remove legacy keys
+    delete a.trigger;
+    delete a.triggers;
+    delete a.trigger_conditions;
   });
 }
 
@@ -425,16 +435,7 @@ function renderBuilder() {
       <input type="text" value="${escapeHtml(a.name)}" data-i="${i}" data-path="name" class="field">
 
       <div class="section">
-        <div class="sectionTitle">Triggers (any will fire)</div>
-        <div class="items" id="trigs-${i}"></div>
-        <div class="row" style="margin-top:10px;">
-          <button class="secondary addTrigBtn" data-i="${i}">+ Add Trigger</button>
-        </div>
-        <div class="hint">If any trigger matches, the automation runs.</div>
-      </div>
-
-      <div class="section">
-        <div class="sectionTitle">Conditions</div>
+        <div class="sectionTitle">Conditions (ALL must match)</div>
         <div class="items" id="conds-${i}"></div>
         <div class="row" style="margin-top:10px;">
           <button class="secondary addCondBtn" data-i="${i}">+ Add Condition</button>
@@ -456,45 +457,6 @@ function renderBuilder() {
 
     gridEl.appendChild(card);
     
-    // Triggers
-    const trigsEl = card.querySelector(`#trigs-${i}`);
-    const trigs = a.triggers || [];
-
-    if (!trigs.length) {
-      trigsEl.innerHTML = `<div class="hint">No triggers. Add at least one.</div>`;
-    } else {
-      trigsEl.innerHTML = "";
-      trigs.forEach((t, ti) => {
-        const item = document.createElement("div");
-        item.className = "item";
-        item.innerHTML = `
-          <div class="itemHeader">
-            <strong>Trigger</strong>
-            <button class="danger removeTrigBtn" data-i="${i}" data-ti="${ti}">Remove</button>
-          </div>
-          <div class="miniRow">
-            <div>
-              <label>Event Code</label>
-              <input type="text" placeholder="FaceDetection" value="${escapeHtml(t.event_code ?? "")}"
-                data-i="${i}" data-ti="${ti}" data-key="event_code" class="trigField">
-            </div>
-            <div>
-              <label>Action</label>
-              <select data-i="${i}" data-ti="${ti}" data-key="action" class="trigField">
-                ${["", "Start", "Stop"].map(opt => `
-                  <option value="${opt}" ${(t.action ?? "") === opt ? "selected" : ""}>
-                    ${opt === "" ? "(any)" : opt}
-                  </option>
-                `).join("")}
-              </select>
-            </div>
-          </div>
-          <div class="hint">Leave empty to match any code/action.</div>
-        `;
-        trigsEl.appendChild(item);
-      });
-    }
-
     // Conditions
     const condsEl = card.querySelector(`#conds-${i}`);
     const conds = a.conditions || [];
@@ -733,36 +695,6 @@ function wireBuilderEvents() {
       setOk("Deleted (not saved yet). Click Save.");
     };
   });
-
-  document.querySelectorAll(".addTrigBtn").forEach(btn => {
-    btn.onclick = (e) => {
-      const i = Number(e.target.dataset.i);
-      automations[i].triggers = automations[i].triggers || [];
-      automations[i].triggers.push({ event_code: "", action: "" });
-      renderBuilder();
-    };
-  });
-
-  document.querySelectorAll(".removeTrigBtn").forEach(btn => {
-    btn.onclick = (e) => {
-      const i = Number(e.target.dataset.i);
-      const ti = Number(e.target.dataset.ti);
-      automations[i].triggers.splice(ti, 1);
-      renderBuilder();
-    };
-  });
-
-  document.querySelectorAll(".trigField").forEach(el => {
-    el.oninput = (e) => {
-      const i = Number(e.target.dataset.i);
-      const ti = Number(e.target.dataset.ti);
-      const key = e.target.dataset.key;
-      automations[i].triggers[ti][key] = e.target.value;
-      clearStatus();
-    };
-    el.onchange = el.oninput;
-  });
-
 }
 
 async function loadAutomations() {
@@ -786,14 +718,18 @@ async function saveAutomations() {
       syncDataFromEditor();
     }
 
-    // Parse "in" and webhook payload JSON
     for (const a of automations) {
       for (const c of (a.conditions || [])) {
         if (c.op === "in") {
-          try { c.value = JSON.parse(c.value); }
-          catch { throw new Error(`Condition "in" value must be JSON array in "${a.name}"`); }
+          try {
+            c.value = JSON.parse(c.value);
+            if (!Array.isArray(c.value)) throw new Error();
+          } catch {
+            throw new Error(`Condition "in" value must be JSON array in "${a.name}"`);
+          }
         }
       }
+
       for (const act of (a.actions || [])) {
         if (act.type === "webhook") {
           try {
@@ -819,8 +755,7 @@ async function newAutomation() {
     id: uid("auto"),
     name: "New automation",
     enabled: true,
-    triggers: [{ event_code: "", action: "" }],
-    conditions: [],
+    conditions: [{ field: "code", op: "equals", value: "" }],
     actions: [{ type: "log", message: "Automation fired for {{code}} from {{camera_ip}}" }]
   };
   automations.unshift(a);

@@ -39,26 +39,34 @@ def save_automations(automations):
         json.dump(automations, f, indent=2)
 
 def normalize_automation(a: dict) -> dict:
-    """
-    Backward compatible migration:
-    - If "trigger" exists and "triggers" doesn't, convert to triggers list.
-    """
     a = dict(a)
 
-    if "triggers" not in a or a["triggers"] is None:
-        if a.get("trigger"):
-            a["triggers"] = [a["trigger"]]
-        else:
-            a["triggers"] = []
+    # Start with existing conditions
+    conds = a.get("conditions") or []
 
-    # Keep old key optional
-    if "trigger" in a:
-        del a["trigger"]
+    # Backwards compat: migrate trigger(s) into conditions
+    triggers = a.get("triggers") or []
+    if not triggers and a.get("trigger"):
+        triggers = [a["trigger"]]
+
+    for t in triggers:
+        if t.get("event_code"):
+            conds.append({"field": "code", "op": "equals", "value": t["event_code"]})
+        if t.get("action"):
+            conds.append({"field": "action", "op": "equals", "value": t["action"]})
+
+    # Cleanup legacy trigger keys
+    a.pop("trigger", None)
+    a.pop("triggers", None)
 
     # Ensure lists exist
-    a["conditions"] = a.get("conditions") or []
+    a["conditions"] = conds
     a["actions"] = a.get("actions") or []
     a["enabled"] = bool(a.get("enabled", False))
+
+    # Optional defaults
+    a["id"] = a.get("id") or f"auto-{int(time.time())}"
+    a["name"] = a.get("name") or "New automation"
 
     return a
 
@@ -114,18 +122,14 @@ def matches_automation(automation: dict, event: dict) -> bool:
     if not automation.get("enabled", False):
         return False
 
-    triggers = automation.get("triggers") or []
+    conds = automation.get("conditions") or []
 
-    # If no triggers, don't match
-    if not triggers:
+    # No conditions = never matches (recommended)
+    if not conds:
         return False
 
-    # OR logic: any trigger matches
-    if not any(trigger_matches(t, event) for t in triggers):
-        return False
-
-    # Conditions (AND logic)
-    for cond in automation.get("conditions", []) or []:
+    # AND logic across all conditions
+    for cond in conds:
         if not check_condition(cond, event):
             return False
 
