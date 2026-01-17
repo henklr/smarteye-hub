@@ -86,6 +86,9 @@ else
   git clone "$REPO_URL" "$APP_DIR"
 fi
 
+log "Creating additional files..."
+mkdir -p secret && [[ -f secret/openai.env ]] || echo 'OPENAI_API_KEY=your_openai_api_key_here' > secret/openai.env
+
 log "Running rebuild (build + start)..."
 chmod +x "$APP_DIR/rebuild" "$APP_DIR/start"
 "$APP_DIR/rebuild"
@@ -140,11 +143,6 @@ fi
 
 # Make it available immediately in this script session
 export PATH="$HOME/bin:$PATH"
-
-# ---------------------------------------------------------------------
-
-log "Creating additional files..."
-mkdir -p secret && [[ -f secret/openai.env ]] || echo 'OPENAI_API_KEY=your_openai_api_key_here' > secret/openai.env
 
 # ---------------------------------------------------------------------
 
