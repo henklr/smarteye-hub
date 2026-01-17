@@ -144,6 +144,10 @@ fi
 # Make it available immediately in this script session
 export PATH="$HOME/bin:$PATH"
 
+log "Setting timezone Europe/Copenhagen"
+sudo timedatectl set-timezone Europe/Copenhagen
+sudo timedatectl set-ntp true
+
 # ---------------------------------------------------------------------
 
 HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
