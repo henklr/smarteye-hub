@@ -87,7 +87,7 @@ else
 fi
 
 log "Creating additional files..."
-mkdir -p secret && [[ -f secret/openai.env ]] || echo 'OPENAI_API_KEY=your_openai_api_key_here' > secret/openai.env
+mkdir -p $APP_DIR/secret && [[ -f $APP_DIR/secret/openai.env ]] || echo 'OPENAI_API_KEY=your_openai_api_key_here' > $APP_DIR/secret/openai.env
 
 log "Running rebuild (build + start)..."
 chmod +x "$APP_DIR/rebuild" "$APP_DIR/start"
