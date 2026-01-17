@@ -143,6 +143,11 @@ export PATH="$HOME/bin:$PATH"
 
 # ---------------------------------------------------------------------
 
+log "Creating additional files..."
+mkdir -p secret && [[ -f secret/openai.env ]] || echo 'OPENAI_API_KEY=your_openai_api_key_here' > secret/openai.env
+
+# ---------------------------------------------------------------------
+
 HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 HOST_IP="${HOST_IP:-127.0.0.1}"
 
