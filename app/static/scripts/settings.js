@@ -16,8 +16,10 @@ async function loadSettings() {
         if (!res.ok) throw new Error("Failed to load settings");
         const settings = await res.json();
 
+        const t = settings.time || {};
+        document.getElementById("time_timezone").value = t.timezone ?? "Europe/Copenhagen";
+
         const al = settings.alarm_listener || {};
-        document.getElementById("only_start_events").checked = !!al.only_start_events;
         document.getElementById("log_raw_payload").checked = !!al.log_raw_payload;
         document.getElementById("listen_host").value = al.listen_host ?? "0.0.0.0";
         document.getElementById("listen_port").value = al.listen_port ?? 15000;
@@ -39,8 +41,10 @@ async function saveSettings() {
     saveBtn.disabled = true;
     try {
         const payload = {
+            time: {
+                timezone: document.getElementById("time_timezone").value.trim() || "Europe/Copenhagen"
+            },
             alarm_listener: {
-                only_start_events: document.getElementById("only_start_events").checked,
                 log_raw_payload: document.getElementById("log_raw_payload").checked,
                 listen_host: document.getElementById("listen_host").value.trim(),
                 listen_port: parseInt(document.getElementById("listen_port").value, 10)

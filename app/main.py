@@ -78,8 +78,7 @@ def get_settings():
 
 @app.post("/api/settings")
 def update_settings(new_settings: dict = Body(...)):
-    saved = save_settings(new_settings)
-    return {"ok": True, "settings": saved}
+    return save_settings(new_settings)
 
 @app.post("/api/alarm/restart")
 def restart_alarm_listener():

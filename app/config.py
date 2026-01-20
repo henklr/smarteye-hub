@@ -8,7 +8,6 @@ DEFAULT_SETTINGS = {
         "timezone": "Europe/Copenhagen",
     },
     "alarm_listener": {
-        "only_start_events": True,
         "log_raw_payload": False,
         "listen_host": "0.0.0.0",
         "listen_port": 15000
@@ -29,7 +28,6 @@ def merge_settings(user: dict) -> dict:
         **DEFAULT_SETTINGS.get("time", {}),
         **(user.get("time", {}) or {})
     }
-
     merged["alarm_listener"] = {
         **DEFAULT_SETTINGS["alarm_listener"],
         **(user.get("alarm_listener", {}) or {})

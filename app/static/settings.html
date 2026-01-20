@@ -36,11 +36,6 @@
         <div class="title">Alarm Listener</div>
 
         <div class="row">
-          <input type="checkbox" id="only_start_events">
-          <label for="only_start_events">Only log <b>Action=Start</b> events</label>
-        </div>
-
-        <div class="row">
           <input type="checkbox" id="log_raw_payload">
           <label for="log_raw_payload">Log raw payload</label>
         </div>
@@ -73,6 +68,17 @@
           <label for="upload_delete_empty_dirs">Delete empty folders</label>
         </div>
       </div>
+      <div class="card">
+        <div class="title">Time</div>
+
+        <label for="time_timezone">Timezone (IANA name)</label>
+        <input type="text" id="time_timezone" placeholder="Europe/Copenhagen" spellcheck="false" autocomplete="off" />
+
+        <div class="hint">
+          Examples: <code>Europe/Copenhagen</code>, <code>UTC</code>, <code>America/New_York</code>
+        </div>
+      </div>
+
 
     </div>
 
