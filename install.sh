@@ -144,9 +144,9 @@ fi
 # Make it available immediately in this script session
 export PATH="$HOME/bin:$PATH"
 
-log "Setting timezone Europe/Copenhagen"
-sudo timedatectl set-timezone Europe/Copenhagen
-sudo timedatectl set-ntp true
+#log "Setting timezone Europe/Copenhagen"
+#sudo timedatectl set-timezone Europe/Copenhagen
+#sudo timedatectl set-ntp true
 
 # ---------------------------------------------------------------------
 
