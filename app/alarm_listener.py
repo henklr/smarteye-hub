@@ -7,7 +7,6 @@ from concurrent.futures import ThreadPoolExecutor
 from config import load_settings
 
 settings = load_settings()["alarm_listener"]
-ONLY_START_EVENTS = settings["only_start_events"]
 LOG_RAW_PAYLOAD = settings["log_raw_payload"]
 HOST = settings["listen_host"]
 PORT = settings["listen_port"]
@@ -77,10 +76,6 @@ def process_payload(payload: bytes, addr):
 
         action = alarm.get("Action")
         data = alarm.get("Data", {}) or {}
-
-        if ONLY_START_EVENTS and action != "Start":
-            print(f"[ALARM] Ignoring Action={action} (ONLY_START_EVENTS enabled)", flush=True)
-            return
 
         from events import record_and_dispatch_alarm
 
