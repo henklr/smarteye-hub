@@ -3,6 +3,9 @@ import json
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
+from config import load_settings
+from time_utils import make_clock
+from zoneinfo import ZoneInfo
 
 from openai import OpenAI
 
@@ -16,6 +19,8 @@ DEFAULT_MODEL = "gpt-5.1"
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff"}
 
+SETTINGS = load_settings()
+CLOCK = make_clock(SETTINGS)
 
 # ---------------------------
 # Scenes storage
@@ -47,7 +52,7 @@ def get_scene(scene_id: str) -> dict:
 def is_image_file(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in IMAGE_EXTS
 
-def parse_snapshot_time(filename: str) -> Optional[datetime]:
+def parse_snapshot_time(filename: str, tz: ZoneInfo) -> Optional[datetime]:
     """
     Extract timestamp from filename like:
       NVR_ch6_20260109202903_E.jpg
@@ -57,7 +62,8 @@ def parse_snapshot_time(filename: str) -> Optional[datetime]:
         return None
     ts_str = parts[2]
     try:
-        return datetime.strptime(ts_str, "%Y%m%d%H%M%S")
+        dt = datetime.strptime(ts_str, "%Y%m%d%H%M%S")
+        return dt.replace(tzinfo=tz)  # assume filenames are in local/camera timezone
     except ValueError:
         return None
 
@@ -85,7 +91,7 @@ def find_snapshots(
     for p in day_dir.glob(pattern):
         if not is_image_file(p):
             continue
-        snap_time = parse_snapshot_time(p.name)
+        snap_time = parse_snapshot_time(p.name, CLOCK.tz)
         if not snap_time:
             continue
         if start <= snap_time <= end:
@@ -158,7 +164,7 @@ def run_scene(scene_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         return out
 
 
-    alarm_time_str = event.get("timestamp") or event.get("locale_time")
+    alarm_time_str = event.get("locale_time") or event.get("timestamp")
     if not alarm_time_str:
         out = {
             "ok": False,
@@ -173,10 +179,7 @@ def run_scene(scene_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         return out
 
     # Parse alarm time
-    try:
-        alarm_time = datetime.fromisoformat(alarm_time_str.replace("Z",""))
-    except Exception:
-        alarm_time = datetime.strptime(alarm_time_str, "%Y-%m-%d %H:%M:%S")
+    alarm_time = CLOCK.parse_datetime(alarm_time_str)
 
     camera_ip = scene.get("camera_ip") or event.get("camera_ip")
     channel = int(scene.get("channel") or event.get("channel") or 1)
@@ -211,6 +214,7 @@ def run_scene(scene_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             "camera_ip": camera_ip,
             "channel": channel,
             "alarm_time": alarm_time_str,
+            "alarm_time_utc": CLOCK.utc_iso(alarm_time),
             "snapshot_count": 0,
             "snapshots": [],
             "model": model,

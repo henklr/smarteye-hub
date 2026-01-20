@@ -16,6 +16,7 @@ import json
 import uuid
 from pathlib import Path
 from datetime import datetime
+from time_utils import make_clock
 from typing import Any, Dict, Optional
 
 from config import load_settings
@@ -26,8 +27,8 @@ EVENTS_PATH = Path(settings.get("events_path", "data/events.jsonl"))
 EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
-def _now_utc() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+def _now_utc(settings: dict) -> str:
+    return make_clock(settings).utc_iso()
 
 
 def _new_id() -> str:
@@ -56,7 +57,7 @@ def build_alarm_event(alarm: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": _new_id(),
         "event_type": "alarm",
-        "timestamp": _now_utc(),
+        "timestamp": _now_utc(settings),
         "camera_ip": data.get("IP"),
         "action": action,
         "code": code,
@@ -92,7 +93,7 @@ def build_analysis_event(
     return {
         "id": _new_id(),
         "event_type": "analysis",
-        "timestamp": _now_utc(),
+        "timestamp": _now_utc(settings),
 
         "ok": bool(scene_result.get("ok")),
         "error": scene_result.get("error"),

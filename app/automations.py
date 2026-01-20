@@ -3,12 +3,16 @@ import time
 import re
 import requests
 from pathlib import Path
-from datetime import datetime
 from analyze import run_scene
+from config import load_settings
+from time_utils import make_clock
 
 AUTOMATIONS_PATH = Path("data/automations.json")
 RUNS_PATH = Path("data/automation_runs.jsonl")
 AUTOMATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+SETTINGS = load_settings()
+CLOCK = make_clock(SETTINGS)
 
 DEFAULT_AUTOMATIONS = [
     {
@@ -189,7 +193,7 @@ def handle_event(event: dict):
         if not matches_automation(a, event):
             continue
 
-        run_id = f"{a.get('id')}:{datetime.utcnow().isoformat()}Z"
+        run_id = f"{a.get('id')}:{CLOCK.utc_iso()}"
         results = []
 
         for action in a.get("actions", []) or []:
@@ -200,7 +204,7 @@ def handle_event(event: dict):
             "automation_id": a.get("id"),
             "automation_name": a.get("name"),
             "event_id": event.get("id"),
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": CLOCK.utc_iso(),
             "event": event,
             "results": results,
         }

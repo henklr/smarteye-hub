@@ -4,6 +4,9 @@ from pathlib import Path
 SETTINGS_PATH = Path("data/settings.json")
 
 DEFAULT_SETTINGS = {
+    "time": {
+        "timezone": "Europe/Copenhagen",
+    },
     "alarm_listener": {
         "only_start_events": True,
         "log_raw_payload": False,
@@ -21,6 +24,12 @@ DEFAULT_SETTINGS = {
 
 def merge_settings(user: dict) -> dict:
     merged = DEFAULT_SETTINGS.copy()
+
+    merged["time"] = {
+        **DEFAULT_SETTINGS.get("time", {}),
+        **(user.get("time", {}) or {})
+    }
+
     merged["alarm_listener"] = {
         **DEFAULT_SETTINGS["alarm_listener"],
         **(user.get("alarm_listener", {}) or {})

@@ -3,7 +3,6 @@ import socket
 import json
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 
 from config import load_settings
 
