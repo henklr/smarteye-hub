@@ -133,7 +133,7 @@ def cleanup():
         print(f"[CLEANUP] Found {len(files)} files in {uploads_dir}. Total size: {total_mb:.2f} MB. Threshold: {cfg['max_total_mb']} MB", flush=True)
 
         if total_size <= max_total_bytes:
-            print("[CLEANUP] ✅ No cleanup needed.", flush=True)
+            print("[CLEANUP] No cleanup needed.", flush=True)
             return
 
         files.sort(key=lambda x: x[1])  # oldest first
@@ -151,10 +151,10 @@ def cleanup():
                 freed += size
                 deleted += 1
             except Exception as e:
-                print(f"[CLEANUP] ⚠️ Failed to delete {path}: {e}", flush=True)
+                print(f"[CLEANUP] Failed to delete {path}: {e}", flush=True)
 
         print(
-            f"[CLEANUP] ✅ Deleted {deleted} files, freed {freed / (1024*1024):.2f} MB "
+            f"[CLEANUP] Deleted {deleted} files, freed {freed / (1024*1024):.2f} MB "
             f"(new total: {(total_size - freed) / (1024*1024):.2f} MB)",
             flush=True
         )

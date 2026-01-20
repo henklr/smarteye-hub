@@ -368,7 +368,7 @@ async function loadAutomations() {
         automations = await apiGet("/api/automations");
         normalize();
         applyMode();
-        setOk("Loaded ✅");
+        setOk("Loaded");
     } catch (e) {
         setErr("Load failed: " + e.message);
     }
@@ -408,7 +408,7 @@ async function saveAutomations() {
         }
 
         await apiPost("/api/automations", automations);
-        setOk("Saved ✅");
+        setOk("Saved");
         await loadAutomations();
     } catch (e) {
         setErr("Save failed: " + e.message);
@@ -439,7 +439,7 @@ async function sendTestEvent() {
             locale_time: new Date().toISOString()
         };
         await apiPost("/api/automations/test", event);
-        setOk("Test event sent ✅ Check docker logs + automation_runs.jsonl");
+        setOk("Test event sent. Check docker logs + automation_runs.jsonl");
     } catch (e) {
         setErr("Test failed: " + e.message);
     }

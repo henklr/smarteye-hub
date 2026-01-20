@@ -162,7 +162,7 @@ log "Verifying effective config for user $SFTP_USER..."
 sudo sshd -T -C user="$SFTP_USER",host=localhost,addr=127.0.0.1 | grep -i chroot || true
 
 echo > "$TTY"
-log "✅ SFTP setup complete!"
+log "SFTP setup complete!"
 log "Login: $SFTP_USER"
 log "SFTP root (chroot): /"
 log "Upload path inside SFTP: /uploads"

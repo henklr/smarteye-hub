@@ -69,7 +69,7 @@ async function saveSettings() {
             throw new Error("Save failed: " + txt);
         }
 
-        setStatusOk("Saved! ✅ Restart container for listener port/host changes to take effect.");
+        setStatusOk("Saved! Restart container for listener port/host changes to take effect.");
     } catch (e) {
         setStatusErr("Error: " + e.message);
     } finally {
@@ -89,7 +89,7 @@ async function restartAlarm() {
             const txt = await res.text();
             throw new Error("Restart failed: " + txt);
         }
-        setStatusOk("Alarm listener restarted ✅");
+        setStatusOk("Alarm listener restarted.");
     } catch (e) {
         setStatusErr("Error: " + e.message);
     } finally {

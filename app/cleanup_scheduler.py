@@ -53,7 +53,7 @@ def main():
             run_cleanup(cleanup_path, base_dir)
             next_run_at = time.time() + get_interval_seconds()
 
-        # ✅ The key: wake up frequently so interval changes apply immediately
+        # The key: wake up frequently so interval changes apply immediately
         time.sleep(1)
 
         # If interval was shortened, don't wait unnecessarily

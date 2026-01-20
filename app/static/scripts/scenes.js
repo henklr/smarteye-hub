@@ -171,7 +171,7 @@ function render() {
 
             try {
                 const result = await apiPost(`/api/scenes/test/${scene.id}`, fakeEvent);
-                ok("Test run complete ✅ Check output in dev console (F12)");
+                ok("Test run complete. Check output in dev console (F12)");
                 console.log("Scene test result:", result);
             } catch (ex) {
                 err("Test failed: " + ex.message);
@@ -210,7 +210,7 @@ async function load() {
             s.prompt = s.prompt || "";
         });
         render();
-        ok("Loaded ✅");
+        ok("Loaded!");
     } catch (ex) {
         err("Load failed: " + ex.message);
     }
@@ -219,7 +219,7 @@ async function load() {
 async function save() {
     try {
         await apiPost("/api/scenes", scenes);
-        ok("Saved ✅");
+        ok("Saved!");
         await load();
     } catch (ex) {
         err("Save failed: " + ex.message);
