@@ -19,8 +19,10 @@ DEFAULT_AUTOMATIONS = [
         "id": "log-face-detection",
         "name": "Log Face Detection Start",
         "enabled": True,
-        "triggers": [{"event_code": "FaceDetection", "action": "Start"}],
-        "conditions": [],
+        "conditions": [
+            {"field": "code", "op": "equals", "value": "FaceDetection"},
+            {"field": "action", "op": "equals", "value": "Start"},
+        ],
         "actions": [
             {"type": "log", "message": "Face detected on {{camera_ip}} at {{locale_time}}"}
         ],
@@ -45,24 +47,8 @@ def save_automations(automations):
 def normalize_automation(a: dict) -> dict:
     a = dict(a)
 
-    # Start with existing conditions
     conds = a.get("conditions") or []
-
-    # Backwards compat: migrate trigger(s) into conditions
-    triggers = a.get("triggers") or []
-    if not triggers and a.get("trigger"):
-        triggers = [a["trigger"]]
-
-    for t in triggers:
-        if t.get("event_code"):
-            conds.append({"field": "code", "op": "equals", "value": t["event_code"]})
-        if t.get("action"):
-            conds.append({"field": "action", "op": "equals", "value": t["action"]})
-
-    # Cleanup legacy trigger keys
-    a.pop("trigger", None)
-    a.pop("triggers", None)
-
+ 
     # Ensure lists exist
     a["conditions"] = conds
     a["actions"] = a.get("actions") or []
@@ -107,20 +93,6 @@ def check_condition(cond: dict, event: dict) -> bool:
     if op == "exists":
         return field in event and event[field] is not None
     return False
-
-def trigger_matches(trigger: dict, event: dict) -> bool:
-    if not trigger:
-        return False
-
-    code = trigger.get("event_code")
-    action = trigger.get("action")
-
-    if code and code != event.get("code"):
-        return False
-    if action and action != event.get("action"):
-        return False
-
-    return True
 
 def matches_automation(automation: dict, event: dict) -> bool:
     if not automation.get("enabled", False):
