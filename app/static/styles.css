@@ -201,6 +201,12 @@ h1 {
     backdrop-filter: blur(var(--blur));
 }
 
+pre.editor {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
 /* Header / nav (glassy) */
 header {
     position: sticky;
