@@ -163,6 +163,43 @@ def iter_events_jsonl(path: str):
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Failed to read events file: {e}")
 
+def iter_events_jsonl_reverse(path: str, chunk_size: int = 8192):
+    """Yield JSON objects from a JSONL file in reverse (last line -> first line)."""
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Events file not found: {path}")
+
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            pos = f.tell()
+            buf = b""
+
+            while pos > 0:
+                read_size = min(chunk_size, pos)
+                pos -= read_size
+                f.seek(pos)
+                buf = f.read(read_size) + buf
+
+                lines = buf.split(b"\n")
+                buf = lines[0]  # partial line carried to next chunk
+                for line in reversed(lines[1:]):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        yield json.loads(line.decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+
+            # first line (start of file)
+            line = buf.strip()
+            if line:
+                try:
+                    yield json.loads(line.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read events file: {e}")
 
 @app.get("/api/events")
 def get_events(
@@ -183,6 +220,7 @@ def get_events(
 
     since: Optional[str] = Query(default=None, description="Timestamp. Parsed by time_utils.Clock."),
     until: Optional[str] = Query(default=None, description="Timestamp. Parsed by time_utils.Clock."),
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
 ):
     # Build clock from your configured timezone
     clock = make_clock(load_settings())
@@ -200,7 +238,9 @@ def get_events(
     out: List[Dict[str, Any]] = []
     scanned = 0
 
-    for ev in iter_events_jsonl(EVENTS_PATH):
+    it = iter_events_jsonl_reverse(EVENTS_PATH) if order == "desc" else iter_events_jsonl(EVENTS_PATH)
+
+    for ev in it:
         scanned += 1
 
         # Field filters
@@ -224,14 +264,17 @@ def get_events(
             try:
                 ev_dt_utc = clock.parse_datetime(ev["timestamp"]).astimezone(clock.now_utc().tzinfo)
             except ValueError:
-                # If timestamp is malformed, skip the line
                 continue
+
+            # When reading newest->oldest, once we're older than "since", we can stop entirely.
+            if order == "desc" and since_dt_utc and ev_dt_utc < since_dt_utc:
+                break
 
             if since_dt_utc and ev_dt_utc < since_dt_utc:
                 continue
             if until_dt_utc and ev_dt_utc > until_dt_utc:
                 continue
-
+        
         out.append(pick_fields(ev, selected_fields))
         if len(out) >= limit:
             break

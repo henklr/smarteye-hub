@@ -66,11 +66,52 @@ def log_run(run_obj):
         f.write(json.dumps(run_obj, ensure_ascii=False) + "\n")
 
 def render_template(template: str, event: dict) -> str:
-    # Very simple {{field}} replacements
     def repl(match):
         key = match.group(1).strip()
-        return str(event.get(key, ""))
+        val = get_by_path(event, key)
+        return "" if val is None else str(val)
     return re.sub(r"\{\{(.*?)\}\}", repl, template)
+
+def get_by_path(obj, path: str):
+    """Get nested values using dot paths, e.g. 'analysis.category'."""
+    cur = obj
+    for part in (path or "").split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return None
+    return cur
+
+def coerce_value_for_compare(actual, value):
+    # If value is already same type (or actual is None), leave it
+    if actual is None:
+        return value
+
+    # bool: allow "true"/"false"
+    if isinstance(actual, bool) and isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("true", "false"):
+            return (v == "true")
+
+    # int: allow "123"
+    if isinstance(actual, int) and not isinstance(actual, bool) and isinstance(value, str):
+        s = value.strip()
+        if re.fullmatch(r"[+-]?\d+", s):
+            try:
+                return int(s)
+            except ValueError:
+                pass
+
+    # float: allow "12.3" or "12" (convert to float)
+    if isinstance(actual, float) and isinstance(value, str):
+        s = value.strip()
+        if re.fullmatch(r"[+-]?(\d+(\.\d*)?|\.\d+)", s):
+            try:
+                return float(s)
+            except ValueError:
+                pass
+
+    return value
 
 # ------------------
 # Conditions
@@ -80,18 +121,21 @@ def check_condition(cond: dict, event: dict) -> bool:
     field = cond.get("field")
     op = cond.get("op")
     value = cond.get("value")
-    actual = event.get(field)
+    actual = get_by_path(event, field)
 
     if op == "equals":
-        return actual == value
+        value2 = coerce_value_for_compare(actual, value)
+        return actual == value2
+
     if op == "not_equals":
-        return actual != value
-    if op == "contains" and isinstance(actual, str):
+        value2 = coerce_value_for_compare(actual, value)
+        return actual != value2
+    if op == "contains" and isinstance(actual, str) and isinstance(value, str):
         return value in actual
     if op == "in":
         return actual in value if isinstance(value, list) else False
     if op == "exists":
-        return field in event and event[field] is not None
+        return actual is not None
     return False
 
 def matches_automation(automation: dict, event: dict) -> bool:
@@ -164,8 +208,9 @@ def handle_event(event: dict):
     for a in automations:
         if not matches_automation(a, event):
             continue
-
-        run_id = f"{a.get('id')}:{CLOCK.utc_iso()}"
+        
+        clock = make_clock(load_settings())
+        run_id = f"{a.get('id')}:{clock.utc_iso()}"
         results = []
 
         for action in a.get("actions", []) or []:
@@ -176,7 +221,7 @@ def handle_event(event: dict):
             "automation_id": a.get("id"),
             "automation_name": a.get("name"),
             "event_id": event.get("id"),
-            "timestamp": CLOCK.utc_iso(),
+            "timestamp": clock.utc_iso(),
             "event": event,
             "results": results,
         }

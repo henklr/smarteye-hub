@@ -105,7 +105,6 @@
           </div>
         </div>
 
-        <div id="status" class="status"></div>
       </div>
     </div>
 
@@ -120,7 +119,10 @@
 
         <div class="items" id="eventsList"></div>
       </div>
+
+      <div id="status" class="status"></div>
     </div>
+
   </main>
 
   <script>
@@ -187,6 +189,8 @@
       // fields can be empty -> endpoint returns full object
       add("fields", els.fields.value);
 
+      add("order", "desc");
+
       return params.toString();
     }
 
@@ -219,6 +223,7 @@
       els.meta.textContent = `Showing ${returned} event(s) (scanned ${scanned}). Source: ${path}`;
 
       const events = payload.events || [];
+
       if (!events.length) {
         const empty = document.createElement("div");
         empty.className = "item";
