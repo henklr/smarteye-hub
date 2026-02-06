@@ -21,4 +21,4 @@ log "Building Docker image: $IMAGE_NAME..."
 $DOCKER build --pull -t "$IMAGE_NAME" .
 
 log "Starting container..."
-./start
+DOCKER="$DOCKER" ./start

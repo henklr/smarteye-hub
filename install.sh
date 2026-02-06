@@ -12,7 +12,6 @@ REPO_URL="https://github.com/henklr/sei-raspi.git"
 IMAGE_NAME="sei-raspi"
 CONTAINER_NAME="sei-raspi"
 PORT="${PORT:-8000}"   # Allow override: PORT=1234 ./install.sh
-ALARM_PORT="${ALARM_PORT:-15000}"
 
 # Determine if we should use sudo for docker
 DOCKER="docker"
@@ -94,10 +93,6 @@ mkdir -p $APP_DIR/secrets && [[ -f $APP_DIR/secrets/openai.env ]] || echo 'OPENA
 log "Running rebuild (build + start)..."
 chmod +x "$APP_DIR/rebuild" "$APP_DIR/start"
 "$APP_DIR/rebuild"
-
-log "Running SFTP setup..."
-chmod +x "$APP_DIR/sftp_setup.sh"
-"$APP_DIR/sftp_setup.sh"
 
 # ---------------------------------------------------------------------
 # Install rebuild helper script (symlink to repo) + ensure ~/bin is on PATH
