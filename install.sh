@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# version 0.1.0
 set -euo pipefail
 
 log()  { echo -e "\033[1;32m[setup]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[warn]\033[0m  $*"; }
 
-APP_DIR="$HOME/sei-raspi"
-REPO_URL="https://github.com/henklr/sei-raspi.git"
-IMAGE_NAME="sei-raspi"
-CONTAINER_NAME="sei-raspi"
+APP_DIR="$HOME/onvif-demo"
+REPO_URL="https://github.com/henklr/onvif-demo.git"
+IMAGE_NAME="onvif-demo"
+CONTAINER_NAME="onvif-demo"
 PORT="${PORT:-8000}"
 
 DOCKER="docker"

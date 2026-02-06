@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-$HOME/onvif-demo}"
-IMAGE_NAME="${IMAGE_NAME:-onvif-demo}"
-CONTAINER_NAME="${CONTAINER_NAME:-onvif-demo}"
+APP_DIR="${APP_DIR:-$HOME/sei-raspi}"
+IMAGE_NAME="${IMAGE_NAME:-sei-raspi}"
+CONTAINER_NAME="${CONTAINER_NAME:-sei-raspi}"
 PORT="${PORT:-8000}"
 
 log()  { echo -e "\033[1;32m[start]\033[0m $*"; }
@@ -22,12 +22,13 @@ $DOCKER rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
 log "Creating data directory..."
 mkdir -p "$APP_DIR/data"
 
-log "Starting container on port $PORT (web)..."
+log "Starting container on ports $PORT (web)..."
 $DOCKER run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \
   -p "$PORT:$PORT" \
   -v "$APP_DIR/data:/app/data" \
+  -v "$HOME/sei-raspi/data:/app/data"
   -e PORT="$PORT" \
   -e PYTHONUNBUFFERED=1 \
   "$IMAGE_NAME"

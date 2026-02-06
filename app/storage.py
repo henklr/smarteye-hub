@@ -36,37 +36,19 @@ class InMemoryStore:
         if not DEVICES_FILE.exists():
             return
         try:
-            raw = json.loads(DEVICES_FILE.read_text(encoding="utf-8"))
-            if not isinstance(raw, list):
-                return
+            raw = json.loads(DEVICES_FILE.read_text())
             for item in raw:
-                d = StoredDevice(
-                    id=item["id"],
-                    name=item["name"],
-                    host=item["host"],
-                    port=int(item.get("port", 80)),
-                    username=item["username"],
-                    password=item["password"],
-                )
+                d = StoredDevice(**item)
                 self.devices[d.id] = d
                 self.events[d.id] = deque(maxlen=settings.event_buffer_size)
         except Exception:
-            # If file is corrupt, ignore (could also rename it, etc.)
-            return
+            pass
 
     def _save_devices(self) -> None:
-        payload = [
-            {
-                "id": d.id,
-                "name": d.name,
-                "host": d.host,
-                "port": d.port,
-                "username": d.username,
-                "password": d.password,
-            }
-            for d in self.devices.values()
-        ]
-        DEVICES_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        DEVICES_FILE.write_text(json.dumps(
+            [d.__dict__ for d in self.devices.values()],
+            indent=2
+        ))
 
     def add_device(self, dc: DeviceCreate) -> DeviceInfo:
         device_id = str(uuid.uuid4())
@@ -98,8 +80,7 @@ class InMemoryStore:
         self.events[device_id].append(event)
 
     def get_events(self, device_id: str) -> List[OnvifEvent]:
-        q = self.events.get(device_id)
-        return list(q) if q else []
+        return list(self.events.get(device_id, []))
 
 
 store = InMemoryStore()
