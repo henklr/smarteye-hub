@@ -4,10 +4,18 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-$HOME/sei-raspi}"
 IMAGE_NAME="${IMAGE_NAME:-sei-raspi}"
 
-log() { echo -e "\033[1;32m[rebuild]\033[0m $*"; }
+log()  { echo -e "\033[1;32m[rebuild]\033[0m $*"; }
+warn() { echo -e "\033[1;33m[warn]\033[0m  $*"; }
+
+# Use sudo docker if daemon socket is not accessible
+DOCKER="${DOCKER:-docker}"
+if ! $DOCKER info >/dev/null 2>&1; then
+  DOCKER="sudo docker"
+  warn "Docker daemon not accessible — using sudo for docker."
+fi
 
 log "Building image: $IMAGE_NAME..."
-docker build -t "$IMAGE_NAME" "$APP_DIR"
+$DOCKER build -t "$IMAGE_NAME" "$APP_DIR"
 
 log "Starting container..."
 "$APP_DIR/start"
