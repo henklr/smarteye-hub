@@ -1,6 +1,6 @@
-__pycache__/
+.venv
+__pycache__
 *.pyc
-.env
-.venv/
-.git/
-
+data
+.git
+.gitignore
