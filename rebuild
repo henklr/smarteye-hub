@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-$HOME/onvif-demo}"
-IMAGE_NAME="${IMAGE_NAME:-onvif-demo}"
-CONTAINER_NAME="${CONTAINER_NAME:-onvif-demo}"
+APP_DIR="$HOME/sei-raspi"
+IMAGE_NAME="sei-raspi"
 
 log()  { echo -e "\033[1;32m[rebuild]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[warn]\033[0m  $*"; }
 
-DOCKER="${DOCKER:-docker}"
-if ! $DOCKER info >/dev/null 2>&1; then
+# Use sudo docker if daemon socket is not accessible
+DOCKER="docker"
+if ! docker info >/dev/null 2>&1; then
   DOCKER="sudo docker"
   warn "Docker daemon not accessible — using sudo for docker."
 fi
 
-log "Building image: $IMAGE_NAME ..."
-$DOCKER build -t "$IMAGE_NAME" "$APP_DIR"
+log "Changing to $APP_DIR..."
+cd "$APP_DIR"
 
-log "Starting..."
-"$APP_DIR/start"
+log "Building Docker image: $IMAGE_NAME..."
+$DOCKER build --pull -t "$IMAGE_NAME" .
+
+log "Starting container..."
+./start

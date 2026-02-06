@@ -1,17 +1,64 @@
-from pydantic import BaseModel
+import json
+from pathlib import Path
 
+SETTINGS_PATH = Path("data/settings.json")
 
-class Settings(BaseModel):
-    # MJPEG settings
-    mjpeg_fps: int = 8
-    mjpeg_jpeg_quality: int = 80
+DEFAULT_SETTINGS = {
+    "time": {
+        "timezone": "Europe/Copenhagen",
+    },
+    "alarm_listener": {
+        "log_raw_payload": False,
+        "listen_host": "0.0.0.0",
+        "listen_port": 15000
+    },
+    "upload_cleanup": {
+        "enabled": True,
+        "max_total_mb": 4096,
+        "min_file_age_seconds": 60,
+        "interval_seconds": 60,
+        "delete_empty_dirs": True
+    }
+}
 
-    # Event polling settings (PullMessages timeout + sleep)
-    event_pull_timeout_seconds: int = 10
-    event_poll_sleep_seconds: float = 0.2
+def merge_settings(user: dict) -> dict:
+    merged = DEFAULT_SETTINGS.copy()
 
-    # Keep last N events in memory per device
-    event_buffer_size: int = 200
+    merged["time"] = {
+        **DEFAULT_SETTINGS.get("time", {}),
+        **(user.get("time", {}) or {})
+    }
+    merged["alarm_listener"] = {
+        **DEFAULT_SETTINGS["alarm_listener"],
+        **(user.get("alarm_listener", {}) or {})
+    }
+    merged["upload_cleanup"] = {
+        **DEFAULT_SETTINGS["upload_cleanup"],
+        **(user.get("upload_cleanup", {}) or {})
+    }
+    return merged
 
+def load_settings() -> dict:
+    user = {}
+    if SETTINGS_PATH.exists():
+        try:
+            with SETTINGS_PATH.open("r", encoding="utf-8") as f:
+                user = json.load(f) or {}
+        except Exception:
+            user = {}
 
-settings = Settings()
+    settings = merge_settings(user)
+
+    # Ensure file exists (so UI always has something to edit)
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with SETTINGS_PATH.open("w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+
+    return settings
+
+def save_settings(new_settings: dict) -> dict:
+    settings = merge_settings(new_settings)
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with SETTINGS_PATH.open("w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+    return settings

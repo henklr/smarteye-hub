@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# version 0.1.0
+
+#version 0.2.0
 set -euo pipefail
 
 log()  { echo -e "\033[1;32m[setup]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[warn]\033[0m  $*"; }
+err()  { echo -e "\033[1;31m[error]\033[0m $*" >&2; }
 
 APP_DIR="$HOME/sei-raspi"
 REPO_URL="https://github.com/henklr/sei-raspi.git"
 IMAGE_NAME="sei-raspi"
 CONTAINER_NAME="sei-raspi"
-PORT="${PORT:-8000}"
+PORT="${PORT:-8000}"   # Allow override: PORT=1234 ./install.sh
+ALARM_PORT="${ALARM_PORT:-15000}"
 
+# Determine if we should use sudo for docker
 DOCKER="docker"
 if ! groups "$USER" | grep -q "\bdocker\b"; then
   DOCKER="sudo docker"
@@ -22,7 +26,7 @@ sudo apt update
 log "Installing prerequisites..."
 sudo apt install -y ca-certificates curl gnupg git lsb-release
 
-# Install Docker only if missing
+# Install Docker only if it isn't already installed
 if ! command -v docker >/dev/null 2>&1; then
   log "Docker not found. Installing Docker..."
 
@@ -30,16 +34,21 @@ if ! command -v docker >/dev/null 2>&1; then
   CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
   ARCH="$(dpkg --print-architecture)"
 
+  # Raspbian uses Debian repo
   if [[ "$OS_ID" == "raspbian" ]]; then
     DOCKER_DIST="debian"
   else
     DOCKER_DIST="$OS_ID"
   fi
 
+  log "Detected OS: $OS_ID ($CODENAME), Arch: $ARCH"
+  log "Setting Docker repo: $DOCKER_DIST"
+
   sudo install -m 0755 -d /etc/apt/keyrings
   curl -fsSL "https://download.docker.com/linux/${DOCKER_DIST}/gpg" | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
+  log "Adding Docker repository..."
   echo \
     "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DIST} \
     ${CODENAME} stable" | \
@@ -61,6 +70,7 @@ else
   log "Docker OK."
 fi
 
+# Add current user to docker group (won’t take effect until new login)
 if ! groups "$USER" | grep -q "\bdocker\b"; then
   log "Adding user '$USER' to docker group..."
   sudo usermod -aG docker "$USER"
@@ -78,21 +88,43 @@ else
   git clone "$REPO_URL" "$APP_DIR"
 fi
 
-log "Ensuring scripts are executable..."
-chmod +x "$APP_DIR/rebuild" "$APP_DIR/start" || true
+log "Creating additional files..."
+mkdir -p $APP_DIR/secrets && [[ -f $APP_DIR/secrets/openai.env ]] || echo 'OPENAI_API_KEY=your_openai_api_key_here' > $APP_DIR/secrets/openai.env
 
-log "Building + starting..."
+log "Running rebuild (build + start)..."
+chmod +x "$APP_DIR/rebuild" "$APP_DIR/start"
 "$APP_DIR/rebuild"
 
-# Helper symlink: rebuild -> ~/bin/rebuild
+log "Running SFTP setup..."
+chmod +x "$APP_DIR/sftp_setup.sh"
+"$APP_DIR/sftp_setup.sh"
+
+# ---------------------------------------------------------------------
+# Install rebuild helper script (symlink to repo) + ensure ~/bin is on PATH
+# ---------------------------------------------------------------------
 log "Installing helper script: rebuild (symlink to repo)..."
+
 BIN_DIR="$HOME/bin"
 mkdir -p "$BIN_DIR"
 
-rm -f "$BIN_DIR/rebuild"
-ln -s "$APP_DIR/rebuild" "$BIN_DIR/rebuild"
+REPO_REBUILD="$APP_DIR/rebuild"
+BIN_REBUILD="$BIN_DIR/rebuild"
+
+if [[ ! -f "$REPO_REBUILD" ]]; then
+  warn "No rebuild script found at $REPO_REBUILD"
+  warn "Make sure your repo contains a rebuild script at that path."
+else
+  chmod +x "$REPO_REBUILD"
+
+  # Replace existing file/symlink safely
+  rm -f "$BIN_REBUILD"
+  ln -s "$REPO_REBUILD" "$BIN_REBUILD"
+
+  log "Rebuild script linked: $BIN_REBUILD -> $REPO_REBUILD"
+fi
 
 log "Ensuring $HOME/bin is on PATH..."
+
 SHELL_RC=""
 if [[ -n "${BASH_VERSION:-}" ]]; then
   SHELL_RC="$HOME/.bashrc"
@@ -111,7 +143,14 @@ else
   log "\$HOME/bin is already on PATH in $SHELL_RC"
 fi
 
+# Make it available immediately in this script session
 export PATH="$HOME/bin:$PATH"
+
+#log "Setting timezone Europe/Copenhagen"
+#sudo timedatectl set-timezone Europe/Copenhagen
+#sudo timedatectl set-ntp true
+
+# ---------------------------------------------------------------------
 
 HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 HOST_IP="${HOST_IP:-127.0.0.1}"
@@ -121,3 +160,17 @@ log "Visit: http://${HOST_IP}:${PORT}/"
 log "Rebuild anytime with: rebuild"
 warn "If you want to run docker without sudo, log out and log back in (or reboot)."
 warn "If 'rebuild' isn't found immediately, run: source $SHELL_RC"
+
+echo
+warn "A reboot is recommended to ensure all changes take effect."
+if [[ -t 0 ]]; then
+  read -r -p "Reboot now? (y/N): " REBOOT_ANSWER
+  if [[ "$REBOOT_ANSWER" =~ ^[Yy]$ ]]; then
+    log "Rebooting..."
+    sudo reboot
+  else
+    warn "Skipping reboot. Please reboot later if anything doesn't work."
+  fi
+else
+  warn "Non-interactive shell detected (e.g. curl | bash). Please reboot manually."
+fi

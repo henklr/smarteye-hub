@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/styles.css" />
+  <title>Intelligence Automations</title>
+</head>
+
+<body>
+  <header>
+    <div class="wrap">
+      <div>
+        <h1>Automations</h1>
+      </div>
+      <div class="nav">
+        <a href="/">Home</a>
+        <a href="/scenes.html">Scenes</a>
+        <a href="/settings.html">Settings</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="row">
+      <button id="newBtn">+ New Automation</button>
+      <button class="secondary" id="reloadBtn">Reload</button>
+      <button class="secondary" id="saveBtn">Save</button>
+      <button class="secondary" id="testBtn">Send Test Event</button>
+      <button class="secondary" id="toggleModeBtn">Switch to JSON</button>
+    </div>
+
+    <div id="status" class="status"></div>
+
+    <div class="hint">
+      Templates supported: <span class="code">{{camera_ip}}</span> <span class="code">{{locale_time}}</span>
+      <span class="code">{{code}}</span> <span class="code">{{action}}</span>
+    </div>
+
+    <!-- Builder -->
+    <div id="builderWrap">
+      <div id="grid" class="grid"></div>
+    </div>
+
+    <!-- JSON editor -->
+    <div id="editorWrap" class="editorWrap">
+      <textarea id="editor" class="editor" spellcheck="false"></textarea>
+      <div class="hint">
+        This is the raw <span class="code">automations.json</span> file. Edit carefully. JSON must be valid.
+      </div>
+    </div>
+  </main>
+
+  <script type="module" src="/scripts/automations.js"></script>
+
+</body>
+
+</html>

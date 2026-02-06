@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-$HOME/onvif-demo}"
-IMAGE_NAME="${IMAGE_NAME:-onvif-demo}"
-CONTAINER_NAME="${CONTAINER_NAME:-onvif-demo}"
+APP_DIR="${APP_DIR:-$HOME/sei-raspi}"
+IMAGE_NAME="${IMAGE_NAME:-sei-raspi}"
+CONTAINER_NAME="${CONTAINER_NAME:-sei-raspi}"
 PORT="${PORT:-8000}"
+ALARM_PORT="${ALARM_PORT:-15000}"
 
 log()  { echo -e "\033[1;32m[start]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[warn]\033[0m  $*"; }
 
+# Use sudo docker if daemon socket is not accessible
 DOCKER="${DOCKER:-docker}"
 if ! $DOCKER info >/dev/null 2>&1; then
   DOCKER="sudo docker"
@@ -19,16 +21,19 @@ log "Stopping/removing existing container (if any): $CONTAINER_NAME..."
 $DOCKER stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
 $DOCKER rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
-log "Creating data directory..."
-mkdir -p "$APP_DIR/data"
+log "Creating data and uploads directories..."
+mkdir -p "$HOME/sei-raspi/data"
+mkdir -p "$HOME/sei-raspi/uploads"
 
-log "Starting container on port $PORT (web)..."
+log "Starting container on ports $PORT (web) and $ALARM_PORT (alarms)..."
 $DOCKER run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \
   -p "$PORT:$PORT" \
-  -v "$APP_DIR/data:/app/data" \
-  -e PORT="$PORT" \
+  -p "$ALARM_PORT:$ALARM_PORT" \
+  -v "$HOME/sei-raspi/data:/app/data" \
+  -v "$HOME/sei-raspi/uploads:/app/uploads" \
+  --env-file "$HOME/sei-raspi/secrets/openai.env" \
   -e PYTHONUNBUFFERED=1 \
   "$IMAGE_NAME"
 
