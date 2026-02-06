@@ -81,9 +81,6 @@ log "Ensuring scripts are executable..."
 chmod +x "$APP_DIR/rebuild" "$APP_DIR/start" || true
 
 log "Building + starting..."
-DOCKER="${DOCKER:-docker}"
-if ! $DOCKER info >/dev/null 2>&1; then DOCKER="sudo docker"; fi
-export DOCKER
 "$APP_DIR/rebuild"
 
 # Helper symlink: rebuild -> ~/bin/rebuild
