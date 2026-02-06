@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#version 0.2.0
 set -euo pipefail
 
 log()  { echo -e "\033[1;32m[setup]\033[0m $*"; }
