@@ -256,24 +256,6 @@ def start_hls_stream(device_id: str, rtsp_url: str):
     raise HTTPException(status_code=504, detail=f"HLS playlist was not created in time.\n{tail}")
 
 
-@app.get("/api/stream/log")
-def stream_log(device_id: str):
-    log_file = (HLS_ROOT / device_id / "ffmpeg.log")
-    if not log_file.exists():
-        raise HTTPException(status_code=404, detail="No ffmpeg log for that device.")
-    txt = log_file.read_text(encoding="utf-8")
-    return {"log_tail": txt[-4000:]}
-
-
-@app.get("/api/debug/ffmpeg")
-def debug_ffmpeg():
-    return {
-        "path_env": os.environ.get("PATH"),
-        "which_ffmpeg": shutil.which("ffmpeg"),
-        "exists_usr_bin_ffmpeg": os.path.exists("/usr/bin/ffmpeg"),
-    }
-
-
 # -------------------------
 # API
 # -------------------------
@@ -428,3 +410,21 @@ def api_stream_status():
         for device_id, p in _streams.items():
             running.append({"device_id": device_id, "running": (p.poll() is None)})
     return {"streams": running}
+
+
+@app.get("/api/stream/log")
+def stream_log(device_id: str):
+    log_file = (HLS_ROOT / device_id / "ffmpeg.log")
+    if not log_file.exists():
+        raise HTTPException(status_code=404, detail="No ffmpeg log for that device.")
+    txt = log_file.read_text(encoding="utf-8")
+    return {"log_tail": txt[-4000:]}
+
+
+@app.get("/api/debug/ffmpeg")
+def debug_ffmpeg():
+    return {
+        "path_env": os.environ.get("PATH"),
+        "which_ffmpeg": shutil.which("ffmpeg"),
+        "exists_usr_bin_ffmpeg": os.path.exists("/usr/bin/ffmpeg"),
+    }
