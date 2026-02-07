@@ -21,6 +21,9 @@ from wsdiscovery.discovery import ThreadedWSDiscovery as WSDiscovery
 from wsdiscovery import QName
 from onvif import ONVIFCamera
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+_executor = ThreadPoolExecutor(max_workers=6)
+
 app = FastAPI()
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -89,7 +92,7 @@ class StoredDevice:
 # Storage
 # -------------------------
 
-_devices_lock = threading.Lock()
+_devices_lock = threading.RLock()
 _devices: Dict[str, StoredDevice] = {}  # device_id -> StoredDevice
 
 
@@ -178,59 +181,97 @@ def stop_stream(device_id: str):
 
 
 def start_hls_stream(device_id: str, rtsp_url: str):
-    """
-    Spawns ffmpeg to produce HLS:
-      /hls/<device_id>/index.m3u8
-    """
+    # Stop existing stream + remove old HLS dir FIRST
+    stop_stream(device_id)
+
     out_dir = HLS_ROOT / device_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
     playlist = out_dir / "index.m3u8"
+    segment_pattern = str(out_dir / "seg_%05d.ts")
+    log_file = out_dir / "ffmpeg.log"
 
-    # Stop existing if any
-    stop_stream(device_id)
+    ffmpeg_bin = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+    if not os.path.exists(ffmpeg_bin):
+        raise HTTPException(
+            status_code=500,
+            detail=f"ffmpeg binary not found. which(ffmpeg)={shutil.which('ffmpeg')}, tried={ffmpeg_bin}"
+        )
 
-    # HLS settings tuned for low latency-ish and robustness.
-    # -fflags +genpts helps with some cameras.
     cmd = [
-        "ffmpeg",
+        ffmpeg_bin,
         "-hide_banner",
         "-loglevel", "warning",
         "-rtsp_transport", "tcp",
         "-fflags", "+genpts",
         "-i", rtsp_url,
         "-an",
-        "-c:v", "copy",  # start with copy (no re-encode) for low CPU; change to h264 if needed
+        # Strongly recommended for browser compatibility:
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-tune", "zerolatency",
+        "-pix_fmt", "yuv420p",
+        "-g", "50",
+        "-sc_threshold", "0",
         "-f", "hls",
         "-hls_time", "1",
         "-hls_list_size", "6",
         "-hls_flags", "delete_segments+append_list+program_date_time",
+        "-hls_segment_filename", segment_pattern,
         str(playlist),
     ]
 
     try:
-        p = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="ffmpeg not found in container. Install it in Dockerfile.")
+        lf = open(log_file, "w", encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to open ffmpeg log file '{log_file}': {e}")
+
+    try:
+        p = subprocess.Popen(cmd, stdout=lf, stderr=lf)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to execute ffmpeg at '{ffmpeg_bin}': {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start ffmpeg: {e}")
 
     with _streams_lock:
         _streams[device_id] = p
 
-    # Wait a moment for playlist to appear
-    for _ in range(20):
-        if playlist.exists() and playlist.stat().st_size > 0:
-            break
+    # Wait for playlist to appear (and confirm ffmpeg didn't die)
+    deadline = time.time() + 6.0
+    while time.time() < deadline:
         if p.poll() is not None:
-            raise HTTPException(status_code=500, detail="ffmpeg exited immediately (bad RTSP URL/creds?)")
-        time.sleep(0.1)
+            try:
+                tail = log_file.read_text(encoding="utf-8")[-2000:]
+            except Exception:
+                tail = "(unable to read ffmpeg log)"
+            raise HTTPException(status_code=500, detail=f"ffmpeg exited early.\n{tail}")
+        if playlist.exists() and playlist.stat().st_size > 0:
+            return f"/hls/{device_id}/index.m3u8"
+        time.sleep(0.15)
 
-    return f"/hls/{device_id}/index.m3u8"
+    try:
+        tail = log_file.read_text(encoding="utf-8")[-2000:]
+    except Exception:
+        tail = "(unable to read ffmpeg log)"
+    raise HTTPException(status_code=504, detail=f"HLS playlist was not created in time.\n{tail}")
+
+
+@app.get("/api/stream/log")
+def stream_log(device_id: str):
+    log_file = (HLS_ROOT / device_id / "ffmpeg.log")
+    if not log_file.exists():
+        raise HTTPException(status_code=404, detail="No ffmpeg log for that device.")
+    txt = log_file.read_text(encoding="utf-8")
+    return {"log_tail": txt[-4000:]}
+
+
+@app.get("/api/debug/ffmpeg")
+def debug_ffmpeg():
+    return {
+        "path_env": os.environ.get("PATH"),
+        "which_ffmpeg": shutil.which("ffmpeg"),
+        "exists_usr_bin_ffmpeg": os.path.exists("/usr/bin/ffmpeg"),
+    }
 
 
 # -------------------------
@@ -294,9 +335,6 @@ def discover(timeout: float = 3.0):
 
 @app.post("/api/devices/connect")
 def connect(req: ConnectRequest):
-    """
-    Store credentials and pull a little device info if possible.
-    """
     try:
         host, port = parse_xaddr(req.xaddr)
     except ValueError as e:
@@ -312,21 +350,11 @@ def connect(req: ConnectRequest):
         password=req.password,
     )
 
-    # Attempt to query device information (best-effort)
-    try:
-        cam = onvif_camera_from(stored)
-        dev = cam.create_devicemgmt_service()
-        info = dev.GetDeviceInformation()
-        stored.manufacturer = getattr(info, "Manufacturer", None)
-        stored.model = getattr(info, "Model", None)
-    except Exception:
-        # OK if camera blocks this without proper auth/etc.
-        pass
-
     with _devices_lock:
         _devices[device_id] = stored
         save_devices()
 
+    # IMPORTANT: do NOT call ONVIF here (prevents hanging)
     return {"device_id": device_id, "ok": True}
 
 
@@ -337,20 +365,20 @@ def get_profiles(device_id: str):
     if not d:
         raise HTTPException(status_code=404, detail="Unknown device_id. Connect it first.")
 
-    try:
+    def _work():
         cam = onvif_camera_from(d)
         media = cam.create_media_service()
-        profiles = media.GetProfiles()
+        return media.GetProfiles()
+
+    fut = _executor.submit(_work)
+    try:
+        profiles = fut.result(timeout=4.0)
+    except FuturesTimeout:
+        raise HTTPException(status_code=504, detail="Timeout talking to camera (profiles).")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get profiles: {e}")
 
-    out = []
-    for p in profiles:
-        out.append({
-            "token": getattr(p, "token", None),
-            "name": getattr(p, "Name", None),
-        })
-    return {"profiles": out}
+    return {"profiles": [{"token": getattr(p, "token", None), "name": getattr(p, "Name", None)} for p in profiles]}
 
 
 @app.post("/api/stream/start")
@@ -379,8 +407,7 @@ def api_start_stream(req: StartStreamRequest):
         raise HTTPException(status_code=500, detail=f"Failed to obtain RTSP URI from ONVIF: {e}")
 
     # Some devices return rtsp://host/... without creds. Embed creds if absent.
-    if rtsp_url.startswith("rtsp://") and "@"
-    not in rtsp_url:
+    if rtsp_url.startswith("rtsp://") and "@" not in rtsp_url:
         # rtsp://host/path -> rtsp://user:pass@host/path
         rtsp_url = rtsp_url.replace("rtsp://", f"rtsp://{d.username}:{d.password}@", 1)
 
