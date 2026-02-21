@@ -1,358 +1,250 @@
 <!doctype html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>ONVIF Browser</title>
   <style>
-    body {
-      font-family: system-ui, sans-serif;
-      margin: 0;
-      background: #0b1220;
-      color: #e5e7eb;
-    }
-
-    header {
-      padding: 16px 18px;
-      border-bottom: 1px solid #1f2937;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    main {
-      padding: 18px;
-      display: grid;
-      gap: 16px;
-      grid-template-columns: 420px 1fr;
-    }
-
-    .card {
-      background: #0f172a;
-      border: 1px solid #1f2937;
-      border-radius: 14px;
-      padding: 14px;
-    }
-
-    button {
-      background: #2563eb;
-      color: white;
-      border: none;
-      padding: 10px 12px;
-      border-radius: 10px;
-      cursor: pointer;
-    }
-
-    button.secondary {
-      background: #334155;
-    }
-
-    button.danger {
-      background: #dc2626;
-    }
-
-    button:disabled {
-      opacity: .6;
-      cursor: not-allowed;
-    }
-
-    input,
-    select {
-      width: 100%;
-      padding: 10px 10px;
-      border-radius: 10px;
-      border: 1px solid #334155;
-      background: #0b1220;
-      color: #e5e7eb;
-    }
-
-    label {
-      font-size: 12px;
-      color: #9ca3af;
-      display: block;
-      margin: 10px 0 6px;
-    }
-
-    .row {
-      display: flex;
-      gap: 10px;
-    }
-
-    .row>* {
-      flex: 1;
-    }
-
-    .list {
-      display: grid;
-      gap: 10px;
-      margin-top: 10px;
-    }
-
-    .item {
-      padding: 10px;
-      border-radius: 12px;
-      border: 1px solid #334155;
-      background: #0b1220;
-    }
-
-    .item strong {
-      display: block;
-      margin-bottom: 4px;
-    }
-
-    .muted {
-      color: #9ca3af;
-      font-size: 12px;
-    }
-
-    video {
-      width: 100%;
-      max-height: 70vh;
-      background: black;
-      border-radius: 14px;
-      border: 1px solid #1f2937;
-    }
-
-    pre {
-      white-space: pre-wrap;
-      word-break: break-word;
-      background: #0b1220;
-      border: 1px solid #334155;
-      padding: 10px;
-      border-radius: 12px;
-    }
+    body { font-family: system-ui, sans-serif; margin: 0; background:#0b1220; color:#e5e7eb; }
+    header { padding: 16px 18px; border-bottom: 1px solid #1f2937; display:flex; align-items:center; justify-content:space-between; }
+    main { padding: 18px; display:grid; gap:16px; grid-template-columns: 420px 1fr; }
+    .card { background:#0f172a; border:1px solid #1f2937; border-radius:14px; padding:14px; }
+    button { background:#2563eb; color:white; border:none; padding:10px 12px; border-radius:10px; cursor:pointer; }
+    button.secondary { background:#334155; }
+    button.danger { background:#dc2626; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    input, select { width:100%; padding:10px 10px; border-radius:10px; border:1px solid #334155; background:#0b1220; color:#e5e7eb; }
+    label { font-size: 12px; color:#9ca3af; display:block; margin: 10px 0 6px; }
+    .row { display:flex; gap:10px; }
+    .row > * { flex:1; }
+    .list { display:grid; gap:10px; margin-top:10px; }
+    .item { padding:10px; border-radius:12px; border:1px solid #334155; background:#0b1220; }
+    .item strong { display:block; margin-bottom:4px; }
+    .muted { color:#9ca3af; font-size: 12px; }
+    video { width: 100%; max-height: 70vh; background:black; border-radius:14px; border:1px solid #1f2937; }
+    pre { white-space: pre-wrap; word-break: break-word; background:#0b1220; border:1px solid #334155; padding:10px; border-radius:12px; }
   </style>
 </head>
-
 <body>
-  <header>
-    <div>
-      <strong>ONVIF Device Browser</strong>
-      <div class="muted">Discover cameras, connect, list profiles, view stream (RTSP → HLS)</div>
+<header>
+  <div>
+    <strong>ONVIF Device Browser</strong>
+    <div class="muted">Discover cameras, connect, list profiles, view stream (RTSP → HLS)</div>
+  </div>
+  <div class="row" style="width:340px;">
+    <button id="btnDiscover">Discover</button>
+    <button id="btnSaved" class="secondary">Saved</button>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <strong>Devices</strong>
+    <div class="muted">Click a discovered device, enter credentials, connect, then load profiles.</div>
+
+    <div class="list" id="deviceList"></div>
+
+    <hr style="border:0;border-top:1px solid #1f2937;margin:14px 0;" />
+
+    <strong>Connect</strong>
+    <div class="muted">Selected XAddr:</div>
+    <pre id="selectedXaddr">(none)</pre>
+
+    <label>Username</label>
+    <input id="username" placeholder="admin" />
+
+    <label>Password</label>
+    <input id="password" type="password" placeholder="••••••••" />
+
+    <div class="row" style="margin-top:12px;">
+      <button id="btnConnect">Connect & Save</button>
+      <button id="btnProfiles" class="secondary" disabled>Load Profiles</button>
     </div>
-    <div class="row" style="width:340px;">
-      <button id="btnDiscover">Discover</button>
-      <button id="btnSaved" class="secondary">Saved</button>
+
+    <label style="margin-top:14px;">Profiles</label>
+    <select id="profiles" disabled></select>
+
+    <div class="row" style="margin-top:12px;">
+      <button id="btnPlay" disabled>Start Stream</button>
+      <button id="btnStop" class="danger" disabled>Stop</button>
     </div>
-  </header>
 
-  <main>
-    <section class="card">
-      <strong>Devices</strong>
-      <div class="muted">Click a discovered device, enter credentials, connect, then load profiles.</div>
+    <div style="margin-top:12px" class="muted">Debug</div>
+    <pre id="log"></pre>
+  </section>
 
-      <div class="list" id="deviceList"></div>
+  <section class="card">
+    <strong>Player</strong>
+    <div class="muted">Browser plays HLS generated by backend (ffmpeg).</div>
+    <video id="video" controls autoplay muted playsinline></video>
+    <div class="muted" style="margin-top:10px;">Playlist URL</div>
+    <pre id="playlistUrl">(none)</pre>
+  </section>
+</main>
 
-      <hr style="border:0;border-top:1px solid #1f2937;margin:14px 0;" />
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script>
+  const logEl = document.getElementById('log');
+  const deviceListEl = document.getElementById('deviceList');
+  const selectedXaddrEl = document.getElementById('selectedXaddr');
+  const profilesEl = document.getElementById('profiles');
+  const videoEl = document.getElementById('video');
+  const playlistEl = document.getElementById('playlistUrl');
 
-      <strong>Connect</strong>
-      <div class="muted">Selected XAddr:</div>
-      <pre id="selectedXaddr">(none)</pre>
+  const btnDiscover = document.getElementById('btnDiscover');
+  const btnSaved = document.getElementById('btnSaved');
+  const btnConnect = document.getElementById('btnConnect');
+  const btnProfiles = document.getElementById('btnProfiles');
+  const btnPlay = document.getElementById('btnPlay');
+  const btnStop = document.getElementById('btnStop');
 
-      <label>Username</label>
-      <input id="username" placeholder="admin" />
+  const usernameEl = document.getElementById('username');
+  const passwordEl = document.getElementById('password');
 
-      <label>Password</label>
-      <input id="password" type="password" placeholder="••••••••" />
+  let selected = null; // {device_id, xaddr, host, port}
+  let connectedDeviceId = null;
+  let hls = null;
 
-      <div class="row" style="margin-top:12px;">
-        <button id="btnConnect">Connect & Save</button>
-        <button id="btnProfiles" class="secondary" disabled>Load Profiles</button>
-      </div>
+  function log(msg, obj) {
+    const line = obj ? msg + " " + JSON.stringify(obj, null, 2) : msg;
+    logEl.textContent = line + "\n\n" + logEl.textContent;
+  }
 
-      <label style="margin-top:14px;">Profiles</label>
-      <select id="profiles" disabled></select>
-
-      <div class="row" style="margin-top:12px;">
-        <button id="btnPlay" disabled>Start Stream</button>
-        <button id="btnStop" class="danger" disabled>Stop</button>
-      </div>
-
-      <div style="margin-top:12px" class="muted">Debug</div>
-      <pre id="log"></pre>
-    </section>
-
-    <section class="card">
-      <strong>Player</strong>
-      <div class="muted">Browser plays HLS generated by backend (ffmpeg).</div>
-      <video id="video" controls autoplay muted playsinline></video>
-      <div class="muted" style="margin-top:10px;">Playlist URL</div>
-      <pre id="playlistUrl">(none)</pre>
-    </section>
-  </main>
-
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-  <script>
-    const logEl = document.getElementById('log');
-    const deviceListEl = document.getElementById('deviceList');
-    const selectedXaddrEl = document.getElementById('selectedXaddr');
-    const profilesEl = document.getElementById('profiles');
-    const videoEl = document.getElementById('video');
-    const playlistEl = document.getElementById('playlistUrl');
-
-    const btnDiscover = document.getElementById('btnDiscover');
-    const btnSaved = document.getElementById('btnSaved');
-    const btnConnect = document.getElementById('btnConnect');
-    const btnProfiles = document.getElementById('btnProfiles');
-    const btnPlay = document.getElementById('btnPlay');
-    const btnStop = document.getElementById('btnStop');
-
-    const usernameEl = document.getElementById('username');
-    const passwordEl = document.getElementById('password');
-
-    let selected = null; // {device_id, xaddr, host, port}
-    let connectedDeviceId = null;
-    let hls = null;
-
-    function log(msg, obj) {
-      const line = obj ? msg + " " + JSON.stringify(obj, null, 2) : msg;
-      logEl.textContent = line + "\n\n" + logEl.textContent;
+  async function api(path, opts) {
+    const res = await fetch(path, opts);
+    const text = await res.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch { data = text; }
+    if (!res.ok) {
+      throw new Error((data && data.detail) ? data.detail : text);
     }
+    return data;
+  }
 
-    const API_BASE = window.location.origin;
-
-    async function api(path, opts) {
-      const res = await fetch(API_BASE + path, opts);
-      const text = await res.text();
-      let data = null;
-      try { data = JSON.parse(text); } catch { data = text; }
-      if (!res.ok) {
-        throw new Error((data && data.detail) ? data.detail : text);
-      }
-      return data;
+  function renderDevices(devices) {
+    deviceListEl.innerHTML = "";
+    if (!devices.length) {
+      deviceListEl.innerHTML = `<div class="muted">No devices found.</div>`;
+      return;
     }
-
-    function renderDevices(devices) {
-      deviceListEl.innerHTML = "";
-      if (!devices.length) {
-        deviceListEl.innerHTML = `<div class="muted">No devices found.</div>`;
-        return;
-      }
-      for (const d of devices) {
-        const div = document.createElement('div');
-        div.className = "item";
-        div.innerHTML = `
+    for (const d of devices) {
+      const div = document.createElement('div');
+      div.className = "item";
+      div.innerHTML = `
         <strong>${d.name || d.model || d.host || "Device"}</strong>
         <div class="muted">${d.manufacturer ? (d.manufacturer + " ") : ""}${d.model ? d.model : ""}</div>
         <div class="muted">${d.xaddr}</div>
       `;
-        div.onclick = () => {
-          selected = d;
-          connectedDeviceId = d.device_id;
-          selectedXaddrEl.textContent = d.xaddr;
-          btnProfiles.disabled = false;
-          log("Selected device", d);
-        };
-        deviceListEl.appendChild(div);
-      }
-    }
-
-    async function discover() {
-      log("Discovering ONVIF devices...");
-      const data = await api('/api/devices/discover');
-      renderDevices(data.devices);
-      log("Discovered", data.devices);
-    }
-
-    async function loadSaved() {
-      log("Loading saved devices...");
-      const data = await api('/api/devices/saved');
-      renderDevices(data.devices);
-      log("Saved devices", data.devices);
-    }
-
-    async function connect() {
-      try {
-        if (!selected) throw new Error("Select a device first.");
-        const username = usernameEl.value.trim();
-        const password = passwordEl.value;
-        if (!username || !password) throw new Error("Username + password required.");
-
-        log("Connecting...");
-        const data = await api('/api/devices/connect', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ xaddr: selected.xaddr, username, password })
-        });
-        connectedDeviceId = data.device_id;
-        log("Connected", data);
+      div.onclick = () => {
+        selected = d;
+        connectedDeviceId = d.device_id;
+        selectedXaddrEl.textContent = d.xaddr;
         btnProfiles.disabled = false;
-      } catch (e) {
-        log("Connect failed: " + e.message);
-        throw e;
-      }
+        log("Selected device", d);
+      };
+      deviceListEl.appendChild(div);
     }
+  }
 
-    async function loadProfiles() {
-      if (!connectedDeviceId) throw new Error("Connect first.");
-      log("Fetching profiles...");
-      const data = await api(`/api/devices/${connectedDeviceId}/profiles`);
-      profilesEl.innerHTML = "";
-      for (const p of data.profiles) {
-        const opt = document.createElement('option');
-        opt.value = p.token;
-        opt.textContent = p.name || p.token;
-        profilesEl.appendChild(opt);
-      }
-      profilesEl.disabled = false;
-      btnPlay.disabled = data.profiles.length === 0;
-      log("Profiles", data.profiles);
+  async function discover() {
+    log("Discovering ONVIF devices...");
+    const data = await api('/api/devices/discover');
+    renderDevices(data.devices);
+    log("Discovered", data.devices);
+  }
+
+  async function loadSaved() {
+    log("Loading saved devices...");
+    const data = await api('/api/devices/saved');
+    renderDevices(data.devices);
+    log("Saved devices", data.devices);
+  }
+
+  async function connect() {
+    if (!selected) throw new Error("Select a device first.");
+    const username = usernameEl.value.trim();
+    const password = passwordEl.value;
+    if (!username || !password) throw new Error("Username + password required.");
+
+    log("Connecting...");
+    const data = await api('/api/devices/connect', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ xaddr: selected.xaddr, username, password })
+    });
+    connectedDeviceId = data.device_id;
+    log("Connected", data);
+    btnProfiles.disabled = false;
+  }
+
+  async function loadProfiles() {
+    if (!connectedDeviceId) throw new Error("Connect first.");
+    log("Fetching profiles...");
+    const data = await api(`/api/devices/${connectedDeviceId}/profiles`);
+    profilesEl.innerHTML = "";
+    for (const p of data.profiles) {
+      const opt = document.createElement('option');
+      opt.value = p.token;
+      opt.textContent = p.name || p.token;
+      profilesEl.appendChild(opt);
     }
+    profilesEl.disabled = false;
+    btnPlay.disabled = data.profiles.length === 0;
+    log("Profiles", data.profiles);
+  }
 
-    function attachHls(url) {
-      playlistEl.textContent = url;
-      if (hls) { hls.destroy(); hls = null; }
-      if (Hls.isSupported()) {
-        hls = new Hls({ lowLatencyMode: true });
-        hls.loadSource(url);
-        hls.attachMedia(videoEl);
-        hls.on(Hls.Events.ERROR, (event, data) => log("HLS error", data));
-      } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
-        videoEl.src = url;
-      } else {
-        log("HLS not supported in this browser.");
-      }
+  function attachHls(url) {
+    playlistEl.textContent = url;
+    if (hls) { hls.destroy(); hls = null; }
+    if (Hls.isSupported()) {
+      hls = new Hls({ lowLatencyMode: true });
+      hls.loadSource(url);
+      hls.attachMedia(videoEl);
+      hls.on(Hls.Events.ERROR, (event, data) => log("HLS error", data));
+    } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
+      videoEl.src = url;
+    } else {
+      log("HLS not supported in this browser.");
     }
+  }
 
-    async function startStream() {
-      if (!connectedDeviceId) throw new Error("Connect first.");
-      const token = profilesEl.value;
-      if (!token) throw new Error("Select a profile.");
+  async function startStream() {
+    if (!connectedDeviceId) throw new Error("Connect first.");
+    const token = profilesEl.value;
+    if (!token) throw new Error("Select a profile.");
 
-      log("Starting stream...");
-      const data = await api('/api/stream/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_id: connectedDeviceId, profile_token: token })
-      });
-      log("Stream started", data);
-      attachHls(data.hls);
-      btnStop.disabled = false;
-    }
+    log("Starting stream...");
+    const data = await api('/api/stream/start', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ device_id: connectedDeviceId, profile_token: token })
+    });
+    log("Stream started", data);
+    attachHls(data.hls);
+    btnStop.disabled = false;
+  }
 
-    async function stopStream() {
-      if (!connectedDeviceId) return;
-      log("Stopping stream...");
-      await api(`/api/stream/stop?device_id=${encodeURIComponent(connectedDeviceId)}`, { method: 'POST' });
-      btnStop.disabled = true;
-      playlistEl.textContent = "(none)";
-      if (hls) { hls.destroy(); hls = null; }
-      videoEl.removeAttribute('src');
-      videoEl.load();
-      log("Stopped.");
-    }
+  async function stopStream() {
+    if (!connectedDeviceId) return;
+    log("Stopping stream...");
+    await api(`/api/stream/stop?device_id=${encodeURIComponent(connectedDeviceId)}`, { method: 'POST' });
+    btnStop.disabled = true;
+    playlistEl.textContent = "(none)";
+    if (hls) { hls.destroy(); hls = null; }
+    videoEl.removeAttribute('src');
+    videoEl.load();
+    log("Stopped.");
+  }
 
-    btnDiscover.onclick = () => discover().catch(e => log("Error: " + e.message));
-    btnSaved.onclick = () => loadSaved().catch(e => log("Error: " + e.message));
-    btnConnect.onclick = () => connect().catch(e => log("Error: " + e.message));
-    btnProfiles.onclick = () => loadProfiles().catch(e => log("Error: " + e.message));
-    btnPlay.onclick = () => startStream().catch(e => log("Error: " + e.message));
-    btnStop.onclick = () => stopStream().catch(e => log("Error: " + e.message));
+  btnDiscover.onclick = () => discover().catch(e => log("Error: " + e.message));
+  btnSaved.onclick = () => loadSaved().catch(e => log("Error: " + e.message));
+  btnConnect.onclick = () => connect().catch(e => log("Error: " + e.message));
+  btnProfiles.onclick = () => loadProfiles().catch(e => log("Error: " + e.message));
+  btnPlay.onclick = () => startStream().catch(e => log("Error: " + e.message));
+  btnStop.onclick = () => stopStream().catch(e => log("Error: " + e.message));
 
-    // initial
-    loadSaved().catch(() => discover());
-  </script>
+  // initial
+  loadSaved().catch(() => discover());
+</script>
 </body>
-
 </html>

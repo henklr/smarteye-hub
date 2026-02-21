@@ -21,27 +21,21 @@ $DOCKER stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
 $DOCKER rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
 log "Creating data directories..."
-mkdir -p "$HOME/sei-raspi/data" "$HOME/sei-raspi/secrets"
+mkdir -p "$HOME/sei-raspi/data"
 
-if [[ ! -f "$HOME/sei-raspi/secrets/openai.env" ]]; then
-  warn "Missing secrets file: $HOME/sei-raspi/secrets/openai.env"
-  warn "Continuing anyway (ONVIF features do not require it)."
-fi
-
-log "Starting container (host network). App will listen on host port: $PORT"
+log "Starting container on ports $PORT (web)..."
 $DOCKER run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \
-  --network host \
+  -p "$PORT:$PORT" \
   -v "$HOME/sei-raspi/data:/app/data" \
   --env-file "$HOME/sei-raspi/secrets/openai.env" \
   -e PORT="$PORT" \
   -e PYTHONUNBUFFERED=1 \
   "$IMAGE_NAME"
 
-HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-HOST_IP="${HOST_IP:-127.0.0.1}"
+log "Published ports:"
+$DOCKER port "$CONTAINER_NAME"
 
 log "Done."
-log "Open: http://${HOST_IP}:${PORT}/"
 log "Logs: $DOCKER logs -f $CONTAINER_NAME"
