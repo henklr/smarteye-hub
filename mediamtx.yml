@@ -1,0 +1,5 @@
+api: yes
+webrtc: yes
+
+paths:
+  cam1: {}

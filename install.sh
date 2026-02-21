@@ -90,33 +90,27 @@ fi
 log "Creating additional files..."
 mkdir -p $APP_DIR/secrets && [[ -f $APP_DIR/secrets/openai.env ]] || echo 'OPENAI_API_KEY=your_openai_api_key_here' > $APP_DIR/secrets/openai.env
 
-log "Running rebuild (build + start)..."
-chmod +x "$APP_DIR/rebuild" "$APP_DIR/start"
-"$APP_DIR/rebuild"
+log "Starting stack with docker compose..."
+cd "$APP_DIR"
 
-# ---------------------------------------------------------------------
-# Install rebuild helper script (symlink to repo) + ensure ~/bin is on PATH
-# ---------------------------------------------------------------------
-log "Installing helper script: rebuild (symlink to repo)..."
-
-BIN_DIR="$HOME/bin"
-mkdir -p "$BIN_DIR"
-
-REPO_REBUILD="$APP_DIR/rebuild"
-BIN_REBUILD="$BIN_DIR/rebuild"
-
-if [[ ! -f "$REPO_REBUILD" ]]; then
-  warn "No rebuild script found at $REPO_REBUILD"
-  warn "Make sure your repo contains a rebuild script at that path."
-else
-  chmod +x "$REPO_REBUILD"
-
-  # Replace existing file/symlink safely
-  rm -f "$BIN_REBUILD"
-  ln -s "$REPO_REBUILD" "$BIN_REBUILD"
-
-  log "Rebuild script linked: $BIN_REBUILD -> $REPO_REBUILD"
+# Use sudo docker compose if daemon socket not accessible yet
+COMPOSE="docker compose"
+if ! docker info >/dev/null 2>&1; then
+  COMPOSE="sudo docker compose"
+  warn "Docker daemon not accessible — using sudo for docker compose."
 fi
+
+# Make sure compose plugin exists (installed earlier, but helpful error)
+if ! $COMPOSE version >/dev/null 2>&1; then
+  err "docker compose not available. Ensure docker-compose-plugin is installed."
+  exit 1
+fi
+
+# Build + start api + mediamtx
+$COMPOSE up -d --build
+
+log "Services running:"
+$COMPOSE ps
 
 log "Ensuring $HOME/bin is on PATH..."
 
@@ -151,10 +145,9 @@ HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 HOST_IP="${HOST_IP:-127.0.0.1}"
 
 log "Done!"
-log "Visit: http://${HOST_IP}:${PORT}/"
-log "Rebuild anytime with: rebuild"
+log "UI:      http://${HOST_IP}:${PORT}/"
+log "WebRTC:   http://${HOST_IP}:8889/cam1"
 warn "If you want to run docker without sudo, log out and log back in (or reboot)."
-warn "If 'rebuild' isn't found immediately, run: source $SHELL_RC"
 
 echo
 warn "A reboot is recommended to ensure all changes take effect."

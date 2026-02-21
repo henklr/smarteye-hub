@@ -1,0 +1,23 @@
+services:
+  api:
+    build: .
+    container_name: sei-raspi
+    environment:
+      - PORT=8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mediamtx
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: mediamtx
+    ports:
+      - "8554:8554"
+      - "8889:8889"        # WebRTC HTTP
+      - "8189:8189/udp"    # WebRTC ICE (UDP)
+      - "9997:9997"        # API
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    environment:
+      - MTX_CONF=/mediamtx.yml
