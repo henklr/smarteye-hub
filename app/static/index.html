@@ -11,11 +11,12 @@
       --card: rgba(255, 255, 255, 0.06);
       --stroke: rgba(255, 255, 255, 0.10);
       --text: #e9eefc;
-      --muted: rgba(233, 238, 252, .75);
+      --muted: rgba(233, 238, 252, .72);
       --accent: #7aa2ff;
       --danger: #ff6b6b;
       --ok: #22c55e;
       --warn: #fbbf24;
+      --shadow: 0 16px 40px rgba(0, 0, 0, .28);
       font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
     }
 
@@ -25,7 +26,8 @@
 
     body {
       margin: 0;
-      background: radial-gradient(1200px 600px at 10% -10%, rgba(122, 162, 255, .25), transparent 60%),
+      background:
+        radial-gradient(1200px 600px at 10% -10%, rgba(122, 162, 255, .25), transparent 60%),
         radial-gradient(900px 500px at 90% 0%, rgba(34, 197, 94, .18), transparent 55%),
         var(--bg);
       color: var(--text);
@@ -34,7 +36,7 @@
     .wrap {
       max-width: 1040px;
       margin: 0 auto;
-      padding: 28px 18px 44px;
+      padding: 26px 18px 44px;
     }
 
     .topbar {
@@ -100,12 +102,12 @@
       border-radius: 18px;
       padding: 16px;
       backdrop-filter: blur(8px);
-      box-shadow: 0 16px 40px rgba(0, 0, 0, .25);
+      box-shadow: var(--shadow);
     }
 
     .grid {
       display: grid;
-      grid-template-columns: 1.3fr .7fr 1fr 1fr auto;
+      grid-template-columns: 1.2fr 1fr 1fr auto;
       gap: 10px;
       align-items: end;
     }
@@ -115,11 +117,7 @@
         grid-template-columns: 1fr 1fr;
       }
 
-      .grid>*[data-span="2"] {
-        grid-column: span 2;
-      }
-
-      .grid>*[data-span="full"] {
+      .grid>*[data-full] {
         grid-column: 1 / -1;
       }
     }
@@ -156,10 +154,16 @@
       font-weight: 900;
       background: rgba(255, 255, 255, 0.10);
       color: var(--text);
+      user-select: none;
     }
 
     .btn:hover {
       filter: brightness(1.06);
+    }
+
+    .btn:disabled {
+      opacity: .55;
+      cursor: not-allowed;
     }
 
     .btn-primary {
@@ -171,6 +175,36 @@
     .btn-danger {
       background: rgba(255, 107, 107, .18);
       border-color: rgba(255, 107, 107, .28);
+    }
+
+    .row2 {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: end;
+      margin-top: 10px;
+    }
+
+    .row2 .grow {
+      flex: 1 1 520px;
+    }
+
+    .statusLine {
+      margin-top: 12px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      background: rgba(0, 0, 0, 0.22);
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .statusLine strong {
+      color: var(--text);
     }
 
     details {
@@ -187,40 +221,13 @@
       font-weight: 800;
     }
 
-    .row2 {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      align-items: end;
-      margin-top: 10px;
-    }
-
-    .row2 .grow {
-      flex: 1 1 520px;
-    }
-
-    .statusBox {
-      margin-top: 12px;
-      padding: 10px 12px;
-      border-radius: 14px;
-      border: 1px solid rgba(255, 255, 255, 0.10);
-      background: rgba(0, 0, 0, 0.22);
-      font-size: 13px;
-      color: var(--muted);
-      white-space: pre-wrap;
-      min-height: 46px;
-    }
-
-    .statusBox strong {
-      color: var(--text);
-    }
-
     .player {
       margin-top: 14px;
       border-radius: 18px;
       overflow: hidden;
       border: 1px solid rgba(255, 255, 255, 0.10);
       background: #000;
+      position: relative;
     }
 
     video {
@@ -231,7 +238,6 @@
       object-fit: contain;
     }
 
-    /* Optional: hide native controls in case a browser shows them */
     video::-webkit-media-controls {
       display: none !important;
     }
@@ -240,53 +246,21 @@
       display: none !important;
     }
 
-    .hint {
+    .foot {
+      margin-top: 10px;
       display: flex;
+      justify-content: space-between;
       gap: 10px;
       flex-wrap: wrap;
-      align-items: center;
-      margin-top: 10px;
       font-size: 12px;
       color: var(--muted);
+      opacity: .95;
     }
 
     code {
       background: rgba(255, 255, 255, 0.10);
       padding: 2px 6px;
       border-radius: 8px;
-    }
-
-    .modal {
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, .55);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      padding: 18px;
-    }
-
-    .modal.open {
-      display: flex;
-    }
-
-    .modalCard {
-      width: min(980px, 100%);
-      max-height: 80vh;
-      overflow: auto;
-      background: rgba(11, 16, 32, .95);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 16px;
-      box-shadow: 0 30px 80px rgba(0, 0, 0, .45);
-      padding: 14px;
-    }
-
-    .modalHead {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 8px;
     }
 
     pre {
@@ -309,21 +283,16 @@
     <div class="topbar">
       <div class="title">
         <h1>Camera Viewer</h1>
-        <div class="subtitle">ONVIF profiles → RTSP → MediaMTX → WebRTC</div>
+        <div class="subtitle">ONVIF → RTSP → MediaMTX → WebRTC (WHEP)</div>
       </div>
-      <div class="pill" id="pill"><span class="dot" id="dot"></span><span id="pillText">Idle</span></div>
+      <div class="pill"><span class="dot" id="dot"></span><span id="pillText">Idle</span></div>
     </div>
 
     <div class="card">
       <div class="grid">
-        <div data-span="full">
+        <div data-full>
           <label>Camera IP</label>
           <input id="ip" placeholder="192.168.1.108" />
-        </div>
-
-        <div>
-          <label>ONVIF Port</label>
-          <input id="onvif_port" value="80" />
         </div>
 
         <div>
@@ -336,7 +305,7 @@
           <input id="password" type="password" placeholder="••••••••" />
         </div>
 
-        <button class="btn" id="fetch" data-span="2">Fetch profiles</button>
+        <button class="btn" id="fetch" data-full>Fetch profiles</button>
       </div>
 
       <div class="row2">
@@ -347,57 +316,67 @@
           </select>
         </div>
         <button class="btn btn-primary" id="start" disabled>Start</button>
-        <button class="btn btn-danger" id="stop">Stop</button>
-        <button class="btn" id="logs">Log tail</button>
+        <button class="btn btn-danger" id="stop" disabled>Stop</button>
       </div>
 
-      <details>
-        <summary>Advanced</summary>
-        <div class="hint" style="margin-top:10px;">
-          Player URL: <code id="playerUrl"></code>
-          <span>Tip: if it says “stream not found”, wait 1–2s and click Start again.</span>
-        </div>
-      </details>
+      <div class="statusLine" id="statusLine">
+        <strong>Status:</strong> <span id="statusText">Idle.</span>
+      </div>
 
-      <div class="statusBox" id="status"><strong>Status:</strong> Idle.</div>
+      <details id="advanced">
+        <summary>Advanced</summary>
+
+        <div style="margin-top:10px; display:grid; gap:10px; grid-template-columns: 1fr 1fr;">
+          <div>
+            <label>ONVIF Port</label>
+            <input id="onvif_port" value="80" />
+          </div>
+
+          <div>
+            <label>Player (MediaMTX)</label>
+            <div
+              style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,0.12); background:rgba(0,0,0,0.2);">
+              <code id="playerUrl">(loading…)</code>
+            </div>
+          </div>
+        </div>
+
+        <!-- Move the log panel INSIDE Advanced -->
+        <details id="logPanel" style="margin-top:10px;">
+          <summary>ffmpeg.log (tail)</summary>
+          <div style="margin-top:10px;">
+            <pre id="logPre">(open to load)</pre>
+          </div>
+        </details>
+      </details>
 
       <div class="player">
         <video id="video" autoplay playsinline muted></video>
       </div>
-    </div>
-  </div>
 
-  <!-- log modal -->
-  <div class="modal" id="modal">
-    <div class="modalCard">
-      <div class="modalHead">
-        <div style="font-weight:900;">ffmpeg.log (tail)</div>
-        <button class="btn" id="closeModal">Close</button>
+      <div class="foot">
+        <div>Tip: first time can take 1–3s. If it stalls, press <b>Stop</b> then <b>Start</b>.</div>
+        <div>WHEP: <code id="whepUrl"></code></div>
       </div>
-      <pre id="logPre">(loading…)</pre>
     </div>
   </div>
 
   <script>
+    const dot = document.getElementById('dot');
+    const pillText = document.getElementById('pillText');
+    const statusText = document.getElementById('statusText');
 
-    const video = document.getElementById('video');
-
-    let pc = null;
-
-    function getWhepUrl() {
-      const proto = window.location.protocol; // http: or https:
-      const host = window.location.hostname;
-      return `${proto}//${host}:8889/cam1/whep`;
-    }
-
-    const whepUrl = getWhepUrl();
-    document.getElementById('playerUrl').textContent = whepUrl.replace('/whep', ''); // keep showing /cam1 in UI
-
-    const statusEl = document.getElementById('status');
     const profilesSel = document.getElementById('profiles');
     const startBtn = document.getElementById('start');
-    const pillText = document.getElementById('pillText');
-    const dot = document.getElementById('dot');
+    const stopBtn = document.getElementById('stop');
+    const video = document.getElementById('video');
+
+    const advanced = document.getElementById('advanced');
+    const logPanel = document.getElementById('logPanel');
+    const logPre = document.getElementById('logPre');
+
+    let pc = null;
+    let logTimer = null;
 
     function setPill(state, text) {
       pillText.textContent = text;
@@ -407,41 +386,26 @@
     }
 
     function setStatus(msg, state = "warn") {
-      statusEl.innerHTML = `<strong>Status:</strong> ${msg}`;
-      setPill(state, msg.replace(/<[^>]*>/g, '').slice(0, 40));
+      statusText.textContent = msg;
+      setPill(state, msg.slice(0, 40));
     }
 
-    async function startWhep() {
-      stopWhep(); // cleanup any previous PC
+    function getWhepUrl() {
+      const proto = window.location.protocol;
+      const host = window.location.hostname;
+      return `${proto}//${host}:8889/cam1/whep`;
+    }
 
-      pc = new RTCPeerConnection();
+    const whepUrl = getWhepUrl();
+    document.getElementById('whepUrl').textContent = whepUrl;
+    document.getElementById('playerUrl').textContent = whepUrl.replace('/whep', '');
 
-      pc.ontrack = (event) => {
-        video.srcObject = event.streams[0];
-      };
-
-      pc.onconnectionstatechange = () => {
-        const st = pc.connectionState;
-        if (st === "connected") setStatus("Streaming.", "ok");
-        else if (st === "failed" || st === "disconnected") setStatus(`WebRTC ${st}.`, "bad");
-      };
-
-      const offer = await pc.createOffer({ offerToReceiveVideo: true });
-      await pc.setLocalDescription(offer);
-
-      const res = await fetch(getWhepUrl(), {
-        method: "POST",
-        headers: { "Content-Type": "application/sdp" },
-        body: offer.sdp,
-      });
-
-      if (!res.ok) {
-        const t = await res.text().catch(() => "");
-        throw new Error(`WHEP failed (${res.status}): ${t || res.statusText}`);
-      }
-
-      const answerSdp = await res.text();
-      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+    function creds() {
+      const ip = document.getElementById('ip').value.trim();
+      const onvif_port = parseInt((document.getElementById('onvif_port').value || "80").trim(), 10);
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+      return { ip, onvif_port, username, password };
     }
 
     function stopWhep() {
@@ -455,18 +419,34 @@
       }
     }
 
-    function getPlayerUrl() {
-      const proto = window.location.protocol; // http: or https:
-      const host = window.location.hostname;
-      return `${proto}//${host}:8889/cam1`;
-    }
+    async function startWhep() {
+      stopWhep();
+      pc = new RTCPeerConnection();
 
-    function creds() {
-      const ip = document.getElementById('ip').value.trim();
-      const onvif_port = parseInt(document.getElementById('onvif_port').value.trim() || "80", 10);
-      const username = document.getElementById('username').value.trim();
-      const password = document.getElementById('password').value;
-      return { ip, onvif_port, username, password };
+      pc.ontrack = (e) => { video.srcObject = e.streams[0]; };
+
+      pc.onconnectionstatechange = () => {
+        const st = pc.connectionState;
+        if (st === "connected") setStatus("Streaming.", "ok");
+        else if (st === "failed" || st === "disconnected") setStatus(`WebRTC ${st}.`, "bad");
+      };
+
+      const offer = await pc.createOffer({ offerToReceiveVideo: true });
+      await pc.setLocalDescription(offer);
+
+      const res = await fetch(getWhepUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/sdp" },
+        body: offer.sdp
+      });
+
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        throw new Error(`WHEP failed (${res.status}): ${t || res.statusText}`);
+      }
+
+      const answerSdp = await res.text();
+      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
     }
 
     function profileLabel(p) {
@@ -474,13 +454,64 @@
       if (p.name) parts.push(p.name);
       if (p.encoding) parts.push(String(p.encoding));
       if (p.width && p.height) parts.push(`${p.width}x${p.height}`);
-      if (p.fps) parts.push(`${p.fps}fps`);
       return parts.length ? parts.join(" • ") : p.token;
+    }
+
+    async function loadLogs() {
+      try {
+        const res = await fetch('/api/debug/ffmpeg-log');
+        const data = await res.json();
+        logPre.textContent = data.tail || "(empty)";
+      } catch (e) {
+        logPre.textContent = "Failed to fetch logs: " + (e?.message || e);
+      }
+    }
+
+    function stopLogTimer() {
+      if (logTimer) {
+        clearInterval(logTimer);
+        logTimer = null;
+      }
+    }
+
+    function maybeStartLogTimer() {
+      // Only run if BOTH Advanced and LogPanel are open
+      if (advanced?.open && logPanel?.open) {
+        loadLogs();
+        stopLogTimer();
+        logTimer = setInterval(loadLogs, 1500);
+      } else {
+        stopLogTimer();
+      }
+    }
+
+    // Start/stop log polling ONLY when Advanced + logPanel are open
+    if (advanced) {
+      advanced.addEventListener('toggle', () => {
+        if (!advanced.open) {
+          if (logPanel) logPanel.open = false;
+          stopLogTimer();
+        } else {
+          maybeStartLogTimer();
+        }
+      });
+    }
+
+    if (logPanel) {
+      logPanel.addEventListener('toggle', () => {
+        // If someone opens logs while Advanced is closed, don't allow it
+        if (logPanel.open && !advanced?.open) {
+          logPanel.open = false;
+          setStatus("Open Advanced to view logs.", "warn");
+          return;
+        }
+        maybeStartLogTimer();
+      });
     }
 
     document.getElementById('fetch').addEventListener('click', async () => {
       const c = creds();
-      if (!c.ip || !c.username || !c.password) return setStatus("Fill in IP, username, password.", "bad");
+      if (!c.ip || !c.username || !c.password) return setStatus("Fill IP, username, password.", "bad");
 
       setStatus("Fetching profiles…", "warn");
       profilesSel.disabled = true;
@@ -508,7 +539,7 @@
         }
         profilesSel.disabled = false;
         startBtn.disabled = false;
-        setStatus(`Found ${profs.length} profiles. Select one and click Start.`, "ok");
+        setStatus(`Profiles loaded (${profs.length}).`, "ok");
       } catch (e) {
         profilesSel.innerHTML = `<option>Fetch failed</option>`;
         setStatus(`Error: ${e?.message || e}`, "bad");
@@ -520,7 +551,9 @@
       const profile_token = profilesSel.value;
       if (!profile_token) return setStatus("Select a profile first.", "bad");
 
-      setStatus("Starting stream…", "warn");
+      setStatus("Starting…", "warn");
+      startBtn.disabled = true;
+
       try {
         const res = await fetch('/api/start', {
           method: 'POST',
@@ -530,42 +563,29 @@
         const data = await res.json().catch(() => null);
         if (!res.ok) throw new Error(data?.detail || "Start failed");
 
-        setStatus("Streaming.", "ok");
         await startWhep();
+        stopBtn.disabled = false;
+        setStatus("Streaming.", "ok");
       } catch (e) {
+        stopWhep();
         setStatus(`Error: ${e?.message || e}`, "bad");
+      } finally {
+        startBtn.disabled = false;
       }
     });
 
     document.getElementById('stop').addEventListener('click', async () => {
       setStatus("Stopping…", "warn");
+      stopBtn.disabled = true;
       try {
         await fetch('/api/stop', { method: 'POST' });
-        stopWhep();
-        setStatus("Stopped.", "warn");
-      } catch (e) {
-        setStatus(`Stop error: ${e?.message || e}`, "bad");
-      }
+      } catch { }
+      stopWhep();
+      setStatus("Stopped.", "warn");
     });
-
-    // log modal
-    const modal = document.getElementById('modal');
-    const logPre = document.getElementById('logPre');
-    document.getElementById('logs').addEventListener('click', async () => {
-      modal.classList.add("open");
-      logPre.textContent = "(loading…)";
-      try {
-        const res = await fetch('/api/debug/ffmpeg-log');
-        const data = await res.json();
-        logPre.textContent = data.tail || "(empty)";
-      } catch (e) {
-        logPre.textContent = "Failed to fetch log tail: " + (e?.message || e);
-      }
-    });
-    document.getElementById('closeModal').addEventListener('click', () => modal.classList.remove("open"));
-    modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove("open"); });
 
     setStatus("Idle.", "warn");
+    stopBtn.disabled = true;
   </script>
 </body>
 
