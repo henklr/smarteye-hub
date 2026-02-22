@@ -1,175 +1,309 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Camera Viewer</title>
   <style>
-    :root{
-      --bg:#0b1020;
-      --card: rgba(255,255,255,0.06);
-      --stroke: rgba(255,255,255,0.10);
-      --text:#e9eefc;
-      --muted: rgba(233,238,252,.75);
-      --accent:#7aa2ff;
-      --danger:#ff6b6b;
-      --ok:#22c55e;
-      --warn:#fbbf24;
+    :root {
+      --bg: #0b1020;
+      --card: rgba(255, 255, 255, 0.06);
+      --stroke: rgba(255, 255, 255, 0.10);
+      --text: #e9eefc;
+      --muted: rgba(233, 238, 252, .75);
+      --accent: #7aa2ff;
+      --danger: #ff6b6b;
+      --ok: #22c55e;
+      --warn: #fbbf24;
       font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
     }
-    *{ box-sizing:border-box; }
-    body{ margin:0; background: radial-gradient(1200px 600px at 10% -10%, rgba(122,162,255,.25), transparent 60%),
-                         radial-gradient(900px 500px at 90% 0%, rgba(34,197,94,.18), transparent 55%),
-                         var(--bg);
-          color:var(--text); }
-    .wrap{ max-width:1040px; margin:0 auto; padding:28px 18px 44px; }
 
-    .topbar{
-      display:flex; align-items:center; justify-content:space-between;
-      margin-bottom:14px; gap:12px;
+    * {
+      box-sizing: border-box;
     }
-    .title{
-      display:flex; flex-direction:column; gap:4px;
-    }
-    h1{ margin:0; font-size:18px; font-weight:900; letter-spacing:.2px; }
-    .subtitle{ font-size:12px; color:var(--muted); }
-    .pill{
-      display:inline-flex; align-items:center; gap:8px;
-      padding:8px 10px; border-radius:999px;
-      background: rgba(255,255,255,0.08);
-      border:1px solid var(--stroke);
-      font-size:12px; color:var(--muted);
-      white-space:nowrap;
-    }
-    .dot{ width:8px; height:8px; border-radius:50%; background: var(--warn); box-shadow: 0 0 0 4px rgba(251,191,36,.12); }
-    .dot.ok{ background: var(--ok); box-shadow: 0 0 0 4px rgba(34,197,94,.12); }
-    .dot.bad{ background: var(--danger); box-shadow: 0 0 0 4px rgba(255,107,107,.12); }
 
-    .card{
+    body {
+      margin: 0;
+      background: radial-gradient(1200px 600px at 10% -10%, rgba(122, 162, 255, .25), transparent 60%),
+        radial-gradient(900px 500px at 90% 0%, rgba(34, 197, 94, .18), transparent 55%),
+        var(--bg);
+      color: var(--text);
+    }
+
+    .wrap {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 28px 18px 44px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+      gap: 12px;
+    }
+
+    .title {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 900;
+      letter-spacing: .2px;
+    }
+
+    .subtitle {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--stroke);
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--warn);
+      box-shadow: 0 0 0 4px rgba(251, 191, 36, .12);
+    }
+
+    .dot.ok {
+      background: var(--ok);
+      box-shadow: 0 0 0 4px rgba(34, 197, 94, .12);
+    }
+
+    .dot.bad {
+      background: var(--danger);
+      box-shadow: 0 0 0 4px rgba(255, 107, 107, .12);
+    }
+
+    .card {
       background: var(--card);
       border: 1px solid var(--stroke);
       border-radius: 18px;
       padding: 16px;
       backdrop-filter: blur(8px);
-      box-shadow: 0 16px 40px rgba(0,0,0,.25);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, .25);
     }
-    .grid{
-      display:grid;
+
+    .grid {
+      display: grid;
       grid-template-columns: 1.3fr .7fr 1fr 1fr auto;
-      gap:10px;
-      align-items:end;
-    }
-    @media (max-width: 900px){
-      .grid{ grid-template-columns: 1fr 1fr; }
-      .grid > *[data-span="2"]{ grid-column: span 2; }
-      .grid > *[data-span="full"]{ grid-column: 1 / -1; }
+      gap: 10px;
+      align-items: end;
     }
 
-    label{ display:block; font-size:12px; color:var(--muted); margin:0 0 6px; }
-    input, select{
-      width:100%;
-      padding:10px 12px;
+    @media (max-width: 900px) {
+      .grid {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .grid>*[data-span="2"] {
+        grid-column: span 2;
+      }
+
+      .grid>*[data-span="full"] {
+        grid-column: 1 / -1;
+      }
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0 0 6px;
+    }
+
+    input,
+    select {
+      width: 100%;
+      padding: 10px 12px;
       border-radius: 12px;
-      border:1px solid rgba(255,255,255,0.16);
-      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(0, 0, 0, 0.25);
       color: var(--text);
-      outline:none;
+      outline: none;
     }
-    input:focus, select:focus{ border-color: rgba(122,162,255,.65); box-shadow: 0 0 0 3px rgba(122,162,255,.18); }
 
-    .btn{
-      padding:10px 14px;
-      border-radius:12px;
-      border:1px solid rgba(255,255,255,0.14);
-      cursor:pointer;
-      font-weight:900;
-      background: rgba(255,255,255,0.10);
+    input:focus,
+    select:focus {
+      border-color: rgba(122, 162, 255, .65);
+      box-shadow: 0 0 0 3px rgba(122, 162, 255, .18);
+    }
+
+    .btn {
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      cursor: pointer;
+      font-weight: 900;
+      background: rgba(255, 255, 255, 0.10);
       color: var(--text);
     }
-    .btn:hover{ filter: brightness(1.06); }
-    .btn-primary{ background: var(--accent); color:#08122b; border-color: transparent; }
-    .btn-danger{ background: rgba(255,107,107,.18); border-color: rgba(255,107,107,.28); }
 
-    details{
-      margin-top:12px;
-      border:1px solid rgba(255,255,255,0.10);
-      border-radius: 14px;
-      padding:10px 12px;
-      background: rgba(0,0,0,0.18);
+    .btn:hover {
+      filter: brightness(1.06);
     }
-    summary{ cursor:pointer; color:var(--muted); font-weight:800; }
 
-    .row2{
-      display:flex; gap:10px; flex-wrap:wrap; align-items:end;
-      margin-top:10px;
+    .btn-primary {
+      background: var(--accent);
+      color: #08122b;
+      border-color: transparent;
     }
-    .row2 .grow{ flex: 1 1 520px; }
 
-    .statusBox{
-      margin-top:12px;
-      padding:10px 12px;
+    .btn-danger {
+      background: rgba(255, 107, 107, .18);
+      border-color: rgba(255, 107, 107, .28);
+    }
+
+    details {
+      margin-top: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.10);
       border-radius: 14px;
-      border:1px solid rgba(255,255,255,0.10);
-      background: rgba(0,0,0,0.22);
-      font-size:13px;
+      padding: 10px 12px;
+      background: rgba(0, 0, 0, 0.18);
+    }
+
+    summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    .row2 {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: end;
+      margin-top: 10px;
+    }
+
+    .row2 .grow {
+      flex: 1 1 520px;
+    }
+
+    .statusBox {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      background: rgba(0, 0, 0, 0.22);
+      font-size: 13px;
       color: var(--muted);
       white-space: pre-wrap;
       min-height: 46px;
     }
-    .statusBox strong{ color: var(--text); }
 
-    .player{
+    .statusBox strong {
+      color: var(--text);
+    }
+
+    .player {
       margin-top: 14px;
       border-radius: 18px;
-      overflow:hidden;
-      border:1px solid rgba(255,255,255,0.10);
-      background:#000;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      background: #000;
     }
-    iframe{ width:100%; height: 560px; border:0; display:block; background:#000; }
 
-    .hint{
-      display:flex; gap:10px; flex-wrap:wrap; align-items:center;
-      margin-top:10px;
-      font-size:12px;
+    video {
+      width: 100%;
+      height: 560px;
+      display: block;
+      background: #000;
+      object-fit: contain;
+    }
+
+    /* Optional: hide native controls in case a browser shows them */
+    video::-webkit-media-controls {
+      display: none !important;
+    }
+
+    video::-webkit-media-controls-enclosure {
+      display: none !important;
+    }
+
+    .hint {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 10px;
+      font-size: 12px;
       color: var(--muted);
     }
-    code{ background: rgba(255,255,255,0.10); padding: 2px 6px; border-radius: 8px; }
 
-    .modal{
-      position:fixed; inset:0;
-      background: rgba(0,0,0,.55);
-      display:none; align-items:center; justify-content:center;
-      padding:18px;
+    code {
+      background: rgba(255, 255, 255, 0.10);
+      padding: 2px 6px;
+      border-radius: 8px;
     }
-    .modal.open{ display:flex; }
-    .modalCard{
-      width:min(980px, 100%);
+
+    .modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, .55);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+    }
+
+    .modal.open {
+      display: flex;
+    }
+
+    .modalCard {
+      width: min(980px, 100%);
       max-height: 80vh;
-      overflow:auto;
-      background: rgba(11,16,32,.95);
-      border:1px solid rgba(255,255,255,0.12);
+      overflow: auto;
+      background: rgba(11, 16, 32, .95);
+      border: 1px solid rgba(255, 255, 255, 0.12);
       border-radius: 16px;
-      box-shadow: 0 30px 80px rgba(0,0,0,.45);
-      padding:14px;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, .45);
+      padding: 14px;
     }
-    .modalHead{
-      display:flex; justify-content:space-between; align-items:center; gap:10px;
-      margin-bottom:8px;
+
+    .modalHead {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
     }
-    pre{
-      margin:0;
-      padding:12px;
+
+    pre {
+      margin: 0;
+      padding: 12px;
       border-radius: 12px;
-      background: rgba(0,0,0,0.35);
-      border:1px solid rgba(255,255,255,0.08);
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.08);
       color: #d7def6;
-      font-size:12px;
-      line-height:1.35;
+      font-size: 12px;
+      line-height: 1.35;
       white-space: pre-wrap;
       word-break: break-word;
     }
   </style>
 </head>
+
 <body>
   <div class="wrap">
     <div class="topbar">
@@ -228,7 +362,7 @@
       <div class="statusBox" id="status"><strong>Status:</strong> Idle.</div>
 
       <div class="player">
-        <iframe id="player" allow="autoplay; fullscreen; microphone; camera"></iframe>
+        <video id="video" autoplay playsinline muted></video>
       </div>
     </div>
   </div>
@@ -244,140 +378,195 @@
     </div>
   </div>
 
-<script>
-  const statusEl = document.getElementById('status');
-  const iframe = document.getElementById('player');
-  const profilesSel = document.getElementById('profiles');
-  const startBtn = document.getElementById('start');
-  const pillText = document.getElementById('pillText');
-  const dot = document.getElementById('dot');
+  <script>
 
-  function setPill(state, text){
-    pillText.textContent = text;
-    dot.className = "dot";
-    if(state === "ok") dot.classList.add("ok");
-    else if(state === "bad") dot.classList.add("bad");
-  }
+    const video = document.getElementById('video');
 
-  function setStatus(msg, state="warn") {
-    statusEl.innerHTML = `<strong>Status:</strong> ${msg}`;
-    setPill(state, msg.replace(/<[^>]*>/g,'').slice(0,40));
-  }
+    let pc = null;
 
-  function getPlayerUrl() {
-    const proto = window.location.protocol; // http: or https:
-    const host = window.location.hostname;
-    return `${proto}//${host}:8889/cam1`;
-  }
+    function getWhepUrl() {
+      const proto = window.location.protocol; // http: or https:
+      const host = window.location.hostname;
+      return `${proto}//${host}:8889/cam1/whep`;
+    }
 
-  const playerUrl = getPlayerUrl();
-  document.getElementById('playerUrl').textContent = playerUrl;
-  iframe.src = playerUrl;
+    const whepUrl = getWhepUrl();
+    document.getElementById('playerUrl').textContent = whepUrl.replace('/whep', ''); // keep showing /cam1 in UI
 
-  function creds() {
-    const ip = document.getElementById('ip').value.trim();
-    const onvif_port = parseInt(document.getElementById('onvif_port').value.trim() || "80", 10);
-    const username = document.getElementById('username').value.trim();
-    const password = document.getElementById('password').value;
-    return { ip, onvif_port, username, password };
-  }
+    const statusEl = document.getElementById('status');
+    const profilesSel = document.getElementById('profiles');
+    const startBtn = document.getElementById('start');
+    const pillText = document.getElementById('pillText');
+    const dot = document.getElementById('dot');
 
-  function profileLabel(p) {
-    const parts = [];
-    if (p.name) parts.push(p.name);
-    if (p.encoding) parts.push(String(p.encoding));
-    if (p.width && p.height) parts.push(`${p.width}x${p.height}`);
-    if (p.fps) parts.push(`${p.fps}fps`);
-    return parts.length ? parts.join(" • ") : p.token;
-  }
+    function setPill(state, text) {
+      pillText.textContent = text;
+      dot.className = "dot";
+      if (state === "ok") dot.classList.add("ok");
+      else if (state === "bad") dot.classList.add("bad");
+    }
 
-  document.getElementById('fetch').addEventListener('click', async () => {
-    const c = creds();
-    if (!c.ip || !c.username || !c.password) return setStatus("Fill in IP, username, password.", "bad");
+    function setStatus(msg, state = "warn") {
+      statusEl.innerHTML = `<strong>Status:</strong> ${msg}`;
+      setPill(state, msg.replace(/<[^>]*>/g, '').slice(0, 40));
+    }
 
-    setStatus("Fetching profiles…", "warn");
-    profilesSel.disabled = true;
-    startBtn.disabled = true;
-    profilesSel.innerHTML = `<option>Loading…</option>`;
+    async function startWhep() {
+      stopWhep(); // cleanup any previous PC
 
-    try {
-      const res = await fetch('/api/profiles', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(c)
+      pc = new RTCPeerConnection();
+
+      pc.ontrack = (event) => {
+        video.srcObject = event.streams[0];
+      };
+
+      pc.onconnectionstatechange = () => {
+        const st = pc.connectionState;
+        if (st === "connected") setStatus("Streaming.", "ok");
+        else if (st === "failed" || st === "disconnected") setStatus(`WebRTC ${st}.`, "bad");
+      };
+
+      const offer = await pc.createOffer({ offerToReceiveVideo: true });
+      await pc.setLocalDescription(offer);
+
+      const res = await fetch(getWhepUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/sdp" },
+        body: offer.sdp,
       });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.detail || "Failed to fetch profiles");
 
-      const profs = data.profiles || [];
-      if (!profs.length) throw new Error("No profiles returned.");
-
-      profilesSel.innerHTML = "";
-      for (const p of profs) {
-        const opt = document.createElement('option');
-        opt.value = p.token;
-        opt.textContent = profileLabel(p);
-        profilesSel.appendChild(opt);
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        throw new Error(`WHEP failed (${res.status}): ${t || res.statusText}`);
       }
-      profilesSel.disabled = false;
-      startBtn.disabled = false;
-      setStatus(`Found ${profs.length} profiles. Select one and click Start.`, "ok");
-    } catch (e) {
-      profilesSel.innerHTML = `<option>Fetch failed</option>`;
-      setStatus(`Error: ${e?.message || e}`, "bad");
+
+      const answerSdp = await res.text();
+      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
     }
-  });
 
-  document.getElementById('start').addEventListener('click', async () => {
-    const c = creds();
-    const profile_token = profilesSel.value;
-    if (!profile_token) return setStatus("Select a profile first.", "bad");
-
-    setStatus("Starting stream…", "warn");
-    try {
-      const res = await fetch('/api/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...c, profile_token })
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.detail || "Start failed");
-
-      setStatus("Streaming.", "ok");
-      iframe.src = playerUrl + `?t=${Date.now()}`;
-    } catch (e) {
-      setStatus(`Error: ${e?.message || e}`, "bad");
+    function stopWhep() {
+      if (pc) {
+        try { pc.close(); } catch { }
+        pc = null;
+      }
+      if (video.srcObject) {
+        try { video.srcObject.getTracks().forEach(t => t.stop()); } catch { }
+        video.srcObject = null;
+      }
     }
-  });
 
-  document.getElementById('stop').addEventListener('click', async () => {
-    setStatus("Stopping…", "warn");
-    try {
-      await fetch('/api/stop', { method: 'POST' });
-      setStatus("Stopped.", "warn");
-    } catch (e) {
-      setStatus(`Stop error: ${e?.message || e}`, "bad");
+    function getPlayerUrl() {
+      const proto = window.location.protocol; // http: or https:
+      const host = window.location.hostname;
+      return `${proto}//${host}:8889/cam1`;
     }
-  });
 
-  // log modal
-  const modal = document.getElementById('modal');
-  const logPre = document.getElementById('logPre');
-  document.getElementById('logs').addEventListener('click', async () => {
-    modal.classList.add("open");
-    logPre.textContent = "(loading…)";
-    try{
-      const res = await fetch('/api/debug/ffmpeg-log');
-      const data = await res.json();
-      logPre.textContent = data.tail || "(empty)";
-    }catch(e){
-      logPre.textContent = "Failed to fetch log tail: " + (e?.message || e);
+    function creds() {
+      const ip = document.getElementById('ip').value.trim();
+      const onvif_port = parseInt(document.getElementById('onvif_port').value.trim() || "80", 10);
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+      return { ip, onvif_port, username, password };
     }
-  });
-  document.getElementById('closeModal').addEventListener('click', () => modal.classList.remove("open"));
-  modal.addEventListener('click', (e) => { if(e.target === modal) modal.classList.remove("open"); });
 
-  setStatus("Idle.", "warn");
-</script>
+    function profileLabel(p) {
+      const parts = [];
+      if (p.name) parts.push(p.name);
+      if (p.encoding) parts.push(String(p.encoding));
+      if (p.width && p.height) parts.push(`${p.width}x${p.height}`);
+      if (p.fps) parts.push(`${p.fps}fps`);
+      return parts.length ? parts.join(" • ") : p.token;
+    }
+
+    document.getElementById('fetch').addEventListener('click', async () => {
+      const c = creds();
+      if (!c.ip || !c.username || !c.password) return setStatus("Fill in IP, username, password.", "bad");
+
+      setStatus("Fetching profiles…", "warn");
+      profilesSel.disabled = true;
+      startBtn.disabled = true;
+      profilesSel.innerHTML = `<option>Loading…</option>`;
+
+      try {
+        const res = await fetch('/api/profiles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(c)
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.detail || "Failed to fetch profiles");
+
+        const profs = data.profiles || [];
+        if (!profs.length) throw new Error("No profiles returned.");
+
+        profilesSel.innerHTML = "";
+        for (const p of profs) {
+          const opt = document.createElement('option');
+          opt.value = p.token;
+          opt.textContent = profileLabel(p);
+          profilesSel.appendChild(opt);
+        }
+        profilesSel.disabled = false;
+        startBtn.disabled = false;
+        setStatus(`Found ${profs.length} profiles. Select one and click Start.`, "ok");
+      } catch (e) {
+        profilesSel.innerHTML = `<option>Fetch failed</option>`;
+        setStatus(`Error: ${e?.message || e}`, "bad");
+      }
+    });
+
+    document.getElementById('start').addEventListener('click', async () => {
+      const c = creds();
+      const profile_token = profilesSel.value;
+      if (!profile_token) return setStatus("Select a profile first.", "bad");
+
+      setStatus("Starting stream…", "warn");
+      try {
+        const res = await fetch('/api/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...c, profile_token })
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.detail || "Start failed");
+
+        setStatus("Streaming.", "ok");
+        await startWhep();
+      } catch (e) {
+        setStatus(`Error: ${e?.message || e}`, "bad");
+      }
+    });
+
+    document.getElementById('stop').addEventListener('click', async () => {
+      setStatus("Stopping…", "warn");
+      try {
+        await fetch('/api/stop', { method: 'POST' });
+        stopWhep();
+        setStatus("Stopped.", "warn");
+      } catch (e) {
+        setStatus(`Stop error: ${e?.message || e}`, "bad");
+      }
+    });
+
+    // log modal
+    const modal = document.getElementById('modal');
+    const logPre = document.getElementById('logPre');
+    document.getElementById('logs').addEventListener('click', async () => {
+      modal.classList.add("open");
+      logPre.textContent = "(loading…)";
+      try {
+        const res = await fetch('/api/debug/ffmpeg-log');
+        const data = await res.json();
+        logPre.textContent = data.tail || "(empty)";
+      } catch (e) {
+        logPre.textContent = "Failed to fetch log tail: " + (e?.message || e);
+      }
+    });
+    document.getElementById('closeModal').addEventListener('click', () => modal.classList.remove("open"));
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove("open"); });
+
+    setStatus("Idle.", "warn");
+  </script>
 </body>
+
 </html>

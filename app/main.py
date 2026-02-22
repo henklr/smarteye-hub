@@ -1,18 +1,16 @@
 from pathlib import Path
 import os
+import socket
 import subprocess
 import time
 from typing import Optional, Dict, Any
+from urllib.parse import urlparse
 
-import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from onvif import ONVIFCamera
-
-import socket
-from urllib.parse import urlparse
 
 app = FastAPI()
 
@@ -26,7 +24,8 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 FFMPEG_LOG = DATA_DIR / "ffmpeg.log"
 
 MEDIAMTX_PUBLISH_URL = os.getenv("MEDIAMTX_PUBLISH_URL", "rtsp://mediamtx:8554/cam1")
-MEDIAMTX_API = os.getenv("MEDIAMTX_API", "http://mediamtx:9997")
+MEDIAMTX_HOST = "mediamtx"
+MEDIAMTX_RTSP_PORT = 8554
 
 _ffmpeg: Optional[subprocess.Popen] = None
 
@@ -94,35 +93,31 @@ def _profile_summary(p) -> Dict[str, Any]:
 def _get_stream_uri(req: OnvifBase, profile_token: str) -> str:
     cam = _cam(req)
     media = cam.create_media_service()
-    resp = media.GetStreamUri({
-        "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
-        "ProfileToken": profile_token,
-    })
+    resp = media.GetStreamUri(
+        {
+            "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
+            "ProfileToken": profile_token,
+        }
+    )
 
     rtsp = getattr(resp, "Uri", None)
     if not rtsp or not rtsp.lower().startswith("rtsp://"):
         raise RuntimeError(f"Unexpected RTSP URI returned: {rtsp}")
 
+    # add credentials if absent
     if "@" not in rtsp:
         rtsp = rtsp.replace("rtsp://", f"rtsp://{req.username}:{req.password}@", 1)
 
     return rtsp
 
 
-def _rtsp_describe_ok(rtsp_url: str, timeout_s: float = 1.0) -> bool:
+def _rtsp_describe_ok_for_cam1(timeout_s: float = 1.0) -> bool:
     """
-    Minimal RTSP DESCRIBE to see if MediaMTX has a stream on the path.
-    Works even when MediaMTX API requires auth.
+    Check if MediaMTX has a stream available on path 'cam1' via RTSP DESCRIBE.
+    Doesn't require MediaMTX API and works even if API auth is enabled.
     """
-    u = urlparse(rtsp_url)
-    host = u.hostname or "mediamtx"
-    port = u.port or 554
-    path = u.path or "/"
-    if u.query:
-        path = f"{path}?{u.query}"
-
     req = (
-        f"DESCRIBE {u.scheme}://{host}:{port}{path} RTSP/1.0\r\n"
+        f"DESCRIBE rtsp://{MEDIAMTX_HOST}:{MEDIAMTX_RTSP_PORT}/cam1 RTSP/1.0\r\n"
         f"CSeq: 1\r\n"
         f"User-Agent: sei-raspi\r\n"
         f"Accept: application/sdp\r\n"
@@ -130,15 +125,15 @@ def _rtsp_describe_ok(rtsp_url: str, timeout_s: float = 1.0) -> bool:
     ).encode("utf-8")
 
     try:
-        with socket.create_connection((host, port), timeout=timeout_s) as s:
+        with socket.create_connection((MEDIAMTX_HOST, MEDIAMTX_RTSP_PORT), timeout=timeout_s) as s:
             s.settimeout(timeout_s)
             s.sendall(req)
             resp = s.recv(4096).decode("utf-8", errors="ignore")
-        # MediaMTX returns 200 when stream exists; 404 when not
         return "RTSP/1.0 200" in resp
     except Exception:
         return False
-    
+
+
 def _start_ffmpeg(rtsp_in: str):
     global _ffmpeg
     _stop_ffmpeg()
@@ -150,8 +145,11 @@ def _start_ffmpeg(rtsp_in: str):
         "ffmpeg",
         "-hide_banner",
         "-loglevel", "info",
+
         "-rtsp_transport", "tcp",
+        "-rtsp_flags", "prefer_tcp",
         "-i", rtsp_in,
+
         "-an",
         "-vf", "scale=1280:-2,format=yuv420p",
         "-c:v", "libx264",
@@ -161,10 +159,12 @@ def _start_ffmpeg(rtsp_in: str):
         "-g", "50",
         "-keyint_min", "50",
         "-sc_threshold", "0",
+
         "-f", "rtsp",
         "-rtsp_transport", "tcp",
         MEDIAMTX_PUBLISH_URL,
-    ]    
+    ]
+
     _ffmpeg = subprocess.Popen(cmd, stdout=log_f, stderr=log_f)
 
 
@@ -196,11 +196,11 @@ def start(req: StartRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"ffmpeg failed to start: {e}")
 
-    # Wait up to ~8s for ffmpeg + MediaMTX to show cam1 online
+    # Wait up to ~8s for publisher to appear on cam1
     for _ in range(80):
         if _ffmpeg and _ffmpeg.poll() is not None:
-            raise HTTPException(status_code=500, detail="ffmpeg exited immediately:\n\n" + _log_tail())
-        if _rtsp_describe_ok(MEDIAMTX_PUBLISH_URL):
+            raise HTTPException(status_code=500, detail="ffmpeg exited:\n\n" + _log_tail())
+        if _rtsp_describe_ok_for_cam1():
             return {"ok": True}
         time.sleep(0.1)
 
