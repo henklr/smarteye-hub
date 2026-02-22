@@ -7,264 +7,377 @@
   <style>
     :root{
       --bg:#0b1020;
-      --panel:#121a33;
-      --panel2:#0f1630;
-      --text:#e8ecff;
-      --muted:#aab3d6;
+      --card: rgba(255,255,255,0.06);
+      --stroke: rgba(255,255,255,0.10);
+      --text:#e9eefc;
+      --muted: rgba(233,238,252,.75);
       --accent:#7aa2ff;
-      --ok:#34d399;
-      --bad:#fb7185;
+      --danger:#ff6b6b;
+      --ok:#22c55e;
       --warn:#fbbf24;
-      --border:rgba(255,255,255,.08);
-      --shadow: 0 10px 30px rgba(0,0,0,.35);
-    }
-    *{box-sizing:border-box}
-    body{
-      margin:0;
       font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-      color:var(--text);
-      background: radial-gradient(1200px 600px at 20% 10%, rgba(122,162,255,.18), transparent 60%),
-                  radial-gradient(900px 500px at 80% 20%, rgba(52,211,153,.10), transparent 55%),
-                  var(--bg);
-      min-height:100vh;
     }
-    .wrap{max-width:1100px;margin:0 auto;padding:28px}
-    header{
-      display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px
+    *{ box-sizing:border-box; }
+    body{ margin:0; background: radial-gradient(1200px 600px at 10% -10%, rgba(122,162,255,.25), transparent 60%),
+                         radial-gradient(900px 500px at 90% 0%, rgba(34,197,94,.18), transparent 55%),
+                         var(--bg);
+          color:var(--text); }
+    .wrap{ max-width:1040px; margin:0 auto; padding:28px 18px 44px; }
+
+    .topbar{
+      display:flex; align-items:center; justify-content:space-between;
+      margin-bottom:14px; gap:12px;
     }
     .title{
-      display:flex;flex-direction:column;gap:6px
+      display:flex; flex-direction:column; gap:4px;
     }
-    h1{margin:0;font-size:22px;letter-spacing:.2px}
-    .sub{color:var(--muted);font-size:13px}
-    .badge{
-      display:inline-flex;align-items:center;gap:8px;
-      padding:10px 12px;border-radius:999px;
-      background:rgba(255,255,255,.06);
-      border:1px solid var(--border);
+    h1{ margin:0; font-size:18px; font-weight:900; letter-spacing:.2px; }
+    .subtitle{ font-size:12px; color:var(--muted); }
+    .pill{
+      display:inline-flex; align-items:center; gap:8px;
+      padding:8px 10px; border-radius:999px;
+      background: rgba(255,255,255,0.08);
+      border:1px solid var(--stroke);
+      font-size:12px; color:var(--muted);
+      white-space:nowrap;
     }
-    .dot{width:10px;height:10px;border-radius:999px;background:var(--warn);box-shadow:0 0 0 4px rgba(251,191,36,.14)}
-    .dot.ok{background:var(--ok);box-shadow:0 0 0 4px rgba(52,211,153,.12)}
-    .dot.bad{background:var(--bad);box-shadow:0 0 0 4px rgba(251,113,133,.12)}
+    .dot{ width:8px; height:8px; border-radius:50%; background: var(--warn); box-shadow: 0 0 0 4px rgba(251,191,36,.12); }
+    .dot.ok{ background: var(--ok); box-shadow: 0 0 0 4px rgba(34,197,94,.12); }
+    .dot.bad{ background: var(--danger); box-shadow: 0 0 0 4px rgba(255,107,107,.12); }
+
+    .card{
+      background: var(--card);
+      border: 1px solid var(--stroke);
+      border-radius: 18px;
+      padding: 16px;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 16px 40px rgba(0,0,0,.25);
+    }
     .grid{
       display:grid;
-      grid-template-columns: 380px 1fr;
-      gap:16px;
+      grid-template-columns: 1.3fr .7fr 1fr 1fr auto;
+      gap:10px;
+      align-items:end;
     }
-    @media (max-width: 980px){
-      .grid{grid-template-columns:1fr}
+    @media (max-width: 900px){
+      .grid{ grid-template-columns: 1fr 1fr; }
+      .grid > *[data-span="2"]{ grid-column: span 2; }
+      .grid > *[data-span="full"]{ grid-column: 1 / -1; }
     }
-    .card{
-      background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03));
-      border:1px solid var(--border);
-      border-radius:16px;
-      box-shadow:var(--shadow);
-      overflow:hidden;
-    }
-    .card .hd{
-      padding:14px 16px;
-      background:rgba(0,0,0,.18);
-      border-bottom:1px solid var(--border);
-      display:flex;align-items:center;justify-content:space-between;gap:10px
-    }
-    .card .hd b{font-weight:650}
-    .card .bd{padding:16px}
-    label{display:block;color:var(--muted);font-size:12px;margin:10px 0 6px}
-    input{
+
+    label{ display:block; font-size:12px; color:var(--muted); margin:0 0 6px; }
+    input, select{
       width:100%;
       padding:10px 12px;
-      border-radius:12px;
-      border:1px solid var(--border);
-      background:rgba(10,15,32,.55);
-      color:var(--text);
+      border-radius: 12px;
+      border:1px solid rgba(255,255,255,0.16);
+      background: rgba(0,0,0,0.25);
+      color: var(--text);
       outline:none;
     }
-    input:focus{border-color:rgba(122,162,255,.55);box-shadow:0 0 0 4px rgba(122,162,255,.12)}
-    .row{display:grid;grid-template-columns:1fr 120px;gap:10px}
-    .btns{display:flex;gap:10px;margin-top:14px}
-    button{
-      cursor:pointer;
-      border:1px solid var(--border);
-      background:rgba(122,162,255,.14);
-      color:var(--text);
-      padding:10px 12px;
+    input:focus, select:focus{ border-color: rgba(122,162,255,.65); box-shadow: 0 0 0 3px rgba(122,162,255,.18); }
+
+    .btn{
+      padding:10px 14px;
       border-radius:12px;
-      font-weight:650;
+      border:1px solid rgba(255,255,255,0.14);
+      cursor:pointer;
+      font-weight:900;
+      background: rgba(255,255,255,0.10);
+      color: var(--text);
     }
-    button.secondary{background:rgba(255,255,255,.06)}
-    button:disabled{opacity:.55;cursor:not-allowed}
-    .msg{
+    .btn:hover{ filter: brightness(1.06); }
+    .btn-primary{ background: var(--accent); color:#08122b; border-color: transparent; }
+    .btn-danger{ background: rgba(255,107,107,.18); border-color: rgba(255,107,107,.28); }
+
+    details{
+      margin-top:12px;
+      border:1px solid rgba(255,255,255,0.10);
+      border-radius: 14px;
+      padding:10px 12px;
+      background: rgba(0,0,0,0.18);
+    }
+    summary{ cursor:pointer; color:var(--muted); font-weight:800; }
+
+    .row2{
+      display:flex; gap:10px; flex-wrap:wrap; align-items:end;
+      margin-top:10px;
+    }
+    .row2 .grow{ flex: 1 1 520px; }
+
+    .statusBox{
       margin-top:12px;
       padding:10px 12px;
-      border-radius:12px;
-      border:1px solid var(--border);
-      background:rgba(0,0,0,.18);
-      color:var(--muted);
+      border-radius: 14px;
+      border:1px solid rgba(255,255,255,0.10);
+      background: rgba(0,0,0,0.22);
       font-size:13px;
-      white-space:pre-wrap;
+      color: var(--muted);
+      white-space: pre-wrap;
+      min-height: 46px;
     }
-    .viewer{
-      position:relative;
-      aspect-ratio: 16 / 9;
+    .statusBox strong{ color: var(--text); }
+
+    .player{
+      margin-top: 14px;
+      border-radius: 18px;
+      overflow:hidden;
+      border:1px solid rgba(255,255,255,0.10);
       background:#000;
     }
-    .viewer iframe{
-      position:absolute;inset:0;
-      width:100%;height:100%;
-      border:0;
+    iframe{ width:100%; height: 560px; border:0; display:block; background:#000; }
+
+    .hint{
+      display:flex; gap:10px; flex-wrap:wrap; align-items:center;
+      margin-top:10px;
+      font-size:12px;
+      color: var(--muted);
     }
-    .hint{color:var(--muted);font-size:12px;margin-top:10px;line-height:1.4}
-    .small{font-size:12px;color:var(--muted)}
-    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace}
+    code{ background: rgba(255,255,255,0.10); padding: 2px 6px; border-radius: 8px; }
+
+    .modal{
+      position:fixed; inset:0;
+      background: rgba(0,0,0,.55);
+      display:none; align-items:center; justify-content:center;
+      padding:18px;
+    }
+    .modal.open{ display:flex; }
+    .modalCard{
+      width:min(980px, 100%);
+      max-height: 80vh;
+      overflow:auto;
+      background: rgba(11,16,32,.95);
+      border:1px solid rgba(255,255,255,0.12);
+      border-radius: 16px;
+      box-shadow: 0 30px 80px rgba(0,0,0,.45);
+      padding:14px;
+    }
+    .modalHead{
+      display:flex; justify-content:space-between; align-items:center; gap:10px;
+      margin-bottom:8px;
+    }
+    pre{
+      margin:0;
+      padding:12px;
+      border-radius: 12px;
+      background: rgba(0,0,0,0.35);
+      border:1px solid rgba(255,255,255,0.08);
+      color: #d7def6;
+      font-size:12px;
+      line-height:1.35;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <header>
+    <div class="topbar">
       <div class="title">
-        <h1>ONVIF Camera Viewer</h1>
-        <div class="sub">Connect → we publish H.264 into MediaMTX → you watch via WebRTC (no controls).</div>
+        <h1>Camera Viewer</h1>
+        <div class="subtitle">ONVIF profiles → RTSP → MediaMTX → WebRTC</div>
       </div>
-      <div class="badge" title="Backend & MediaMTX status">
-        <div id="dot" class="dot"></div>
-        <div>
-          <div style="font-weight:650">Status</div>
-          <div id="status" class="small">Idle</div>
-        </div>
-      </div>
-    </header>
+      <div class="pill" id="pill"><span class="dot" id="dot"></span><span id="pillText">Idle</span></div>
+    </div>
 
-    <div class="grid">
-      <div class="card">
-        <div class="hd">
-          <b>Connect</b>
-          <span class="small mono">/api/connect</span>
-        </div>
-        <div class="bd">
+    <div class="card">
+      <div class="grid">
+        <div data-span="full">
           <label>Camera IP</label>
-          <input id="ip" placeholder="172.16.0.101" />
-
-          <div class="row">
-            <div>
-              <label>ONVIF port</label>
-              <input id="port" type="number" value="80" />
-            </div>
-            <div>
-              <label>RTSP port</label>
-              <input id="rtspPort" type="number" value="554" />
-            </div>
-          </div>
-
-          <label>Username</label>
-          <input id="user" placeholder="admin" />
-
-          <label>Password</label>
-          <input id="pass" type="password" placeholder="••••••••" />
-
-          <div class="btns">
-            <button id="connectBtn">Connect</button>
-            <button id="stopBtn" class="secondary">Stop</button>
-          </div>
-
-          <div id="msg" class="msg">Tip: If the stream doesn’t start, check MediaMTX is reachable and the camera credentials are correct.</div>
-          <div class="hint">
-            Viewer loads from <span class="mono">http://&lt;host&gt;:8889/cam1?controls=false</span> inside an iframe.  [oai_citation:2‡mediamtx.org](https://mediamtx.org/docs/usage/embed-streams-in-a-website)
-          </div>
+          <input id="ip" placeholder="192.168.1.108" />
         </div>
+
+        <div>
+          <label>ONVIF Port</label>
+          <input id="onvif_port" value="80" />
+        </div>
+
+        <div>
+          <label>Username</label>
+          <input id="username" placeholder="admin" />
+        </div>
+
+        <div>
+          <label>Password</label>
+          <input id="password" type="password" placeholder="••••••••" />
+        </div>
+
+        <button class="btn" id="fetch" data-span="2">Fetch profiles</button>
       </div>
 
-      <div class="card">
-        <div class="hd">
-          <b>Live View</b>
-          <span class="small mono" id="viewUrl">—</span>
+      <div class="row2">
+        <div class="grow">
+          <label>Profile</label>
+          <select id="profiles" disabled>
+            <option>Fetch profiles first…</option>
+          </select>
         </div>
-        <div class="viewer">
-          <iframe id="player" allow="autoplay; fullscreen; encrypted-media"></iframe>
+        <button class="btn btn-primary" id="start" disabled>Start</button>
+        <button class="btn btn-danger" id="stop">Stop</button>
+        <button class="btn" id="logs">Log tail</button>
+      </div>
+
+      <details>
+        <summary>Advanced</summary>
+        <div class="hint" style="margin-top:10px;">
+          Player URL: <code id="playerUrl"></code>
+          <span>Tip: if it says “stream not found”, wait 1–2s and click Start again.</span>
         </div>
-        <div class="bd">
-          <div class="small">
-            If you see “no stream available”, the camera isn’t publishing yet. If it connects but times out, check UDP 8189 + <span class="mono">webrtcAdditionalHosts</span>.  [oai_citation:3‡mediamtx.org](https://mediamtx.org/docs/usage/webrtc-specific-features)
-          </div>
-        </div>
+      </details>
+
+      <div class="statusBox" id="status"><strong>Status:</strong> Idle.</div>
+
+      <div class="player">
+        <iframe id="player" allow="autoplay; fullscreen; microphone; camera"></iframe>
       </div>
     </div>
   </div>
 
+  <!-- log modal -->
+  <div class="modal" id="modal">
+    <div class="modalCard">
+      <div class="modalHead">
+        <div style="font-weight:900;">ffmpeg.log (tail)</div>
+        <button class="btn" id="closeModal">Close</button>
+      </div>
+      <pre id="logPre">(loading…)</pre>
+    </div>
+  </div>
+
 <script>
-  const el = (id) => document.getElementById(id);
+  const statusEl = document.getElementById('status');
+  const iframe = document.getElementById('player');
+  const profilesSel = document.getElementById('profiles');
+  const startBtn = document.getElementById('start');
+  const pillText = document.getElementById('pillText');
+  const dot = document.getElementById('dot');
 
-  const dot = el("dot");
-  const status = el("status");
-  const msg = el("msg");
-  const player = el("player");
-  const viewUrl = el("viewUrl");
-
-  function setState(kind, text) {
-    dot.className = "dot " + (kind || "");
-    status.textContent = text;
+  function setPill(state, text){
+    pillText.textContent = text;
+    dot.className = "dot";
+    if(state === "ok") dot.classList.add("ok");
+    else if(state === "bad") dot.classList.add("bad");
   }
-  function setMsg(text) { msg.textContent = text; }
 
-  function buildPlayerUrl() {
+  function setStatus(msg, state="warn") {
+    statusEl.innerHTML = `<strong>Status:</strong> ${msg}`;
+    setPill(state, msg.replace(/<[^>]*>/g,'').slice(0,40));
+  }
+
+  function getPlayerUrl() {
+    const proto = window.location.protocol; // http: or https:
     const host = window.location.hostname;
-    // MediaMTX built-in WebRTC web client; hide controls via query params.  [oai_citation:4‡mediamtx.org](https://mediamtx.org/docs/usage/embed-streams-in-a-website)
-    const url = `http://${host}:8889/cam1?controls=false&muted=true&autoplay=true&playsInline=true&disablepictureinpicture=true&t=${Date.now()}`;
-    return url;
+    return `${proto}//${host}:8889/cam1`;
   }
 
-  async function connect() {
-    setState("", "Connecting…");
-    setMsg("Connecting…");
+  const playerUrl = getPlayerUrl();
+  document.getElementById('playerUrl').textContent = playerUrl;
+  iframe.src = playerUrl;
 
-    const payload = {
-      ip: el("ip").value.trim(),
-      port: Number(el("port").value || 80),
-      rtsp_port: Number(el("rtspPort").value || 554),
-      username: el("user").value.trim(),
-      password: el("pass").value,
-    };
+  function creds() {
+    const ip = document.getElementById('ip').value.trim();
+    const onvif_port = parseInt(document.getElementById('onvif_port').value.trim() || "80", 10);
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value;
+    return { ip, onvif_port, username, password };
+  }
+
+  function profileLabel(p) {
+    const parts = [];
+    if (p.name) parts.push(p.name);
+    if (p.encoding) parts.push(String(p.encoding));
+    if (p.width && p.height) parts.push(`${p.width}x${p.height}`);
+    if (p.fps) parts.push(`${p.fps}fps`);
+    return parts.length ? parts.join(" • ") : p.token;
+  }
+
+  document.getElementById('fetch').addEventListener('click', async () => {
+    const c = creds();
+    if (!c.ip || !c.username || !c.password) return setStatus("Fill in IP, username, password.", "bad");
+
+    setStatus("Fetching profiles…", "warn");
+    profilesSel.disabled = true;
+    startBtn.disabled = true;
+    profilesSel.innerHTML = `<option>Loading…</option>`;
 
     try {
-      const r = await fetch("/api/connect", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload),
+      const res = await fetch('/api/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(c)
       });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.detail || "connect failed");
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.detail || "Failed to fetch profiles");
 
-      const url = buildPlayerUrl();
-      viewUrl.textContent = url.replace(/\?.*$/, "");
-      player.src = url;
+      const profs = data.profiles || [];
+      if (!profs.length) throw new Error("No profiles returned.");
 
-      setState("ok", "Streaming");
-      setMsg("Streaming. If video doesn’t appear, try Stop → Connect again.");
+      profilesSel.innerHTML = "";
+      for (const p of profs) {
+        const opt = document.createElement('option');
+        opt.value = p.token;
+        opt.textContent = profileLabel(p);
+        profilesSel.appendChild(opt);
+      }
+      profilesSel.disabled = false;
+      startBtn.disabled = false;
+      setStatus(`Found ${profs.length} profiles. Select one and click Start.`, "ok");
     } catch (e) {
-      setState("bad", "Error");
-      setMsg("Error: " + (e?.message || e));
+      profilesSel.innerHTML = `<option>Fetch failed</option>`;
+      setStatus(`Error: ${e?.message || e}`, "bad");
     }
-  }
+  });
 
-  async function stop() {
-    setState("", "Stopping…");
-    setMsg("Stopping…");
+  document.getElementById('start').addEventListener('click', async () => {
+    const c = creds();
+    const profile_token = profilesSel.value;
+    if (!profile_token) return setStatus("Select a profile first.", "bad");
+
+    setStatus("Starting stream…", "warn");
     try {
-      const r = await fetch("/api/stop", { method: "POST" });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.detail || "stop failed");
-      player.src = "about:blank";
-      viewUrl.textContent = "—";
-      setState("", "Idle");
-      setMsg("Stopped.");
-    } catch (e) {
-      setState("bad", "Error");
-      setMsg("Error: " + (e?.message || e));
-    }
-  }
+      const res = await fetch('/api/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...c, profile_token })
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.detail || "Start failed");
 
-  el("connectBtn").addEventListener("click", connect);
-  el("stopBtn").addEventListener("click", stop);
-  setState("", "Idle");
+      setStatus("Streaming.", "ok");
+      iframe.src = playerUrl + `?t=${Date.now()}`;
+    } catch (e) {
+      setStatus(`Error: ${e?.message || e}`, "bad");
+    }
+  });
+
+  document.getElementById('stop').addEventListener('click', async () => {
+    setStatus("Stopping…", "warn");
+    try {
+      await fetch('/api/stop', { method: 'POST' });
+      setStatus("Stopped.", "warn");
+    } catch (e) {
+      setStatus(`Stop error: ${e?.message || e}`, "bad");
+    }
+  });
+
+  // log modal
+  const modal = document.getElementById('modal');
+  const logPre = document.getElementById('logPre');
+  document.getElementById('logs').addEventListener('click', async () => {
+    modal.classList.add("open");
+    logPre.textContent = "(loading…)";
+    try{
+      const res = await fetch('/api/debug/ffmpeg-log');
+      const data = await res.json();
+      logPre.textContent = data.tail || "(empty)";
+    }catch(e){
+      logPre.textContent = "Failed to fetch log tail: " + (e?.message || e);
+    }
+  });
+  document.getElementById('closeModal').addEventListener('click', () => modal.classList.remove("open"));
+  modal.addEventListener('click', (e) => { if(e.target === modal) modal.classList.remove("open"); });
+
+  setStatus("Idle.", "warn");
 </script>
 </body>
 </html>

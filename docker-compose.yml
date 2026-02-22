@@ -4,6 +4,7 @@ services:
     container_name: sei-raspi
     environment:
       - PORT=8000
+      - MEDIAMTX_PUBLISH_URL=rtsp://mediamtx:8554/cam1
     ports:
       - "8000:8000"
     depends_on:
@@ -14,9 +15,8 @@ services:
     container_name: mediamtx
     ports:
       - "8554:8554"
-      - "8889:8889"        # WebRTC HTTP
-      - "8189:8189/udp"    # WebRTC ICE (UDP)
-      - "9997:9997"        # API
+      - "8889:8889"
+      - "8189:8189/udp"
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
     environment:

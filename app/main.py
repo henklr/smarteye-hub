@@ -1,13 +1,18 @@
 from pathlib import Path
+import os
 import subprocess
 import time
-from typing import Optional
+from typing import Optional, Dict, Any
 
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from onvif import ONVIFCamera
+
+import socket
+from urllib.parse import urlparse
 
 app = FastAPI()
 
@@ -15,8 +20,13 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# publish into MediaMTX over the docker network
-MEDIAMTX_PUBLISH_URL = "rtsp://mediamtx:8554/cam1"
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+FFMPEG_LOG = DATA_DIR / "ffmpeg.log"
+
+MEDIAMTX_PUBLISH_URL = os.getenv("MEDIAMTX_PUBLISH_URL", "rtsp://mediamtx:8554/cam1")
+MEDIAMTX_API = os.getenv("MEDIAMTX_API", "http://mediamtx:9997")
 
 _ffmpeg: Optional[subprocess.Popen] = None
 
@@ -31,12 +41,15 @@ def health():
     return {"ok": True}
 
 
-class ConnectRequest(BaseModel):
+class OnvifBase(BaseModel):
     ip: str
-    port: int = 80          # ONVIF port
-    rtsp_port: int = 554    # RTSP port (some cameras embed it in URI already, but keep it handy)
+    onvif_port: int = 80
     username: str
     password: str
+
+
+class StartRequest(OnvifBase):
+    profile_token: str
 
 
 def _stop_ffmpeg():
@@ -50,86 +63,156 @@ def _stop_ffmpeg():
     _ffmpeg = None
 
 
-def _get_rtsp_uri(req: ConnectRequest) -> str:
-    cam = ONVIFCamera(req.ip, req.port, req.username, req.password)
+def _log_tail(n: int = 4000) -> str:
+    if not FFMPEG_LOG.exists():
+        return "(no ffmpeg.log yet)"
+    try:
+        return FFMPEG_LOG.read_text(errors="ignore")[-n:]
+    except Exception:
+        return "(failed to read ffmpeg.log)"
+
+
+def _cam(req: OnvifBase) -> ONVIFCamera:
+    return ONVIFCamera(req.ip, req.onvif_port, req.username, req.password)
+
+
+def _profile_summary(p) -> Dict[str, Any]:
+    out = {"token": getattr(p, "token", None), "name": getattr(p, "Name", None)}
+    try:
+        vec = getattr(p, "VideoEncoderConfiguration", None)
+        if vec:
+            out["encoding"] = getattr(vec, "Encoding", None)
+            res = getattr(vec, "Resolution", None)
+            if res:
+                out["width"] = getattr(res, "Width", None)
+                out["height"] = getattr(res, "Height", None)
+    except Exception:
+        pass
+    return out
+
+
+def _get_stream_uri(req: OnvifBase, profile_token: str) -> str:
+    cam = _cam(req)
     media = cam.create_media_service()
-    profiles = media.GetProfiles()
-    if not profiles:
-        raise RuntimeError("No ONVIF media profiles found.")
+    resp = media.GetStreamUri({
+        "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
+        "ProfileToken": profile_token,
+    })
 
-    token = profiles[0].token
-    uri_resp = media.GetStreamUri(
-        {
-            "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
-            "ProfileToken": token,
-        }
-    )
-    rtsp = uri_resp.Uri
-    if not rtsp or not rtsp.lower().startswith("rtsp"):
-        raise RuntimeError(f"Unexpected RTSP URI: {rtsp}")
+    rtsp = getattr(resp, "Uri", None)
+    if not rtsp or not rtsp.lower().startswith("rtsp://"):
+        raise RuntimeError(f"Unexpected RTSP URI returned: {rtsp}")
 
-    # add credentials if absent
     if "@" not in rtsp:
         rtsp = rtsp.replace("rtsp://", f"rtsp://{req.username}:{req.password}@", 1)
 
     return rtsp
 
 
+def _rtsp_describe_ok(rtsp_url: str, timeout_s: float = 1.0) -> bool:
+    """
+    Minimal RTSP DESCRIBE to see if MediaMTX has a stream on the path.
+    Works even when MediaMTX API requires auth.
+    """
+    u = urlparse(rtsp_url)
+    host = u.hostname or "mediamtx"
+    port = u.port or 554
+    path = u.path or "/"
+    if u.query:
+        path = f"{path}?{u.query}"
+
+    req = (
+        f"DESCRIBE {u.scheme}://{host}:{port}{path} RTSP/1.0\r\n"
+        f"CSeq: 1\r\n"
+        f"User-Agent: sei-raspi\r\n"
+        f"Accept: application/sdp\r\n"
+        f"\r\n"
+    ).encode("utf-8")
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s) as s:
+            s.settimeout(timeout_s)
+            s.sendall(req)
+            resp = s.recv(4096).decode("utf-8", errors="ignore")
+        # MediaMTX returns 200 when stream exists; 404 when not
+        return "RTSP/1.0 200" in resp
+    except Exception:
+        return False
+    
 def _start_ffmpeg(rtsp_in: str):
-    """
-    Pull RTSP from camera, transcode to H264 baseline, push RTSP to MediaMTX path 'cam1'.
-    This makes WebRTC broadly compatible with browsers.  [oai_citation:6‡mediamtx.org](https://mediamtx.org/docs/usage/webrtc-specific-features)
-    """
     global _ffmpeg
     _stop_ffmpeg()
+
+    FFMPEG_LOG.write_text("", encoding="utf-8")
+    log_f = open(FFMPEG_LOG, "a")
 
     cmd = [
         "ffmpeg",
         "-hide_banner",
-        "-loglevel", "warning",
-
+        "-loglevel", "info",
         "-rtsp_transport", "tcp",
         "-i", rtsp_in,
-
         "-an",
+        "-vf", "scale=1280:-2,format=yuv420p",
         "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
         "-profile:v", "baseline",
-        "-level", "3.1",
         "-preset", "veryfast",
         "-tune", "zerolatency",
         "-g", "50",
         "-keyint_min", "50",
         "-sc_threshold", "0",
-
         "-f", "rtsp",
         "-rtsp_transport", "tcp",
         MEDIAMTX_PUBLISH_URL,
-    ]
+    ]    
+    _ffmpeg = subprocess.Popen(cmd, stdout=log_f, stderr=log_f)
 
-    _ffmpeg = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-
-@app.post("/api/connect")
-def connect(req: ConnectRequest):
+@app.post("/api/profiles")
+def profiles(req: OnvifBase):
     try:
-        rtsp = _get_rtsp_uri(req)
+        cam = _cam(req)
+        media = cam.create_media_service()
+        profs = media.GetProfiles()
+        out = [_profile_summary(p) for p in profs if getattr(p, "token", None)]
+        if not out:
+            raise RuntimeError("No profiles returned.")
+        return {"profiles": out}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"ONVIF failed: {e}")
+        raise HTTPException(status_code=400, detail=f"ONVIF profiles failed: {e}")
+
+
+@app.post("/api/start")
+def start(req: StartRequest):
+    try:
+        rtsp = _get_stream_uri(req, req.profile_token)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"ONVIF stream uri failed: {e}")
 
     try:
         _start_ffmpeg(rtsp)
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="ffmpeg not found in container.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ffmpeg start failed: {e}")
+        raise HTTPException(status_code=500, detail=f"ffmpeg failed to start: {e}")
 
-    # tiny delay so the publisher appears
-    time.sleep(0.3)
-    return {"ok": True}
+    # Wait up to ~8s for ffmpeg + MediaMTX to show cam1 online
+    for _ in range(80):
+        if _ffmpeg and _ffmpeg.poll() is not None:
+            raise HTTPException(status_code=500, detail="ffmpeg exited immediately:\n\n" + _log_tail())
+        if _rtsp_describe_ok(MEDIAMTX_PUBLISH_URL):
+            return {"ok": True}
+        time.sleep(0.1)
+
+    raise HTTPException(status_code=500, detail="Timed out waiting for cam1 to become online.\n\n" + _log_tail())
 
 
 @app.post("/api/stop")
 def stop():
     _stop_ffmpeg()
     return {"ok": True}
+
+
+@app.get("/api/debug/ffmpeg-log")
+def ffmpeg_log():
+    return {"tail": _log_tail()}
