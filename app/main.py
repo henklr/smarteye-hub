@@ -211,8 +211,3 @@ def start(req: StartRequest):
 def stop():
     _stop_ffmpeg()
     return {"ok": True}
-
-
-@app.get("/api/debug/ffmpeg-log")
-def ffmpeg_log():
-    return {"tail": _log_tail()}
