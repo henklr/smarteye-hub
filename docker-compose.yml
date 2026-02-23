@@ -21,6 +21,7 @@ services:
       - "8554:8554"
       - "8889:8889"
       - "8189:8189/udp"
+      - "8189:8189/tcp"
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
     environment:
