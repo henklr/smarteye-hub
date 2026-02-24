@@ -1,4 +1,5 @@
-// devices.js — fetch profiles here, save selected profile into device
+// static/devices.js
+// devices.js — click row to edit; refresh button inside card; no per-item edit/delete buttons
 
 const tbody = document.getElementById("devTbody");
 const listStatus = document.getElementById("listStatus");
@@ -19,6 +20,9 @@ const newBtn = document.getElementById("new");
 const delBtn = document.getElementById("delete");
 const clearBtn = document.getElementById("clear");
 const refreshBtn = document.getElementById("refresh");
+
+// (optional hidden top refresh)
+const refreshTop = document.getElementById("refreshTop");
 
 let devices = [];
 let editingId = null;
@@ -41,6 +45,12 @@ async function api(url, opts) {
   return data;
 }
 
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
 function profileLabel(p) {
   const parts = [];
   if (p.name) parts.push(p.name);
@@ -52,12 +62,22 @@ function profileLabel(p) {
 function clearProfilesUI(msg = "Fetch profiles first…") {
   lastProfiles = [];
   profilesSel.disabled = true;
-  profilesSel.innerHTML = `<option>${msg}</option>`;
+  profilesSel.innerHTML = `<option>${escapeHtml(msg)}</option>`;
+}
+
+function clearRowSelection() {
+  tbody.querySelectorAll("tr[data-id]").forEach(tr => tr.classList.remove("active"));
+}
+
+function selectRow(deviceId) {
+  clearRowSelection();
+  const tr = tbody.querySelector(`tr[data-id="${CSS.escape(deviceId)}"]`);
+  if (tr) tr.classList.add("active");
 }
 
 function clearForm() {
   editingId = null;
-  formTitle.textContent = "Add device";
+  formTitle.textContent = "Create device";
   nameEl.value = "";
   ipEl.value = "";
   portEl.value = "80";
@@ -65,12 +85,14 @@ function clearForm() {
   passEl.value = "";
   delBtn.disabled = true;
   clearProfilesUI();
+  clearRowSelection();
   setFormStatus("Fill details, then Fetch profiles.");
 }
 
 function fillForm(d) {
   editingId = d.id;
   formTitle.textContent = `Edit device (${d.name || d.ip})`;
+
   nameEl.value = d.name || "";
   ipEl.value = d.ip || "";
   portEl.value = String(d.onvif_port ?? 80);
@@ -82,11 +104,17 @@ function fillForm(d) {
 
   if (d.profile_token) {
     // show saved profile immediately, even before fetching
-    profilesSel.innerHTML = `<option value="${d.profile_token}">${d.profile_label || d.profile_token}</option>`;
+    profilesSel.innerHTML = `<option value="${escapeHtml(d.profile_token)}">${escapeHtml(d.profile_label || d.profile_token)}</option>`;
     profilesSel.disabled = false;
   }
 
-  setFormStatus(d.profile_token ? "Loaded (ready). You can Fetch profiles to change it." : "Loaded. Fetch profiles to select one.");
+  selectRow(d.id);
+
+  setFormStatus(
+    d.profile_token
+      ? "Loaded (ready). You can Fetch profiles to change it."
+      : "Loaded. Fetch profiles to select one."
+  );
 }
 
 function rowHtml(d) {
@@ -96,38 +124,41 @@ function rowHtml(d) {
     : `<span class="badTag">NO</span>`;
 
   return `
-    <tr>
-      <td>${String(d.name || "")}</td>
-      <td>${String(d.ip || "")}</td>
+    <tr data-id="${escapeHtml(d.id)}" role="button" tabindex="0" title="Click to edit">
+      <td>${escapeHtml(d.name || "")}</td>
+      <td>${escapeHtml(d.ip || "")}</td>
       <td>${readyTag}</td>
-      <td>
-        <div class="actions">
-          <button class="btn btn-mini" data-act="edit" data-id="${d.id}">Edit</button>
-          <button class="btn btn-mini btn-danger" data-act="del" data-id="${d.id}">Delete</button>
-        </div>
-      </td>
     </tr>
   `;
 }
 
 async function load() {
   setListStatus("Loading…");
-  tbody.innerHTML = `<tr><td colspan="4" class="muted">Loading…</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="3" class="muted">Loading…</td></tr>`;
 
   try {
     const data = await api("/api/devices", { method: "GET" });
     devices = data.devices || [];
 
     if (!devices.length) {
-      tbody.innerHTML = `<tr><td colspan="4" class="muted">No devices yet.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="3" class="muted">No devices yet.</td></tr>`;
       setListStatus("No devices.");
+      clearForm();
       return;
     }
 
     tbody.innerHTML = devices.map(rowHtml).join("");
     setListStatus(`Loaded ${devices.length} device(s).`);
+
+    // keep selection if editingId still exists
+    if (editingId && devices.some(d => d.id === editingId)) {
+      selectRow(editingId);
+    } else {
+      // don’t auto-select; user clicks to edit
+      clearRowSelection();
+    }
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="4" class="muted">Failed to load: ${String(e.message || e)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="3" class="muted">Failed to load: ${escapeHtml(e.message || e)}</td></tr>`;
     setListStatus("Load failed.");
   }
 }
@@ -198,9 +229,8 @@ async function fetchProfiles() {
 
 fetchBtn.addEventListener("click", async () => {
   try {
-    // Force user to either be editing or have a filled form
     if (!editingId && !ipEl.value.trim()) {
-      throw new Error("Click Edit on a device (or fill fields) before Fetch profiles.");
+      throw new Error("Click a device row (or fill fields) before Fetch profiles.");
     }
     await fetchProfiles();
   } catch (e) {
@@ -219,7 +249,7 @@ saveBtn.addEventListener("click", async () => {
     }
 
     if (editingId) {
-      await api(`/api/devices/${editingId}`, {
+      await api(`/api/devices/${encodeURIComponent(editingId)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -243,13 +273,14 @@ saveBtn.addEventListener("click", async () => {
 
 newBtn.addEventListener("click", () => {
   editingId = null;
-  formTitle.textContent = "Add device (copy mode)";
+  formTitle.textContent = "Create device";
   delBtn.disabled = true;
 
   // DO NOT clear fields
   // DO clear profile selection so user explicitly selects for new device
   clearProfilesUI("Fetch profiles to select…");
 
+  clearRowSelection();
   setFormStatus("Creating new device (fields copied). Select profile and Save.");
 });
 
@@ -262,7 +293,7 @@ delBtn.addEventListener("click", async () => {
   if (!editingId) return;
   try {
     setFormStatus("Deleting…");
-    await api(`/api/devices/${editingId}`, { method: "DELETE" });
+    await api(`/api/devices/${encodeURIComponent(editingId)}`, { method: "DELETE" });
     setFormStatus("Deleted.");
     await load();
     clearForm();
@@ -272,26 +303,28 @@ delBtn.addEventListener("click", async () => {
 });
 
 refreshBtn.addEventListener("click", () => load());
+if (refreshTop) refreshTop.addEventListener("click", () => load());
 
-tbody.addEventListener("click", async (ev) => {
-  const btn = ev.target?.closest?.("button");
-  if (!btn) return;
-  const id = btn.getAttribute("data-id");
-  const act = btn.getAttribute("data-act");
+// Click row to edit (no edit/delete buttons in rows)
+tbody.addEventListener("click", (ev) => {
+  const tr = ev.target?.closest?.("tr[data-id]");
+  if (!tr) return;
+  const id = tr.getAttribute("data-id");
   const d = devices.find(x => x.id === id);
   if (!d) return;
+  fillForm(d);
+});
 
-  if (act === "edit") {
-    fillForm(d);
-    // Optional: auto-fetch to make it obvious it works
-    // (comment out if you don't want it)
-    try { await fetchProfiles(); } catch (e) { setFormStatus(`Error: ${String(e.message || e)}`); }
-  }
-
-  if (act === "del") {
-    fillForm(d);
-    delBtn.click();
-  }
+// Keyboard accessibility (Enter/Space)
+tbody.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter" && ev.key !== " ") return;
+  const tr = ev.target?.closest?.("tr[data-id]");
+  if (!tr) return;
+  ev.preventDefault();
+  const id = tr.getAttribute("data-id");
+  const d = devices.find(x => x.id === id);
+  if (!d) return;
+  fillForm(d);
 });
 
 clearForm();

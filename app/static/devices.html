@@ -1,75 +1,77 @@
+<!-- static/devices.html -->
 <!doctype html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Devices</title>
   <link rel="stylesheet" href="/static/styles.css" />
   <style>
-    .split {
-      display: grid;
+    .split{
+      display:grid;
       grid-template-columns: 1.1fr .9fr;
-      gap: 14px;
-      align-items: start;
+      gap:14px;
+      align-items:start;
+    }
+    @media (max-width:900px){ .split{ grid-template-columns:1fr; } }
+
+    .table{
+      width:100%;
+      border-collapse:collapse;
+      overflow:hidden;
+      border-radius:14px;
+      border:1px solid rgba(255,255,255,.10);
+    }
+    .table th, .table td{
+      padding:10px 12px;
+      font-size:13px;
+      border-bottom:1px solid rgba(255,255,255,.08);
+    }
+    .table th{
+      text-align:left;
+      color:var(--muted);
+      font-weight:800;
+      user-select:none;
     }
 
-    @media (max-width: 900px) {
-      .split {
-        grid-template-columns: 1fr;
-      }
+    /* Clickable rows */
+    .table tbody tr{
+      cursor:pointer;
+    }
+    .table tbody tr:hover td{
+      background: rgba(255,255,255,.04);
+    }
+    .table tbody tr.active td{
+      background: rgba(122,162,255,.10);
+    }
+    .table tbody tr.active{
+      outline: 2px solid rgba(122,162,255,.35);
+      outline-offset: -2px;
     }
 
-    .table {
-      width: 100%;
-      border-collapse: collapse;
-      overflow: hidden;
-      border-radius: 14px;
-      border: 1px solid rgba(255, 255, 255, .10);
-    }
+    .muted{ color:var(--muted); font-size:12px; }
+    .okTag{ color:var(--ok); font-weight:800; }
+    .badTag{ color:var(--danger); font-weight:800; }
 
-    .table th,
-    .table td {
-      padding: 10px 12px;
-      font-size: 13px;
-      border-bottom: 1px solid rgba(255, 255, 255, .08);
+    /* Put tabs left, status/actions right (same pattern as Live) */
+    .topbar{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      margin-bottom:14px;
+      gap:12px;
     }
-
-    .table th {
-      text-align: left;
-      color: var(--muted);
-      font-weight: 800;
+    .topbarLeft{
+      display:flex;
+      align-items:center;
+      gap:12px;
+      min-width:0;
     }
-
-    .table tr:hover td {
-      background: rgba(255, 255, 255, .04);
-    }
-
-    .actions {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    .btn-mini {
-      padding: 8px 10px;
-      border-radius: 12px;
-      font-size: 12px;
-    }
-
-    .muted {
-      color: var(--muted);
-      font-size: 12px;
-    }
-
-    .okTag {
-      color: var(--ok);
-      font-weight: 800;
-    }
-
-    .badTag {
-      color: var(--danger);
-      font-weight: 800;
+    .topbarRight{
+      display:flex;
+      align-items:center;
+      gap:12px;
+      margin-left:auto;
     }
   </style>
 </head>
@@ -77,23 +79,32 @@
 <body>
   <div class="wrap">
     <div class="topbar">
-      <div class="tabs">
-        <a class="tab" href="/"><span class="tabDot"></span>Home</a>
-        <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
-        <a class="tab active" href="/devices"><span class="tabDot"></span>Devices</a>
+      <div class="topbarLeft">
+        <div class="tabs">
+          <a class="tab" href="/"><span class="tabDot"></span>Home</a>
+          <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
+          <a class="tab active" href="/devices"><span class="tabDot"></span>Devices</a>
+        </div>
       </div>
 
-      <button class="btn" id="refresh">Refresh</button>
+      <div class="topbarRight">
+        <!-- Refresh moved OUT of header area in JS/UX request,
+             but leaving here as a fallback is fine; we will hide it via JS.
+             If you want it gone entirely, delete this button. -->
+        <button class="btn" id="refreshTop" style="display:none;">Reload</button>
+      </div>
     </div>
 
     <div class="split">
 
+      <!-- LEFT: list -->
       <div class="card">
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+        <div class="listHeader">
           <div>
-            <div style="font-weight:900;">Saved devices</div>
-            <div class="muted">Click Edit to change credentials/profile.</div>
+            <div class="listTitle">Saved devices</div>
+            <div class="listSub">Click a row to edit. Use Refresh to reload the list.</div>
           </div>
+          <button class="btn" id="refresh">Refresh</button>
         </div>
 
         <div style="margin-top:12px; overflow:auto;">
@@ -103,13 +114,10 @@
                 <th>Name</th>
                 <th>IP</th>
                 <th>Ready</th>
-                <th style="width:180px;">Actions</th>
               </tr>
             </thead>
             <tbody id="devTbody">
-              <tr>
-                <td colspan="4" class="muted">Loading…</td>
-              </tr>
+              <tr><td colspan="3" class="muted">Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -119,6 +127,7 @@
         </div>
       </div>
 
+      <!-- RIGHT: form -->
       <div class="card">
         <div style="font-weight:900; margin-bottom:8px;" id="formTitle">Add device</div>
 
@@ -168,10 +177,7 @@
         <div class="statusLine" style="margin-top:12px;">
           <strong>Status:</strong> <span id="formStatus" class="muted">Ready.</span>
         </div>
-
-        <div class="muted" style="margin-top:10px;">
-          Live Start is enabled only when a device has a saved profile.
-        </div>
+        
       </div>
 
     </div>
@@ -179,5 +185,4 @@
 
   <script src="/static/devices.js"></script>
 </body>
-
 </html>
