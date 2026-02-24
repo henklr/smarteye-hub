@@ -25,12 +25,34 @@
       </div>
     </div>
 
-    <div class="liveLayout">
-      <!-- LEFT: player -->
-      <div class="card">
-        <div class="meta">
-          <span>Active: <code id="activeName">(none)</code></span>
-          <span>Path: <code id="pathCode">(none)</code></span>
+    <div class="liveLayout" id="liveLayout">
+      <!-- LEFT: camera list -->
+      <div class="card liveSidebar" id="sidebar">
+        <div class="listHeader">
+          <div>
+            <div class="listTitle">Cameras</div>
+            <div class="listSub">Click to start/stop. Switching cameras stops the previous stream.</div>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center;">
+            <button class="btn" id="reload">Reload</button>
+            <button class="btn" id="toggleSidebar" title="Hide sidebar">Hide</button>
+          </div>
+        </div>
+
+        <div id="camList" class="camList">
+          <div class="muted" style="padding:10px 2px;">Loading…</div>
+        </div>
+      </div>
+
+      <!-- RIGHT: player -->
+      <div class="card liveMain">
+        <!-- when sidebar is hidden, show a small "Show" control here -->
+        <div class="row2 liveMainTop">
+          <button class="btn" id="showSidebar" style="display:none;">Show cameras</button>
+          <div class="meta" style="margin-top:0; flex:1 1 auto;">
+            <span>Active: <code id="activeName">(none)</code></span>
+            <span>Path: <code id="pathCode">(none)</code></span>
+          </div>
         </div>
 
         <div class="statusLine" id="statusLine">
@@ -48,21 +70,6 @@
 
         <div class="row2">
           <button class="btn btn-danger" id="stop" disabled>Stop</button>
-        </div>
-      </div>
-
-      <!-- RIGHT: camera list -->
-      <div class="card">
-        <div class="listHeader">
-          <div>
-            <div class="listTitle">Cameras</div>
-            <div class="listSub">Click to start/stop. Switching cameras stops the previous stream.</div>
-          </div>
-          <button class="btn" id="reload">Reload</button>
-        </div>
-
-        <div id="camList" class="camList">
-          <div class="muted" style="padding:10px 2px;">Loading…</div>
         </div>
       </div>
     </div>

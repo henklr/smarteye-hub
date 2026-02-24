@@ -1,4 +1,4 @@
-// live.js — right-side camera list with toggle + auto-switch
+// live.js — left-side camera list with toggle + auto-switch
 const dot = document.getElementById('dot');
 const pillText = document.getElementById('pillText');
 const statusText = document.getElementById('statusText');
@@ -13,6 +13,12 @@ const activeNameEl = document.getElementById('activeName');
 const pathCodeEl = document.getElementById('pathCode');
 const whepEl = document.getElementById('whepUrl');
 const playerEl = document.getElementById('playerUrl');
+
+// sidebar toggle controls
+const layoutEl = document.getElementById('liveLayout');
+const sidebarEl = document.getElementById('sidebar');
+const toggleSidebarBtn = document.getElementById('toggleSidebar');
+const showSidebarBtn = document.getElementById('showSidebar');
 
 let pc = null;
 let devices = [];
@@ -77,7 +83,6 @@ function stopWhepOnly() {
 }
 
 async function stopAll() {
-  // Stop backend publisher + local WebRTC
   stopWhepOnly();
   try { await fetch("/api/stop", { method: "POST" }); } catch {}
   stopBtn.disabled = true;
@@ -136,6 +141,12 @@ async function startWhep(deviceId) {
   await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 }
 
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
 function renderList() {
   if (!devices.length) {
     camListEl.innerHTML = `<div class="muted" style="padding:10px 2px;">No devices. Add some in Devices.</div>`;
@@ -167,12 +178,6 @@ function renderList() {
   }).join("");
 }
 
-function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
-  }[c]));
-}
-
 async function loadDevices() {
   setStatus("Loading devices…", "warn");
   try {
@@ -180,12 +185,8 @@ async function loadDevices() {
     devices = data.devices || [];
     renderList();
 
-    if (!activeDevice) {
-      setStatus("Select a camera to start.", "warn");
-    } else {
-      // keep highlight in sync
-      renderList();
-    }
+    if (!activeDevice) setStatus("Select a camera to start.", "warn");
+    else renderList();
   } catch (e) {
     camListEl.innerHTML = `<div class="muted" style="padding:10px 2px;">Failed to load devices: ${escapeHtml(e.message || e)}</div>`;
     setStatus(`Device load error: ${e?.message || e}`, "bad");
@@ -213,7 +214,6 @@ async function toggleDevice(device) {
   try {
     await stopAll();
 
-    // Start backend ffmpeg publisher for this device/path
     await api("/api/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -227,7 +227,6 @@ async function toggleDevice(device) {
       })
     });
 
-    // Now pull via WHEP
     activeDevice = device;
     updateUrls();
     renderList();
@@ -262,6 +261,22 @@ stopBtn.addEventListener("click", async () => {
   if (!activeDevice) return;
   await toggleDevice(activeDevice);
 });
+
+// ---- Sidebar hide/show ----
+const LS_KEY = "live.sidebarHidden";
+
+function setSidebarHidden(hidden) {
+  layoutEl.classList.toggle("sidebarHidden", !!hidden);
+  // show the small "Show cameras" button when hidden
+  showSidebarBtn.style.display = hidden ? "inline-flex" : "none";
+  localStorage.setItem(LS_KEY, hidden ? "1" : "0");
+}
+
+toggleSidebarBtn.addEventListener("click", () => setSidebarHidden(true));
+showSidebarBtn.addEventListener("click", () => setSidebarHidden(false));
+
+// init state from localStorage
+setSidebarHidden(localStorage.getItem(LS_KEY) === "1");
 
 updateUrls();
 setStatus("Loading…", "warn");
