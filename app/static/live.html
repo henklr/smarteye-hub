@@ -16,7 +16,12 @@
       </div>
 
       <div class="headerRight">
-        <div class="pill"><span class="dot" id="dot"></span><span id="pillText">Idle</span></div>
+        <!-- pill stays + is clickable -->
+        <div class="pill" id="statusPill" title="Click to view full status">
+          <span class="dot" id="dot"></span>
+          <span id="pillText">Idle</span>
+        </div>
+
         <div class="tabs">
           <a class="tab" href="/"><span class="tabDot"></span>Home</a>
           <a class="tab active" href="/live"><span class="tabDot"></span>Live</a>
@@ -31,7 +36,6 @@
         <div class="listHeader">
           <div>
             <div class="listTitle">Cameras</div>
-            <div class="listSub">Click to add/remove tiles. Start All starts every READY camera.</div>
           </div>
           <div style="display:flex; gap:10px; align-items:center;">
             <button class="btn" id="reload">Reload</button>
@@ -53,18 +57,9 @@
       <div class="card liveMain">
         <div class="row2 liveMainTop" style="margin-top:0;">
           <button class="btn" id="showSidebar" style="display:none;">Show cameras</button>
-          <div class="muted" id="gridHint" style="flex:1 1 auto;">
-            Click cameras on the left to add streams.
-          </div>
         </div>
 
-        <div class="statusLine" id="statusLine">
-          <strong>Status:</strong> <span id="statusText">Loading…</span>
-        </div>
-
-        <div class="gridMeta meta">
-          <span>Streams: <code id="streamCount">0</code></span>
-        </div>
+        <!-- removed statusLine -->
 
         <div class="videoGrid" id="videoGrid"></div>
       </div>

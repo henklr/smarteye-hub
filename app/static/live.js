@@ -1,8 +1,8 @@
-// live.js — multi-stream tiles + Start All + dynamic grid (2x2 <=4, 3x3 <=9, etc.)
+// live.js — multi-stream tiles + Start All + dynamic grid
 
 const dot = document.getElementById('dot');
 const pillText = document.getElementById('pillText');
-const statusText = document.getElementById('statusText');
+const statusPill = document.getElementById('statusPill');
 
 const camListEl = document.getElementById('camList');
 const reloadBtn = document.getElementById('reload');
@@ -11,8 +11,6 @@ const startAllBtn = document.getElementById('startAll');
 const stopAllBtn = document.getElementById('stopAll');
 
 const videoGrid = document.getElementById('videoGrid');
-const streamCountEl = document.getElementById('streamCount');
-const gridHintEl = document.getElementById('gridHint');
 
 // sidebar toggle controls
 const layoutEl = document.getElementById('liveLayout');
@@ -24,6 +22,9 @@ let devices = [];
 // Map deviceId -> { pc, tileEl, videoEl, overlayEl, startingPromise? }
 const streams = new Map();
 
+// store full message for pill click
+let lastStatusMessage = "Idle.";
+
 function setPill(state, text) {
   pillText.textContent = text;
   dot.className = "dot";
@@ -32,9 +33,15 @@ function setPill(state, text) {
 }
 
 function setStatus(msg, state = "warn") {
-  statusText.textContent = msg;
-  setPill(state, msg.slice(0, 40));
+  lastStatusMessage = String(msg ?? "");
+  setPill(state, lastStatusMessage.slice(0, 40));
 }
+
+// pill click -> show full message
+statusPill?.addEventListener("click", () => {
+  if (!lastStatusMessage) return;
+  alert(lastStatusMessage);
+});
 
 function getWhepUrl(deviceId) {
   const proto = window.location.protocol;
@@ -62,15 +69,6 @@ function escapeHtml(s) {
 
 function recomputeGrid() {
   const n = streams.size;
-  streamCountEl.textContent = String(n);
-
-  if (n === 0) {
-    gridHintEl.textContent = "Click cameras on the left to add streams.";
-  } else {
-    gridHintEl.textContent = "Click an active camera again to remove its stream.";
-  }
-
-  // 2x2 <=4, 3x3 <=9, etc. => cols = ceil(sqrt(n))
   const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
   videoGrid.style.setProperty("--cols", String(cols));
 }
@@ -159,10 +157,7 @@ async function startWhep(deviceId, videoEl, onState) {
   const pc = new RTCPeerConnection();
 
   pc.ontrack = (e) => { videoEl.srcObject = e.streams[0]; };
-  pc.onconnectionstatechange = () => {
-    const st = pc.connectionState;
-    onState?.(st);
-  };
+  pc.onconnectionstatechange = () => onState?.(pc.connectionState);
 
   pc.addTransceiver("video", { direction: "recvonly" });
 
@@ -186,10 +181,6 @@ async function startWhep(deviceId, videoEl, onState) {
   return pc;
 }
 
-/**
- * Wait until backend reports MediaMTX path is available.
- * Requires: GET /api/status/{device_id} -> { ready, running, exit_code, log_tail, path }
- */
 async function waitUntilReady(deviceId, timeoutMs = 8000) {
   const started = Date.now();
   let last = null;
@@ -197,7 +188,6 @@ async function waitUntilReady(deviceId, timeoutMs = 8000) {
   while (Date.now() - started < timeoutMs) {
     last = await api(`/api/status/${encodeURIComponent(deviceId)}`, { method: "GET" });
 
-    // If ffmpeg crashed, stop waiting early with logs
     if (!last.running && last.exit_code !== null && last.exit_code !== undefined) {
       throw new Error(`ffmpeg exited (code ${last.exit_code}):\n\n${last.log_tail || ""}`);
     }
@@ -221,9 +211,7 @@ function makeTile(device) {
 
       <div class="tileHud">
         <div class="tileName">${escapeHtml(device.name || device.ip || device.id)}</div>
-        <div class="tileBtns">
-          <button class="btn btn-mini btn-danger" data-act="stop">Stop</button>
-        </div>
+        <button class="btn btn-mini btn-danger tileStopBtn" type="button">Stop</button>
       </div>
 
       <div class="tileOverlay">Starting…</div>
@@ -232,23 +220,18 @@ function makeTile(device) {
 
   const videoEl = tile.querySelector("video");
   const overlayEl = tile.querySelector(".tileOverlay");
+  const stopBtn = tile.querySelector(".tileStopBtn");
 
-  tile.addEventListener("click", (ev) => {
-    const btn = ev.target.closest?.("button[data-act]");
-    if (!btn) return;
-    const act = btn.getAttribute("data-act");
-    if (act === "stop") {
-      ev.preventDefault();
-      ev.stopPropagation();
-      toggleDevice(device); // stop = toggle off
-    }
+  stopBtn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    stopDevice(device.id).catch(() => {});
   });
 
   return { tile, videoEl, overlayEl };
 }
 
 async function startDevice(device) {
-  // Already streaming OR currently starting?
   const existing = streams.get(device.id);
   if (existing?.startingPromise) return existing.startingPromise;
   if (streams.has(device.id) && existing?.pc) return;
@@ -258,7 +241,14 @@ async function startDevice(device) {
   const { tile, videoEl, overlayEl } = makeTile(device);
   videoGrid.appendChild(tile);
 
-  const entry = { pc: null, tileEl: tile, videoEl, overlayEl, startingPromise: null };
+  const entry = {
+    pc: null,
+    tileEl: tile,
+    videoEl,
+    overlayEl,
+    startingPromise: null,
+    cancelled: false,
+  };
   streams.set(device.id, entry);
 
   recomputeGrid();
@@ -267,10 +257,8 @@ async function startDevice(device) {
   overlayEl.textContent = "Starting…";
   overlayEl.style.display = "flex";
 
-  // Keep a handle so rapid clicks don’t spawn multiple starts
   entry.startingPromise = (async () => {
     try {
-      // 1) Start publisher (fast / non-blocking)
       await api("/api/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -284,34 +272,31 @@ async function startDevice(device) {
         })
       });
 
-      // 2) Wait for MediaMTX path online (prevents WHEP 404)
+      if (streams.get(device.id)?.cancelled) return;
+
       overlayEl.textContent = "Waiting for stream…";
       await waitUntilReady(device.id, 8000);
 
-      // 3) Connect WHEP
+      if (streams.get(device.id)?.cancelled) return;
+
       overlayEl.textContent = "Connecting WebRTC…";
       const pc = await startWhep(device.id, videoEl, (st) => {
-        if (st === "connected") {
-          overlayEl.style.display = "none";
-        } else if (st === "failed" || st === "disconnected") {
+        if (st === "connected") overlayEl.style.display = "none";
+        else if (st === "failed" || st === "disconnected") {
           overlayEl.textContent = `WebRTC ${st}`;
           overlayEl.style.display = "flex";
         }
       });
 
       const cur = streams.get(device.id);
-      if (!cur) {
-        // We got stopped while connecting
+      if (!cur || cur.cancelled) {
         try { pc.close(); } catch {}
         return;
       }
 
       cur.pc = pc;
-      cur.startingPromise = null;
-
       setStatus(`Streaming ${streams.size} camera(s).`, "ok");
     } catch (e) {
-      // cleanup tile if failed
       await stopDevice(device.id, { skipApiStop: false });
       setStatus(`Error: ${e?.message || e}`, "bad");
       throw e;
@@ -328,24 +313,25 @@ async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
   const entry = streams.get(deviceId);
   if (!entry) return;
 
-  const { pc, tileEl, videoEl } = entry;
+  entry.cancelled = true;
 
-  // Stop WHEP immediately (client-side = instant UI responsiveness)
+  const { pc, tileEl, videoEl } = entry;
   stopPc(pc, videoEl);
 
-  // remove tile
   try { tileEl?.remove?.(); } catch {}
   streams.delete(deviceId);
 
   recomputeGrid();
   renderList();
 
-  // Tell backend to stop ffmpeg (don’t await to avoid UI halting)
   if (!skipApiStop) {
     fetch(`/api/stop/${encodeURIComponent(deviceId)}`, { method: "POST" }).catch(() => {});
   }
 
-  setStatus(streams.size ? `Streaming ${streams.size} camera(s).` : "Stopped.", streams.size ? "ok" : "warn");
+  setStatus(
+    streams.size ? `Streaming ${streams.size} camera(s).` : "Stopped.",
+    streams.size ? "ok" : "warn"
+  );
 }
 
 // ---- Events ----
@@ -356,12 +342,8 @@ camListEl.addEventListener("click", (ev) => {
   const d = devices.find(x => x.id === id);
   if (!d) return;
 
-  // toggle behavior: if already streaming, stop. else start.
-  if (streams.has(d.id)) {
-    stopDevice(d.id).catch(() => {});
-  } else {
-    startDevice(d).catch(() => {});
-  }
+  if (streams.has(d.id)) stopDevice(d.id).catch(() => {});
+  else startDevice(d).catch(() => {});
 });
 
 reloadBtn.addEventListener("click", () => loadDevices());
@@ -369,23 +351,16 @@ reloadBtn.addEventListener("click", () => loadDevices());
 startAllBtn.addEventListener("click", async () => {
   const ready = devices.filter(profileReady);
   const toStart = ready.filter(d => !streams.has(d.id));
-
   if (!toStart.length) return;
 
   setStatus(`Starting ${toStart.length} camera(s)…`, "warn");
-
-  // start everything concurrently
   const jobs = toStart.map(d => startDevice(d));
   await Promise.allSettled(jobs);
-
   setStatus(`Streaming ${streams.size} camera(s).`, streams.size ? "ok" : "warn");
 });
 
 stopAllBtn.addEventListener("click", () => {
-  // stop everything immediately without waiting
-  for (const [id] of streams) {
-    stopDevice(id).catch(() => {});
-  }
+  for (const [id] of streams) stopDevice(id).catch(() => {});
   setStatus("Stopping all…", "warn");
 });
 
@@ -400,7 +375,6 @@ function setSidebarHidden(hidden) {
 
 toggleSidebarBtn.addEventListener("click", () => setSidebarHidden(true));
 showSidebarBtn.addEventListener("click", () => setSidebarHidden(false));
-
 setSidebarHidden(localStorage.getItem(LS_KEY) === "1");
 
 // ---- init ----
