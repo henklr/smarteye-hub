@@ -1,23 +1,23 @@
-// live.js — select saved device; start only if it has a saved profile_token
-
+// live.js — right-side camera list with toggle + auto-switch
 const dot = document.getElementById('dot');
 const pillText = document.getElementById('pillText');
 const statusText = document.getElementById('statusText');
 
-const startBtn = document.getElementById('start');
-const stopBtn = document.getElementById('stop');
 const video = document.getElementById('video');
+const stopBtn = document.getElementById('stop');
 
-const deviceSel = document.getElementById('deviceSel');
-const reloadBtn = document.getElementById('reloadDevices');
-const profileLabelEl = document.getElementById('profileLabel');
+const camListEl = document.getElementById('camList');
+const reloadBtn = document.getElementById('reload');
 
+const activeNameEl = document.getElementById('activeName');
+const pathCodeEl = document.getElementById('pathCode');
 const whepEl = document.getElementById('whepUrl');
 const playerEl = document.getElementById('playerUrl');
 
 let pc = null;
 let devices = [];
-let selectedDevice = null;
+let activeDevice = null;     // device object currently streaming (or null)
+let isStarting = false;
 
 function setPill(state, text) {
   pillText.textContent = text;
@@ -38,22 +38,18 @@ function getWhepUrl(deviceId) {
 }
 
 function updateUrls() {
-  const pathCodeEl = document.getElementById("pathCode");
-
-  if (!selectedDevice || !selectedDevice.id) {
-    if (whepEl) whepEl.textContent = "(select a device)";
-    if (playerEl) playerEl.textContent = "(select a device)";
-    if (pathCodeEl) pathCodeEl.textContent = "(select a device)";
+  if (!activeDevice?.id) {
+    activeNameEl.textContent = "(none)";
+    pathCodeEl.textContent = "(none)";
+    whepEl.textContent = "(select a camera)";
+    playerEl.textContent = "(select a camera)";
     return;
   }
-
-  const path = `cam-${selectedDevice.id}`;
-  const whepUrl = getWhepUrl(selectedDevice.id);
-  const playerUrl = whepUrl.replace(/\/whep$/, '');
-
-  if (pathCodeEl) pathCodeEl.textContent = path;
-  if (whepEl) whepEl.textContent = whepUrl;
-  if (playerEl) playerEl.textContent = playerUrl;
+  const whepUrl = getWhepUrl(activeDevice.id);
+  activeNameEl.textContent = activeDevice.name || activeDevice.ip || activeDevice.id;
+  pathCodeEl.textContent = `cam-${activeDevice.id}`;
+  whepEl.textContent = whepUrl;
+  playerEl.textContent = whepUrl.replace(/\/whep$/, '');
 }
 
 async function api(url, opts) {
@@ -66,11 +62,10 @@ async function api(url, opts) {
     const detail = data?.detail || text || res.statusText;
     throw new Error(`${res.status} ${res.statusText}: ${detail}`);
   }
-  if (data === null) throw new Error(`Expected JSON from ${url}, got: ${text.slice(0, 200)}`);
   return data;
 }
 
-function stopWhep() {
+function stopWhepOnly() {
   if (pc) {
     try { pc.close(); } catch {}
     pc = null;
@@ -79,6 +74,14 @@ function stopWhep() {
     try { video.srcObject.getTracks().forEach(t => t.stop()); } catch {}
     video.srcObject = null;
   }
+}
+
+async function stopAll() {
+  // Stop backend publisher + local WebRTC
+  stopWhepOnly();
+  try { await fetch("/api/stop", { method: "POST" }); } catch {}
+  stopBtn.disabled = true;
+  setStatus("Stopped.", "warn");
 }
 
 function waitIceGatheringComplete(pc, timeoutMs = 2000) {
@@ -100,10 +103,8 @@ function waitIceGatheringComplete(pc, timeoutMs = 2000) {
   });
 }
 
-async function startWhepForSelectedDevice() {
-  if (!selectedDevice?.id) throw new Error("No device selected.");
-
-  stopWhep();
+async function startWhep(deviceId) {
+  stopWhepOnly();
   pc = new RTCPeerConnection();
 
   pc.ontrack = (e) => { video.srcObject = e.streams[0]; };
@@ -120,7 +121,7 @@ async function startWhepForSelectedDevice() {
   await pc.setLocalDescription(offer);
   await waitIceGatheringComplete(pc, 2000);
 
-  const res = await fetch(getWhepUrl(selectedDevice.id), {
+  const res = await fetch(getWhepUrl(deviceId), {
     method: "POST",
     headers: { "Content-Type": "application/sdp" },
     body: pc.localDescription.sdp,
@@ -135,111 +136,134 @@ async function startWhepForSelectedDevice() {
   await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 }
 
-function setSelectedDevice(d) {
-  selectedDevice = d || null;
-
-  stopWhep();
-  stopBtn.disabled = true;
-
-  const ready = !!(selectedDevice && selectedDevice.profile_token);
-  profileLabelEl.textContent =
-    selectedDevice?.profile_label ||
-    (selectedDevice?.profile_token ? selectedDevice.profile_token : "(none)");
-
-  startBtn.disabled = !ready;
-
-  updateUrls();
-
-  if (!selectedDevice) {
-    setStatus("No device selected.", "warn");
-  } else if (!ready) {
-    setStatus("Device not ready: select & save a profile in Devices.", "warn");
-  } else {
-    setStatus(`Ready: ${selectedDevice.name || selectedDevice.ip}`, "ok");
+function renderList() {
+  if (!devices.length) {
+    camListEl.innerHTML = `<div class="muted" style="padding:10px 2px;">No devices. Add some in Devices.</div>`;
+    return;
   }
+
+  camListEl.innerHTML = devices.map(d => {
+    const ready = !!d.profile_token;
+    const active = activeDevice?.id === d.id;
+    const cls = [
+      "camItem",
+      ready ? "ready" : "notReady",
+      active ? "active" : ""
+    ].join(" ");
+
+    const subtitle = ready
+      ? (d.profile_label || d.profile_token)
+      : "Not ready (select profile in Devices)";
+
+    return `
+      <button class="${cls}" data-id="${d.id}" ${ready ? "" : "disabled"}>
+        <div class="camItemTop">
+          <div class="camName">${escapeHtml(d.name || d.ip || d.id)}</div>
+          <div class="camBadge">${active ? "LIVE" : (ready ? "READY" : "SETUP")}</div>
+        </div>
+        <div class="camSub">${escapeHtml(subtitle)}</div>
+      </button>
+    `;
+  }).join("");
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
 }
 
 async function loadDevices() {
-  deviceSel.disabled = true;
-  deviceSel.innerHTML = `<option>Loading…</option>`;
-  setSelectedDevice(null);
-
+  setStatus("Loading devices…", "warn");
   try {
     const data = await api("/api/devices", { method: "GET" });
     devices = data.devices || [];
+    renderList();
 
-    deviceSel.innerHTML = "";
-
-    if (!devices.length) {
-      deviceSel.innerHTML = `<option>(no devices — add one in Devices)</option>`;
-      setStatus("No devices saved. Go to Devices.", "warn");
-      return;
+    if (!activeDevice) {
+      setStatus("Select a camera to start.", "warn");
+    } else {
+      // keep highlight in sync
+      renderList();
     }
-
-    for (const d of devices) {
-      const opt = document.createElement("option");
-      opt.value = d.id;
-      opt.textContent = `${d.name || d.ip} (${d.ip})`;
-      deviceSel.appendChild(opt);
-    }
-
-    deviceSel.disabled = false;
-    deviceSel.value = devices[0].id;
-    setSelectedDevice(devices[0]);
   } catch (e) {
-    deviceSel.innerHTML = `<option>(failed to load devices)</option>`;
+    camListEl.innerHTML = `<div class="muted" style="padding:10px 2px;">Failed to load devices: ${escapeHtml(e.message || e)}</div>`;
     setStatus(`Device load error: ${e?.message || e}`, "bad");
   }
 }
 
-deviceSel.addEventListener("change", () => {
-  const d = devices.find(x => x.id === deviceSel.value);
-  setSelectedDevice(d || null);
-});
+async function toggleDevice(device) {
+  if (isStarting) return;
+  if (!device?.profile_token) return;
 
-reloadBtn.addEventListener("click", () => loadDevices());
+  // Clicking active camera toggles off
+  if (activeDevice?.id === device.id) {
+    setStatus(`Stopping ${device.name || device.ip}…`, "warn");
+    activeDevice = null;
+    updateUrls();
+    renderList();
+    await stopAll();
+    return;
+  }
 
-startBtn.addEventListener("click", async () => {
-  if (!selectedDevice) return setStatus("Select a device first.", "bad");
-  if (!selectedDevice.profile_token) return setStatus("Device not ready: save a profile in Devices.", "bad");
-
-  setStatus("Starting…", "warn");
-  startBtn.disabled = true;
+  // Switching cameras: stop then start new
+  isStarting = true;
+  setStatus(`Switching to ${device.name || device.ip}…`, "warn");
 
   try {
+    await stopAll();
+
+    // Start backend ffmpeg publisher for this device/path
     await api("/api/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        ip: selectedDevice.ip,
-        onvif_port: selectedDevice.onvif_port ?? 80,
-        username: selectedDevice.username,
-        password: selectedDevice.password,
-        profile_token: selectedDevice.profile_token,
-        device_id: selectedDevice.id
+        ip: device.ip,
+        onvif_port: device.onvif_port ?? 80,
+        username: device.username,
+        password: device.password,
+        profile_token: device.profile_token,
+        device_id: device.id
       })
     });
 
-    await startWhepForSelectedDevice();
+    // Now pull via WHEP
+    activeDevice = device;
+    updateUrls();
+    renderList();
+
+    await startWhep(device.id);
+
     stopBtn.disabled = false;
-    setStatus("Streaming.", "ok");
+    setStatus(`Streaming: ${device.name || device.ip}`, "ok");
   } catch (e) {
-    stopWhep();
+    activeDevice = null;
+    updateUrls();
+    renderList();
+    stopWhepOnly();
     setStatus(`Error: ${e?.message || e}`, "bad");
   } finally {
-    startBtn.disabled = false;
+    isStarting = false;
   }
+}
+
+camListEl.addEventListener("click", (ev) => {
+  const btn = ev.target.closest?.("button[data-id]");
+  if (!btn) return;
+  const id = btn.getAttribute("data-id");
+  const d = devices.find(x => x.id === id);
+  if (!d) return;
+  toggleDevice(d);
 });
+
+reloadBtn.addEventListener("click", () => loadDevices());
 
 stopBtn.addEventListener("click", async () => {
-  setStatus("Stopping…", "warn");
-  stopBtn.disabled = true;
-  try { await fetch("/api/stop", { method: "POST" }); } catch {}
-  stopWhep();
-  setStatus("Stopped.", "warn");
+  if (!activeDevice) return;
+  await toggleDevice(activeDevice);
 });
 
+updateUrls();
 setStatus("Loading…", "warn");
 stopBtn.disabled = true;
-updateUrls();
 loadDevices();

@@ -1,10 +1,9 @@
 <!doctype html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Camera Viewer</title>
+  <title>Live</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 
@@ -13,8 +12,9 @@
     <div class="topbar">
       <div class="title">
         <h1>Camera Viewer</h1>
-        <div class="subtitle">Devices → MediaMTX (cam1) → WebRTC (WHEP)</div>
+        <div class="subtitle">Devices → MediaMTX → WebRTC (WHEP)</div>
       </div>
+
       <div class="headerRight">
         <div class="pill"><span class="dot" id="dot"></span><span id="pillText">Idle</span></div>
         <div class="tabs">
@@ -25,43 +25,49 @@
       </div>
     </div>
 
-    <div class="card">
-      <div class="row2" style="margin-top:0;">
-        <div class="grow">
-          <label>Device</label>
-          <select id="deviceSel" disabled>
-            <option>Loading devices…</option>
-          </select>
+    <div class="liveLayout">
+      <!-- LEFT: player -->
+      <div class="card">
+        <div class="meta">
+          <span>Active: <code id="activeName">(none)</code></span>
+          <span>Path: <code id="pathCode">(none)</code></span>
         </div>
-        <button class="btn" id="reloadDevices">Reload</button>
+
+        <div class="statusLine" id="statusLine">
+          <strong>Status:</strong> <span id="statusText">Loading…</span>
+        </div>
+
+        <div class="meta">
+          <span>Player: <code id="playerUrl">(select a camera)</code></span>
+          <span>WHEP: <code id="whepUrl">(select a camera)</code></span>
+        </div>
+
+        <div class="player">
+          <video id="video" autoplay playsinline muted></video>
+        </div>
+
+        <div class="row2">
+          <button class="btn btn-danger" id="stop" disabled>Stop</button>
+        </div>
       </div>
 
-      <div class="meta">
-        <span>Selected profile: <code id="profileLabel">(none)</code></span>
-        <span>Path: <code id="pathCode">(select a device)</code></span>
-      </div>
+      <!-- RIGHT: camera list -->
+      <div class="card">
+        <div class="listHeader">
+          <div>
+            <div class="listTitle">Cameras</div>
+            <div class="listSub">Click to start/stop. Switching cameras stops the previous stream.</div>
+          </div>
+          <button class="btn" id="reload">Reload</button>
+        </div>
 
-      <div class="row2">
-        <button class="btn btn-primary" id="start" disabled>Start</button>
-        <button class="btn btn-danger" id="stop" disabled>Stop</button>
-      </div>
-
-      <div class="statusLine" id="statusLine">
-        <strong>Status:</strong> <span id="statusText">Idle.</span>
-      </div>
-
-      <div class="meta">
-        <span>Player: <code id="playerUrl">(loading…)</code></span>
-        <span>WHEP: <code id="whepUrl"></code></span>
-      </div>
-
-      <div class="player">
-        <video id="video" autoplay playsinline muted></video>
+        <div id="camList" class="camList">
+          <div class="muted" style="padding:10px 2px;">Loading…</div>
+        </div>
       </div>
     </div>
   </div>
 
   <script src="/static/live.js"></script>
 </body>
-
 </html>
