@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -10,24 +11,20 @@
 <body>
   <div class="wrap">
     <div class="topbar">
-      <div class="title">
-        <h1>Camera Viewer</h1>
-        <div class="subtitle">Multiple devices → MediaMTX → WebRTC (WHEP)</div>
+
+      <!-- LEFT: Tabs -->
+      <div class="tabs">
+        <a class="tab" href="/"><span class="tabDot"></span>Home</a>
+        <a class="tab active" href="/live"><span class="tabDot"></span>Live</a>
+        <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
       </div>
 
-      <div class="headerRight">
-        <!-- pill stays + is clickable -->
-        <div class="pill" id="statusPill" title="Click to view full status">
-          <span class="dot" id="dot"></span>
-          <span id="pillText">Idle</span>
-        </div>
-
-        <div class="tabs">
-          <a class="tab" href="/"><span class="tabDot"></span>Home</a>
-          <a class="tab active" href="/live"><span class="tabDot"></span>Live</a>
-          <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
-        </div>
+      <!-- RIGHT: Status pill -->
+      <div class="pill" id="statusPill" title="Click to view full status">
+        <span class="dot" id="dot"></span>
+        <span id="pillText">Idle</span>
       </div>
+
     </div>
 
     <div class="liveLayout" id="liveLayout">
@@ -68,4 +65,5 @@
 
   <script src="/static/live.js"></script>
 </body>
+
 </html>
