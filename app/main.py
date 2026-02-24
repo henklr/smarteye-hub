@@ -22,14 +22,14 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-FFMPEG_LOG = DATA_DIR / "ffmpeg.log"
 DEVICES_JSON = DATA_DIR / "devices.json"
 
 MEDIAMTX_BASE_URL = os.getenv("MEDIAMTX_BASE_URL", "rtsp://mediamtx:8554")
 MEDIAMTX_HOST = os.getenv("MEDIAMTX_HOST", "mediamtx")
 MEDIAMTX_RTSP_PORT = int(os.getenv("MEDIAMTX_RTSP_PORT", "8554"))
 
-_ffmpeg: Optional[subprocess.Popen] = None
+# One ffmpeg per device_id
+_ffmpegs: Dict[str, subprocess.Popen] = {}
 
 
 def _dump(model) -> dict:
@@ -44,19 +44,22 @@ def _dump(model) -> dict:
 
 @app.get("/", response_class=HTMLResponse)
 def index_page():
-    # Serve index.html at /
     return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
 
 @app.get("/live", response_class=HTMLResponse)
 def live_page():
-    # Serve live.html at /live
     return (STATIC_DIR / "live.html").read_text(encoding="utf-8")
 
 
 @app.get("/devices", response_class=HTMLResponse)
 def devices_page():
     return (STATIC_DIR / "devices.html").read_text(encoding="utf-8")
+
+
+@app.get("/health")
+def health():
+    return {"ok": True, "streams": list(_ffmpegs.keys())}
 
 
 # -------------------------
@@ -73,7 +76,7 @@ class OnvifBase(BaseModel):
 class StartRequest(OnvifBase):
     profile_token: str
     device_id: str
-    
+
 
 class DeviceIn(BaseModel):
     name: str = Field(..., min_length=1)
@@ -157,24 +160,36 @@ def delete_device(device_id: str):
 # Streaming helpers
 # -------------------------
 
-def _stop_ffmpeg():
-    global _ffmpeg
-    if _ffmpeg and _ffmpeg.poll() is None:
-        _ffmpeg.terminate()
-        try:
-            _ffmpeg.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            _ffmpeg.kill()
-    _ffmpeg = None
+def _log_path_for(device_id: str) -> Path:
+    return DATA_DIR / f"ffmpeg-{device_id}.log"
 
 
-def _log_tail(n: int = 4000) -> str:
-    if not FFMPEG_LOG.exists():
-        return "(no ffmpeg.log yet)"
+def _log_tail(device_id: str, n: int = 4000) -> str:
+    p = _log_path_for(device_id)
+    if not p.exists():
+        return "(no ffmpeg log yet)"
     try:
-        return FFMPEG_LOG.read_text(errors="ignore")[-n:]
+        return p.read_text(errors="ignore")[-n:]
     except Exception:
-        return "(failed to read ffmpeg.log)"
+        return "(failed to read ffmpeg log)"
+
+
+def _stop_ffmpeg(device_id: str):
+    p = _ffmpegs.get(device_id)
+    if not p:
+        return
+    if p.poll() is None:
+        p.terminate()
+        try:
+            p.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            p.kill()
+    _ffmpegs.pop(device_id, None)
+
+
+def _stop_all_ffmpeg():
+    for device_id in list(_ffmpegs.keys()):
+        _stop_ffmpeg(device_id)
 
 
 def _cam(req: OnvifBase) -> ONVIFCamera:
@@ -233,27 +248,17 @@ def _rtsp_describe_ok(path: str, timeout_s: float = 1.0) -> bool:
         return "RTSP/1.0 200" in resp
     except Exception:
         return False
-    
-
-def _safe_device_id(s: str) -> str:
-    # allow hex-ish ids; keep it simple and safe for mediamtx paths
-    s = (s or "").strip()
-    if not s:
-        raise ValueError("device_id is empty")
-    for ch in s:
-        if ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_":
-            raise ValueError("device_id contains invalid characters")
-    return s
 
 
-def _start_ffmpeg(rtsp_in: str, path: str):
-    global _ffmpeg
-    _stop_ffmpeg()
+def _start_ffmpeg(rtsp_in: str, device_id: str, path: str):
+    # stop existing for this device (idempotent)
+    _stop_ffmpeg(device_id)
 
-    publish_url = f"{MEDIAMTX_BASE_URL.rstrip('/')}/{path}"
+    publish_url = f"{MEDIAMTX_BASE_URL}/{path}"
 
-    FFMPEG_LOG.write_text("", encoding="utf-8")
-    log_f = open(FFMPEG_LOG, "a")
+    log_path = _log_path_for(device_id)
+    log_path.write_text("", encoding="utf-8")
+    log_f = open(log_path, "a")
 
     cmd = [
         "ffmpeg",
@@ -264,7 +269,6 @@ def _start_ffmpeg(rtsp_in: str, path: str):
         "-rtsp_flags", "prefer_tcp",
         "-i", rtsp_in,
 
-        # publish ONLY video (avoid audio/data weirdness)
         "-map", "0:v:0",
         "-an",
 
@@ -282,7 +286,8 @@ def _start_ffmpeg(rtsp_in: str, path: str):
         publish_url,
     ]
 
-    _ffmpeg = subprocess.Popen(cmd, stdout=log_f, stderr=log_f)
+    _ffmpegs[device_id] = subprocess.Popen(cmd, stdout=log_f, stderr=log_f)
+
 
 # -------------------------
 # Streaming API
@@ -302,17 +307,21 @@ def profiles(req: OnvifBase):
         raise HTTPException(status_code=400, detail=f"ONVIF profiles failed: {e}")
 
 
+@app.get("/api/streams")
+def streams():
+    return {"streams": list(_ffmpegs.keys())}
+
+
 @app.post("/api/start")
 def start(req: StartRequest):
     if not req.profile_token:
         raise HTTPException(status_code=400, detail="Missing profile_token.")
 
-    try:
-        dev_id = _safe_device_id(req.device_id)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid device_id: {e}")
+    device_id = req.device_id.strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Missing device_id.")
 
-    path = f"cam-{dev_id}"
+    path = f"cam-{device_id}"
 
     try:
         rtsp = _get_stream_uri(req, req.profile_token)
@@ -320,27 +329,28 @@ def start(req: StartRequest):
         raise HTTPException(status_code=400, detail=f"ONVIF stream uri failed: {e}")
 
     try:
-        _start_ffmpeg(rtsp, path)
-    except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="ffmpeg not found in container.")
+        _start_ffmpeg(rtsp, device_id=device_id, path=path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"ffmpeg failed to start: {e}")
 
-    # Wait until MediaMTX reports stream available
     for _ in range(80):
-        if _ffmpeg and _ffmpeg.poll() is not None:
-            raise HTTPException(status_code=500, detail="ffmpeg exited:\n\n" + _log_tail())
+        p = _ffmpegs.get(device_id)
+        if p and p.poll() is not None:
+            raise HTTPException(status_code=500, detail="ffmpeg exited:\n\n" + _log_tail(device_id))
         if _rtsp_describe_ok(path):
             return {"ok": True, "path": path}
         time.sleep(0.1)
 
-    raise HTTPException(
-        status_code=500,
-        detail="Timed out waiting for stream.\n\n" + _log_tail()
-    )
-    
+    raise HTTPException(status_code=500, detail="Timed out waiting for stream.\n\n" + _log_tail(device_id))
+
+
+@app.post("/api/stop/{device_id}")
+def stop_one(device_id: str):
+    _stop_ffmpeg(device_id)
+    return {"ok": True}
+
 
 @app.post("/api/stop")
-def stop():
-    _stop_ffmpeg()
+def stop_all():
+    _stop_all_ffmpeg()
     return {"ok": True}
