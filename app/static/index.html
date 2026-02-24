@@ -1,12 +1,44 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta http-equiv="refresh" content="0; url=/static/live.html" />
-    <title>Redirecting…</title>
-  </head>
-  <body>
-    <p>Redirecting to <a href="/static/live.html">/static/live.html</a>…</p>
-  </body>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Home</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="title">
+        <h1>Camera Viewer</h1>
+        <div class="subtitle">Home</div>
+      </div>
+
+      <div class="headerRight">
+        <div class="tabs">
+          <a class="tab active" href="/"><span class="tabDot"></span>Home</a>
+          <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
+          <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin:0 0 8px; font-size:16px; font-weight:900;">Welcome</h2>
+      <div class="subtitle" style="margin-bottom:14px;">
+        Use the tabs above to manage devices and view live video.
+      </div>
+
+      <div class="row2" style="margin-top:0;">
+        <a class="btn btn-primary" href="/live">Go to Live</a>
+        <a class="btn" href="/devices">Manage Devices</a>
+      </div>
+
+      <div class="meta" style="margin-top:14px;">
+        <span>Tip: Add a device and save a profile in <code>/devices</code> first.</span>
+      </div>
+    </div>
+  </div>
+</body>
 </html>

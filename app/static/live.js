@@ -1,15 +1,15 @@
-// live.js (devices + no manual entry; publishes/plays cam1)
+// live.js — select saved device; start only if it has a saved profile_token
 const dot = document.getElementById('dot');
 const pillText = document.getElementById('pillText');
 const statusText = document.getElementById('statusText');
 
-const profilesSel = document.getElementById('profiles');
 const startBtn = document.getElementById('start');
 const stopBtn = document.getElementById('stop');
 const video = document.getElementById('video');
 
 const deviceSel = document.getElementById('deviceSel');
 const reloadBtn = document.getElementById('reloadDevices');
+const profileLabelEl = document.getElementById('profileLabel');
 
 let pc = null;
 let devices = [];
@@ -37,29 +37,31 @@ const whepUrl = getWhepUrl();
 document.getElementById('whepUrl').textContent = whepUrl;
 document.getElementById('playerUrl').textContent = whepUrl.replace('/whep', '');
 
-function fillCredsFromDevice(d) {
-  selectedDevice = d;
-  document.getElementById('ip').value = d.ip || "";
-  document.getElementById('onvif_port').value = d.onvif_port ?? 80;
-  document.getElementById('username').value = d.username || "";
-  document.getElementById('password').value = d.password || "";
-}
+async function api(url, opts) {
+  const res = await fetch(url, opts);
+  const text = await res.text();             // <- always read body
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch {}
 
-function creds() {
-  const ip = document.getElementById('ip').value.trim();
-  const onvif_port = parseInt((document.getElementById('onvif_port').value || "80").trim(), 10);
-  const username = document.getElementById('username').value.trim();
-  const password = document.getElementById('password').value;
-  return { ip, onvif_port, username, password };
+  if (!res.ok) {
+    // show FastAPI detail if present, otherwise show raw response
+    const detail = data?.detail || text || res.statusText;
+    throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+  }
+
+  if (data === null) {
+    throw new Error(`Expected JSON from ${url}, got: ${text.slice(0, 200)}`);
+  }
+  return data;
 }
 
 function stopWhep() {
   if (pc) {
-    try { pc.close(); } catch { }
+    try { pc.close(); } catch {}
     pc = null;
   }
   if (video.srcObject) {
-    try { video.srcObject.getTracks().forEach(t => t.stop()); } catch { }
+    try { video.srcObject.getTracks().forEach(t => t.stop()); } catch {}
     video.srcObject = null;
   }
 }
@@ -67,7 +69,6 @@ function stopWhep() {
 function waitIceGatheringComplete(pc, timeoutMs = 2000) {
   return new Promise((resolve) => {
     if (pc.iceGatheringState === "complete") return resolve();
-
     const t = setTimeout(() => {
       pc.removeEventListener("icegatheringstatechange", onChange);
       resolve();
@@ -87,7 +88,6 @@ function waitIceGatheringComplete(pc, timeoutMs = 2000) {
 async function startWhep() {
   stopWhep();
   pc = new RTCPeerConnection();
-
   pc.ontrack = (e) => { video.srcObject = e.streams[0]; };
 
   pc.onconnectionstatechange = () => {
@@ -117,25 +117,29 @@ async function startWhep() {
   await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 }
 
-function profileLabel(p) {
-  const parts = [];
-  if (p.name) parts.push(p.name);
-  if (p.encoding) parts.push(String(p.encoding));
-  if (p.width && p.height) parts.push(`${p.width}x${p.height}`);
-  return parts.length ? parts.join(" • ") : p.token;
-}
+function setSelectedDevice(d) {
+  selectedDevice = d;
+  stopWhep();
+  stopBtn.disabled = true;
 
-async function api(url, opts) {
-  const res = await fetch(url, opts);
-  const data = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(data?.detail || res.statusText);
-  return data;
+  const ready = !!(d && d.profile_token);
+  profileLabelEl.textContent = d?.profile_label || (d?.profile_token ? d.profile_token : "(none)");
+
+  startBtn.disabled = !ready;
+
+  if (!d) {
+    setStatus("No device selected.", "warn");
+  } else if (!ready) {
+    setStatus("Device not ready: select & save a profile in Devices.", "warn");
+  } else {
+    setStatus(`Ready: ${d.name || d.ip}`, "ok");
+  }
 }
 
 async function loadDevices() {
   deviceSel.disabled = true;
-  deviceSel.innerHTML = `<option>Loading devices…</option>`;
-  selectedDevice = null;
+  deviceSel.innerHTML = `<option>Loading…</option>`;
+  setSelectedDevice(null);
 
   try {
     const data = await api("/api/devices", { method: "GET" });
@@ -144,10 +148,8 @@ async function loadDevices() {
     deviceSel.innerHTML = "";
 
     if (!devices.length) {
-      deviceSel.innerHTML = `<option>(no devices yet — click Devices)</option>`;
-      setStatus("No devices saved. Click Devices to add one.", "warn");
-      profilesSel.disabled = true;
-      startBtn.disabled = true;
+      deviceSel.innerHTML = `<option>(no devices — add one in Devices)</option>`;
+      setStatus("No devices saved. Go to Devices.", "warn");
       return;
     }
 
@@ -159,17 +161,8 @@ async function loadDevices() {
     }
 
     deviceSel.disabled = false;
-
-    // select first
-    selectedDevice = devices[0];
-    deviceSel.value = selectedDevice.id;
-    fillCredsFromDevice(selectedDevice);
-
-    profilesSel.disabled = true;
-    startBtn.disabled = true;
-    profilesSel.innerHTML = `<option>Select "Fetch profiles"…</option>`;
-
-    setStatus(`Selected: ${selectedDevice.name || selectedDevice.ip}`, "ok");
+    deviceSel.value = devices[0].id;
+    setSelectedDevice(devices[0]);
   } catch (e) {
     deviceSel.innerHTML = `<option>(failed to load devices)</option>`;
     setStatus(`Device load error: ${e?.message || e}`, "bad");
@@ -177,70 +170,30 @@ async function loadDevices() {
 }
 
 deviceSel.addEventListener("change", () => {
-  const id = deviceSel.value;
-  const d = devices.find(x => x.id === id);
-  if (!d) return;
-
-  stopWhep();
-  fillCredsFromDevice(d);
-
-  profilesSel.disabled = true;
-  startBtn.disabled = true;
-  profilesSel.innerHTML = `<option>Select "Fetch profiles"…</option>`;
-
-  setStatus(`Selected: ${d.name || d.ip}`, "ok");
+  const d = devices.find(x => x.id === deviceSel.value);
+  setSelectedDevice(d || null);
 });
 
 reloadBtn.addEventListener("click", () => loadDevices());
 
-document.getElementById('fetch').addEventListener('click', async () => {
-  const c = creds();
-  if (!c.ip || !c.username || !c.password) return setStatus("Missing device credentials.", "bad");
-
-  setStatus("Fetching profiles…", "warn");
-  profilesSel.disabled = true;
-  startBtn.disabled = true;
-  profilesSel.innerHTML = `<option>Loading…</option>`;
-
-  try {
-    const data = await api('/api/profiles', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(c)
-    });
-
-    const profs = data.profiles || [];
-    if (!profs.length) throw new Error("No profiles returned.");
-
-    profilesSel.innerHTML = "";
-    for (const p of profs) {
-      const opt = document.createElement('option');
-      opt.value = p.token;
-      opt.textContent = profileLabel(p);
-      profilesSel.appendChild(opt);
-    }
-    profilesSel.disabled = false;
-    startBtn.disabled = false;
-    setStatus(`Profiles loaded (${profs.length}).`, "ok");
-  } catch (e) {
-    profilesSel.innerHTML = `<option>Fetch failed</option>`;
-    setStatus(`Error: ${e?.message || e}`, "bad");
-  }
-});
-
-document.getElementById('start').addEventListener('click', async () => {
-  const c = creds();
-  const profile_token = profilesSel.value;
-  if (!profile_token) return setStatus("Select a profile first.", "bad");
+startBtn.addEventListener("click", async () => {
+  if (!selectedDevice) return setStatus("Select a device first.", "bad");
+  if (!selectedDevice.profile_token) return setStatus("Device not ready: save a profile in Devices.", "bad");
 
   setStatus("Starting…", "warn");
   startBtn.disabled = true;
 
   try {
-    await api('/api/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...c, profile_token })
+    await api("/api/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ip: selectedDevice.ip,
+        onvif_port: selectedDevice.onvif_port ?? 80,
+        username: selectedDevice.username,
+        password: selectedDevice.password,
+        profile_token: selectedDevice.profile_token,
+      })
     });
 
     await startWhep();
@@ -254,14 +207,14 @@ document.getElementById('start').addEventListener('click', async () => {
   }
 });
 
-document.getElementById('stop').addEventListener('click', async () => {
+stopBtn.addEventListener("click", async () => {
   setStatus("Stopping…", "warn");
   stopBtn.disabled = true;
-  try { await fetch('/api/stop', { method: 'POST' }); } catch { }
+  try { await fetch("/api/stop", { method: "POST" }); } catch {}
   stopWhep();
   setStatus("Stopped.", "warn");
 });
 
-setStatus("Loading devices…", "warn");
+setStatus("Loading…", "warn");
 stopBtn.disabled = true;
 loadDevices();

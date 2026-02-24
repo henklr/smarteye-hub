@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -12,21 +13,19 @@
     <div class="topbar">
       <div class="title">
         <h1>Camera Viewer</h1>
-        <div class="subtitle">Saved Devices → ONVIF → RTSP → MediaMTX → WebRTC (WHEP)</div>
+        <div class="subtitle">Devices → MediaMTX (cam1) → WebRTC (WHEP)</div>
       </div>
-
-      <div style="display:flex; gap:10px; align-items:center;">
-        <a class="btn" href="/devices">Devices</a>
-        <div class="pill">
-          <span class="dot" id="dot"></span>
-          <span id="pillText">Idle</span>
+      <div class="headerRight">
+        <div class="pill"><span class="dot" id="dot"></span><span id="pillText">Idle</span></div>
+        <div class="tabs">
+          <a class="tab" href="/"><span class="tabDot"></span>Home</a>
+          <a class="tab active" href="/live"><span class="tabDot"></span>Live</a>
+          <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
         </div>
       </div>
     </div>
 
     <div class="card">
-
-      <!-- Device selector (no manual entry) -->
       <div class="row2" style="margin-top:0;">
         <div class="grow">
           <label>Device</label>
@@ -37,37 +36,12 @@
         <button class="btn" id="reloadDevices">Reload</button>
       </div>
 
-      <div class="grid" style="margin-top:14px;">
-        <div data-full>
-          <label>Camera IP</label>
-          <input id="ip" placeholder="192.168.1.108" />
-        </div>
-
-        <div>
-          <label>ONVIF Port</label>
-          <input id="onvif_port" value="80" />
-        </div>
-
-        <div>
-          <label>Username</label>
-          <input id="username" placeholder="admin" />
-        </div>
-
-        <div>
-          <label>Password</label>
-          <input id="password" type="password" placeholder="••••••••" />
-        </div>
-
-        <button class="btn" id="fetch" data-full>Fetch profiles</button>
+      <div class="meta">
+        <span>Selected profile: <code id="profileLabel">(none)</code></span>
+        <span>Path: <code>cam1</code></span>
       </div>
 
       <div class="row2">
-        <div class="grow">
-          <label>Profile</label>
-          <select id="profiles" disabled>
-            <option>Select a device & fetch profiles…</option>
-          </select>
-        </div>
         <button class="btn btn-primary" id="start" disabled>Start</button>
         <button class="btn btn-danger" id="stop" disabled>Stop</button>
       </div>
@@ -77,7 +51,6 @@
       </div>
 
       <div class="meta">
-        <span>Path: <code>cam1</code></span>
         <span>Player: <code id="playerUrl">(loading…)</code></span>
         <span>WHEP: <code id="whepUrl"></code></span>
       </div>
@@ -90,4 +63,5 @@
 
   <script src="/static/live.js"></script>
 </body>
+
 </html>

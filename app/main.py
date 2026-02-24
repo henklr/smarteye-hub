@@ -33,7 +33,6 @@ _ffmpeg: Optional[subprocess.Popen] = None
 
 
 def _dump(model) -> dict:
-    # pydantic v2: model_dump(), v1: dict()
     if hasattr(model, "model_dump"):
         return model.model_dump()
     return model.dict()
@@ -44,19 +43,20 @@ def _dump(model) -> dict:
 # -------------------------
 
 @app.get("/", response_class=HTMLResponse)
+def index_page():
+    # Serve index.html at /
+    return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+
+@app.get("/live", response_class=HTMLResponse)
 def live_page():
-    # serve your live.html
+    # Serve live.html at /live
     return (STATIC_DIR / "live.html").read_text(encoding="utf-8")
 
 
 @app.get("/devices", response_class=HTMLResponse)
 def devices_page():
     return (STATIC_DIR / "devices.html").read_text(encoding="utf-8")
-
-
-@app.get("/health")
-def health():
-    return {"ok": True}
 
 
 # -------------------------
@@ -80,6 +80,8 @@ class DeviceIn(BaseModel):
     onvif_port: int = 80
     username: str = Field(..., min_length=1)
     password: str = Field(..., min_length=1)
+    profile_token: Optional[str] = None
+    profile_label: Optional[str] = None
 
 
 class Device(DeviceIn):
@@ -98,7 +100,6 @@ def _load_devices() -> List[Device]:
         items = raw.get("devices", [])
         return [Device(**d) for d in items]
     except Exception:
-        # If file corrupt, don't crash the app; return empty and let you fix the file.
         return []
 
 
@@ -122,9 +123,7 @@ def list_devices():
 @app.post("/api/devices")
 def create_device(dev: DeviceIn):
     devs = _load_devices()
-
     new = Device(id=uuid.uuid4().hex[:12], **_dump(dev))
-
     devs.append(new)
     _save_devices(devs)
     return {"ok": True, "device": _dump(new)}
@@ -149,7 +148,6 @@ def delete_device(device_id: str):
     new_devs = [d for d in devs if d.id != device_id]
     if len(new_devs) == len(devs):
         raise HTTPException(status_code=404, detail="Device not found")
-
     _save_devices(new_devs)
     return {"ok": True}
 
@@ -211,7 +209,6 @@ def _get_stream_uri(req: OnvifBase, profile_token: str) -> str:
     if not rtsp or not rtsp.lower().startswith("rtsp://"):
         raise RuntimeError(f"Unexpected RTSP URI returned: {rtsp}")
 
-    # add credentials if absent
     if "@" not in rtsp:
         rtsp = rtsp.replace("rtsp://", f"rtsp://{req.username}:{req.password}@", 1)
 
@@ -219,10 +216,6 @@ def _get_stream_uri(req: OnvifBase, profile_token: str) -> str:
 
 
 def _rtsp_describe_ok_for_cam1(timeout_s: float = 1.0) -> bool:
-    """
-    Check if MediaMTX has a stream available on path 'cam1' via RTSP DESCRIBE.
-    Doesn't require MediaMTX API and works even if API auth is enabled.
-    """
     req = (
         f"DESCRIBE rtsp://{MEDIAMTX_HOST}:{MEDIAMTX_RTSP_PORT}/cam1 RTSP/1.0\r\n"
         f"CSeq: 1\r\n"
@@ -257,7 +250,6 @@ def _start_ffmpeg(rtsp_in: str):
         "-rtsp_flags", "prefer_tcp",
         "-i", rtsp_in,
 
-        # video only
         "-map", "0:v:0",
         "-an",
 
@@ -298,6 +290,9 @@ def profiles(req: OnvifBase):
 
 @app.post("/api/start")
 def start(req: StartRequest):
+    if not req.profile_token:
+        raise HTTPException(status_code=400, detail="Missing profile_token (select and save a profile in Devices).")
+
     try:
         rtsp = _get_stream_uri(req, req.profile_token)
     except Exception as e:
@@ -310,7 +305,6 @@ def start(req: StartRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"ffmpeg failed to start: {e}")
 
-    # Wait up to ~8s for publisher to appear on cam1
     for _ in range(80):
         if _ffmpeg and _ffmpeg.poll() is not None:
             raise HTTPException(status_code=500, detail="ffmpeg exited:\n\n" + _log_tail())
