@@ -400,14 +400,6 @@ code {
   background: var(--accent);
 }
 
-/* Multi video grid */
-.videoGrid{
-  margin-top: 12px;
-  display: grid;
-  grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr));
-  gap: 12px;
-}
-
 /* tiles */
 .tile{
   border: 1px solid rgba(255,255,255,.10);
@@ -464,4 +456,103 @@ code {
   color: var(--text);
   background: rgba(0,0,0,.45);
   backdrop-filter: blur(4px);
+}
+
+/* ===== Live: tighter grid / full-bleed tiles ===== */
+
+/* The container that holds all tiles */
+#videoGrid {
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 2), 1fr);
+  gap: 0 !important;                 /* no space between tiles */
+  width: 100%;
+}
+
+/* Each tile should be full-bleed */
+.tile {
+  position: relative;
+  border-radius: 0 !important;
+  border: 0 !important;
+  overflow: hidden;
+  background: #000;
+  box-shadow: none !important;
+}
+
+/* Video should fill the tile */
+.tile video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #000;
+  object-fit: cover; /* maximize stream area; use 'contain' if you prefer */
+}
+
+/* Optional: keep tiles a consistent height */
+.tilePlayer {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9; /* tweak if you want taller, e.g. 4/3 */
+  background: #000;
+}
+
+/* Overlay header */
+.tileHud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 10px;
+  pointer-events: none; /* so clicks go through unless on buttons */
+  background: linear-gradient(to bottom, rgba(0,0,0,.55), rgba(0,0,0,0));
+}
+
+/* Name */
+.tileHud .tileName {
+  font-weight: 900;
+  font-size: 13px;
+  color: var(--text);
+  text-shadow: 0 2px 10px rgba(0,0,0,.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 75%;
+}
+
+/* Buttons inside HUD need pointer-events */
+.tileHud .tileBtns {
+  display: inline-flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+/* smaller stop/info buttons */
+.tileHud .btn.btn-mini {
+  padding: 8px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* Overlay status text (Starting / Failed) */
+.tileOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  color: var(--text);
+  background: rgba(0,0,0,.35);
+  backdrop-filter: blur(2px);
+}
+
+/* Remove any extra chrome in the tile (if still present somewhere) */
+.tileBar, .tileMeta {
+  display: none !important;
 }

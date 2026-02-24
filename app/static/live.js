@@ -216,23 +216,16 @@ function makeTile(device) {
   tile.setAttribute("data-id", device.id);
 
   tile.innerHTML = `
-    <div class="tileBar">
-      <div class="tileTitle">
-        <div class="tileName">${escapeHtml(device.name || device.ip || device.id)}</div>
-        <div class="tileSub"><code>cam-${escapeHtml(device.id)}</code></div>
-      </div>
-      <div class="tileActions">
-        <button class="btn btn-mini" data-act="open">Info</button>
-        <button class="btn btn-mini btn-danger" data-act="stop">Stop</button>
-      </div>
-    </div>
-
-    <div class="tileMeta">
-      <span>WHEP: <code class="tileWhep">${escapeHtml(getWhepUrl(device.id))}</code></span>
-    </div>
-
     <div class="tilePlayer">
       <video autoplay playsinline muted></video>
+
+      <div class="tileHud">
+        <div class="tileName">${escapeHtml(device.name || device.ip || device.id)}</div>
+        <div class="tileBtns">
+          <button class="btn btn-mini btn-danger" data-act="stop">Stop</button>
+        </div>
+      </div>
+
       <div class="tileOverlay">Starting…</div>
     </div>
   `;
@@ -243,19 +236,11 @@ function makeTile(device) {
   tile.addEventListener("click", (ev) => {
     const btn = ev.target.closest?.("button[data-act]");
     if (!btn) return;
-
     const act = btn.getAttribute("data-act");
     if (act === "stop") {
       ev.preventDefault();
       ev.stopPropagation();
-      stopDevice(device.id).catch(() => {});
-      return;
-    }
-    if (act === "open") {
-      ev.preventDefault();
-      ev.stopPropagation();
-      alert(`${device.name || device.id}\n${device.ip}\nProfile: ${device.profile_label || device.profile_token}`);
-      return;
+      toggleDevice(device); // stop = toggle off
     }
   });
 
