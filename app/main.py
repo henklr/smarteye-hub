@@ -1,3 +1,6 @@
+# main.py
+from __future__ import annotations
+
 from pathlib import Path
 import os
 import socket
@@ -5,10 +8,13 @@ import subprocess
 import time
 import json
 import uuid
-from typing import Optional, Dict, Any, List
+import threading
+import signal
+import asyncio
+from typing import Optional, Dict, Any, List, Tuple
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from onvif import ONVIFCamera
@@ -24,12 +30,17 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DEVICES_JSON = DATA_DIR / "devices.json"
 
-MEDIAMTX_BASE_URL = os.getenv("MEDIAMTX_BASE_URL", "rtsp://mediamtx:8554")
+MEDIAMTX_BASE_URL = os.getenv("MEDIAMTX_BASE_URL", "rtsp://mediamtx:8554").rstrip("/")
 MEDIAMTX_HOST = os.getenv("MEDIAMTX_HOST", "mediamtx")
 MEDIAMTX_RTSP_PORT = int(os.getenv("MEDIAMTX_RTSP_PORT", "8554"))
 
 # One ffmpeg per device_id
 _ffmpegs: Dict[str, subprocess.Popen] = {}
+_ffmpeg_lock = threading.RLock()
+
+# readiness cache (so /api/start can return immediately without blocking)
+_stream_ready: Dict[str, bool] = {}
+_ready_lock = threading.RLock()
 
 
 def _dump(model) -> dict:
@@ -59,7 +70,9 @@ def devices_page():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "streams": list(_ffmpegs.keys())}
+    with _ffmpeg_lock:
+        streams = list(_ffmpegs.keys())
+    return {"ok": True, "streams": streams}
 
 
 # -------------------------
@@ -160,6 +173,11 @@ def delete_device(device_id: str):
 # Streaming helpers
 # -------------------------
 
+def _path_for(device_id: str) -> str:
+    # MediaMTX path per device
+    return f"cam-{device_id}"
+
+
 def _log_path_for(device_id: str) -> Path:
     return DATA_DIR / f"ffmpeg-{device_id}.log"
 
@@ -174,21 +192,47 @@ def _log_tail(device_id: str, n: int = 4000) -> str:
         return "(failed to read ffmpeg log)"
 
 
+def _popen_kwargs() -> dict:
+    """
+    Make ffmpeg easier to stop reliably:
+    - start in its own process group (Linux) so terminate kills the group
+    """
+    if os.name == "posix":
+        return {"preexec_fn": os.setsid}
+    return {}
+
+
 def _stop_ffmpeg(device_id: str):
-    p = _ffmpegs.get(device_id)
-    if not p:
-        return
-    if p.poll() is None:
-        p.terminate()
+    with _ffmpeg_lock:
+        p = _ffmpegs.get(device_id)
+        if not p:
+            return
+
         try:
-            p.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            p.kill()
-    _ffmpegs.pop(device_id, None)
+            if p.poll() is None:
+                if os.name == "posix":
+                    # terminate the whole process group
+                    os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+                else:
+                    p.terminate()
+                try:
+                    p.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    if os.name == "posix":
+                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                    else:
+                        p.kill()
+        finally:
+            _ffmpegs.pop(device_id, None)
+
+    with _ready_lock:
+        _stream_ready[device_id] = False
 
 
 def _stop_all_ffmpeg():
-    for device_id in list(_ffmpegs.keys()):
+    with _ffmpeg_lock:
+        ids = list(_ffmpegs.keys())
+    for device_id in ids:
         _stop_ffmpeg(device_id)
 
 
@@ -225,6 +269,7 @@ def _get_stream_uri(req: OnvifBase, profile_token: str) -> str:
     if not rtsp or not rtsp.lower().startswith("rtsp://"):
         raise RuntimeError(f"Unexpected RTSP URI returned: {rtsp}")
 
+    # add credentials if absent
     if "@" not in rtsp:
         rtsp = rtsp.replace("rtsp://", f"rtsp://{req.username}:{req.password}@", 1)
 
@@ -251,14 +296,14 @@ def _rtsp_describe_ok(path: str, timeout_s: float = 1.0) -> bool:
 
 
 def _start_ffmpeg(rtsp_in: str, device_id: str, path: str):
-    # stop existing for this device (idempotent)
+    # idempotent start (stop existing first)
     _stop_ffmpeg(device_id)
 
     publish_url = f"{MEDIAMTX_BASE_URL}/{path}"
 
     log_path = _log_path_for(device_id)
     log_path.write_text("", encoding="utf-8")
-    log_f = open(log_path, "a")
+    log_f = open(log_path, "a")  # intentionally left open while ffmpeg runs
 
     cmd = [
         "ffmpeg",
@@ -286,7 +331,43 @@ def _start_ffmpeg(rtsp_in: str, device_id: str, path: str):
         publish_url,
     ]
 
-    _ffmpegs[device_id] = subprocess.Popen(cmd, stdout=log_f, stderr=log_f)
+    p = subprocess.Popen(cmd, stdout=log_f, stderr=log_f, **_popen_kwargs())
+    with _ffmpeg_lock:
+        _ffmpegs[device_id] = p
+
+    with _ready_lock:
+        _stream_ready[device_id] = False
+
+
+def _mark_ready_when_online(device_id: str, path: str, max_wait_s: float = 8.0):
+    """
+    Background readiness check. This prevents /api/start from blocking the server,
+    so you can start/stop many cameras without UI “halting”.
+    """
+    deadline = time.time() + max_wait_s
+    while time.time() < deadline:
+        # if process died, stop
+        with _ffmpeg_lock:
+            p = _ffmpegs.get(device_id)
+        if not p:
+            with _ready_lock:
+                _stream_ready[device_id] = False
+            return
+        if p.poll() is not None:
+            with _ready_lock:
+                _stream_ready[device_id] = False
+            return
+
+        if _rtsp_describe_ok(path):
+            with _ready_lock:
+                _stream_ready[device_id] = True
+            return
+
+        time.sleep(0.1)
+
+    # timed out
+    with _ready_lock:
+        _stream_ready[device_id] = False
 
 
 # -------------------------
@@ -294,14 +375,19 @@ def _start_ffmpeg(rtsp_in: str, device_id: str, path: str):
 # -------------------------
 
 @app.post("/api/profiles")
-def profiles(req: OnvifBase):
-    try:
+async def profiles(req: OnvifBase):
+    # ONVIF calls can block; run in a thread
+    def _work():
         cam = _cam(req)
         media = cam.create_media_service()
         profs = media.GetProfiles()
         out = [_profile_summary(p) for p in profs if getattr(p, "token", None)]
         if not out:
             raise RuntimeError("No profiles returned.")
+        return out
+
+    try:
+        out = await asyncio.to_thread(_work)
         return {"profiles": out}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"ONVIF profiles failed: {e}")
@@ -309,11 +395,38 @@ def profiles(req: OnvifBase):
 
 @app.get("/api/streams")
 def streams():
-    return {"streams": list(_ffmpegs.keys())}
+    with _ffmpeg_lock:
+        ids = list(_ffmpegs.keys())
+    return {"streams": ids}
+
+
+@app.get("/api/status/{device_id}")
+def status(device_id: str):
+    device_id = device_id.strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Missing device_id")
+
+    with _ffmpeg_lock:
+        p = _ffmpegs.get(device_id)
+
+    running = bool(p and p.poll() is None)
+    exit_code = None if not p else p.poll()
+
+    with _ready_lock:
+        ready = bool(_stream_ready.get(device_id, False))
+
+    return {
+        "device_id": device_id,
+        "path": _path_for(device_id),
+        "running": running,
+        "ready": ready,
+        "exit_code": exit_code,
+        "log_tail": _log_tail(device_id),
+    }
 
 
 @app.post("/api/start")
-def start(req: StartRequest):
+async def start(req: StartRequest, bg: BackgroundTasks):
     if not req.profile_token:
         raise HTTPException(status_code=400, detail="Missing profile_token.")
 
@@ -321,36 +434,45 @@ def start(req: StartRequest):
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id.")
 
-    path = f"cam-{device_id}"
+    path = _path_for(device_id)
 
+    # ONVIF + ffmpeg spawn can block; do ONVIF in thread
     try:
-        rtsp = _get_stream_uri(req, req.profile_token)
+        rtsp = await asyncio.to_thread(_get_stream_uri, req, req.profile_token)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"ONVIF stream uri failed: {e}")
 
     try:
-        _start_ffmpeg(rtsp, device_id=device_id, path=path)
+        # spawning is quick, but keep it off the event loop anyway
+        await asyncio.to_thread(_start_ffmpeg, rtsp, device_id, path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="ffmpeg not found in container.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"ffmpeg failed to start: {e}")
 
-    for _ in range(80):
-        p = _ffmpegs.get(device_id)
-        if p and p.poll() is not None:
-            raise HTTPException(status_code=500, detail="ffmpeg exited:\n\n" + _log_tail(device_id))
-        if _rtsp_describe_ok(path):
-            return {"ok": True, "path": path}
-        time.sleep(0.1)
+    # DO NOT block here; mark readiness in background
+    bg.add_task(_mark_ready_when_online, device_id, path)
 
-    raise HTTPException(status_code=500, detail="Timed out waiting for stream.\n\n" + _log_tail(device_id))
+    # return immediately so starting many cameras doesn't “halt”
+    return {"ok": True, "device_id": device_id, "path": path}
 
 
 @app.post("/api/stop/{device_id}")
-def stop_one(device_id: str):
-    _stop_ffmpeg(device_id)
+async def stop_one(device_id: str):
+    device_id = device_id.strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Missing device_id")
+
+    await asyncio.to_thread(_stop_ffmpeg, device_id)
     return {"ok": True}
 
 
 @app.post("/api/stop")
-def stop_all():
-    _stop_all_ffmpeg()
+async def stop_all():
+    await asyncio.to_thread(_stop_all_ffmpeg)
     return {"ok": True}
+
+
+@app.on_event("shutdown")
+def _on_shutdown():
+    _stop_all_ffmpeg()

@@ -20,9 +20,8 @@ const toggleSidebarBtn = document.getElementById('toggleSidebar');
 const showSidebarBtn = document.getElementById('showSidebar');
 
 let devices = [];
-let isBusy = false;
 
-// Map deviceId -> { pc, tileEl, videoEl }
+// Map deviceId -> { pc, tileEl, videoEl, overlayEl, startingPromise? }
 const streams = new Map();
 
 function setPill(state, text) {
@@ -71,7 +70,7 @@ function recomputeGrid() {
     gridHintEl.textContent = "Click an active camera again to remove its stream.";
   }
 
-  // requirement: 2x2 for <=4, 3x3 for <=9, etc => cols = ceil(sqrt(n))
+  // 2x2 <=4, 3x3 <=9, etc. => cols = ceil(sqrt(n))
   const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
   videoGrid.style.setProperty("--cols", String(cols));
 }
@@ -187,6 +186,30 @@ async function startWhep(deviceId, videoEl, onState) {
   return pc;
 }
 
+/**
+ * Wait until backend reports MediaMTX path is available.
+ * Requires: GET /api/status/{device_id} -> { ready, running, exit_code, log_tail, path }
+ */
+async function waitUntilReady(deviceId, timeoutMs = 8000) {
+  const started = Date.now();
+  let last = null;
+
+  while (Date.now() - started < timeoutMs) {
+    last = await api(`/api/status/${encodeURIComponent(deviceId)}`, { method: "GET" });
+
+    // If ffmpeg crashed, stop waiting early with logs
+    if (!last.running && last.exit_code !== null && last.exit_code !== undefined) {
+      throw new Error(`ffmpeg exited (code ${last.exit_code}):\n\n${last.log_tail || ""}`);
+    }
+
+    if (last.ready) return last;
+
+    await new Promise(r => setTimeout(r, 150));
+  }
+
+  throw new Error(`Timed out waiting for stream.\n\n${last?.log_tail || ""}`);
+}
+
 function makeTile(device) {
   const tile = document.createElement("div");
   tile.className = "tile";
@@ -225,13 +248,12 @@ function makeTile(device) {
     if (act === "stop") {
       ev.preventDefault();
       ev.stopPropagation();
-      toggleDevice(device); // clicking stop = toggle off
+      stopDevice(device.id).catch(() => {});
       return;
     }
     if (act === "open") {
       ev.preventDefault();
       ev.stopPropagation();
-      // simple info
       alert(`${device.name || device.id}\n${device.ip}\nProfile: ${device.profile_label || device.profile_token}`);
       return;
     }
@@ -241,12 +263,18 @@ function makeTile(device) {
 }
 
 async function startDevice(device) {
-  if (streams.has(device.id)) return; // already running
+  // Already streaming OR currently starting?
+  const existing = streams.get(device.id);
+  if (existing?.startingPromise) return existing.startingPromise;
+  if (streams.has(device.id) && existing?.pc) return;
+
   if (!profileReady(device)) return;
 
   const { tile, videoEl, overlayEl } = makeTile(device);
   videoGrid.appendChild(tile);
-  streams.set(device.id, { pc: null, tileEl: tile, videoEl });
+
+  const entry = { pc: null, tileEl: tile, videoEl, overlayEl, startingPromise: null };
+  streams.set(device.id, entry);
 
   recomputeGrid();
   renderList();
@@ -254,39 +282,61 @@ async function startDevice(device) {
   overlayEl.textContent = "Starting…";
   overlayEl.style.display = "flex";
 
-  try {
-    // Start ffmpeg publisher for THIS device/path
-    await api("/api/start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ip: device.ip,
-        onvif_port: device.onvif_port ?? 80,
-        username: device.username,
-        password: device.password,
-        profile_token: device.profile_token,
-        device_id: device.id
-      })
-    });
+  // Keep a handle so rapid clicks don’t spawn multiple starts
+  entry.startingPromise = (async () => {
+    try {
+      // 1) Start publisher (fast / non-blocking)
+      await api("/api/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ip: device.ip,
+          onvif_port: device.onvif_port ?? 80,
+          username: device.username,
+          password: device.password,
+          profile_token: device.profile_token,
+          device_id: device.id
+        })
+      });
 
-    // Start WHEP subscriber for THIS tile
-    const pc = await startWhep(device.id, videoEl, (st) => {
-      if (st === "connected") {
-        overlayEl.style.display = "none";
-      } else if (st === "failed" || st === "disconnected") {
-        overlayEl.textContent = `WebRTC ${st}`;
-        overlayEl.style.display = "flex";
+      // 2) Wait for MediaMTX path online (prevents WHEP 404)
+      overlayEl.textContent = "Waiting for stream…";
+      await waitUntilReady(device.id, 8000);
+
+      // 3) Connect WHEP
+      overlayEl.textContent = "Connecting WebRTC…";
+      const pc = await startWhep(device.id, videoEl, (st) => {
+        if (st === "connected") {
+          overlayEl.style.display = "none";
+        } else if (st === "failed" || st === "disconnected") {
+          overlayEl.textContent = `WebRTC ${st}`;
+          overlayEl.style.display = "flex";
+        }
+      });
+
+      const cur = streams.get(device.id);
+      if (!cur) {
+        // We got stopped while connecting
+        try { pc.close(); } catch {}
+        return;
       }
-    });
 
-    streams.get(device.id).pc = pc;
+      cur.pc = pc;
+      cur.startingPromise = null;
 
-    setStatus(`Streaming ${streams.size} camera(s).`, "ok");
-  } catch (e) {
-    // cleanup tile if failed
-    await stopDevice(device.id, { skipApiStop: false });
-    setStatus(`Error: ${e?.message || e}`, "bad");
-  }
+      setStatus(`Streaming ${streams.size} camera(s).`, "ok");
+    } catch (e) {
+      // cleanup tile if failed
+      await stopDevice(device.id, { skipApiStop: false });
+      setStatus(`Error: ${e?.message || e}`, "bad");
+      throw e;
+    } finally {
+      const cur = streams.get(device.id);
+      if (cur) cur.startingPromise = null;
+    }
+  })();
+
+  return entry.startingPromise;
 }
 
 async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
@@ -294,6 +344,8 @@ async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
   if (!entry) return;
 
   const { pc, tileEl, videoEl } = entry;
+
+  // Stop WHEP immediately (client-side = instant UI responsiveness)
   stopPc(pc, videoEl);
 
   // remove tile
@@ -303,26 +355,12 @@ async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
   recomputeGrid();
   renderList();
 
+  // Tell backend to stop ffmpeg (don’t await to avoid UI halting)
   if (!skipApiStop) {
-    try { await fetch(`/api/stop/${encodeURIComponent(deviceId)}`, { method: "POST" }); } catch {}
+    fetch(`/api/stop/${encodeURIComponent(deviceId)}`, { method: "POST" }).catch(() => {});
   }
 
   setStatus(streams.size ? `Streaming ${streams.size} camera(s).` : "Stopped.", streams.size ? "ok" : "warn");
-}
-
-async function toggleDevice(device) {
-  if (isBusy) return;
-  isBusy = true;
-
-  try {
-    if (streams.has(device.id)) {
-      await stopDevice(device.id);
-      return;
-    }
-    await startDevice(device);
-  } finally {
-    isBusy = false;
-  }
 }
 
 // ---- Events ----
@@ -332,35 +370,38 @@ camListEl.addEventListener("click", (ev) => {
   const id = btn.getAttribute("data-id");
   const d = devices.find(x => x.id === id);
   if (!d) return;
-  toggleDevice(d);
+
+  // toggle behavior: if already streaming, stop. else start.
+  if (streams.has(d.id)) {
+    stopDevice(d.id).catch(() => {});
+  } else {
+    startDevice(d).catch(() => {});
+  }
 });
 
 reloadBtn.addEventListener("click", () => loadDevices());
 
 startAllBtn.addEventListener("click", async () => {
   const ready = devices.filter(profileReady);
-  if (!ready.length) return setStatus("No READY devices (set profile in Devices).", "bad");
+  const toStart = ready.filter(d => !streams.has(d.id));
 
-  setStatus(`Starting ${ready.length}…`, "warn");
+  if (!toStart.length) return;
 
-  // start only those not already running
-  for (const d of ready) {
-    if (!streams.has(d.id)) {
-      await startDevice(d);
-    }
-  }
+  setStatus(`Starting ${toStart.length} camera(s)…`, "warn");
+
+  // start everything concurrently
+  const jobs = toStart.map(d => startDevice(d));
+  await Promise.allSettled(jobs);
+
+  setStatus(`Streaming ${streams.size} camera(s).`, streams.size ? "ok" : "warn");
 });
 
-stopAllBtn.addEventListener("click", async () => {
-  setStatus("Stopping all…", "warn");
-
-  // stop local first (fast UI), then API stop-all
-  for (const id of Array.from(streams.keys())) {
-    await stopDevice(id, { skipApiStop: true });
+stopAllBtn.addEventListener("click", () => {
+  // stop everything immediately without waiting
+  for (const [id] of streams) {
+    stopDevice(id).catch(() => {});
   }
-  try { await fetch("/api/stop", { method: "POST" }); } catch {}
-
-  setStatus("Stopped.", "warn");
+  setStatus("Stopping all…", "warn");
 });
 
 // ---- Sidebar hide/show ----
