@@ -25,7 +25,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 FFMPEG_LOG = DATA_DIR / "ffmpeg.log"
 DEVICES_JSON = DATA_DIR / "devices.json"
 
-MEDIAMTX_PUBLISH_URL = os.getenv("MEDIAMTX_PUBLISH_URL", "rtsp://mediamtx:8554/cam1")
+MEDIAMTX_BASE_URL = os.getenv("MEDIAMTX_BASE_URL", "rtsp://mediamtx:8554")
 MEDIAMTX_HOST = os.getenv("MEDIAMTX_HOST", "mediamtx")
 MEDIAMTX_RTSP_PORT = int(os.getenv("MEDIAMTX_RTSP_PORT", "8554"))
 
@@ -72,7 +72,8 @@ class OnvifBase(BaseModel):
 
 class StartRequest(OnvifBase):
     profile_token: str
-
+    device_id: str
+    
 
 class DeviceIn(BaseModel):
     name: str = Field(..., min_length=1)
@@ -215,9 +216,9 @@ def _get_stream_uri(req: OnvifBase, profile_token: str) -> str:
     return rtsp
 
 
-def _rtsp_describe_ok_for_cam1(timeout_s: float = 1.0) -> bool:
+def _rtsp_describe_ok(path: str, timeout_s: float = 1.0) -> bool:
     req = (
-        f"DESCRIBE rtsp://{MEDIAMTX_HOST}:{MEDIAMTX_RTSP_PORT}/cam1 RTSP/1.0\r\n"
+        f"DESCRIBE rtsp://{MEDIAMTX_HOST}:{MEDIAMTX_RTSP_PORT}/{path} RTSP/1.0\r\n"
         f"CSeq: 1\r\n"
         f"User-Agent: sei-raspi\r\n"
         f"Accept: application/sdp\r\n"
@@ -232,11 +233,24 @@ def _rtsp_describe_ok_for_cam1(timeout_s: float = 1.0) -> bool:
         return "RTSP/1.0 200" in resp
     except Exception:
         return False
+    
+
+def _safe_device_id(s: str) -> str:
+    # allow hex-ish ids; keep it simple and safe for mediamtx paths
+    s = (s or "").strip()
+    if not s:
+        raise ValueError("device_id is empty")
+    for ch in s:
+        if ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_":
+            raise ValueError("device_id contains invalid characters")
+    return s
 
 
-def _start_ffmpeg(rtsp_in: str):
+def _start_ffmpeg(rtsp_in: str, path: str):
     global _ffmpeg
     _stop_ffmpeg()
+
+    publish_url = f"{MEDIAMTX_BASE_URL.rstrip('/')}/{path}"
 
     FFMPEG_LOG.write_text("", encoding="utf-8")
     log_f = open(FFMPEG_LOG, "a")
@@ -250,6 +264,7 @@ def _start_ffmpeg(rtsp_in: str):
         "-rtsp_flags", "prefer_tcp",
         "-i", rtsp_in,
 
+        # publish ONLY video (avoid audio/data weirdness)
         "-map", "0:v:0",
         "-an",
 
@@ -264,11 +279,10 @@ def _start_ffmpeg(rtsp_in: str):
 
         "-f", "rtsp",
         "-rtsp_transport", "tcp",
-        MEDIAMTX_PUBLISH_URL,
+        publish_url,
     ]
 
     _ffmpeg = subprocess.Popen(cmd, stdout=log_f, stderr=log_f)
-
 
 # -------------------------
 # Streaming API
@@ -291,7 +305,14 @@ def profiles(req: OnvifBase):
 @app.post("/api/start")
 def start(req: StartRequest):
     if not req.profile_token:
-        raise HTTPException(status_code=400, detail="Missing profile_token (select and save a profile in Devices).")
+        raise HTTPException(status_code=400, detail="Missing profile_token.")
+
+    try:
+        dev_id = _safe_device_id(req.device_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid device_id: {e}")
+
+    path = f"cam-{dev_id}"
 
     try:
         rtsp = _get_stream_uri(req, req.profile_token)
@@ -299,21 +320,25 @@ def start(req: StartRequest):
         raise HTTPException(status_code=400, detail=f"ONVIF stream uri failed: {e}")
 
     try:
-        _start_ffmpeg(rtsp)
+        _start_ffmpeg(rtsp, path)
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="ffmpeg not found in container.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"ffmpeg failed to start: {e}")
 
+    # Wait until MediaMTX reports stream available
     for _ in range(80):
         if _ffmpeg and _ffmpeg.poll() is not None:
             raise HTTPException(status_code=500, detail="ffmpeg exited:\n\n" + _log_tail())
-        if _rtsp_describe_ok_for_cam1():
-            return {"ok": True}
+        if _rtsp_describe_ok(path):
+            return {"ok": True, "path": path}
         time.sleep(0.1)
 
-    raise HTTPException(status_code=500, detail="Timed out waiting for cam1 to become online.\n\n" + _log_tail())
-
+    raise HTTPException(
+        status_code=500,
+        detail="Timed out waiting for stream.\n\n" + _log_tail()
+    )
+    
 
 @app.post("/api/stop")
 def stop():

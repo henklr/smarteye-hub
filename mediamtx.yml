@@ -5,4 +5,5 @@ webrtcAdditionalHosts:
 webrtcLocalTCPAddress: :8189
 
 paths:
-  cam1: {}
+  all:
+    source: publisher

@@ -1,4 +1,5 @@
 // live.js — select saved device; start only if it has a saved profile_token
+
 const dot = document.getElementById('dot');
 const pillText = document.getElementById('pillText');
 const statusText = document.getElementById('statusText');
@@ -10,6 +11,9 @@ const video = document.getElementById('video');
 const deviceSel = document.getElementById('deviceSel');
 const reloadBtn = document.getElementById('reloadDevices');
 const profileLabelEl = document.getElementById('profileLabel');
+
+const whepEl = document.getElementById('whepUrl');
+const playerEl = document.getElementById('playerUrl');
 
 let pc = null;
 let devices = [];
@@ -27,31 +31,42 @@ function setStatus(msg, state = "warn") {
   setPill(state, msg.slice(0, 40));
 }
 
-function getWhepUrl() {
+function getWhepUrl(deviceId) {
   const proto = window.location.protocol;
   const host = window.location.hostname;
-  return `${proto}//${host}:8889/cam1/whep`;
+  return `${proto}//${host}:8889/cam-${encodeURIComponent(deviceId)}/whep`;
 }
 
-const whepUrl = getWhepUrl();
-document.getElementById('whepUrl').textContent = whepUrl;
-document.getElementById('playerUrl').textContent = whepUrl.replace('/whep', '');
+function updateUrls() {
+  const pathCodeEl = document.getElementById("pathCode");
+
+  if (!selectedDevice || !selectedDevice.id) {
+    if (whepEl) whepEl.textContent = "(select a device)";
+    if (playerEl) playerEl.textContent = "(select a device)";
+    if (pathCodeEl) pathCodeEl.textContent = "(select a device)";
+    return;
+  }
+
+  const path = `cam-${selectedDevice.id}`;
+  const whepUrl = getWhepUrl(selectedDevice.id);
+  const playerUrl = whepUrl.replace(/\/whep$/, '');
+
+  if (pathCodeEl) pathCodeEl.textContent = path;
+  if (whepEl) whepEl.textContent = whepUrl;
+  if (playerEl) playerEl.textContent = playerUrl;
+}
 
 async function api(url, opts) {
   const res = await fetch(url, opts);
-  const text = await res.text();             // <- always read body
+  const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch {}
 
   if (!res.ok) {
-    // show FastAPI detail if present, otherwise show raw response
     const detail = data?.detail || text || res.statusText;
     throw new Error(`${res.status} ${res.statusText}: ${detail}`);
   }
-
-  if (data === null) {
-    throw new Error(`Expected JSON from ${url}, got: ${text.slice(0, 200)}`);
-  }
+  if (data === null) throw new Error(`Expected JSON from ${url}, got: ${text.slice(0, 200)}`);
   return data;
 }
 
@@ -85,9 +100,12 @@ function waitIceGatheringComplete(pc, timeoutMs = 2000) {
   });
 }
 
-async function startWhep() {
+async function startWhepForSelectedDevice() {
+  if (!selectedDevice?.id) throw new Error("No device selected.");
+
   stopWhep();
   pc = new RTCPeerConnection();
+
   pc.ontrack = (e) => { video.srcObject = e.streams[0]; };
 
   pc.onconnectionstatechange = () => {
@@ -102,7 +120,7 @@ async function startWhep() {
   await pc.setLocalDescription(offer);
   await waitIceGatheringComplete(pc, 2000);
 
-  const res = await fetch(getWhepUrl(), {
+  const res = await fetch(getWhepUrl(selectedDevice.id), {
     method: "POST",
     headers: { "Content-Type": "application/sdp" },
     body: pc.localDescription.sdp,
@@ -118,21 +136,26 @@ async function startWhep() {
 }
 
 function setSelectedDevice(d) {
-  selectedDevice = d;
+  selectedDevice = d || null;
+
   stopWhep();
   stopBtn.disabled = true;
 
-  const ready = !!(d && d.profile_token);
-  profileLabelEl.textContent = d?.profile_label || (d?.profile_token ? d.profile_token : "(none)");
+  const ready = !!(selectedDevice && selectedDevice.profile_token);
+  profileLabelEl.textContent =
+    selectedDevice?.profile_label ||
+    (selectedDevice?.profile_token ? selectedDevice.profile_token : "(none)");
 
   startBtn.disabled = !ready;
 
-  if (!d) {
+  updateUrls();
+
+  if (!selectedDevice) {
     setStatus("No device selected.", "warn");
   } else if (!ready) {
     setStatus("Device not ready: select & save a profile in Devices.", "warn");
   } else {
-    setStatus(`Ready: ${d.name || d.ip}`, "ok");
+    setStatus(`Ready: ${selectedDevice.name || selectedDevice.ip}`, "ok");
   }
 }
 
@@ -193,10 +216,11 @@ startBtn.addEventListener("click", async () => {
         username: selectedDevice.username,
         password: selectedDevice.password,
         profile_token: selectedDevice.profile_token,
+        device_id: selectedDevice.id
       })
     });
 
-    await startWhep();
+    await startWhepForSelectedDevice();
     stopBtn.disabled = false;
     setStatus("Streaming.", "ok");
   } catch (e) {
@@ -217,4 +241,5 @@ stopBtn.addEventListener("click", async () => {
 
 setStatus("Loading…", "warn");
 stopBtn.disabled = true;
+updateUrls();
 loadDevices();
