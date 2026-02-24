@@ -1,12 +1,9 @@
-<!-- live.html -->
 <!doctype html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Camera Viewer</title>
-
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 
@@ -15,16 +12,32 @@
     <div class="topbar">
       <div class="title">
         <h1>Camera Viewer</h1>
-        <div class="subtitle">ONVIF → RTSP → MediaMTX → WebRTC (WHEP)</div>
+        <div class="subtitle">Saved Devices → ONVIF → RTSP → MediaMTX → WebRTC (WHEP)</div>
       </div>
-      <div class="pill">
-        <span class="dot" id="dot"></span>
-        <span id="pillText">Idle</span>
+
+      <div style="display:flex; gap:10px; align-items:center;">
+        <a class="btn" href="/devices">Devices</a>
+        <div class="pill">
+          <span class="dot" id="dot"></span>
+          <span id="pillText">Idle</span>
+        </div>
       </div>
     </div>
 
     <div class="card">
-      <div class="grid">
+
+      <!-- Device selector (no manual entry) -->
+      <div class="row2" style="margin-top:0;">
+        <div class="grow">
+          <label>Device</label>
+          <select id="deviceSel" disabled>
+            <option>Loading devices…</option>
+          </select>
+        </div>
+        <button class="btn" id="reloadDevices">Reload</button>
+      </div>
+
+      <div class="grid" style="margin-top:14px;">
         <div data-full>
           <label>Camera IP</label>
           <input id="ip" placeholder="192.168.1.108" />
@@ -52,7 +65,7 @@
         <div class="grow">
           <label>Profile</label>
           <select id="profiles" disabled>
-            <option>Fetch profiles first…</option>
+            <option>Select a device & fetch profiles…</option>
           </select>
         </div>
         <button class="btn btn-primary" id="start" disabled>Start</button>
@@ -64,6 +77,7 @@
       </div>
 
       <div class="meta">
+        <span>Path: <code>cam1</code></span>
         <span>Player: <code id="playerUrl">(loading…)</code></span>
         <span>WHEP: <code id="whepUrl"></code></span>
       </div>
@@ -75,7 +89,5 @@
   </div>
 
   <script src="/static/live.js"></script>
-
 </body>
-
 </html>

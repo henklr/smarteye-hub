@@ -3,13 +3,14 @@ import os
 import socket
 import subprocess
 import time
-from typing import Optional, Dict, Any
-from urllib.parse import urlparse
+import json
+import uuid
+from typing import Optional, Dict, Any, List
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from onvif import ONVIFCamera
 
 app = FastAPI()
@@ -22,23 +23,45 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 FFMPEG_LOG = DATA_DIR / "ffmpeg.log"
+DEVICES_JSON = DATA_DIR / "devices.json"
 
 MEDIAMTX_PUBLISH_URL = os.getenv("MEDIAMTX_PUBLISH_URL", "rtsp://mediamtx:8554/cam1")
-MEDIAMTX_HOST = "mediamtx"
-MEDIAMTX_RTSP_PORT = 8554
+MEDIAMTX_HOST = os.getenv("MEDIAMTX_HOST", "mediamtx")
+MEDIAMTX_RTSP_PORT = int(os.getenv("MEDIAMTX_RTSP_PORT", "8554"))
 
 _ffmpeg: Optional[subprocess.Popen] = None
 
 
+def _dump(model) -> dict:
+    # pydantic v2: model_dump(), v1: dict()
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
+
+
+# -------------------------
+# Pages
+# -------------------------
+
 @app.get("/", response_class=HTMLResponse)
-def index():
-    return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+def live_page():
+    # serve your live.html
+    return (STATIC_DIR / "live.html").read_text(encoding="utf-8")
+
+
+@app.get("/devices", response_class=HTMLResponse)
+def devices_page():
+    return (STATIC_DIR / "devices.html").read_text(encoding="utf-8")
 
 
 @app.get("/health")
 def health():
     return {"ok": True}
 
+
+# -------------------------
+# Models
+# -------------------------
 
 class OnvifBase(BaseModel):
     ip: str
@@ -50,6 +73,90 @@ class OnvifBase(BaseModel):
 class StartRequest(OnvifBase):
     profile_token: str
 
+
+class DeviceIn(BaseModel):
+    name: str = Field(..., min_length=1)
+    ip: str = Field(..., min_length=1)
+    onvif_port: int = 80
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+
+
+class Device(DeviceIn):
+    id: str
+
+
+# -------------------------
+# Device storage
+# -------------------------
+
+def _load_devices() -> List[Device]:
+    if not DEVICES_JSON.exists():
+        return []
+    try:
+        raw = json.loads(DEVICES_JSON.read_text(encoding="utf-8"))
+        items = raw.get("devices", [])
+        return [Device(**d) for d in items]
+    except Exception:
+        # If file corrupt, don't crash the app; return empty and let you fix the file.
+        return []
+
+
+def _save_devices(devs: List[Device]) -> None:
+    payload = {"devices": [_dump(d) for d in devs]}
+    tmp = DEVICES_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(DEVICES_JSON)
+
+
+# -------------------------
+# Devices API
+# -------------------------
+
+@app.get("/api/devices")
+def list_devices():
+    devs = _load_devices()
+    return {"devices": [_dump(d) for d in devs]}
+
+
+@app.post("/api/devices")
+def create_device(dev: DeviceIn):
+    devs = _load_devices()
+
+    new = Device(id=uuid.uuid4().hex[:12], **_dump(dev))
+
+    devs.append(new)
+    _save_devices(devs)
+    return {"ok": True, "device": _dump(new)}
+
+
+@app.put("/api/devices/{device_id}")
+def update_device(device_id: str, dev: DeviceIn):
+    devs = _load_devices()
+    idx = next((i for i, d in enumerate(devs) if d.id == device_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    updated = Device(id=device_id, **_dump(dev))
+    devs[idx] = updated
+    _save_devices(devs)
+    return {"ok": True, "device": _dump(updated)}
+
+
+@app.delete("/api/devices/{device_id}")
+def delete_device(device_id: str):
+    devs = _load_devices()
+    new_devs = [d for d in devs if d.id != device_id]
+    if len(new_devs) == len(devs):
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    _save_devices(new_devs)
+    return {"ok": True}
+
+
+# -------------------------
+# Streaming helpers
+# -------------------------
 
 def _stop_ffmpeg():
     global _ffmpeg
@@ -150,7 +257,10 @@ def _start_ffmpeg(rtsp_in: str):
         "-rtsp_flags", "prefer_tcp",
         "-i", rtsp_in,
 
+        # video only
+        "-map", "0:v:0",
         "-an",
+
         "-vf", "scale=1280:-2,format=yuv420p",
         "-c:v", "libx264",
         "-profile:v", "baseline",
@@ -167,6 +277,10 @@ def _start_ffmpeg(rtsp_in: str):
 
     _ffmpeg = subprocess.Popen(cmd, stdout=log_f, stderr=log_f)
 
+
+# -------------------------
+# Streaming API
+# -------------------------
 
 @app.post("/api/profiles")
 def profiles(req: OnvifBase):
