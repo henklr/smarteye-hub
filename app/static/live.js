@@ -1,3 +1,4 @@
+// live.js
 const dot = document.getElementById('dot');
 const pillText = document.getElementById('pillText');
 const statusText = document.getElementById('statusText');
