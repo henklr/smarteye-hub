@@ -344,6 +344,7 @@ async function selectDevice(deviceId) {
     return;
   }
 
+  // Backend workers are always running. We only connect/disconnect the SSE stream per device in the UI.
   startSSE(currentDevice.id);
   await refreshLearnedAndAllow();
 }
@@ -393,29 +394,6 @@ async function startLearn() {
   logLine("ok", "Learning started (unfiltered).");
 }
 
-async function startFiltered() {
-  if (!currentDevice) return;
-
-  await api("/api/events/start", {
-    method: "POST",
-    body: JSON.stringify({
-      device_id: currentDevice.id,
-      ip: currentDevice.ip,
-      onvif_port: currentDevice.onvif_port,
-      username: currentDevice.username,
-      password: currentDevice.password
-    })
-  });
-
-  logLine("ok", "Filtered subscription started (uses saved allowlist).");
-}
-
-async function stopWorker() {
-  if (!currentDevice) return;
-  await api(`/api/events/stop/${encodeURIComponent(currentDevice.id)}`, { method: "POST" });
-  logLine("warn", "Worker stop requested.");
-}
-
 async function saveAllowlist() {
   if (!currentDevice) return;
 
@@ -440,16 +418,6 @@ el("btnRefresh").addEventListener("click", async () => {
 
 el("btnLearnStart").addEventListener("click", async () => {
   try { await startLearn(); }
-  catch (err) { logLine("bad", err.message); }
-});
-
-el("btnEventsStart").addEventListener("click", async () => {
-  try { await startFiltered(); }
-  catch (err) { logLine("bad", err.message); }
-});
-
-el("btnStop").addEventListener("click", async () => {
-  try { await stopWorker(); }
   catch (err) { logLine("bad", err.message); }
 });
 

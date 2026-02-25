@@ -268,12 +268,14 @@
       <div class="listHeader">
         <div>
           <div class="listTitle">ONVIF Events</div>
-          <div class="listSub">Learn topics from the camera, then allowlist what you want per device.</div>
+          <div class="listSub">
+            Events are always running in the backend. Manage your per-device allowlist and save.
+          </div>
         </div>
         <div class="camBadge" id="deviceChip">No device</div>
       </div>
 
-      <div class="grid" style="grid-template-columns: 1.2fr 1fr auto auto auto; gap:10px;">
+      <div class="grid" style="grid-template-columns: 1.2fr 1fr auto auto; gap:10px;">
         <div data-full>
           <label>Device</label>
           <select id="deviceSelect"></select>
@@ -285,13 +287,11 @@
         </div>
 
         <button class="btn" id="btnRefresh">Refresh</button>
-        <button class="btn" id="btnStop">Stop</button>
         <button class="btn btn-danger" id="btnClearAllow">Clear selection</button>
       </div>
 
       <div class="row2" style="margin-top:12px;">
         <button class="btn" id="btnLearnStart">Start learning</button>
-        <button class="btn btn-primary" id="btnEventsStart">Start filtered subscription</button>
         <button class="btn btn-primary" id="btnSaveAllow">Save allowlist</button>
       </div>
 
@@ -319,7 +319,7 @@
           <div class="listHeader" style="margin-bottom:8px;">
             <div>
               <div class="listTitle">Allowlist</div>
-              <div class="listSub">Used by “Start filtered subscription”.</div>
+              <div class="listSub">Applied live to the always-on subscription.</div>
             </div>
           </div>
 

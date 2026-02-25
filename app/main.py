@@ -350,12 +350,16 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages:
     PullPoint worker:
       - mode="learn": no filter, save topic keys/examples per device
       - mode="filtered": only forward events that match allowlist for device
+
+    NOTE: filtered mode is always-on and hot-reloads allowlist periodically.
+          If allowlist is empty, it forwards NOTHING (allowed events only).
     """
     with _event_worker_lock:
         stop_flag = _event_workers[device_id].stop_flag
 
-    allow = _get_allowlist_snapshot(device_id) if mode == "filtered" else []
-    allow_set = set(allow)
+    allow_set: set[str] = set()
+    last_allow_refresh = 0.0
+    ALLOW_REFRESH_S = 2.0
 
     def emit(level: str, msg: str, extra: Optional[dict] = None):
         payload = {
@@ -382,9 +386,16 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages:
         if mode == "learn":
             emit("ok", "Learning ONVIF topics (unfiltered).")
         else:
-            emit("ok", f"Subscribed to ONVIF events (filtered). allow_topics={len(allow_set)}")
+            emit("ok", "Subscribed to ONVIF events (filtered, allowlist hot-reload enabled).")
 
         while not stop_flag.is_set():
+            # hot-reload allowlist in filtered mode
+            if mode == "filtered":
+                now = time.time()
+                if (now - last_allow_refresh) >= ALLOW_REFRESH_S:
+                    allow_set = set(_get_allowlist_snapshot(device_id))
+                    last_allow_refresh = now
+
             try:
                 resp = pullpoint.PullMessages({"Timeout": "PT2S", "MessageLimit": max_messages})
                 msgs = getattr(resp, "NotificationMessage", None)
@@ -427,7 +438,10 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages:
                         continue
 
                     # FILTERED MODE:
-                    if allow_set and topic_key not in allow_set:
+                    # allowed events only: if allowlist is empty, forward nothing
+                    if not allow_set:
+                        continue
+                    if topic_key not in allow_set:
                         continue
 
                     # change detection (avoid noise)
@@ -544,8 +558,8 @@ def _start_event_worker(device_id: str, req: OnvifBase, mode: str) -> None:
 @app.post("/api/events/start")
 async def events_start(req: EventsStartRequest):
     """
-    Start FILTERED events worker for device_id.
-    Uses allow_topics stored on the device. If allowlist is empty, it will still run (but will be noisy).
+    Kept for compatibility; events are always-on.
+    Ensures FILTERED worker is running for device_id.
     """
     device_id = req.device_id.strip()
     if not device_id:
@@ -571,17 +585,13 @@ async def events_learn_start(req: EventsStartRequest):
 
 @app.post("/api/events/stop/{device_id}")
 async def events_stop(device_id: str):
+    """
+    Stop is intentionally disabled (always-on workers).
+    """
     device_id = device_id.strip()
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
-
-    with _event_worker_lock:
-        w = _event_workers.get(device_id)
-        if not w:
-            return {"ok": True, "device_id": device_id, "running": False}
-        w.stop_flag.set()
-
-    return {"ok": True, "device_id": device_id, "running": False}
+    return {"ok": True, "device_id": device_id, "running": True, "note": "stop disabled"}
 
 
 @app.get("/api/events/learned/{device_id}")
@@ -637,6 +647,17 @@ def create_device(dev: DeviceIn):
     new = Device(id=uuid.uuid4().hex[:12], **_dump(dev))
     devs.append(new)
     _save_devices(devs)
+
+    # Always-on filtered events worker for new device
+    req = EventsStartRequest(
+        device_id=new.id,
+        ip=new.ip,
+        onvif_port=new.onvif_port,
+        username=new.username,
+        password=new.password,
+    )
+    _start_event_worker(new.id, req, mode="filtered")
+
     return {"ok": True, "device": _dump(new)}
 
 
@@ -650,6 +671,17 @@ def update_device(device_id: str, dev: DeviceIn):
     updated = Device(id=device_id, **_dump(dev))
     devs[idx] = updated
     _save_devices(devs)
+
+    # Ensure always-on worker exists (won't restart if already running)
+    req = EventsStartRequest(
+        device_id=device_id,
+        ip=updated.ip,
+        onvif_port=updated.onvif_port,
+        username=updated.username,
+        password=updated.password,
+    )
+    _start_event_worker(device_id, req, mode="filtered")
+
     return {"ok": True, "device": _dump(updated)}
 
 
@@ -936,10 +968,32 @@ async def stop_all():
     return {"ok": True}
 
 
+# -------------------------
+# Startup / shutdown
+# -------------------------
+@app.on_event("startup")
+def _on_startup():
+    # Always-on filtered event workers for all saved devices
+    try:
+        devs = _load_devices()
+        for d in devs:
+            req = EventsStartRequest(
+                device_id=d.id,
+                ip=d.ip,
+                onvif_port=d.onvif_port,
+                username=d.username,
+                password=d.password,
+            )
+            _start_event_worker(d.id, req, mode="filtered")
+    except Exception:
+        # don't crash if a camera is down at boot
+        pass
+
+
 @app.on_event("shutdown")
 def _on_shutdown():
     _stop_all_ffmpeg()
-    # stop event workers
+    # stop event workers (server shutdown only)
     with _event_worker_lock:
         for _, w in list(_event_workers.items()):
             w.stop_flag.set()
