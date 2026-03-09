@@ -1,3 +1,4 @@
+# main.py
 from __future__ import annotations
 
 from pathlib import Path
@@ -36,6 +37,8 @@ MEDIAMTX_API_URL = os.getenv("MEDIAMTX_API_URL", "http://mediamtx:9997").rstrip(
 MEDIAMTX_API_USER = os.getenv("MEDIAMTX_API_USER", "apiuser")
 MEDIAMTX_API_PASS = os.getenv("MEDIAMTX_API_PASS", "apipass")
 
+PTZ_WATCHDOG_SEC = float(os.getenv("PTZ_WATCHDOG_SEC", "0.45"))
+
 
 def _dump(model) -> dict:
     if hasattr(model, "model_dump"):
@@ -61,6 +64,10 @@ _event_worker_lock = threading.RLock()
 
 _event_last: Dict[str, Dict[str, str]] = {}
 _event_last_lock = threading.RLock()
+
+# PTZ watchdog timers
+_ptz_watchdogs: Dict[str, threading.Timer] = {}
+_ptz_watchdog_lock = threading.RLock()
 
 
 # -------------------------
@@ -116,11 +123,26 @@ class DeviceIn(BaseModel):
     password: str = Field(..., min_length=1)
     profile_token: Optional[str] = None
     profile_label: Optional[str] = None
+    profile_encoding: Optional[str] = None
     allow_topics: Optional[List[str]] = None
 
 
 class Device(DeviceIn):
     id: str
+
+
+class EventsStartRequest(OnvifBase):
+    device_id: str
+
+
+class AllowListRequest(BaseModel):
+    allow_topics: List[str] = Field(default_factory=list)
+
+
+class PTZMoveRequest(BaseModel):
+    pan: float = 0.0
+    tilt: float = 0.0
+    zoom: float = 0.0
 
 
 # -------------------------
@@ -239,15 +261,6 @@ def _broadcast_event(device_id: str, payload: dict) -> None:
             pass
 
 
-def _xml_to_str(elem, limit=6000):
-    if elem is None:
-        return None
-    try:
-        return ET.tostring(elem, encoding="unicode")[:limit]
-    except Exception:
-        return str(elem)[:limit]
-
-
 def _extract_simple_items(message_elem) -> dict:
     out = {"source": {}, "data": {}}
     if message_elem is None:
@@ -307,6 +320,15 @@ def _topic_to_key(topic_obj, items: dict) -> str:
 
 def _cam(req: OnvifBase) -> ONVIFCamera:
     return ONVIFCamera(req.ip, req.onvif_port, req.username, req.password)
+
+
+def _device_req(device: Device) -> OnvifBase:
+    return OnvifBase(
+        ip=device.ip,
+        onvif_port=device.onvif_port,
+        username=device.username,
+        password=device.password,
+    )
 
 
 def _get_allowlist_snapshot(device_id: str) -> List[str]:
@@ -460,16 +482,342 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages:
 
 
 # -------------------------
+# Streaming helpers
+# -------------------------
+def _path_for(device_id: str) -> str:
+    return f"cam-{device_id}"
+
+
+def _profile_summary(p) -> Dict[str, Any]:
+    out = {
+        "token": getattr(p, "token", None),
+        "name": getattr(p, "Name", None),
+        "encoding": None,
+        "width": None,
+        "height": None,
+        "browser_compatible": False,
+        "recommended": False,
+    }
+
+    try:
+        vec = getattr(p, "VideoEncoderConfiguration", None)
+        if vec:
+            encoding = getattr(vec, "Encoding", None)
+            if encoding is not None:
+                encoding = str(encoding).upper()
+            out["encoding"] = encoding
+
+            res = getattr(vec, "Resolution", None)
+            if res:
+                out["width"] = getattr(res, "Width", None)
+                out["height"] = getattr(res, "Height", None)
+    except Exception:
+        pass
+
+    out["browser_compatible"] = out["encoding"] == "H264"
+    return out
+
+
+def _find_profile_encoding(req: OnvifBase, profile_token: str) -> Optional[str]:
+    cam = _cam(req)
+    media = cam.create_media_service()
+    profs = media.GetProfiles()
+
+    for p in profs:
+        if getattr(p, "token", None) != profile_token:
+            continue
+        try:
+            vec = getattr(p, "VideoEncoderConfiguration", None)
+            if vec:
+                encoding = getattr(vec, "Encoding", None)
+                if encoding is not None:
+                    return str(encoding).upper()
+        except Exception:
+            pass
+        return None
+
+    raise RuntimeError(f"Profile not found: {profile_token}")
+
+
+def _get_stream_uri(req: OnvifBase, profile_token: str) -> str:
+    cam = _cam(req)
+    media = cam.create_media_service()
+    resp = media.GetStreamUri(
+        {
+            "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
+            "ProfileToken": profile_token,
+        }
+    )
+
+    rtsp = getattr(resp, "Uri", None)
+    if not rtsp or not rtsp.lower().startswith("rtsp://"):
+        raise RuntimeError(f"Unexpected RTSP URI returned: {rtsp}")
+
+    if "@" not in rtsp:
+        rtsp = rtsp.replace("rtsp://", f"rtsp://{req.username}:{req.password}@", 1)
+
+    return rtsp
+
+
+def _mediamtx_api_request(method: str, path: str, body: Optional[dict] = None) -> dict:
+    url = f"{MEDIAMTX_API_URL}{path}"
+    data = None
+    auth_raw = f"{MEDIAMTX_API_USER}:{MEDIAMTX_API_PASS}".encode("utf-8")
+    auth_b64 = base64.b64encode(auth_raw).decode("ascii")
+
+    headers = {
+        "Authorization": f"Basic {auth_b64}",
+    }
+
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"MediaMTX API {method} {path} failed: {e.code} {detail}")
+    except Exception as e:
+        raise RuntimeError(f"MediaMTX API {method} {path} failed: {e}")
+
+
+def _ensure_mediamtx_path(device_id: str, source_rtsp: str) -> dict:
+    name = _path_for(device_id)
+    payload = {
+        "source": source_rtsp,
+        "sourceOnDemand": True,
+        "sourceOnDemandStartTimeout": "10s",
+        "sourceOnDemandCloseAfter": "10s",
+    }
+
+    try:
+        return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
+    except Exception:
+        return _mediamtx_api_request("PATCH", f"/v3/config/paths/edit/{name}", payload)
+
+
+def _delete_mediamtx_path(device_id: str) -> None:
+    name = _path_for(device_id)
+    try:
+        _mediamtx_api_request("DELETE", f"/v3/config/paths/delete/{name}")
+    except Exception:
+        pass
+
+
+# -------------------------
+# PTZ helpers
+# -------------------------
+def _clamp_speed(v: float) -> float:
+    try:
+        v = float(v)
+    except Exception:
+        return 0.0
+    return max(-1.0, min(1.0, v))
+
+
+def _cancel_ptz_watchdog(device_id: str) -> None:
+    with _ptz_watchdog_lock:
+        t = _ptz_watchdogs.pop(device_id, None)
+        if t:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+
+def _schedule_ptz_watchdog(device_id: str) -> None:
+    _cancel_ptz_watchdog(device_id)
+
+    def _timeout_stop():
+        try:
+            _ptz_stop(device_id)
+        except Exception:
+            pass
+
+    t = threading.Timer(PTZ_WATCHDOG_SEC, _timeout_stop)
+    t.daemon = True
+    with _ptz_watchdog_lock:
+        _ptz_watchdogs[device_id] = t
+    t.start()
+
+
+def _ptz_context(device_id: str) -> dict:
+    device = _get_device(device_id)
+    if not device.profile_token:
+        raise RuntimeError("Device has no saved profile_token")
+
+    req = _device_req(device)
+    cam = _cam(req)
+    media = cam.create_media_service()
+    ptz = cam.create_ptz_service()
+
+    profiles = media.GetProfiles()
+    profile = next((p for p in profiles if getattr(p, "token", None) == device.profile_token), None)
+    if not profile:
+        raise RuntimeError("Saved profile_token not found on camera")
+
+    ptz_cfg = getattr(profile, "PTZConfiguration", None)
+    if not ptz_cfg:
+        raise RuntimeError("Selected profile has no PTZ configuration")
+
+    cfg_token = getattr(ptz_cfg, "token", None)
+    opts = None
+    try:
+        if cfg_token:
+            opts = ptz.GetConfigurationOptions({"ConfigurationToken": cfg_token})
+    except Exception:
+        opts = None
+
+    pan_tilt_space = None
+    zoom_space = None
+    has_pan_tilt = False
+    has_zoom = False
+
+    try:
+        spaces = getattr(opts, "Spaces", None) if opts is not None else None
+
+        pt_spaces = getattr(spaces, "ContinuousPanTiltVelocitySpace", None) if spaces is not None else None
+        if pt_spaces:
+            first = pt_spaces[0]
+            pan_tilt_space = getattr(first, "URI", None)
+            has_pan_tilt = True
+
+        zoom_spaces = getattr(spaces, "ContinuousZoomVelocitySpace", None) if spaces is not None else None
+        if zoom_spaces:
+            first = zoom_spaces[0]
+            zoom_space = getattr(first, "URI", None)
+            has_zoom = True
+    except Exception:
+        pass
+
+    if not has_pan_tilt:
+        try:
+            if getattr(ptz_cfg, "DefaultContinuousPanTiltVelocitySpace", None):
+                has_pan_tilt = True
+                pan_tilt_space = getattr(ptz_cfg, "DefaultContinuousPanTiltVelocitySpace", None)
+        except Exception:
+            pass
+
+    if not has_zoom:
+        try:
+            if getattr(ptz_cfg, "DefaultContinuousZoomVelocitySpace", None):
+                has_zoom = True
+                zoom_space = getattr(ptz_cfg, "DefaultContinuousZoomVelocitySpace", None)
+        except Exception:
+            pass
+
+    return {
+        "device": device,
+        "req": req,
+        "ptz": ptz,
+        "profile_token": device.profile_token,
+        "pan_tilt_space": pan_tilt_space,
+        "zoom_space": zoom_space,
+        "has_ptz": True,
+        "has_pan_tilt": has_pan_tilt,
+        "has_zoom": has_zoom,
+    }
+
+
+def _ptz_move(device_id: str, pan: float, tilt: float, zoom: float) -> dict:
+    ctx = _ptz_context(device_id)
+
+    pan = _clamp_speed(pan)
+    tilt = _clamp_speed(tilt)
+    zoom = _clamp_speed(zoom)
+
+    velocity: Dict[str, Any] = {}
+
+    if ctx["has_pan_tilt"] and (abs(pan) > 0.0001 or abs(tilt) > 0.0001):
+        payload = {"x": pan, "y": tilt}
+        if ctx["pan_tilt_space"]:
+            payload["space"] = ctx["pan_tilt_space"]
+        velocity["PanTilt"] = payload
+
+    if ctx["has_zoom"] and abs(zoom) > 0.0001:
+        payload = {"x": zoom}
+        if ctx["zoom_space"]:
+            payload["space"] = ctx["zoom_space"]
+        velocity["Zoom"] = payload
+
+    if not velocity:
+        return _ptz_stop(device_id)
+
+    ctx["ptz"].ContinuousMove(
+        {
+            "ProfileToken": ctx["profile_token"],
+            "Velocity": velocity,
+        }
+    )
+    _schedule_ptz_watchdog(device_id)
+    return {"ok": True, "moving": True, "pan": pan, "tilt": tilt, "zoom": zoom}
+
+
+def _ptz_stop(device_id: str) -> dict:
+    _cancel_ptz_watchdog(device_id)
+    ctx = _ptz_context(device_id)
+    ctx["ptz"].Stop(
+        {
+            "ProfileToken": ctx["profile_token"],
+            "PanTilt": True,
+            "Zoom": True,
+        }
+    )
+    return {"ok": True, "moving": False}
+
+
+def _ptz_status(device_id: str) -> dict:
+    ctx = _ptz_context(device_id)
+    st = ctx["ptz"].GetStatus({"ProfileToken": ctx["profile_token"]})
+
+    pos = getattr(st, "Position", None)
+    move = getattr(st, "MoveStatus", None)
+
+    out = {
+        "ok": True,
+        "position": {
+            "pan": None,
+            "tilt": None,
+            "zoom": None,
+        },
+        "move_status": {
+            "pan_tilt": None,
+            "zoom": None,
+        },
+    }
+
+    try:
+        pt = getattr(pos, "PanTilt", None)
+        if pt is not None:
+            out["position"]["pan"] = getattr(pt, "x", None)
+            out["position"]["tilt"] = getattr(pt, "y", None)
+    except Exception:
+        pass
+
+    try:
+        z = getattr(pos, "Zoom", None)
+        if z is not None:
+            out["position"]["zoom"] = getattr(z, "x", None)
+    except Exception:
+        pass
+
+    try:
+        out["move_status"]["pan_tilt"] = getattr(move, "PanTilt", None)
+        out["move_status"]["zoom"] = getattr(move, "Zoom", None)
+    except Exception:
+        pass
+
+    return out
+
+
+# -------------------------
 # Events API
 # -------------------------
-class EventsStartRequest(OnvifBase):
-    device_id: str
-
-
-class AllowListRequest(BaseModel):
-    allow_topics: List[str] = Field(default_factory=list)
-
-
 @app.get("/api/events/stream/{device_id}")
 async def events_stream(device_id: str):
     device_id = device_id.strip()
@@ -642,135 +990,8 @@ def delete_device(device_id: str):
         raise HTTPException(status_code=404, detail="Device not found")
     _save_devices(new_devs)
     _delete_mediamtx_path(device_id)
+    _cancel_ptz_watchdog(device_id)
     return {"ok": True}
-
-
-# -------------------------
-# Streaming helpers
-# -------------------------
-def _path_for(device_id: str) -> str:
-    return f"cam-{device_id}"
-
-
-def _profile_summary(p) -> Dict[str, Any]:
-    out = {
-        "token": getattr(p, "token", None),
-        "name": getattr(p, "Name", None),
-        "encoding": None,
-        "width": None,
-        "height": None,
-        "browser_compatible": False,
-        "recommended": False,
-    }
-
-    try:
-        vec = getattr(p, "VideoEncoderConfiguration", None)
-        if vec:
-            encoding = getattr(vec, "Encoding", None)
-            if encoding is not None:
-                encoding = str(encoding).upper()
-            out["encoding"] = encoding
-
-            res = getattr(vec, "Resolution", None)
-            if res:
-                out["width"] = getattr(res, "Width", None)
-                out["height"] = getattr(res, "Height", None)
-    except Exception:
-        pass
-
-    out["browser_compatible"] = out["encoding"] == "H264"
-    return out
-
-
-def _find_profile_encoding(req: OnvifBase, profile_token: str) -> Optional[str]:
-    cam = _cam(req)
-    media = cam.create_media_service()
-    profs = media.GetProfiles()
-
-    for p in profs:
-        if getattr(p, "token", None) != profile_token:
-            continue
-        try:
-            vec = getattr(p, "VideoEncoderConfiguration", None)
-            if vec:
-                encoding = getattr(vec, "Encoding", None)
-                if encoding is not None:
-                    return str(encoding).upper()
-        except Exception:
-            pass
-        return None
-
-    raise RuntimeError(f"Profile not found: {profile_token}")
-
-
-def _get_stream_uri(req: OnvifBase, profile_token: str) -> str:
-    cam = _cam(req)
-    media = cam.create_media_service()
-    resp = media.GetStreamUri(
-        {
-            "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
-            "ProfileToken": profile_token,
-        }
-    )
-
-    rtsp = getattr(resp, "Uri", None)
-    if not rtsp or not rtsp.lower().startswith("rtsp://"):
-        raise RuntimeError(f"Unexpected RTSP URI returned: {rtsp}")
-
-    if "@" not in rtsp:
-        rtsp = rtsp.replace("rtsp://", f"rtsp://{req.username}:{req.password}@", 1)
-
-    return rtsp
-
-
-def _mediamtx_api_request(method: str, path: str, body: Optional[dict] = None) -> dict:
-    url = f"{MEDIAMTX_API_URL}{path}"
-    data = None
-    auth_raw = f"{MEDIAMTX_API_USER}:{MEDIAMTX_API_PASS}".encode("utf-8")
-    auth_b64 = base64.b64encode(auth_raw).decode("ascii")
-
-    headers = {
-        "Authorization": f"Basic {auth_b64}",
-    }
-
-    if body is not None:
-        data = json.dumps(body).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-
-    req = urllib.request.Request(url, data=data, method=method, headers=headers)
-
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            raw = resp.read().decode("utf-8", errors="ignore")
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"MediaMTX API {method} {path} failed: {e.code} {detail}")
-    except Exception as e:
-        raise RuntimeError(f"MediaMTX API {method} {path} failed: {e}")
-
-
-def _ensure_mediamtx_path(device_id: str, source_rtsp: str) -> dict:
-    name = _path_for(device_id)
-    payload = {
-        "source": source_rtsp,
-        "sourceOnDemand": True,
-        "sourceOnDemandStartTimeout": "10s",
-        "sourceOnDemandCloseAfter": "10s",
-    }
-
-    try:
-        return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
-    except Exception:
-        return _mediamtx_api_request("PATCH", f"/v3/config/paths/edit/{name}", payload)
-
-
-def _delete_mediamtx_path(device_id: str) -> None:
-    name = _path_for(device_id)
-    try:
-        _mediamtx_api_request("DELETE", f"/v3/config/paths/delete/{name}")
-    except Exception:
-        pass
 
 
 # -------------------------
@@ -825,6 +1046,7 @@ def status(device_id: str):
         "running": None,
         "exit_code": None,
         "log_tail": None,
+        "profile_encoding": (d.profile_encoding or "").upper() or None,
     }
 
 
@@ -871,6 +1093,10 @@ async def stop_one(device_id: str):
         raise HTTPException(status_code=400, detail="Missing device_id")
 
     await asyncio.to_thread(_delete_mediamtx_path, device_id)
+    try:
+        await asyncio.to_thread(_ptz_stop, device_id)
+    except Exception:
+        pass
     return {"ok": True}
 
 
@@ -879,7 +1105,70 @@ async def stop_all():
     devs = _load_devices()
     for d in devs:
         await asyncio.to_thread(_delete_mediamtx_path, d.id)
+        try:
+            await asyncio.to_thread(_ptz_stop, d.id)
+        except Exception:
+            pass
     return {"ok": True}
+
+
+# -------------------------
+# PTZ API
+# -------------------------
+@app.get("/api/ptz/capabilities/{device_id}")
+async def ptz_capabilities(device_id: str):
+    device_id = device_id.strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Missing device_id")
+    try:
+        ctx = await asyncio.to_thread(_ptz_context, device_id)
+        return {
+            "ok": True,
+            "ptz": bool(ctx["has_ptz"]),
+            "pan_tilt": bool(ctx["has_pan_tilt"]),
+            "zoom": bool(ctx["has_zoom"]),
+        }
+    except Exception as e:
+        return {
+            "ok": True,
+            "ptz": False,
+            "pan_tilt": False,
+            "zoom": False,
+            "detail": str(e),
+        }
+
+
+@app.get("/api/ptz/status/{device_id}")
+async def ptz_status(device_id: str):
+    device_id = device_id.strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Missing device_id")
+    try:
+        return await asyncio.to_thread(_ptz_status, device_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"PTZ status failed: {e}")
+
+
+@app.post("/api/ptz/move/{device_id}")
+async def ptz_move(device_id: str, req: PTZMoveRequest):
+    device_id = device_id.strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Missing device_id")
+    try:
+        return await asyncio.to_thread(_ptz_move, device_id, req.pan, req.tilt, req.zoom)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"PTZ move failed: {e}")
+
+
+@app.post("/api/ptz/stop/{device_id}")
+async def ptz_stop(device_id: str):
+    device_id = device_id.strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Missing device_id")
+    try:
+        return await asyncio.to_thread(_ptz_stop, device_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"PTZ stop failed: {e}")
 
 
 # -------------------------
@@ -907,3 +1196,11 @@ def _on_shutdown():
     with _event_worker_lock:
         for _, w in list(_event_workers.items()):
             w.stop_flag.set()
+    with _ptz_watchdog_lock:
+        timers = list(_ptz_watchdogs.values())
+        _ptz_watchdogs.clear()
+    for t in timers:
+        try:
+            t.cancel()
+        except Exception:
+            pass

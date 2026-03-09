@@ -18,6 +18,7 @@ const showSidebarBtn = document.getElementById("showSidebar");
 
 let devices = [];
 const streams = new Map();
+const ptzCapsCache = new Map();
 let lastStatusMessage = "Idle.";
 
 function setPill(state, text) {
@@ -193,6 +194,25 @@ async function startWhep(deviceId, videoEl, onState) {
   return pc;
 }
 
+async function getPtzCaps(deviceId) {
+  if (ptzCapsCache.has(deviceId)) return ptzCapsCache.get(deviceId);
+  const caps = await api(`/api/ptz/capabilities/${encodeURIComponent(deviceId)}`, { method: "GET" });
+  ptzCapsCache.set(deviceId, caps);
+  return caps;
+}
+
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+
+function shapeAxis(v, deadzone = 0.18, expo = 1.8) {
+  const s = Math.sign(v);
+  const a = Math.abs(v);
+  if (a <= deadzone) return 0;
+  const n = (a - deadzone) / (1 - deadzone);
+  return s * Math.pow(n, expo);
+}
+
 function makeTile(device) {
   const tile = document.createElement("div");
   tile.className = "tile";
@@ -205,6 +225,21 @@ function makeTile(device) {
       <div class="tileHud">
         <div class="tileName">${escapeHtml(device.name || device.ip || device.id)}</div>
         <button class="btn btn-mini btn-danger tileStopBtn" type="button">Stop</button>
+      </div>
+
+      <div class="tilePtzPanel hidden">
+        <div class="tilePtzJoystickWrap">
+          <div class="tilePtzJoystick" data-role="joystick">
+            <div class="tilePtzCross"></div>
+            <div class="tilePtzKnob"></div>
+          </div>
+          <div class="tilePtzLabel">PT</div>
+        </div>
+
+        <div class="tilePtzZoom">
+          <button class="btn btn-mini tilePtzZoomBtn" data-zoom="0.35" type="button">＋</button>
+          <button class="btn btn-mini tilePtzZoomBtn" data-zoom="-0.35" type="button">－</button>
+        </div>
       </div>
 
       <div class="tileOverlay">Starting…</div>
@@ -224,6 +259,197 @@ function makeTile(device) {
   return { tile, videoEl, overlayEl };
 }
 
+function installPtzControls(device, entry, caps) {
+  const panel = entry.tileEl.querySelector(".tilePtzPanel");
+  const joystick = entry.tileEl.querySelector(".tilePtzJoystick");
+  const knob = entry.tileEl.querySelector(".tilePtzKnob");
+  const zoomBtns = Array.from(entry.tileEl.querySelectorAll(".tilePtzZoomBtn"));
+
+  if (!caps?.ptz) {
+    panel.classList.add("hidden");
+    return;
+  }
+
+  panel.classList.remove("hidden");
+
+  if (!caps.pan_tilt) {
+    joystick.classList.add("disabled");
+  }
+
+  if (!caps.zoom) {
+    zoomBtns.forEach((btn) => btn.classList.add("hidden"));
+  }
+
+  let scheduled = null;
+  let desired = { pan: 0, tilt: 0, zoom: 0 };
+  let lastSent = { pan: 999, tilt: 999, zoom: 999 };
+  let activeJoystick = false;
+
+  async function flushMove() {
+    scheduled = null;
+    if (entry.cancelled) return;
+
+    const next = {
+      pan: Number(desired.pan.toFixed(3)),
+      tilt: Number(desired.tilt.toFixed(3)),
+      zoom: Number(desired.zoom.toFixed(3)),
+    };
+
+    const same =
+      next.pan === lastSent.pan &&
+      next.tilt === lastSent.tilt &&
+      next.zoom === lastSent.zoom;
+
+    if (same) return;
+    lastSent = next;
+
+    try {
+      if (Math.abs(next.pan) < 0.001 && Math.abs(next.tilt) < 0.001 && Math.abs(next.zoom) < 0.001) {
+        await api(`/api/ptz/stop/${encodeURIComponent(device.id)}`, { method: "POST" });
+      } else {
+        await api(`/api/ptz/move/${encodeURIComponent(device.id)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(next),
+        });
+      }
+    } catch (e) {
+      setStatus(`PTZ error: ${e?.message || e}`, "bad");
+    }
+  }
+
+  function queueMove(pan, tilt, zoom = 0) {
+    desired = {
+      pan: clamp(pan, -1, 1),
+      tilt: clamp(tilt, -1, 1),
+      zoom: clamp(zoom, -1, 1),
+    };
+
+    if (scheduled) clearTimeout(scheduled);
+    scheduled = setTimeout(flushMove, 140);
+  }
+
+  function resetKnob() {
+    knob.style.transform = "translate(-50%, -50%)";
+  }
+
+  function stopNow() {
+    desired = { pan: 0, tilt: 0, zoom: 0 };
+    resetKnob();
+    if (scheduled) {
+      clearTimeout(scheduled);
+      scheduled = null;
+    }
+    lastSent = { pan: 999, tilt: 999, zoom: 999 };
+    api(`/api/ptz/stop/${encodeURIComponent(device.id)}`, { method: "POST" }).catch(() => {});
+    setTimeout(() => {
+      api(`/api/ptz/stop/${encodeURIComponent(device.id)}`, { method: "POST" }).catch(() => {});
+    }, 120);
+  }
+
+  entry.stopPtz = stopNow;
+
+  if (caps.pan_tilt) {
+    joystick.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      activeJoystick = true;
+
+      try {
+        joystick.setPointerCapture(ev.pointerId);
+      } catch {}
+
+      const rect = joystick.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const maxRadius = rect.width * 0.34;
+
+      function applyPointer(clientX, clientY) {
+        const dx = clientX - cx;
+        const dy = clientY - cy;
+        const dist = Math.hypot(dx, dy);
+
+        let px = 0;
+        let py = 0;
+        if (dist > 0) {
+          const clampedDist = Math.min(dist, maxRadius);
+          px = (dx / dist) * clampedDist;
+          py = (dy / dist) * clampedDist;
+        }
+
+        knob.style.transform = `translate(calc(-50% + ${px}px), calc(-50% + ${py}px))`;
+
+        const nx = shapeAxis(px / maxRadius);
+        const ny = shapeAxis((-py) / maxRadius);
+
+        queueMove(nx, ny, 0);
+      }
+
+      function onMove(moveEv) {
+        if (!activeJoystick) return;
+        applyPointer(moveEv.clientX, moveEv.clientY);
+      }
+
+      function onUp(upEv) {
+        if (!activeJoystick) return;
+        activeJoystick = false;
+        try {
+          joystick.releasePointerCapture(upEv.pointerId);
+        } catch {}
+        joystick.removeEventListener("pointermove", onMove);
+        joystick.removeEventListener("pointerup", onUp);
+        joystick.removeEventListener("pointercancel", onUp);
+        joystick.removeEventListener("lostpointercapture", onUp);
+        stopNow();
+      }
+
+      joystick.addEventListener("pointermove", onMove);
+      joystick.addEventListener("pointerup", onUp);
+      joystick.addEventListener("pointercancel", onUp);
+      joystick.addEventListener("lostpointercapture", onUp);
+
+      applyPointer(ev.clientX, ev.clientY);
+    });
+  }
+
+  if (caps.zoom) {
+    zoomBtns.forEach((btn) => {
+      const speed = Number(btn.getAttribute("data-zoom") || "0");
+
+      function onDown(ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        queueMove(0, 0, speed);
+      }
+
+      function onUp(ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        stopNow();
+      }
+
+      btn.addEventListener("pointerdown", onDown);
+      btn.addEventListener("pointerup", onUp);
+      btn.addEventListener("pointercancel", onUp);
+      btn.addEventListener("pointerleave", onUp);
+    });
+  }
+
+  const globalStop = () => {
+    if (entry.cancelled) return;
+    stopNow();
+  };
+
+  window.addEventListener("blur", globalStop);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) globalStop();
+  });
+
+  entry.cleanupPtzListeners = () => {
+    window.removeEventListener("blur", globalStop);
+  };
+}
+
 async function startDevice(device) {
   const existing = streams.get(device.id);
   if (existing?.startingPromise) return existing.startingPromise;
@@ -240,6 +466,8 @@ async function startDevice(device) {
     overlayEl,
     startingPromise: null,
     cancelled: false,
+    stopPtz: null,
+    cleanupPtzListeners: null,
   };
   streams.set(device.id, entry);
 
@@ -266,11 +494,15 @@ async function startDevice(device) {
 
       if (streams.get(device.id)?.cancelled) return;
 
+      try {
+        const caps = await getPtzCaps(device.id);
+        installPtzControls(device, entry, caps);
+      } catch {}
+
       overlayEl.textContent = "Connecting WebRTC…";
       const pc = await startWhep(device.id, videoEl, (st) => {
-        if (st === "connected") {
-          overlayEl.style.display = "none";
-        } else if (st === "failed" || st === "disconnected") {
+        if (st === "connected") overlayEl.style.display = "none";
+        else if (st === "failed" || st === "disconnected") {
           overlayEl.textContent = `WebRTC ${st}`;
           overlayEl.style.display = "flex";
         }
@@ -304,6 +536,14 @@ async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
   if (!entry) return;
 
   entry.cancelled = true;
+
+  try {
+    entry.stopPtz?.();
+  } catch {}
+
+  try {
+    entry.cleanupPtzListeners?.();
+  } catch {}
 
   const { pc, tileEl, videoEl } = entry;
   stopPc(pc, videoEl);
