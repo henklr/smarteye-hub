@@ -1,28 +1,23 @@
-// live.js — multi-stream tiles + Start All + dynamic grid
+// static/live.js
 
-const dot = document.getElementById('dot');
-const pillText = document.getElementById('pillText');
-const statusPill = document.getElementById('statusPill');
+const dot = document.getElementById("dot");
+const pillText = document.getElementById("pillText");
+const statusPill = document.getElementById("statusPill");
 
-const camListEl = document.getElementById('camList');
-const reloadBtn = document.getElementById('reload');
+const camListEl = document.getElementById("camList");
+const reloadBtn = document.getElementById("reload");
 
-const startAllBtn = document.getElementById('startAll');
-const stopAllBtn = document.getElementById('stopAll');
+const startAllBtn = document.getElementById("startAll");
+const stopAllBtn = document.getElementById("stopAll");
 
-const videoGrid = document.getElementById('videoGrid');
+const videoGrid = document.getElementById("videoGrid");
 
-// sidebar toggle controls
-const layoutEl = document.getElementById('liveLayout');
-const toggleSidebarBtn = document.getElementById('toggleSidebar');
-const showSidebarBtn = document.getElementById('showSidebar');
+const layoutEl = document.getElementById("liveLayout");
+const toggleSidebarBtn = document.getElementById("toggleSidebar");
+const showSidebarBtn = document.getElementById("showSidebar");
 
 let devices = [];
-
-// Map deviceId -> { pc, tileEl, videoEl, overlayEl, startingPromise? }
 const streams = new Map();
-
-// store full message for pill click
 let lastStatusMessage = "Idle.";
 
 function setPill(state, text) {
@@ -37,7 +32,6 @@ function setStatus(msg, state = "warn") {
   setPill(state, lastStatusMessage.slice(0, 40));
 }
 
-// pill click -> show full message
 statusPill?.addEventListener("click", () => {
   if (!lastStatusMessage) return;
   alert(lastStatusMessage);
@@ -53,17 +47,25 @@ async function api(url, opts) {
   const res = await fetch(url, opts);
   const text = await res.text();
   let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch {}
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {}
+
   if (!res.ok) {
     const detail = data?.detail || text || res.statusText;
     throw new Error(`${res.status} ${res.statusText}: ${detail}`);
   }
+
   return data;
 }
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
   }[c]));
 }
 
@@ -87,14 +89,14 @@ function renderList() {
     return;
   }
 
-  camListEl.innerHTML = devices.map(d => {
+  camListEl.innerHTML = devices.map((d) => {
     const ready = profileReady(d);
     const active = isStreaming(d.id);
 
     const cls = [
       "camItem",
       ready ? "ready" : "notReady",
-      active ? "active" : ""
+      active ? "active" : "",
     ].join(" ");
 
     const subtitle = ready
@@ -127,16 +129,23 @@ async function loadDevices() {
 }
 
 function stopPc(pc, videoEl) {
-  try { pc?.close?.(); } catch {}
+  try {
+    pc?.close?.();
+  } catch {}
+
   if (videoEl?.srcObject) {
-    try { videoEl.srcObject.getTracks().forEach(t => t.stop()); } catch {}
+    try {
+      videoEl.srcObject.getTracks().forEach((t) => t.stop());
+    } catch {}
   }
+
   if (videoEl) videoEl.srcObject = null;
 }
 
 function waitIceGatheringComplete(pc, timeoutMs = 2000) {
   return new Promise((resolve) => {
     if (pc.iceGatheringState === "complete") return resolve();
+
     const t = setTimeout(() => {
       pc.removeEventListener("icegatheringstatechange", onChange);
       resolve();
@@ -149,6 +158,7 @@ function waitIceGatheringComplete(pc, timeoutMs = 2000) {
         resolve();
       }
     }
+
     pc.addEventListener("icegatheringstatechange", onChange);
   });
 }
@@ -156,7 +166,9 @@ function waitIceGatheringComplete(pc, timeoutMs = 2000) {
 async function startWhep(deviceId, videoEl, onState) {
   const pc = new RTCPeerConnection();
 
-  pc.ontrack = (e) => { videoEl.srcObject = e.streams[0]; };
+  pc.ontrack = (e) => {
+    videoEl.srcObject = e.streams[0];
+  };
   pc.onconnectionstatechange = () => onState?.(pc.connectionState);
 
   pc.addTransceiver("video", { direction: "recvonly" });
@@ -179,25 +191,6 @@ async function startWhep(deviceId, videoEl, onState) {
   const answerSdp = await res.text();
   await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
   return pc;
-}
-
-async function waitUntilReady(deviceId, timeoutMs = 8000) {
-  const started = Date.now();
-  let last = null;
-
-  while (Date.now() - started < timeoutMs) {
-    last = await api(`/api/status/${encodeURIComponent(deviceId)}`, { method: "GET" });
-
-    if (!last.running && last.exit_code !== null && last.exit_code !== undefined) {
-      throw new Error(`ffmpeg exited (code ${last.exit_code}):\n\n${last.log_tail || ""}`);
-    }
-
-    if (last.ready) return last;
-
-    await new Promise(r => setTimeout(r, 150));
-  }
-
-  throw new Error(`Timed out waiting for stream.\n\n${last?.log_tail || ""}`);
 }
 
 function makeTile(device) {
@@ -235,7 +228,6 @@ async function startDevice(device) {
   const existing = streams.get(device.id);
   if (existing?.startingPromise) return existing.startingPromise;
   if (streams.has(device.id) && existing?.pc) return;
-
   if (!profileReady(device)) return;
 
   const { tile, videoEl, overlayEl } = makeTile(device);
@@ -268,21 +260,17 @@ async function startDevice(device) {
           username: device.username,
           password: device.password,
           profile_token: device.profile_token,
-          device_id: device.id
-        })
+          device_id: device.id,
+        }),
       });
-
-      if (streams.get(device.id)?.cancelled) return;
-
-      overlayEl.textContent = "Waiting for stream…";
-      await waitUntilReady(device.id, 8000);
 
       if (streams.get(device.id)?.cancelled) return;
 
       overlayEl.textContent = "Connecting WebRTC…";
       const pc = await startWhep(device.id, videoEl, (st) => {
-        if (st === "connected") overlayEl.style.display = "none";
-        else if (st === "failed" || st === "disconnected") {
+        if (st === "connected") {
+          overlayEl.style.display = "none";
+        } else if (st === "failed" || st === "disconnected") {
           overlayEl.textContent = `WebRTC ${st}`;
           overlayEl.style.display = "flex";
         }
@@ -290,7 +278,9 @@ async function startDevice(device) {
 
       const cur = streams.get(device.id);
       if (!cur || cur.cancelled) {
-        try { pc.close(); } catch {}
+        try {
+          pc.close();
+        } catch {}
         return;
       }
 
@@ -318,7 +308,10 @@ async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
   const { pc, tileEl, videoEl } = entry;
   stopPc(pc, videoEl);
 
-  try { tileEl?.remove?.(); } catch {}
+  try {
+    tileEl?.remove?.();
+  } catch {}
+
   streams.delete(deviceId);
 
   recomputeGrid();
@@ -330,16 +323,15 @@ async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
 
   setStatus(
     streams.size ? `Streaming ${streams.size} camera(s).` : "Stopped.",
-    streams.size ? "ok" : "warn"
+    streams.size ? "ok" : "warn",
   );
 }
 
-// ---- Events ----
 camListEl.addEventListener("click", (ev) => {
   const btn = ev.target.closest?.("button[data-id]");
   if (!btn) return;
   const id = btn.getAttribute("data-id");
-  const d = devices.find(x => x.id === id);
+  const d = devices.find((x) => x.id === id);
   if (!d) return;
 
   if (streams.has(d.id)) stopDevice(d.id).catch(() => {});
@@ -350,11 +342,11 @@ reloadBtn.addEventListener("click", () => loadDevices());
 
 startAllBtn.addEventListener("click", async () => {
   const ready = devices.filter(profileReady);
-  const toStart = ready.filter(d => !streams.has(d.id));
+  const toStart = ready.filter((d) => !streams.has(d.id));
   if (!toStart.length) return;
 
   setStatus(`Starting ${toStart.length} camera(s)…`, "warn");
-  const jobs = toStart.map(d => startDevice(d));
+  const jobs = toStart.map((d) => startDevice(d));
   await Promise.allSettled(jobs);
   setStatus(`Streaming ${streams.size} camera(s).`, streams.size ? "ok" : "warn");
 });
@@ -364,7 +356,6 @@ stopAllBtn.addEventListener("click", () => {
   setStatus("Stopping all…", "warn");
 });
 
-// ---- Sidebar hide/show ----
 const LS_KEY = "live.sidebarHidden";
 
 function setSidebarHidden(hidden) {
@@ -377,7 +368,6 @@ toggleSidebarBtn.addEventListener("click", () => setSidebarHidden(true));
 showSidebarBtn.addEventListener("click", () => setSidebarHidden(false));
 setSidebarHidden(localStorage.getItem(LS_KEY) === "1");
 
-// ---- init ----
 recomputeGrid();
 setStatus("Loading…", "warn");
 loadDevices();

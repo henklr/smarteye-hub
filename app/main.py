@@ -1,19 +1,18 @@
-# main.py
 from __future__ import annotations
 
 from pathlib import Path
 import os
-import socket
-import subprocess
-import time
 import json
 import uuid
 import threading
-import signal
 import asyncio
+import time
+import urllib.request
+import urllib.error
+import base64
 from typing import Optional, Dict, Any, List
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -33,17 +32,9 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DEVICES_JSON = DATA_DIR / "devices.json"
 
-MEDIAMTX_BASE_URL = os.getenv("MEDIAMTX_BASE_URL", "rtsp://mediamtx:8554").rstrip("/")
-MEDIAMTX_HOST = os.getenv("MEDIAMTX_HOST", "mediamtx")
-MEDIAMTX_RTSP_PORT = int(os.getenv("MEDIAMTX_RTSP_PORT", "8554"))
-
-# One ffmpeg per device_id
-_ffmpegs: Dict[str, subprocess.Popen] = {}
-_ffmpeg_lock = threading.RLock()
-
-# readiness cache (so /api/start can return immediately without blocking)
-_stream_ready: Dict[str, bool] = {}
-_ready_lock = threading.RLock()
+MEDIAMTX_API_URL = os.getenv("MEDIAMTX_API_URL", "http://mediamtx:9997").rstrip("/")
+MEDIAMTX_API_USER = os.getenv("MEDIAMTX_API_USER", "apiuser")
+MEDIAMTX_API_PASS = os.getenv("MEDIAMTX_API_PASS", "apipass")
 
 
 def _dump(model) -> dict:
@@ -62,15 +53,12 @@ class EventWorker:
     mode: str  # "learn" or "filtered"
 
 
-# device_id -> list of subscriber queues (one per browser tab)
 _event_subscribers: Dict[str, List[asyncio.Queue]] = {}
 _event_sub_lock = threading.RLock()
 
-# device_id -> worker
 _event_workers: Dict[str, EventWorker] = {}
 _event_worker_lock = threading.RLock()
 
-# device_id -> last seen values for change detection
 _event_last: Dict[str, Dict[str, str]] = {}
 _event_last_lock = threading.RLock()
 
@@ -100,11 +88,9 @@ def events_page():
 
 @app.get("/health")
 def health():
-    with _ffmpeg_lock:
-        streams = list(_ffmpegs.keys())
     with _event_worker_lock:
         workers = {k: v.mode for k, v in _event_workers.items()}
-    return {"ok": True, "streams": streams, "event_workers": workers}
+    return {"ok": True, "event_workers": workers}
 
 
 # -------------------------
@@ -130,7 +116,6 @@ class DeviceIn(BaseModel):
     password: str = Field(..., min_length=1)
     profile_token: Optional[str] = None
     profile_label: Optional[str] = None
-    # per-device list of "topic keys" the user selected to subscribe to
     allow_topics: Optional[List[str]] = None
 
 
@@ -202,10 +187,6 @@ def _save_learned(device_id: str, data: dict) -> None:
 
 
 def _learn_record(device_id: str, topic_key: str, utc: Optional[str], op: Optional[str], items: dict) -> bool:
-    """
-    Persist learned events per camera.
-    Returns True if it's a "new topic" never seen before.
-    """
     learned = _load_learned(device_id)
     seen: dict = learned.setdefault("seen", {})
     now = datetime.utcnow().isoformat() + "Z"
@@ -238,7 +219,6 @@ def _learn_record(device_id: str, topic_key: str, utc: Optional[str], op: Option
     }
     exs = ent.get("examples", [])
     exs.append(ex)
-    # keep last 5
     ent["examples"] = exs[-5:]
 
     _save_learned(device_id, learned)
@@ -249,7 +229,6 @@ def _learn_record(device_id: str, topic_key: str, utc: Optional[str], op: Option
 # Events helpers
 # -------------------------
 def _broadcast_event(device_id: str, payload: dict) -> None:
-    # Push to all subscribers (async queues) without blocking worker thread
     with _event_sub_lock:
         qs = list(_event_subscribers.get(device_id, []))
 
@@ -290,10 +269,6 @@ def _extract_simple_items(message_elem) -> dict:
 
 
 def _topic_to_key(topic_obj, items: dict) -> str:
-    """
-    Tries to get a usable ONVIF topic string. If camera doesn't provide it,
-    fall back to a stable "signature" based on fields in Source/Data.
-    """
     topic_str = None
     try:
         v = getattr(topic_obj, "_value_1", None)
@@ -305,20 +280,17 @@ def _topic_to_key(topic_obj, items: dict) -> str:
         pass
 
     if not topic_str:
-        # Many cams: Topic is an object whose str() is useless. Try a couple more.
         try:
             if isinstance(topic_obj, str) and topic_obj.strip():
                 topic_str = topic_obj.strip()
         except Exception:
             pass
 
-    # If still not good, signature fallback
-    if not topic_str or "Dialect" in str(topic_obj) and "_value_1" in str(topic_obj):
+    if not topic_str or ("Dialect" in str(topic_obj) and "_value_1" in str(topic_obj)):
         src_keys = ",".join(sorted(items.get("source", {}).keys()))
         data_keys = ",".join(sorted(items.get("data", {}).keys()))
         topic_str = f"sig:source[{src_keys}] data[{data_keys}]"
 
-    # Include "which thing" (token) to disambiguate
     src = items.get("source", {})
     src_id = (
         src.get("InputToken")
@@ -346,14 +318,6 @@ def _get_allowlist_snapshot(device_id: str) -> List[str]:
 
 
 def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages: int = 20):
-    """
-    PullPoint worker:
-      - mode="learn": no filter, save topic keys/examples per device
-      - mode="filtered": only forward events that match allowlist for device
-
-    NOTE: filtered mode is always-on and hot-reloads allowlist periodically.
-          If allowlist is empty, it forwards NOTHING (allowed events only).
-    """
     with _event_worker_lock:
         stop_flag = _event_workers[device_id].stop_flag
 
@@ -389,7 +353,6 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages:
             emit("ok", "Subscribed to ONVIF events (filtered, allowlist hot-reload enabled).")
 
         while not stop_flag.is_set():
-            # hot-reload allowlist in filtered mode
             if mode == "filtered":
                 now = time.time()
                 if (now - last_allow_refresh) >= ALLOW_REFRESH_S:
@@ -425,26 +388,26 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages:
 
                     topic_key = _topic_to_key(topic_obj, items)
 
-                    # LEARN MODE: save, optionally emit only "new topic"
                     if mode == "learn":
                         is_new = _learn_record(device_id, topic_key, utc, op, items)
                         if is_new:
-                            emit("event", "New topic discovered", {
-                                "topic_key": topic_key,
-                                "utc": utc,
-                                "op": op,
-                                "items": items,
-                            })
+                            emit(
+                                "event",
+                                "New topic discovered",
+                                {
+                                    "topic_key": topic_key,
+                                    "utc": utc,
+                                    "op": op,
+                                    "items": items,
+                                },
+                            )
                         continue
 
-                    # FILTERED MODE:
-                    # allowed events only: if allowlist is empty, forward nothing
                     if not allow_set:
                         continue
                     if topic_key not in allow_set:
                         continue
 
-                    # change detection (avoid noise)
                     data = items.get("data", {})
                     src = items.get("source", {})
                     src_id = (
@@ -459,7 +422,6 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages:
                     def kk(k: str) -> str:
                         return f"{topic_key}::{k}::{src_id}" if src_id else f"{topic_key}::{k}"
 
-                    # Look at everything in data; compare per-topic per-key
                     changed: Dict[str, str] = {}
                     with _event_last_lock:
                         last = _event_last.setdefault(device_id, {})
@@ -470,18 +432,20 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages:
                                 changed[k] = v
                                 last[kfull] = v
 
-                    # If Initialized and nothing changed, skip
                     if op == "Initialized" and not changed:
                         continue
 
-                    emit("event", "ONVIF event", {
-                        "op": op,
-                        "utc": utc,
-                        "topic_key": topic_key,
-                        "changed": changed,
-                        "items": items,
-                        # keep xml out by default (less spam); UI can request learned examples instead
-                    })
+                    emit(
+                        "event",
+                        "ONVIF event",
+                        {
+                            "op": op,
+                            "utc": utc,
+                            "topic_key": topic_key,
+                            "changed": changed,
+                            "items": items,
+                        },
+                    )
 
             except Exception as e:
                 emit("warn", f"PullMessages error: {e}")
@@ -539,7 +503,6 @@ async def events_stream(device_id: str):
 def _start_event_worker(device_id: str, req: OnvifBase, mode: str) -> None:
     with _event_worker_lock:
         if device_id in _event_workers:
-            # already running
             return
         stop_flag = threading.Event()
         worker = EventWorker(stop_flag=stop_flag, thread=None, mode=mode)
@@ -557,10 +520,6 @@ def _start_event_worker(device_id: str, req: OnvifBase, mode: str) -> None:
 
 @app.post("/api/events/start")
 async def events_start(req: EventsStartRequest):
-    """
-    Kept for compatibility; events are always-on.
-    Ensures FILTERED worker is running for device_id.
-    """
     device_id = req.device_id.strip()
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
@@ -571,10 +530,6 @@ async def events_start(req: EventsStartRequest):
 
 @app.post("/api/events/learn/start")
 async def events_learn_start(req: EventsStartRequest):
-    """
-    Start LEARN worker for device_id.
-    It records topic keys and examples to /app/data/events-learned-<device_id>.json
-    """
     device_id = req.device_id.strip()
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
@@ -585,9 +540,6 @@ async def events_learn_start(req: EventsStartRequest):
 
 @app.post("/api/events/stop/{device_id}")
 async def events_stop(device_id: str):
-    """
-    Stop is intentionally disabled (always-on workers).
-    """
     device_id = device_id.strip()
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
@@ -617,7 +569,6 @@ def events_allowlist_set(device_id: str, req: AllowListRequest):
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
 
-    # de-dup / stable order
     allow = []
     seen = set()
     for t in req.allow_topics:
@@ -648,7 +599,6 @@ def create_device(dev: DeviceIn):
     devs.append(new)
     _save_devices(devs)
 
-    # Always-on filtered events worker for new device
     req = EventsStartRequest(
         device_id=new.id,
         ip=new.ip,
@@ -672,7 +622,6 @@ def update_device(device_id: str, dev: DeviceIn):
     devs[idx] = updated
     _save_devices(devs)
 
-    # Ensure always-on worker exists (won't restart if already running)
     req = EventsStartRequest(
         device_id=device_id,
         ip=updated.ip,
@@ -692,6 +641,7 @@ def delete_device(device_id: str):
     if len(new_devs) == len(devs):
         raise HTTPException(status_code=404, detail="Device not found")
     _save_devices(new_devs)
+    _delete_mediamtx_path(device_id)
     return {"ok": True}
 
 
@@ -702,72 +652,55 @@ def _path_for(device_id: str) -> str:
     return f"cam-{device_id}"
 
 
-def _log_path_for(device_id: str) -> Path:
-    return DATA_DIR / f"ffmpeg-{device_id}.log"
-
-
-def _log_tail(device_id: str, n: int = 4000) -> str:
-    p = _log_path_for(device_id)
-    if not p.exists():
-        return "(no ffmpeg log yet)"
-    try:
-        return p.read_text(errors="ignore")[-n:]
-    except Exception:
-        return "(failed to read ffmpeg log)"
-
-
-def _popen_kwargs() -> dict:
-    if os.name == "posix":
-        return {"preexec_fn": os.setsid}
-    return {}
-
-
-def _stop_ffmpeg(device_id: str):
-    with _ffmpeg_lock:
-        p = _ffmpegs.get(device_id)
-        if not p:
-            return
-
-        try:
-            if p.poll() is None:
-                if os.name == "posix":
-                    os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-                else:
-                    p.terminate()
-                try:
-                    p.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    if os.name == "posix":
-                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                    else:
-                        p.kill()
-        finally:
-            _ffmpegs.pop(device_id, None)
-
-    with _ready_lock:
-        _stream_ready[device_id] = False
-
-
-def _stop_all_ffmpeg():
-    with _ffmpeg_lock:
-        ids = list(_ffmpegs.keys())
-    for device_id in ids:
-        _stop_ffmpeg(device_id)
-
-
 def _profile_summary(p) -> Dict[str, Any]:
-    out = {"token": getattr(p, "token", None), "name": getattr(p, "Name", None)}
+    out = {
+        "token": getattr(p, "token", None),
+        "name": getattr(p, "Name", None),
+        "encoding": None,
+        "width": None,
+        "height": None,
+        "browser_compatible": False,
+        "recommended": False,
+    }
+
     try:
         vec = getattr(p, "VideoEncoderConfiguration", None)
         if vec:
-            out["encoding"] = getattr(vec, "Encoding", None)
+            encoding = getattr(vec, "Encoding", None)
+            if encoding is not None:
+                encoding = str(encoding).upper()
+            out["encoding"] = encoding
+
             res = getattr(vec, "Resolution", None)
             if res:
                 out["width"] = getattr(res, "Width", None)
                 out["height"] = getattr(res, "Height", None)
     except Exception:
         pass
+
+    out["browser_compatible"] = out["encoding"] == "H264"
     return out
+
+
+def _find_profile_encoding(req: OnvifBase, profile_token: str) -> Optional[str]:
+    cam = _cam(req)
+    media = cam.create_media_service()
+    profs = media.GetProfiles()
+
+    for p in profs:
+        if getattr(p, "token", None) != profile_token:
+            continue
+        try:
+            vec = getattr(p, "VideoEncoderConfiguration", None)
+            if vec:
+                encoding = getattr(vec, "Encoding", None)
+                if encoding is not None:
+                    return str(encoding).upper()
+        except Exception:
+            pass
+        return None
+
+    raise RuntimeError(f"Profile not found: {profile_token}")
 
 
 def _get_stream_uri(req: OnvifBase, profile_token: str) -> str:
@@ -790,86 +723,54 @@ def _get_stream_uri(req: OnvifBase, profile_token: str) -> str:
     return rtsp
 
 
-def _rtsp_describe_ok(path: str, timeout_s: float = 1.0) -> bool:
-    req = (
-        f"DESCRIBE rtsp://{MEDIAMTX_HOST}:{MEDIAMTX_RTSP_PORT}/{path} RTSP/1.0\r\n"
-        f"CSeq: 1\r\n"
-        f"User-Agent: sei-raspi\r\n"
-        f"Accept: application/sdp\r\n"
-        f"\r\n"
-    ).encode("utf-8")
+def _mediamtx_api_request(method: str, path: str, body: Optional[dict] = None) -> dict:
+    url = f"{MEDIAMTX_API_URL}{path}"
+    data = None
+    auth_raw = f"{MEDIAMTX_API_USER}:{MEDIAMTX_API_PASS}".encode("utf-8")
+    auth_b64 = base64.b64encode(auth_raw).decode("ascii")
+
+    headers = {
+        "Authorization": f"Basic {auth_b64}",
+    }
+
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
 
     try:
-        with socket.create_connection((MEDIAMTX_HOST, MEDIAMTX_RTSP_PORT), timeout=timeout_s) as s:
-            s.settimeout(timeout_s)
-            s.sendall(req)
-            resp = s.recv(4096).decode("utf-8", errors="ignore")
-        return "RTSP/1.0 200" in resp
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"MediaMTX API {method} {path} failed: {e.code} {detail}")
+    except Exception as e:
+        raise RuntimeError(f"MediaMTX API {method} {path} failed: {e}")
+
+
+def _ensure_mediamtx_path(device_id: str, source_rtsp: str) -> dict:
+    name = _path_for(device_id)
+    payload = {
+        "source": source_rtsp,
+        "sourceOnDemand": True,
+        "sourceOnDemandStartTimeout": "10s",
+        "sourceOnDemandCloseAfter": "10s",
+    }
+
+    try:
+        return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
     except Exception:
-        return False
+        return _mediamtx_api_request("PATCH", f"/v3/config/paths/edit/{name}", payload)
 
 
-def _start_ffmpeg(rtsp_in: str, device_id: str, path: str):
-    _stop_ffmpeg(device_id)
-
-    publish_url = f"{MEDIAMTX_BASE_URL}/{path}"
-
-    log_path = _log_path_for(device_id)
-    log_path.write_text("", encoding="utf-8")
-    log_f = open(log_path, "a")
-
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel", "info",
-        "-rtsp_transport", "tcp",
-        "-rtsp_flags", "prefer_tcp",
-        "-i", rtsp_in,
-        "-map", "0:v:0",
-        "-an",
-        "-vf", "scale=1280:-2,format=yuv420p",
-        "-c:v", "libx264",
-        "-profile:v", "baseline",
-        "-preset", "veryfast",
-        "-tune", "zerolatency",
-        "-g", "50",
-        "-keyint_min", "50",
-        "-sc_threshold", "0",
-        "-f", "rtsp",
-        "-rtsp_transport", "tcp",
-        publish_url,
-    ]
-
-    p = subprocess.Popen(cmd, stdout=log_f, stderr=log_f, **_popen_kwargs())
-    with _ffmpeg_lock:
-        _ffmpegs[device_id] = p
-    with _ready_lock:
-        _stream_ready[device_id] = False
-
-
-def _mark_ready_when_online(device_id: str, path: str, max_wait_s: float = 8.0):
-    deadline = time.time() + max_wait_s
-    while time.time() < deadline:
-        with _ffmpeg_lock:
-            p = _ffmpegs.get(device_id)
-        if not p:
-            with _ready_lock:
-                _stream_ready[device_id] = False
-            return
-        if p.poll() is not None:
-            with _ready_lock:
-                _stream_ready[device_id] = False
-            return
-
-        if _rtsp_describe_ok(path):
-            with _ready_lock:
-                _stream_ready[device_id] = True
-            return
-
-        time.sleep(0.1)
-
-    with _ready_lock:
-        _stream_ready[device_id] = False
+def _delete_mediamtx_path(device_id: str) -> None:
+    name = _path_for(device_id)
+    try:
+        _mediamtx_api_request("DELETE", f"/v3/config/paths/delete/{name}")
+    except Exception:
+        pass
 
 
 # -------------------------
@@ -884,6 +785,16 @@ async def profiles(req: OnvifBase):
         out = [_profile_summary(p) for p in profs if getattr(p, "token", None)]
         if not out:
             raise RuntimeError("No profiles returned.")
+
+        out.sort(
+            key=lambda p: (
+                0 if p.get("browser_compatible") else 1,
+                (p.get("width") or 999999) * (p.get("height") or 999999),
+                str(p.get("name") or ""),
+            )
+        )
+        for i, p in enumerate(out):
+            p["recommended"] = i == 0 and bool(p.get("browser_compatible"))
         return out
 
     try:
@@ -895,9 +806,8 @@ async def profiles(req: OnvifBase):
 
 @app.get("/api/streams")
 def streams():
-    with _ffmpeg_lock:
-        ids = list(_ffmpegs.keys())
-    return {"streams": ids}
+    devs = _load_devices()
+    return {"streams": [_path_for(d.id) for d in devs if d.profile_token]}
 
 
 @app.get("/api/status/{device_id}")
@@ -906,27 +816,20 @@ def status(device_id: str):
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
 
-    with _ffmpeg_lock:
-        p = _ffmpegs.get(device_id)
-
-    running = bool(p and p.poll() is None)
-    exit_code = None if not p else p.poll()
-
-    with _ready_lock:
-        ready = bool(_stream_ready.get(device_id, False))
-
+    d = _get_device(device_id)
     return {
         "device_id": device_id,
         "path": _path_for(device_id),
-        "running": running,
-        "ready": ready,
-        "exit_code": exit_code,
-        "log_tail": _log_tail(device_id),
+        "configured": bool(d.profile_token),
+        "ready": bool(d.profile_token),
+        "running": None,
+        "exit_code": None,
+        "log_tail": None,
     }
 
 
 @app.post("/api/start")
-async def start(req: StartRequest, bg: BackgroundTasks):
+async def start(req: StartRequest):
     if not req.profile_token:
         raise HTTPException(status_code=400, detail="Missing profile_token.")
 
@@ -934,7 +837,19 @@ async def start(req: StartRequest, bg: BackgroundTasks):
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id.")
 
-    path = _path_for(device_id)
+    try:
+        encoding = await asyncio.to_thread(_find_profile_encoding, req, req.profile_token)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"ONVIF profile check failed: {e}")
+
+    if (encoding or "").upper() != "H264":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Selected profile uses {encoding or 'unknown'}; browser playback needs H264. "
+                f"Pick an H264 profile in Devices."
+            ),
+        )
 
     try:
         rtsp = await asyncio.to_thread(_get_stream_uri, req, req.profile_token)
@@ -942,14 +857,11 @@ async def start(req: StartRequest, bg: BackgroundTasks):
         raise HTTPException(status_code=400, detail=f"ONVIF stream uri failed: {e}")
 
     try:
-        await asyncio.to_thread(_start_ffmpeg, rtsp, device_id, path)
-    except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="ffmpeg not found in container.")
+        await asyncio.to_thread(_ensure_mediamtx_path, device_id, rtsp)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ffmpeg failed to start: {e}")
+        raise HTTPException(status_code=500, detail=f"MediaMTX path setup failed: {e}")
 
-    bg.add_task(_mark_ready_when_online, device_id, path)
-    return {"ok": True, "device_id": device_id, "path": path}
+    return {"ok": True, "device_id": device_id, "path": _path_for(device_id)}
 
 
 @app.post("/api/stop/{device_id}")
@@ -958,13 +870,15 @@ async def stop_one(device_id: str):
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
 
-    await asyncio.to_thread(_stop_ffmpeg, device_id)
+    await asyncio.to_thread(_delete_mediamtx_path, device_id)
     return {"ok": True}
 
 
 @app.post("/api/stop")
 async def stop_all():
-    await asyncio.to_thread(_stop_all_ffmpeg)
+    devs = _load_devices()
+    for d in devs:
+        await asyncio.to_thread(_delete_mediamtx_path, d.id)
     return {"ok": True}
 
 
@@ -973,7 +887,6 @@ async def stop_all():
 # -------------------------
 @app.on_event("startup")
 def _on_startup():
-    # Always-on filtered event workers for all saved devices
     try:
         devs = _load_devices()
         for d in devs:
@@ -986,14 +899,11 @@ def _on_startup():
             )
             _start_event_worker(d.id, req, mode="filtered")
     except Exception:
-        # don't crash if a camera is down at boot
         pass
 
 
 @app.on_event("shutdown")
 def _on_shutdown():
-    _stop_all_ffmpeg()
-    # stop event workers (server shutdown only)
     with _event_worker_lock:
         for _, w in list(_event_workers.items()):
             w.stop_flag.set()

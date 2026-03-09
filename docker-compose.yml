@@ -1,3 +1,4 @@
+# docker-compose.yml
 services:
   api:
     build: .
@@ -5,7 +6,9 @@ services:
     restart: unless-stopped
     environment:
       - PORT=8000
-      - MEDIAMTX_BASE_URL=rtsp://mediamtx:8554
+      - MEDIAMTX_API_URL=http://mediamtx:9997
+      - MEDIAMTX_API_USER=apiuser
+      - MEDIAMTX_API_PASS=apipass
     ports:
       - "8000:8000"
     volumes:
@@ -22,6 +25,7 @@ services:
       - "8889:8889"
       - "8189:8189/udp"
       - "8189:8189/tcp"
+      - "9997:9997"
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
     environment:

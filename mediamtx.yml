@@ -1,9 +1,38 @@
+# mediamtx.yml
 api: yes
+apiAddress: :9997
+
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp]
+
 webrtc: yes
+webrtcAddress: :8889
+webrtcEncryption: false
+webrtcAllowOrigins: ['*']
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
 webrtcAdditionalHosts:
   - 172.16.0.225
-webrtcLocalTCPAddress: :8189
 
-paths:
-  all:
-    source: publisher
+authMethod: internal
+authInternalUsers:
+  - user: apiuser
+    pass: apipass
+    ips: []
+    permissions:
+      - action: api
+
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: read
+        path: ~^cam-.*$
+
+pathDefaults:
+  sourceOnDemand: yes
+  sourceOnDemandStartTimeout: 10s
+  sourceOnDemandCloseAfter: 10s
+
+paths: {}

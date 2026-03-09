@@ -1,5 +1,4 @@
 // static/devices.js
-// devices.js — click row to edit; refresh button inside card; no per-item edit/delete buttons
 
 const tbody = document.getElementById("devTbody");
 const listStatus = document.getElementById("listStatus");
@@ -20,22 +19,27 @@ const newBtn = document.getElementById("new");
 const delBtn = document.getElementById("delete");
 const clearBtn = document.getElementById("clear");
 const refreshBtn = document.getElementById("refresh");
-
-// (optional hidden top refresh)
 const refreshTop = document.getElementById("refreshTop");
 
 let devices = [];
 let editingId = null;
 let lastProfiles = [];
 
-function setListStatus(t) { listStatus.textContent = t; }
-function setFormStatus(t) { formStatus.textContent = t; }
+function setListStatus(t) {
+  listStatus.textContent = t;
+}
+
+function setFormStatus(t) {
+  formStatus.textContent = t;
+}
 
 async function api(url, opts) {
   const res = await fetch(url, opts);
   const text = await res.text();
   let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch {}
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {}
 
   if (!res.ok) {
     const detail = data?.detail || text || res.statusText;
@@ -47,7 +51,11 @@ async function api(url, opts) {
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
   }[c]));
 }
 
@@ -56,6 +64,8 @@ function profileLabel(p) {
   if (p.name) parts.push(p.name);
   if (p.encoding) parts.push(String(p.encoding));
   if (p.width && p.height) parts.push(`${p.width}x${p.height}`);
+  if (p.recommended) parts.push("recommended");
+  else if (p.browser_compatible === false) parts.push("not browser-safe");
   return parts.length ? parts.join(" • ") : p.token;
 }
 
@@ -66,7 +76,7 @@ function clearProfilesUI(msg = "Fetch profiles first…") {
 }
 
 function clearRowSelection() {
-  tbody.querySelectorAll("tr[data-id]").forEach(tr => tr.classList.remove("active"));
+  tbody.querySelectorAll("tr[data-id]").forEach((tr) => tr.classList.remove("active"));
 }
 
 function selectRow(deviceId) {
@@ -103,7 +113,6 @@ function fillForm(d) {
   clearProfilesUI("Fetch profiles to select…");
 
   if (d.profile_token) {
-    // show saved profile immediately, even before fetching
     profilesSel.innerHTML = `<option value="${escapeHtml(d.profile_token)}">${escapeHtml(d.profile_label || d.profile_token)}</option>`;
     profilesSel.disabled = false;
   }
@@ -112,7 +121,7 @@ function fillForm(d) {
 
   setFormStatus(
     d.profile_token
-      ? "Loaded (ready). You can Fetch profiles to change it."
+      ? "Loaded (ready). Fetch profiles to confirm you are using an H264 profile."
       : "Loaded. Fetch profiles to select one."
   );
 }
@@ -150,11 +159,9 @@ async function load() {
     tbody.innerHTML = devices.map(rowHtml).join("");
     setListStatus(`Loaded ${devices.length} device(s).`);
 
-    // keep selection if editingId still exists
-    if (editingId && devices.some(d => d.id === editingId)) {
+    if (editingId && devices.some((d) => d.id === editingId)) {
       selectRow(editingId);
     } else {
-      // don’t auto-select; user clicks to edit
       clearRowSelection();
     }
   } catch (e) {
@@ -184,7 +191,7 @@ function readFormFull() {
   const creds = readCredsOnly();
 
   const profile_token = profilesSel.disabled ? null : (profilesSel.value || null);
-  const selected = lastProfiles.find(p => p.token === profile_token);
+  const selected = lastProfiles.find((p) => p.token === profile_token);
   const profile_label = profile_token
     ? (selected ? profileLabel(selected) : (profilesSel.selectedOptions?.[0]?.textContent || profile_token))
     : null;
@@ -218,13 +225,18 @@ async function fetchProfiles() {
   }
   profilesSel.disabled = false;
 
-  // keep existing saved token selected if possible
   if (editingId) {
-    const d = devices.find(x => x.id === editingId);
+    const d = devices.find((x) => x.id === editingId);
     if (d?.profile_token) profilesSel.value = d.profile_token;
   }
 
-  setFormStatus(`Profiles loaded (${profs.length}). Select one, then Save.`);
+  const recommended = profs.find((p) => p.recommended);
+  if (recommended) {
+    profilesSel.value = recommended.token;
+    setFormStatus(`Profiles loaded (${profs.length}). Recommended H264 profile selected.`);
+  } else {
+    setFormStatus(`Profiles loaded (${profs.length}), but no browser-safe H264 profile was found.`);
+  }
 }
 
 fetchBtn.addEventListener("click", async () => {
@@ -254,14 +266,14 @@ saveBtn.addEventListener("click", async () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      setFormStatus("Updated (ready).");
+      setFormStatus("Updated.");
     } else {
       await api("/api/devices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      setFormStatus("Created (ready).");
+      setFormStatus("Created.");
     }
 
     await load();
@@ -275,11 +287,7 @@ newBtn.addEventListener("click", () => {
   editingId = null;
   formTitle.textContent = "Create device";
   delBtn.disabled = true;
-
-  // DO NOT clear fields
-  // DO clear profile selection so user explicitly selects for new device
   clearProfilesUI("Fetch profiles to select…");
-
   clearRowSelection();
   setFormStatus("Creating new device (fields copied). Select profile and Save.");
 });
@@ -305,24 +313,22 @@ delBtn.addEventListener("click", async () => {
 refreshBtn.addEventListener("click", () => load());
 if (refreshTop) refreshTop.addEventListener("click", () => load());
 
-// Click row to edit (no edit/delete buttons in rows)
 tbody.addEventListener("click", (ev) => {
   const tr = ev.target?.closest?.("tr[data-id]");
   if (!tr) return;
   const id = tr.getAttribute("data-id");
-  const d = devices.find(x => x.id === id);
+  const d = devices.find((x) => x.id === id);
   if (!d) return;
   fillForm(d);
 });
 
-// Keyboard accessibility (Enter/Space)
 tbody.addEventListener("keydown", (ev) => {
   if (ev.key !== "Enter" && ev.key !== " ") return;
   const tr = ev.target?.closest?.("tr[data-id]");
   if (!tr) return;
   ev.preventDefault();
   const id = tr.getAttribute("data-id");
-  const d = devices.find(x => x.id === id);
+  const d = devices.find((x) => x.id === id);
   if (!d) return;
   fillForm(d);
 });
