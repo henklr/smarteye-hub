@@ -575,11 +575,6 @@ code{
   user-select:none;
 }
 
-.tilePtzJoystick.disabled{
-  opacity:.45;
-  pointer-events:none;
-}
-
 .tilePtzCross{
   position:absolute;
   inset:0;
