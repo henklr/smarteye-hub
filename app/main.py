@@ -1,3 +1,4 @@
+# app.py
 from __future__ import annotations
 
 from pathlib import Path
@@ -35,7 +36,7 @@ MEDIAMTX_API_URL = os.getenv("MEDIAMTX_API_URL", "http://mediamtx:9997").rstrip(
 MEDIAMTX_API_USER = os.getenv("MEDIAMTX_API_USER", "apiuser")
 MEDIAMTX_API_PASS = os.getenv("MEDIAMTX_API_PASS", "apipass")
 
-PTZ_WATCHDOG_SEC = float(os.getenv("PTZ_WATCHDOG_SEC", "0.45"))
+PTZ_WATCHDOG_SEC = float(os.getenv("PTZ_WATCHDOG_SEC", "0.25"))
 
 
 def _dump(model) -> dict:
@@ -66,6 +67,42 @@ _event_last_lock = threading.RLock()
 # PTZ watchdog timers
 _ptz_watchdogs: Dict[str, threading.Timer] = {}
 _ptz_watchdog_lock = threading.RLock()
+
+
+# -------------------------
+# PTZ runtime cache
+# -------------------------
+@dataclass
+class PTZContextCache:
+    fingerprint: str
+    profile_token: str
+    ptz: Any
+    pan_tilt_space: Optional[str]
+    zoom_space: Optional[str]
+    has_ptz: bool
+    has_pan_tilt: bool
+    has_zoom: bool
+
+
+_ptz_context_cache: Dict[str, PTZContextCache] = {}
+_ptz_context_cache_lock = threading.RLock()
+
+_ptz_command_locks: Dict[str, threading.Lock] = {}
+_ptz_command_locks_lock = threading.RLock()
+
+
+def _ptz_device_lock(device_id: str) -> threading.Lock:
+    with _ptz_command_locks_lock:
+        lock = _ptz_command_locks.get(device_id)
+        if lock is None:
+            lock = threading.Lock()
+            _ptz_command_locks[device_id] = lock
+        return lock
+
+
+def _invalidate_ptz_cache(device_id: str) -> None:
+    with _ptz_context_cache_lock:
+        _ptz_context_cache.pop(device_id, None)
 
 
 # -------------------------
@@ -334,6 +371,18 @@ def _device_req(device: Device) -> OnvifBase:
         onvif_port=device.onvif_port,
         username=device.username,
         password=device.password,
+    )
+
+
+def _device_fingerprint(device: Device) -> str:
+    return "|".join(
+        [
+            device.ip,
+            str(device.onvif_port),
+            device.username,
+            device.password,
+            str(device.profile_token or ""),
+        ]
     )
 
 
@@ -645,16 +694,6 @@ def _preload_stream_for_device(device: Device) -> None:
 
 
 def _mediamtx_paths_snapshot() -> dict:
-    """
-    Best-effort snapshot of all MediaMTX paths.
-
-    Returns:
-      {
-        "ok": bool,
-        "items": { "cam-abc123": {...raw path row...}, ... },
-        "error": str|None
-      }
-    """
     try:
         data = _mediamtx_api_request("GET", "/v3/paths/list")
         raw_items = data.get("items") or data.get("paths") or []
@@ -698,7 +737,6 @@ def _path_row_to_status(row: Optional[dict]) -> dict:
         else 0
     )
 
-    # Only trust explicit runtime readiness fields.
     ready_val = row.get("ready", None)
     source_ready_val = row.get("sourceReady", None)
 
@@ -714,7 +752,8 @@ def _path_row_to_status(row: Optional[dict]) -> dict:
         "readers": readers,
         "source_ready": source_ready,
         "raw": row,
-    }    
+    }
+
 
 def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
     out = {
@@ -738,7 +777,6 @@ def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
     row = snapshot["items"].get(_path_for(device.id))
     st = _path_row_to_status(row)
 
-    # For cameras that are not meant to stay hot, missing path is not a failure.
     if not device.preload_stream and not st.get("exists"):
         out["status"] = "idle"
         out["detail"] = {
@@ -795,7 +833,7 @@ def _schedule_ptz_watchdog(device_id: str) -> None:
     t.start()
 
 
-def _ptz_context(device_id: str) -> dict:
+def _build_ptz_context(device_id: str) -> PTZContextCache:
     device = _get_device(device_id)
     if not device.profile_token:
         raise RuntimeError("Device has no saved profile_token")
@@ -860,69 +898,120 @@ def _ptz_context(device_id: str) -> dict:
         except Exception:
             pass
 
-    return {
-        "device": device,
-        "req": req,
-        "ptz": ptz,
-        "profile_token": device.profile_token,
-        "pan_tilt_space": pan_tilt_space,
-        "zoom_space": zoom_space,
-        "has_ptz": True,
-        "has_pan_tilt": has_pan_tilt,
-        "has_zoom": has_zoom,
-    }
+    return PTZContextCache(
+        fingerprint=_device_fingerprint(device),
+        profile_token=device.profile_token,
+        ptz=ptz,
+        pan_tilt_space=pan_tilt_space,
+        zoom_space=zoom_space,
+        has_ptz=True,
+        has_pan_tilt=has_pan_tilt,
+        has_zoom=has_zoom,
+    )
+
+
+def _ptz_context(device_id: str, force_refresh: bool = False) -> PTZContextCache:
+    device = _get_device(device_id)
+    fingerprint = _device_fingerprint(device)
+
+    if not force_refresh:
+        with _ptz_context_cache_lock:
+            cached = _ptz_context_cache.get(device_id)
+            if cached and cached.fingerprint == fingerprint:
+                return cached
+
+    with _ptz_context_cache_lock:
+        cached = _ptz_context_cache.get(device_id)
+        if cached and cached.fingerprint == fingerprint and not force_refresh:
+            return cached
+
+        ctx = _build_ptz_context(device_id)
+        _ptz_context_cache[device_id] = ctx
+        return ctx
 
 
 def _ptz_move(device_id: str, pan: float, tilt: float, zoom: float) -> dict:
-    ctx = _ptz_context(device_id)
-
     pan = _clamp_speed(pan)
     tilt = _clamp_speed(tilt)
     zoom = _clamp_speed(zoom)
 
-    velocity: Dict[str, Any] = {}
+    with _ptz_device_lock(device_id):
+        ctx = _ptz_context(device_id)
 
-    if ctx["has_pan_tilt"] and (abs(pan) > 0.0001 or abs(tilt) > 0.0001):
-        payload = {"x": pan, "y": tilt}
-        if ctx["pan_tilt_space"]:
-            payload["space"] = ctx["pan_tilt_space"]
-        velocity["PanTilt"] = payload
+        velocity: Dict[str, Any] = {}
 
-    if ctx["has_zoom"] and abs(zoom) > 0.0001:
-        payload = {"x": zoom}
-        if ctx["zoom_space"]:
-            payload["space"] = ctx["zoom_space"]
-        velocity["Zoom"] = payload
+        if ctx.has_pan_tilt and (abs(pan) > 0.0001 or abs(tilt) > 0.0001):
+            payload = {"x": pan, "y": tilt}
+            if ctx.pan_tilt_space:
+                payload["space"] = ctx.pan_tilt_space
+            velocity["PanTilt"] = payload
 
-    if not velocity:
-        return _ptz_stop(device_id)
+        if ctx.has_zoom and abs(zoom) > 0.0001:
+            payload = {"x": zoom}
+            if ctx.zoom_space:
+                payload["space"] = ctx.zoom_space
+            velocity["Zoom"] = payload
 
-    ctx["ptz"].ContinuousMove(
-        {
-            "ProfileToken": ctx["profile_token"],
-            "Velocity": velocity,
-        }
-    )
-    _schedule_ptz_watchdog(device_id)
-    return {"ok": True, "moving": True, "pan": pan, "tilt": tilt, "zoom": zoom}
+        if not velocity:
+            return _ptz_stop(device_id)
+
+        try:
+            ctx.ptz.ContinuousMove(
+                {
+                    "ProfileToken": ctx.profile_token,
+                    "Velocity": velocity,
+                }
+            )
+        except Exception:
+            _invalidate_ptz_cache(device_id)
+            ctx = _ptz_context(device_id, force_refresh=True)
+            ctx.ptz.ContinuousMove(
+                {
+                    "ProfileToken": ctx.profile_token,
+                    "Velocity": velocity,
+                }
+            )
+
+        _schedule_ptz_watchdog(device_id)
+        return {"ok": True, "moving": True, "pan": pan, "tilt": tilt, "zoom": zoom}
 
 
 def _ptz_stop(device_id: str) -> dict:
     _cancel_ptz_watchdog(device_id)
-    ctx = _ptz_context(device_id)
-    ctx["ptz"].Stop(
-        {
-            "ProfileToken": ctx["profile_token"],
-            "PanTilt": True,
-            "Zoom": True,
-        }
-    )
+
+    with _ptz_device_lock(device_id):
+        ctx = _ptz_context(device_id)
+        try:
+            ctx.ptz.Stop(
+                {
+                    "ProfileToken": ctx.profile_token,
+                    "PanTilt": True,
+                    "Zoom": True,
+                }
+            )
+        except Exception:
+            _invalidate_ptz_cache(device_id)
+            ctx = _ptz_context(device_id, force_refresh=True)
+            ctx.ptz.Stop(
+                {
+                    "ProfileToken": ctx.profile_token,
+                    "PanTilt": True,
+                    "Zoom": True,
+                }
+            )
+
     return {"ok": True, "moving": False}
 
 
 def _ptz_status(device_id: str) -> dict:
-    ctx = _ptz_context(device_id)
-    st = ctx["ptz"].GetStatus({"ProfileToken": ctx["profile_token"]})
+    with _ptz_device_lock(device_id):
+        ctx = _ptz_context(device_id)
+        try:
+            st = ctx.ptz.GetStatus({"ProfileToken": ctx.profile_token})
+        except Exception:
+            _invalidate_ptz_cache(device_id)
+            ctx = _ptz_context(device_id, force_refresh=True)
+            st = ctx.ptz.GetStatus({"ProfileToken": ctx.profile_token})
 
     pos = getattr(st, "Position", None)
     move = getattr(st, "MoveStatus", None)
@@ -1096,6 +1185,7 @@ def create_device(dev: DeviceIn):
     new = Device(id=uuid.uuid4().hex[:12], **_dump(dev))
     devs.append(new)
     _save_devices(devs)
+    _invalidate_ptz_cache(new.id)
 
     req = EventsStartRequest(
         device_id=new.id,
@@ -1124,6 +1214,8 @@ def update_device(device_id: str, dev: DeviceIn):
     updated = Device(id=device_id, **_dump(dev))
     devs[idx] = updated
     _save_devices(devs)
+    _invalidate_ptz_cache(device_id)
+    _cancel_ptz_watchdog(device_id)
 
     req = EventsStartRequest(
         device_id=device_id,
@@ -1154,6 +1246,9 @@ def delete_device(device_id: str):
     _save_devices(new_devs)
     _delete_mediamtx_path(device_id)
     _cancel_ptz_watchdog(device_id)
+    _invalidate_ptz_cache(device_id)
+    with _ptz_command_locks_lock:
+        _ptz_command_locks.pop(device_id, None)
     return {"ok": True}
 
 
@@ -1327,9 +1422,9 @@ async def ptz_capabilities(device_id: str):
         ctx = await asyncio.to_thread(_ptz_context, device_id)
         return {
             "ok": True,
-            "ptz": bool(ctx["has_ptz"]),
-            "pan_tilt": bool(ctx["has_pan_tilt"]),
-            "zoom": bool(ctx["has_zoom"]),
+            "ptz": bool(ctx.has_ptz),
+            "pan_tilt": bool(ctx.has_pan_tilt),
+            "zoom": bool(ctx.has_zoom),
         }
     except Exception as e:
         return {

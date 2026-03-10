@@ -69,6 +69,24 @@ async function api(url, opts) {
   return data;
 }
 
+async function ptzPost(url, body = null) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    let detail = text || res.statusText;
+    try {
+      const parsed = text ? JSON.parse(text) : null;
+      if (parsed?.detail) detail = parsed.detail;
+    } catch {}
+    throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+  }
+}
+
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;",
@@ -303,7 +321,7 @@ function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
-function shapeAxis(v, deadzone = 0.18, expo = 1.8) {
+function shapeAxis(v, deadzone = 0.14, expo = 1.35) {
   const s = Math.sign(v);
   const a = Math.abs(v);
   if (a <= deadzone) return 0;
@@ -375,8 +393,8 @@ function makeTile(device) {
         </div>
 
         <div class="tilePtzZoom">
-          <button class="btn btn-mini tilePtzZoomBtn" data-zoom="0.35" type="button">＋</button>
-          <button class="btn btn-mini tilePtzZoomBtn" data-zoom="-0.35" type="button">－</button>
+          <button class="btn btn-mini tilePtzZoomBtn" data-zoom="0.45" type="button">＋</button>
+          <button class="btn btn-mini tilePtzZoomBtn" data-zoom="-0.45" type="button">－</button>
         </div>
       </div>
 
@@ -418,54 +436,68 @@ function installPtzControls(device, entry, caps) {
     zoomBtns.forEach((btn) => btn.classList.add("hidden"));
   }
 
-  let scheduled = null;
   let desired = { pan: 0, tilt: 0, zoom: 0 };
   let lastSent = { pan: 999, tilt: 999, zoom: 999 };
+  let sending = false;
+  let needsFlush = false;
   let activeJoystick = false;
 
-  async function flushMove() {
-    scheduled = null;
+  function roundedDesired() {
+    return {
+      pan: Number(clamp(desired.pan, -1, 1).toFixed(3)),
+      tilt: Number(clamp(desired.tilt, -1, 1).toFixed(3)),
+      zoom: Number(clamp(desired.zoom, -1, 1).toFixed(3)),
+    };
+  }
+
+  function sameCmd(a, b) {
+    return a.pan === b.pan && a.tilt === b.tilt && a.zoom === b.zoom;
+  }
+
+  async function flushMove(force = false) {
     if (entry.cancelled) return;
     if (entry.state !== STREAM_STATE.LIVE) return;
 
-    const next = {
-      pan: Number(desired.pan.toFixed(3)),
-      tilt: Number(desired.tilt.toFixed(3)),
-      zoom: Number(desired.zoom.toFixed(3)),
-    };
+    const next = roundedDesired();
 
-    const same =
-      next.pan === lastSent.pan &&
-      next.tilt === lastSent.tilt &&
-      next.zoom === lastSent.zoom;
+    if (!force && sameCmd(next, lastSent)) return;
 
-    if (same) return;
-    lastSent = next;
+    if (sending) {
+      needsFlush = true;
+      return;
+    }
+
+    sending = true;
+    needsFlush = false;
 
     try {
       if (Math.abs(next.pan) < 0.001 && Math.abs(next.tilt) < 0.001 && Math.abs(next.zoom) < 0.001) {
-        await api(`/api/ptz/stop/${encodeURIComponent(device.id)}`, { method: "POST" });
+        await ptzPost(`/api/ptz/stop/${encodeURIComponent(device.id)}`);
       } else {
-        await api(`/api/ptz/move/${encodeURIComponent(device.id)}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(next),
-        });
+        await ptzPost(`/api/ptz/move/${encodeURIComponent(device.id)}`, next);
       }
+      lastSent = next;
     } catch (e) {
       setStatus(`PTZ error: ${e?.message || e}`, "bad");
+    } finally {
+      sending = false;
+      const latest = roundedDesired();
+      if (needsFlush || !sameCmd(latest, lastSent)) {
+        needsFlush = false;
+        queueMicrotask(() => {
+          flushMove(false).catch(() => {});
+        });
+      }
     }
   }
 
-  function queueMove(pan, tilt, zoom = 0) {
+  function queueMove(pan, tilt, zoom = 0, force = false) {
     desired = {
       pan: clamp(pan, -1, 1),
       tilt: clamp(tilt, -1, 1),
       zoom: clamp(zoom, -1, 1),
     };
-
-    if (scheduled) clearTimeout(scheduled);
-    scheduled = setTimeout(flushMove, 140);
+    flushMove(force).catch(() => {});
   }
 
   function resetKnob() {
@@ -475,15 +507,7 @@ function installPtzControls(device, entry, caps) {
   function stopNow() {
     desired = { pan: 0, tilt: 0, zoom: 0 };
     resetKnob();
-    if (scheduled) {
-      clearTimeout(scheduled);
-      scheduled = null;
-    }
-    lastSent = { pan: 999, tilt: 999, zoom: 999 };
-    api(`/api/ptz/stop/${encodeURIComponent(device.id)}`, { method: "POST" }).catch(() => {});
-    setTimeout(() => {
-      api(`/api/ptz/stop/${encodeURIComponent(device.id)}`, { method: "POST" }).catch(() => {});
-    }, 120);
+    flushMove(true).catch(() => {});
   }
 
   entry.stopPtz = stopNow;
@@ -521,7 +545,7 @@ function installPtzControls(device, entry, caps) {
         const nx = shapeAxis(px / maxRadius);
         const ny = shapeAxis((-py) / maxRadius);
 
-        queueMove(nx, ny, 0);
+        queueMove(nx, ny, 0, true);
       }
 
       function onMove(moveEv) {
@@ -558,7 +582,7 @@ function installPtzControls(device, entry, caps) {
       function onDown(ev) {
         ev.preventDefault();
         ev.stopPropagation();
-        queueMove(0, 0, speed);
+        queueMove(0, 0, speed, true);
       }
 
       function onUp(ev) {
