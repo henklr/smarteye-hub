@@ -1,5 +1,3 @@
-// static/devices.js
-
 const tbody = document.getElementById("devTbody");
 const listStatus = document.getElementById("listStatus");
 const formStatus = document.getElementById("formStatus");
@@ -24,6 +22,8 @@ const refreshTop = document.getElementById("refreshTop");
 let devices = [];
 let editingId = null;
 let lastProfiles = [];
+let statusMap = new Map();
+let pollTimer = null;
 
 function setListStatus(t) {
   listStatus.textContent = t;
@@ -126,6 +126,42 @@ function fillForm(d) {
   );
 }
 
+function streamStatusHtml(d) {
+  const st = statusMap.get(d.id);
+
+  if (!d.profile_token) {
+    return `<span class="statusChip" title="No profile configured"><span class="statusDot unknown"></span><span class="muted">N/A</span></span>`;
+  }
+
+  if (!st) {
+    return `<span class="statusChip" title="Waiting for status"><span class="statusDot unknown"></span><span class="muted">Checking…</span></span>`;
+  }
+
+  switch (st.status) {
+    case "up":
+      return `<span class="statusChip" title="Stream is up"><span class="statusDot up"></span><span class="okTag">LIVE</span></span>`;
+
+    case "idle":
+      return `<span class="statusChip" title="Configured, but not currently kept hot"><span class="statusDot unknown"></span><span class="muted">IDLE</span></span>`;
+
+    case "unknown": {
+      const title = typeof st.detail === "string" ? st.detail : "Status unavailable";
+      return `<span class="statusChip" title="${escapeHtml(title)}"><span class="statusDot unknown"></span><span class="muted">UNKNOWN</span></span>`;
+    }
+
+    case "down":
+    default: {
+      const title =
+        typeof st.detail === "string"
+          ? st.detail
+          : st.detail
+          ? JSON.stringify(st.detail)
+          : "No stream";
+      return `<span class="statusChip" title="${escapeHtml(title)}"><span class="statusDot down"></span><span class="badTag">DOWN</span></span>`;
+    }
+  }
+}
+
 function rowHtml(d) {
   const ready = !!d.profile_token;
   const readyTag = ready
@@ -137,27 +173,57 @@ function rowHtml(d) {
       <td>${escapeHtml(d.name || "")}</td>
       <td>${escapeHtml(d.ip || "")}</td>
       <td>${readyTag}</td>
+      <td>${streamStatusHtml(d)}</td>
     </tr>
   `;
 }
 
+function renderTable() {
+  if (!devices.length) {
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">No devices yet.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = devices.map(rowHtml).join("");
+
+  if (editingId && devices.some((d) => d.id === editingId)) {
+    selectRow(editingId);
+  }
+}
+
+async function loadStatuses() {
+  try {
+    const data = await api("/api/device-status", { method: "GET" });
+    const items = data.items || [];
+    statusMap = new Map(items.map((x) => [x.device_id, x]));
+    renderTable();
+
+    const up = items.filter((x) => x.status === "up").length;
+    const down = items.filter((x) => x.status === "down").length;
+    setListStatus(`Loaded ${devices.length} device(s). ${up} up, ${down} down.`);
+  } catch (e) {
+    setListStatus(`Status check failed: ${String(e.message || e)}`);
+  }
+}
+
 async function load() {
   setListStatus("Loading…");
-  tbody.innerHTML = `<tr><td colspan="3" class="muted">Loading…</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="4" class="muted">Loading…</td></tr>`;
 
   try {
     const data = await api("/api/devices", { method: "GET" });
     devices = data.devices || [];
 
     if (!devices.length) {
-      tbody.innerHTML = `<tr><td colspan="3" class="muted">No devices yet.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="4" class="muted">No devices yet.</td></tr>`;
       setListStatus("No devices.");
       clearForm();
       return;
     }
 
-    tbody.innerHTML = devices.map(rowHtml).join("");
-    setListStatus(`Loaded ${devices.length} device(s).`);
+    renderTable();
+    setListStatus(`Loaded ${devices.length} device(s). Checking status…`);
+    await loadStatuses();
 
     if (editingId && devices.some((d) => d.id === editingId)) {
       selectRow(editingId);
@@ -165,7 +231,7 @@ async function load() {
       clearRowSelection();
     }
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="3" class="muted">Failed to load: ${escapeHtml(e.message || e)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">Failed to load: ${escapeHtml(e.message || e)}</td></tr>`;
     setListStatus("Load failed.");
   }
 }
@@ -333,5 +399,25 @@ tbody.addEventListener("keydown", (ev) => {
   fillForm(d);
 });
 
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(() => {
+    if (!devices.length) return;
+    loadStatuses().catch(() => {});
+  }, 5000);
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopPolling();
+  else startPolling();
+});
+
 clearForm();
-load();
+load().then(startPolling);

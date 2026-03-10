@@ -1,4 +1,3 @@
-# main.py
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,7 +19,6 @@ from pydantic import BaseModel, Field
 from onvif import ONVIFCamera
 from dataclasses import dataclass
 from datetime import datetime
-from xml.etree import ElementTree as ET
 
 app = FastAPI()
 
@@ -125,6 +123,7 @@ class DeviceIn(BaseModel):
     profile_label: Optional[str] = None
     profile_encoding: Optional[str] = None
     allow_topics: Optional[List[str]] = None
+    preload_stream: bool = True
 
 
 class Device(DeviceIn):
@@ -148,13 +147,20 @@ class PTZMoveRequest(BaseModel):
 # -------------------------
 # Device storage
 # -------------------------
+def _normalize_device_dict(d: dict) -> dict:
+    out = dict(d)
+    if "preload_stream" not in out:
+        out["preload_stream"] = True
+    return out
+
+
 def _load_devices() -> List[Device]:
     if not DEVICES_JSON.exists():
         return []
     try:
         raw = json.loads(DEVICES_JSON.read_text(encoding="utf-8"))
         items = raw.get("devices", [])
-        return [Device(**d) for d in items]
+        return [Device(**_normalize_device_dict(d)) for d in items]
     except Exception:
         return []
 
@@ -586,11 +592,12 @@ def _mediamtx_api_request(method: str, path: str, body: Optional[dict] = None) -
         raise RuntimeError(f"MediaMTX API {method} {path} failed: {e}")
 
 
-def _ensure_mediamtx_path(device_id: str, source_rtsp: str) -> dict:
+def _ensure_mediamtx_path(device_id: str, source_rtsp: str, preload: bool = False) -> dict:
     name = _path_for(device_id)
+
     payload = {
         "source": source_rtsp,
-        "sourceOnDemand": True,
+        "sourceOnDemand": not preload,
         "sourceOnDemandStartTimeout": "10s",
         "sourceOnDemandCloseAfter": "10s",
     }
@@ -611,12 +618,144 @@ def _ensure_mediamtx_path(device_id: str, source_rtsp: str) -> dict:
 
         raise RuntimeError(f"MediaMTX path add failed: {add_err}") from add_err
 
+
 def _delete_mediamtx_path(device_id: str) -> None:
     name = _path_for(device_id)
     try:
         _mediamtx_api_request("DELETE", f"/v3/config/paths/delete/{name}")
     except Exception:
         pass
+
+
+def _preload_stream_for_device(device: Device) -> None:
+    if not device.profile_token:
+        return
+    if not device.preload_stream:
+        return
+
+    req = _device_req(device)
+    encoding = _find_profile_encoding(req, device.profile_token)
+    if (encoding or "").upper() != "H264":
+        raise RuntimeError(
+            f"Selected profile uses {encoding or 'unknown'}; browser playback needs H264."
+        )
+
+    rtsp = _get_stream_uri(req, device.profile_token)
+    _ensure_mediamtx_path(device.id, rtsp, preload=True)
+
+
+def _mediamtx_paths_snapshot() -> dict:
+    """
+    Best-effort snapshot of all MediaMTX paths.
+
+    Returns:
+      {
+        "ok": bool,
+        "items": { "cam-abc123": {...raw path row...}, ... },
+        "error": str|None
+      }
+    """
+    try:
+        data = _mediamtx_api_request("GET", "/v3/paths/list")
+        raw_items = data.get("items") or data.get("paths") or []
+
+        items_by_name = {}
+        for item in raw_items:
+            name = item.get("name")
+            if name:
+                items_by_name[name] = item
+
+        return {
+            "ok": True,
+            "items": items_by_name,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "items": {},
+            "error": str(e),
+        }
+
+
+def _path_row_to_status(row: Optional[dict]) -> dict:
+    if not row:
+        return {
+            "exists": False,
+            "ready": False,
+            "readers": 0,
+            "source_ready": False,
+            "raw": None,
+        }
+
+    readers = (
+        row.get("readersCount")
+        if isinstance(row.get("readersCount"), int)
+        else row.get("numReaders")
+        if isinstance(row.get("numReaders"), int)
+        else row.get("readers")
+        if isinstance(row.get("readers"), int)
+        else 0
+    )
+
+    # Only trust explicit runtime readiness fields.
+    ready_val = row.get("ready", None)
+    source_ready_val = row.get("sourceReady", None)
+
+    source_ready = False
+    if isinstance(source_ready_val, bool):
+        source_ready = source_ready_val
+    elif isinstance(ready_val, bool):
+        source_ready = ready_val
+
+    return {
+        "exists": True,
+        "ready": source_ready,
+        "readers": readers,
+        "source_ready": source_ready,
+        "raw": row,
+    }    
+
+def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
+    out = {
+        "device_id": device.id,
+        "configured": bool(device.profile_token),
+        "preload_stream": bool(getattr(device, "preload_stream", False)),
+        "stream_up": False,
+        "status": "down",
+        "detail": None,
+    }
+
+    if not device.profile_token:
+        out["status"] = "not_configured"
+        return out
+
+    if not snapshot.get("ok"):
+        out["status"] = "unknown"
+        out["detail"] = snapshot.get("error")
+        return out
+
+    row = snapshot["items"].get(_path_for(device.id))
+    st = _path_row_to_status(row)
+
+    # For cameras that are not meant to stay hot, missing path is not a failure.
+    if not device.preload_stream and not st.get("exists"):
+        out["status"] = "idle"
+        out["detail"] = {
+            "exists": False,
+            "source_ready": False,
+            "readers": 0,
+        }
+        return out
+
+    out["stream_up"] = bool(st.get("ready"))
+    out["status"] = "up" if out["stream_up"] else "down"
+    out["detail"] = {
+        "exists": st.get("exists"),
+        "source_ready": st.get("source_ready"),
+        "readers": st.get("readers", 0),
+    }
+    return out
 
 
 # -------------------------
@@ -864,6 +1003,7 @@ def _start_event_worker(device_id: str, req: OnvifBase, mode: str) -> None:
             return
         stop_flag = threading.Event()
         worker = EventWorker(stop_flag=stop_flag, thread=None, mode=mode)
+
         _event_workers[device_id] = worker
 
         t = threading.Thread(
@@ -966,6 +1106,11 @@ def create_device(dev: DeviceIn):
     )
     _start_event_worker(new.id, req, mode="filtered")
 
+    try:
+        _preload_stream_for_device(new)
+    except Exception:
+        pass
+
     return {"ok": True, "device": _dump(new)}
 
 
@@ -988,6 +1133,14 @@ def update_device(device_id: str, dev: DeviceIn):
         password=updated.password,
     )
     _start_event_worker(device_id, req, mode="filtered")
+
+    if updated.preload_stream and updated.profile_token:
+        try:
+            _preload_stream_for_device(updated)
+        except Exception:
+            pass
+    else:
+        _delete_mediamtx_path(device_id)
 
     return {"ok": True, "device": _dump(updated)}
 
@@ -1057,6 +1210,7 @@ def status(device_id: str):
         "exit_code": None,
         "log_tail": None,
         "profile_encoding": (d.profile_encoding or "").upper() or None,
+        "preload_stream": bool(d.preload_stream),
     }
 
 
@@ -1068,6 +1222,15 @@ async def start(req: StartRequest):
     device_id = req.device_id.strip()
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id.")
+
+    device = None
+    try:
+        device = _get_device(device_id)
+    except Exception:
+        pass
+
+    if device and device.preload_stream and device.profile_token == req.profile_token:
+        return {"ok": True, "device_id": device_id, "path": _path_for(device_id)}
 
     try:
         encoding = await asyncio.to_thread(_find_profile_encoding, req, req.profile_token)
@@ -1089,7 +1252,7 @@ async def start(req: StartRequest):
         raise HTTPException(status_code=400, detail=f"ONVIF stream uri failed: {e}")
 
     try:
-        await asyncio.to_thread(_ensure_mediamtx_path, device_id, rtsp)
+        await asyncio.to_thread(_ensure_mediamtx_path, device_id, rtsp, False)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"MediaMTX path setup failed: {e}")
 
@@ -1102,24 +1265,54 @@ async def stop_one(device_id: str):
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
 
-    await asyncio.to_thread(_delete_mediamtx_path, device_id)
+    keep_hot = False
+    try:
+        d = _get_device(device_id)
+        keep_hot = bool(d.preload_stream and d.profile_token)
+    except Exception:
+        keep_hot = False
+
+    if not keep_hot:
+        await asyncio.to_thread(_delete_mediamtx_path, device_id)
+
     try:
         await asyncio.to_thread(_ptz_stop, device_id)
     except Exception:
         pass
-    return {"ok": True}
+
+    return {"ok": True, "kept_preloaded": keep_hot}
 
 
 @app.post("/api/stop")
 async def stop_all():
     devs = _load_devices()
     for d in devs:
-        await asyncio.to_thread(_delete_mediamtx_path, d.id)
+        if not (d.preload_stream and d.profile_token):
+            await asyncio.to_thread(_delete_mediamtx_path, d.id)
         try:
             await asyncio.to_thread(_ptz_stop, d.id)
         except Exception:
             pass
     return {"ok": True}
+
+
+@app.get("/api/device-status/{device_id}")
+def device_status(device_id: str):
+    device_id = device_id.strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Missing device_id")
+
+    d = _get_device(device_id)
+    snapshot = _mediamtx_paths_snapshot()
+    return _device_stream_status_from_snapshot(d, snapshot)
+
+
+@app.get("/api/device-status")
+def all_device_status():
+    devs = _load_devices()
+    snapshot = _mediamtx_paths_snapshot()
+    items = [_device_stream_status_from_snapshot(d, snapshot) for d in devs]
+    return {"items": items}
 
 
 # -------------------------
@@ -1197,6 +1390,12 @@ def _on_startup():
                 password=d.password,
             )
             _start_event_worker(d.id, req, mode="filtered")
+
+        for d in devs:
+            try:
+                _preload_stream_for_device(d)
+            except Exception:
+                pass
     except Exception:
         pass
 
