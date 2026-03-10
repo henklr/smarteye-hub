@@ -16,6 +16,9 @@ const layoutEl = document.getElementById("liveLayout");
 const toggleSidebarBtn = document.getElementById("toggleSidebar");
 const showSidebarBtn = document.getElementById("showSidebar");
 
+const LS_KEY = "live.sidebarHidden";
+const LS_GRID_KEY = "live.gridDeviceIds";
+
 let devices = [];
 const streams = new Map();
 const ptzCapsCache = new Map();
@@ -70,9 +73,24 @@ function escapeHtml(s) {
   }[c]));
 }
 
+function saveGridState() {
+  const ids = Array.from(streams.keys());
+  localStorage.setItem(LS_GRID_KEY, JSON.stringify(ids));
+}
+
+function loadGridState() {
+  try {
+    const raw = localStorage.getItem(LS_GRID_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
 function recomputeGrid() {
   const n = streams.size;
-  const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
+  const cols = Math.max(1, Math.ceil(Math.sqrt(n || 1)));
   videoGrid.style.setProperty("--cols", String(cols));
 }
 
@@ -84,6 +102,15 @@ function isStreaming(deviceId) {
   return streams.has(deviceId);
 }
 
+function streamBadge(entry) {
+  if (!entry) return null;
+  if (entry.state === "live") return "LIVE";
+  if (entry.state === "error") return "ERROR";
+  if (entry.state === "starting") return "STARTING";
+  if (entry.state === "stopped") return "READY";
+  return "READY";
+}
+
 function renderList() {
   if (!devices.length) {
     camListEl.innerHTML = `<div class="muted" style="padding:10px 2px;">No devices. Add some in Devices.</div>`;
@@ -92,23 +119,34 @@ function renderList() {
 
   camListEl.innerHTML = devices.map((d) => {
     const ready = profileReady(d);
-    const active = isStreaming(d.id);
+    const entry = streams.get(d.id);
+    const present = !!entry;
 
     const cls = [
       "camItem",
       ready ? "ready" : "notReady",
-      active ? "active" : "",
+      present ? "active" : "",
     ].join(" ");
 
-    const subtitle = ready
+    let subtitle = ready
       ? (d.profile_label || d.profile_token)
       : "Not ready (select profile in Devices)";
+
+    if (entry?.state === "error" && entry?.errorMessage) {
+      subtitle = entry.errorMessage;
+    } else if (entry?.state === "starting") {
+      subtitle = "Starting…";
+    } else if (entry?.state === "live") {
+      subtitle = "Streaming";
+    }
+
+    const badge = present ? streamBadge(entry) : (ready ? "READY" : "SETUP");
 
     return `
       <button class="${cls}" data-id="${d.id}" ${ready ? "" : "disabled"}>
         <div class="camItemTop">
           <div class="camName">${escapeHtml(d.name || d.ip || d.id)}</div>
-          <div class="camBadge">${active ? "LIVE" : (ready ? "READY" : "SETUP")}</div>
+          <div class="camBadge">${escapeHtml(badge)}</div>
         </div>
         <div class="camSub">${escapeHtml(subtitle)}</div>
       </button>
@@ -213,6 +251,63 @@ function shapeAxis(v, deadzone = 0.18, expo = 1.8) {
   return s * Math.pow(n, expo);
 }
 
+function setTileOverlay(entry, text, visible = true) {
+  if (!entry?.overlayEl) return;
+  entry.overlayEl.textContent = text || "";
+  entry.overlayEl.style.display = visible ? "flex" : "none";
+}
+
+function setEntryState(deviceId, state, errorMessage = "") {
+  const entry = streams.get(deviceId);
+  if (!entry) return;
+  entry.state = state;
+  entry.errorMessage = errorMessage || "";
+
+  if (state === "live") {
+    setTileOverlay(entry, "", false);
+  } else if (state === "starting") {
+    setTileOverlay(entry, "Starting…", true);
+  } else if (state === "error") {
+    setTileOverlay(entry, errorMessage || "Stream failed", true);
+  }
+
+  renderList();
+}
+
+function summarizeGridState() {
+  const values = Array.from(streams.values());
+  const liveCount = values.filter((x) => x.state === "live").length;
+  const errorCount = values.filter((x) => x.state === "error").length;
+  const startingCount = values.filter((x) => x.state === "starting").length;
+  return { liveCount, errorCount, startingCount, total: values.length };
+}
+
+function updateOverallStatusForGrid(defaultOkMessage = null) {
+  const { liveCount, errorCount, startingCount, total } = summarizeGridState();
+
+  if (startingCount > 0) {
+    setStatus(`Starting ${startingCount} camera(s)…`, "warn");
+    return;
+  }
+
+  if (errorCount > 0 && liveCount === 0 && total > 0) {
+    setStatus(`Showing ${total} tile(s), all failed.`, "bad");
+    return;
+  }
+
+  if (errorCount > 0) {
+    setStatus(`Showing ${total} tile(s): ${liveCount} live, ${errorCount} error.`, "bad");
+    return;
+  }
+
+  if (total > 0) {
+    setStatus(defaultOkMessage || `Showing ${total} camera(s).`, "ok");
+    return;
+  }
+
+  setStatus("Stopped.", "warn");
+}
+
 function makeTile(device) {
   const tile = document.createElement("div");
   tile.className = "tile";
@@ -224,7 +319,7 @@ function makeTile(device) {
 
       <div class="tileHud">
         <div class="tileName">${escapeHtml(device.name || device.ip || device.id)}</div>
-        <button class="btn btn-mini btn-danger tileStopBtn" type="button">Stop</button>
+        <button class="btn btn-mini btn-danger tileStopBtn" type="button">Remove</button>
       </div>
 
       <div class="tilePtzPanel hidden">
@@ -288,6 +383,7 @@ function installPtzControls(device, entry, caps) {
   async function flushMove() {
     scheduled = null;
     if (entry.cancelled) return;
+    if (entry.state !== "live") return;
 
     const next = {
       pan: Number(desired.pan.toFixed(3)),
@@ -450,11 +546,14 @@ function installPtzControls(device, entry, caps) {
   };
 }
 
-async function startDevice(device) {
+async function startDevice(device, { restore = false } = {}) {
   const existing = streams.get(device.id);
   if (existing?.startingPromise) return existing.startingPromise;
-  if (streams.has(device.id) && existing?.pc) return;
-  if (!profileReady(device)) return;
+  if (existing) return Promise.resolve();
+  if (!profileReady(device)) {
+    setStatus(`Camera "${device.name || device.id}" is not configured for streaming.`, "bad");
+    return Promise.resolve();
+  }
 
   const { tile, videoEl, overlayEl } = makeTile(device);
   videoGrid.appendChild(tile);
@@ -468,14 +567,15 @@ async function startDevice(device) {
     cancelled: false,
     stopPtz: null,
     cleanupPtzListeners: null,
+    state: "starting",
+    errorMessage: "",
   };
-  streams.set(device.id, entry);
 
+  streams.set(device.id, entry);
+  saveGridState();
   recomputeGrid();
   renderList();
-
-  overlayEl.textContent = "Starting…";
-  overlayEl.style.display = "flex";
+  setTileOverlay(entry, restore ? "Restoring…" : "Starting…", true);
 
   entry.startingPromise = (async () => {
     try {
@@ -492,19 +592,32 @@ async function startDevice(device) {
         }),
       });
 
-      if (streams.get(device.id)?.cancelled) return;
+      const curAfterApi = streams.get(device.id);
+      if (!curAfterApi || curAfterApi.cancelled) return;
 
       try {
         const caps = await getPtzCaps(device.id);
-        installPtzControls(device, entry, caps);
+        installPtzControls(device, curAfterApi, caps);
       } catch {}
 
-      overlayEl.textContent = "Connecting WebRTC…";
+      setTileOverlay(curAfterApi, "Connecting WebRTC…", true);
+
       const pc = await startWhep(device.id, videoEl, (st) => {
-        if (st === "connected") overlayEl.style.display = "none";
-        else if (st === "failed" || st === "disconnected") {
-          overlayEl.textContent = `WebRTC ${st}`;
-          overlayEl.style.display = "flex";
+        const cur = streams.get(device.id);
+        if (!cur || cur.cancelled) return;
+
+        if (st === "connected") {
+          cur.state = "live";
+          cur.errorMessage = "";
+          setTileOverlay(cur, "", false);
+          renderList();
+          updateOverallStatusForGrid();
+        } else if (st === "failed" || st === "disconnected") {
+          cur.state = "error";
+          cur.errorMessage = `WebRTC ${st}`;
+          setTileOverlay(cur, `WebRTC ${st}`, true);
+          renderList();
+          updateOverallStatusForGrid();
         }
       });
 
@@ -517,11 +630,26 @@ async function startDevice(device) {
       }
 
       cur.pc = pc;
-      setStatus(`Streaming ${streams.size} camera(s).`, "ok");
+      cur.state = "live";
+      cur.errorMessage = "";
+      setTileOverlay(cur, "", false);
+
+      renderList();
+      saveGridState();
+      updateOverallStatusForGrid();
     } catch (e) {
-      await stopDevice(device.id, { skipApiStop: false });
+      const cur = streams.get(device.id);
+      if (cur && !cur.cancelled) {
+        stopPc(cur.pc, cur.videoEl);
+        cur.pc = null;
+        cur.state = "error";
+        cur.errorMessage = e?.message || String(e);
+        setTileOverlay(cur, cur.errorMessage, true);
+        renderList();
+        saveGridState();
+        updateOverallStatusForGrid();
+      }
       setStatus(`Error: ${e?.message || e}`, "bad");
-      throw e;
     } finally {
       const cur = streams.get(device.id);
       if (cur) cur.startingPromise = null;
@@ -553,6 +681,7 @@ async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
   } catch {}
 
   streams.delete(deviceId);
+  saveGridState();
 
   recomputeGrid();
   renderList();
@@ -561,10 +690,27 @@ async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
     fetch(`/api/stop/${encodeURIComponent(deviceId)}`, { method: "POST" }).catch(() => {});
   }
 
-  setStatus(
-    streams.size ? `Streaming ${streams.size} camera(s).` : "Stopped.",
-    streams.size ? "ok" : "warn",
+  updateOverallStatusForGrid();
+}
+
+async function restoreGrid() {
+  const savedIds = loadGridState();
+  if (!savedIds.length) return;
+
+  const byId = new Map(devices.map((d) => [d.id, d]));
+  const toRestore = savedIds
+    .map((id) => byId.get(id))
+    .filter((d) => d && profileReady(d));
+
+  if (!toRestore.length) return;
+
+  setStatus(`Restoring ${toRestore.length} camera(s)…`, "warn");
+
+  await Promise.allSettled(
+    toRestore.map((d) => startDevice(d, { restore: true }))
   );
+
+  updateOverallStatusForGrid(`Restored ${toRestore.length} camera(s).`);
 }
 
 camListEl.addEventListener("click", (ev) => {
@@ -586,17 +732,21 @@ startAllBtn.addEventListener("click", async () => {
   if (!toStart.length) return;
 
   setStatus(`Starting ${toStart.length} camera(s)…`, "warn");
-  const jobs = toStart.map((d) => startDevice(d));
-  await Promise.allSettled(jobs);
-  setStatus(`Streaming ${streams.size} camera(s).`, streams.size ? "ok" : "warn");
+
+  await Promise.allSettled(
+    toStart.map((d) => startDevice(d))
+  );
+
+  updateOverallStatusForGrid(`Showing ${streams.size} camera(s).`);
 });
 
-stopAllBtn.addEventListener("click", () => {
-  for (const [id] of streams) stopDevice(id).catch(() => {});
+stopAllBtn.addEventListener("click", async () => {
   setStatus("Stopping all…", "warn");
+  await Promise.allSettled(
+    Array.from(streams.keys()).map((id) => stopDevice(id))
+  );
+  setStatus("Stopped.", "warn");
 });
-
-const LS_KEY = "live.sidebarHidden";
 
 function setSidebarHidden(hidden) {
   layoutEl.classList.toggle("sidebarHidden", !!hidden);
@@ -610,4 +760,8 @@ setSidebarHidden(localStorage.getItem(LS_KEY) === "1");
 
 recomputeGrid();
 setStatus("Loading…", "warn");
-loadDevices();
+
+(async function init() {
+  await loadDevices();
+  await restoreGrid();
+})();
