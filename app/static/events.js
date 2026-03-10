@@ -1,11 +1,10 @@
-// static/events.js
 const el = (id) => document.getElementById(id);
 
 let devices = [];
 let currentDevice = null;
 
-let learned = null;     // { device_id, seen: { topicKey: {...} } }
-let allowTopics = [];   // [topicKey, ...]
+let supported = null;   // full /api/events/properties payload
+let allowTopics = [];   // [topicPath, ...]
 
 let es = null;
 
@@ -22,7 +21,7 @@ function setPill(state, text) {
   const pillText = el("pillText");
   pillText.textContent = text;
 
-  dot.classList.remove("ok","bad");
+  dot.classList.remove("ok", "bad");
   if (state === "ok") dot.classList.add("ok");
   if (state === "bad") dot.classList.add("bad");
 }
@@ -50,46 +49,69 @@ function logLine(level, msg, obj) {
 }
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...opts
+  });
+
   const txt = await res.text();
   let data = null;
   try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
-  if (!res.ok) throw new Error((data && data.detail) ? data.detail : (txt || res.statusText));
+
+  if (!res.ok) {
+    throw new Error((data && data.detail) ? data.detail : (txt || res.statusText));
+  }
   return data;
 }
 
-// ---------- time: "3s ago" ----------
-function parseIsoSafe(s) {
-  if (!s) return null;
-  const d = new Date(s);
-  if (!isFinite(d.getTime())) return null;
-  return d;
+function prettyJson(obj) {
+  try {
+    return JSON.stringify(obj, null, 2);
+  } catch {
+    return String(obj ?? "");
+  }
 }
 
-function fmtAgo(iso) {
-  const d = parseIsoSafe(iso);
-  if (!d) return "";
-  const sec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
-  if (sec < 5) return "just now";
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  return `${day}d ago`;
+function previewSig(s) {
+  const one = String(s ?? "").replace(/\s+/g, " ").trim();
+  return one.length > 90 ? one.slice(0, 90) + "…" : one;
 }
 
-function refreshTimeAgo() {
-  document.querySelectorAll?.(".timeAgo[data-ts]")?.forEach((node) => {
-    const iso = node.getAttribute("data-ts");
-    node.textContent = fmtAgo(iso);
-  });
+function prettyTitle(topicPath) {
+  const parts = String(topicPath || "").split("/");
+  return parts[parts.length - 1] || topicPath || "";
+}
+
+function updateCounts() {
+  const supportedCount = supported?.topics ? supported.topics.length : 0;
+  el("supportedCount").textContent = String(supportedCount);
+  el("selCount").textContent = String(allowTopics.length);
+}
+
+function setDeviceChip() {
+  const chip = el("deviceChip");
+  if (!currentDevice) {
+    chip.textContent = "No device";
+    return;
+  }
+  chip.textContent = `${currentDevice.name} (${currentDevice.id})`;
+}
+
+function renderRawProps() {
+  const box = el("rawProps");
+  if (!supported) {
+    box.textContent = "(nothing loaded yet)";
+    return;
+  }
+  box.textContent = prettyJson(supported.raw ?? supported);
 }
 
 // ---------- SSE ----------
 function stopSSE() {
-  if (es) { es.close(); es = null; }
+  if (es) {
+    es.close();
+    es = null;
+  }
 }
 
 function startSSE(deviceId) {
@@ -113,36 +135,8 @@ function startSSE(deviceId) {
   es.onerror = () => setPill("bad", "Disconnected");
 }
 
-// ---------- state UI ----------
-function updateCounts() {
-  const learnedCount = learned?.seen ? Object.keys(learned.seen).length : 0;
-  el("learnedCount").textContent = String(learnedCount);
-  el("selCount").textContent = String(allowTopics.length);
-}
-
-function setDeviceChip() {
-  const chip = el("deviceChip");
-  if (!currentDevice) {
-    chip.textContent = "No device";
-    return;
-  }
-  chip.textContent = `${currentDevice.name} (${currentDevice.id})`;
-}
-
-// title from topicKey (clean)
-function prettyTitle(topicKey) {
-  const m = topicKey.match(/data\[(.*?)\]/i);
-  if (m && m[1]) return m[1];
-  return topicKey.length > 36 ? topicKey.slice(0, 36) + "…" : topicKey;
-}
-
-// summary preview (monospace, short)
-function previewSig(s) {
-  const one = String(s ?? "").replace(/\s+/g, " ").trim();
-  return one.length > 90 ? one.slice(0, 90) + "…" : one;
-}
-
-function makeRow({ title, count, last, preview, detailsText, buttonText, buttonClass, disabled, onClick }) {
+// ---------- row builder ----------
+function makeRow({ title, preview, detailsText, buttonText, buttonClass, disabled, onClick }) {
   const row = document.createElement("div");
   row.className = "eventRow";
 
@@ -159,27 +153,6 @@ function makeRow({ title, count, last, preview, detailsText, buttonText, buttonC
   top.appendChild(titleDiv);
   left.appendChild(top);
 
-  const meta = document.createElement("div");
-  meta.className = "eventMeta";
-
-  if (typeof count === "number") {
-    const badge = document.createElement("span");
-    badge.className = "countBadge";
-    badge.innerHTML = `<span class="countDot"></span><span>${escapeHtml(String(count))}</span>`;
-    meta.appendChild(badge);
-  }
-
-  if (last) {
-    const ago = document.createElement("span");
-    ago.className = "timeAgo";
-    ago.setAttribute("data-ts", last);
-    ago.textContent = fmtAgo(last);
-    meta.appendChild(ago);
-  }
-
-  if (meta.childNodes.length) left.appendChild(meta);
-
-  // compact details
   const details = document.createElement("details");
   details.className = "sigDetails";
 
@@ -197,7 +170,6 @@ function makeRow({ title, count, last, preview, detailsText, buttonText, buttonC
 
   details.appendChild(summary);
   details.appendChild(body);
-
   left.appendChild(details);
 
   const actions = document.createElement("div");
@@ -235,17 +207,15 @@ function renderAllowList() {
   for (const t of allowTopics) {
     const row = makeRow({
       title: prettyTitle(t),
-      count: null,
-      last: null,
       preview: previewSig(t),
-      detailsText: `Signature:\n${t}`,
+      detailsText: `Topic path:\n${t}`,
       buttonText: "Remove",
       buttonClass: "btn-danger",
       disabled: false,
       onClick: () => {
-        allowTopics = allowTopics.filter(x => x !== t);
+        allowTopics = allowTopics.filter((x) => x !== t);
         renderAllowList();
-        renderLearnedList();
+        renderSupportedList();
       }
     });
 
@@ -255,50 +225,46 @@ function renderAllowList() {
   updateCounts();
 }
 
-function renderLearnedList() {
-  const box = el("learnedList");
+function renderSupportedList() {
+  const box = el("supportedList");
   box.innerHTML = "";
 
-  const seen = learned?.seen || {};
   const q = el("filterInput").value.trim().toLowerCase();
+  const entries = (supported?.topics || []).slice();
 
-  const entries = Object.entries(seen)
-    .map(([key, v]) => ({ key, ...v }))
-    .sort((a, b) => (b.count || 0) - (a.count || 0));
-
-  const filtered = q ? entries.filter(it => it.key.toLowerCase().includes(q)) : entries;
+  const filtered = q
+    ? entries.filter((it) =>
+        (it.path || "").toLowerCase().includes(q) ||
+        (it.name || "").toLowerCase().includes(q)
+      )
+    : entries;
 
   if (!filtered.length) {
-    box.innerHTML = `<div class="muted" style="padding:10px 2px;">No topics yet. Click “Start learning”.</div>`;
+    box.innerHTML = `<div class="muted" style="padding:10px 2px;">No supported topics loaded yet. Click “Load topics”.</div>`;
     updateCounts();
     return;
   }
 
   for (const it of filtered) {
-    const already = allowTopics.includes(it.key);
-
-    const sourceKeys = (it.keys?.source || []).join(", ") || "(none)";
-    const dataKeys = (it.keys?.data || []).join(", ") || "(none)";
+    const key = it.path || "";
+    const already = allowTopics.includes(key);
 
     const detailsText =
-      `Source keys:\n${sourceKeys}\n\n` +
-      `Data keys:\n${dataKeys}\n\n` +
-      `Signature:\n${it.key}`;
+      `Topic name:\n${it.name || "(unknown)"}\n\n` +
+      `Topic path:\n${key}`;
 
     const row = makeRow({
-      title: prettyTitle(it.key),
-      count: typeof it.count === "number" ? it.count : 0,
-      last: it.last_seen || "",
-      preview: previewSig(it.key),
+      title: it.name || key,
+      preview: previewSig(key),
       detailsText,
       buttonText: already ? "Added" : "Add",
       buttonClass: already ? "btn-muted" : "btn-primary",
       disabled: already,
       onClick: () => {
-        if (!allowTopics.includes(it.key)) {
-          allowTopics.push(it.key);
+        if (!allowTopics.includes(key)) {
+          allowTopics.push(key);
           renderAllowList();
-          renderLearnedList();
+          renderSupportedList();
         }
       }
     });
@@ -307,35 +273,36 @@ function renderLearnedList() {
   }
 
   updateCounts();
-  refreshTimeAgo();
 }
 
 // ---------- load / select ----------
-async function refreshLearnedAndAllow() {
+async function refreshSupportedAndAllow() {
   if (!currentDevice) return;
 
-  learned = await api(`/api/events/learned/${encodeURIComponent(currentDevice.id)}`);
-  const a = await api(`/api/events/allowlist/${encodeURIComponent(currentDevice.id)}`);
-  allowTopics = (a.allow_topics || []).slice();
+  supported = await api(`/api/events/properties/${encodeURIComponent(currentDevice.id)}`);
+  const allow = await api(`/api/events/allowlist/${encodeURIComponent(currentDevice.id)}`);
+  allowTopics = (allow.allow_topics || []).slice();
 
+  renderSupportedList();
   renderAllowList();
-  renderLearnedList();
+  renderRawProps();
 
-  logLine("ok", "Refreshed learned topics + allowlist", {
-    learned_topics: Object.keys(learned.seen || {}).length,
-    allow: allowTopics.length
+  logLine("ok", "Loaded ONVIF event properties + allowlist", {
+    supported_topics: supported?.topics?.length || 0,
+    allow: allowTopics.length,
+    fixed_topic_set: supported?.fixed_topic_set ?? null
   });
 }
 
 async function selectDevice(deviceId) {
-  currentDevice = devices.find(d => d.id === deviceId) || null;
+  currentDevice = devices.find((d) => d.id === deviceId) || null;
 
   el("log").innerHTML = "";
-  learned = null;
+  supported = null;
   allowTopics = [];
+  renderSupportedList();
   renderAllowList();
-  renderLearnedList();
-
+  renderRawProps();
   setDeviceChip();
 
   if (!currentDevice) {
@@ -344,9 +311,8 @@ async function selectDevice(deviceId) {
     return;
   }
 
-  // Backend workers are always running. We only connect/disconnect the SSE stream per device in the UI.
   startSSE(currentDevice.id);
-  await refreshLearnedAndAllow();
+  await refreshSupportedAndAllow();
 }
 
 async function loadDevices() {
@@ -377,23 +343,6 @@ async function loadDevices() {
 }
 
 // ---------- actions ----------
-async function startLearn() {
-  if (!currentDevice) return;
-
-  await api("/api/events/learn/start", {
-    method: "POST",
-    body: JSON.stringify({
-      device_id: currentDevice.id,
-      ip: currentDevice.ip,
-      onvif_port: currentDevice.onvif_port,
-      username: currentDevice.username,
-      password: currentDevice.password
-    })
-  });
-
-  logLine("ok", "Learning started (unfiltered).");
-}
-
 async function saveAllowlist() {
   if (!currentDevice) return;
 
@@ -405,6 +354,16 @@ async function saveAllowlist() {
   logLine("ok", "Allowlist saved to device.", { allow: allowTopics.length });
 }
 
+async function copyRaw() {
+  const txt = el("rawProps").textContent || "";
+  try {
+    await navigator.clipboard.writeText(txt);
+    logLine("ok", "Copied raw ONVIF properties.");
+  } catch (err) {
+    logLine("warn", "Copy failed.", { error: String(err?.message || err) });
+  }
+}
+
 // ---------- UI wiring ----------
 el("deviceSelect").addEventListener("change", async (e) => {
   try { await selectDevice(e.target.value); }
@@ -412,12 +371,12 @@ el("deviceSelect").addEventListener("change", async (e) => {
 });
 
 el("btnRefresh").addEventListener("click", async () => {
-  try { await refreshLearnedAndAllow(); }
+  try { await refreshSupportedAndAllow(); }
   catch (err) { logLine("bad", err.message); }
 });
 
-el("btnLearnStart").addEventListener("click", async () => {
-  try { await startLearn(); }
+el("btnLoadTopics").addEventListener("click", async () => {
+  try { await refreshSupportedAndAllow(); }
   catch (err) { logLine("bad", err.message); }
 });
 
@@ -429,17 +388,18 @@ el("btnSaveAllow").addEventListener("click", async () => {
 el("btnClearAllow").addEventListener("click", () => {
   allowTopics = [];
   renderAllowList();
-  renderLearnedList();
+  renderSupportedList();
 });
 
 el("btnClearLog").addEventListener("click", () => {
   el("log").innerHTML = "";
 });
 
-el("filterInput").addEventListener("input", () => renderLearnedList());
+el("btnCopyRaw").addEventListener("click", async () => {
+  await copyRaw();
+});
+
+el("filterInput").addEventListener("input", () => renderSupportedList());
 
 // boot
-loadDevices().catch(err => logLine("bad", err.message));
-
-// keep "x ago" fresh
-setInterval(refreshTimeAgo, 1000);
+loadDevices().catch((err) => logLine("bad", err.message));

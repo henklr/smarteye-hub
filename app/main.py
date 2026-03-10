@@ -1,4 +1,3 @@
-# app.py
 from __future__ import annotations
 
 from pathlib import Path
@@ -41,6 +40,11 @@ MEDIAMTX_API_PASS = os.getenv("MEDIAMTX_API_PASS", "apipass")
 
 PTZ_WATCHDOG_SEC = float(os.getenv("PTZ_WATCHDOG_SEC", "0.25"))
 
+# Event debugging:
+# 1 / true / yes / on => emit verbose event diagnostics to SSE log
+# default is enabled to help understand vendor behavior
+EVENT_DEBUG = str(os.getenv("EVENT_DEBUG", "1")).strip().lower() in {"1", "true", "yes", "on"}
+
 SNAPSHOTS_DIR = DATA_DIR / "snapshots"
 SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 SNAPSHOTS_INDEX_JSON = DATA_DIR / "snapshots.json"
@@ -57,9 +61,10 @@ def _dump(model) -> dict:
 # -------------------------
 @dataclass
 class EventWorker:
+    device_id: str
+    fingerprint: str
     stop_flag: threading.Event
     thread: threading.Thread
-    mode: str  # "learn" or "filtered"
 
 
 _event_subscribers: Dict[str, List[asyncio.Queue]] = {}
@@ -145,8 +150,18 @@ def playback_page():
 @app.get("/health")
 def health():
     with _event_worker_lock:
-        workers = {k: v.mode for k, v in _event_workers.items()}
-    return {"ok": True, "event_workers": workers}
+        workers = {
+            k: {
+                "fingerprint": v.fingerprint,
+                "alive": bool(v.thread and v.thread.is_alive()),
+            }
+            for k, v in _event_workers.items()
+        }
+    return {
+        "ok": True,
+        "event_workers": workers,
+        "event_debug": EVENT_DEBUG,
+    }
 
 
 # -------------------------
@@ -202,10 +217,27 @@ class SnapshotRequest(BaseModel):
 # -------------------------
 # Device storage
 # -------------------------
+def _normalize_allow_topic(s: Optional[str]) -> str:
+    s = (s or "").strip().strip("/")
+    if not s:
+        return ""
+    parts = [p.strip() for p in s.split("/") if p.strip()]
+    cleaned = []
+    for p in parts:
+        if ":" in p:
+            p = p.split(":", 1)[1]
+        if p:
+            cleaned.append(p)
+    return "/".join(cleaned)
+
+
 def _normalize_device_dict(d: dict) -> dict:
     out = dict(d)
     if "preload_stream" not in out:
         out["preload_stream"] = True
+    if "allow_topics" not in out or out["allow_topics"] is None:
+        out["allow_topics"] = []
+    out["allow_topics"] = [_normalize_allow_topic(x) for x in out["allow_topics"] if _normalize_allow_topic(x)]
     return out
 
 
@@ -240,8 +272,17 @@ def _update_device_allowlist(device_id: str, allow_topics: List[str]) -> None:
     idx = next((i for i, d in enumerate(devs) if d.id == device_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Device not found")
+
     d = devs[idx]
-    devs[idx] = Device(**{**_dump(d), "id": d.id, "allow_topics": allow_topics})
+    normalized = []
+    seen = set()
+    for t in allow_topics:
+        t2 = _normalize_allow_topic(t)
+        if t2 and t2 not in seen:
+            seen.add(t2)
+            normalized.append(t2)
+
+    devs[idx] = Device(**{**_dump(d), "id": d.id, "allow_topics": normalized})
     _save_devices(devs)
 
 
@@ -289,139 +330,8 @@ def _snapshot_rel_url(path: Path) -> str:
 
 
 # -------------------------
-# Events: learned topics storage
+# ONVIF helpers
 # -------------------------
-def _learned_path_for(device_id: str) -> Path:
-    return DATA_DIR / f"events-learned-{device_id}.json"
-
-
-def _load_learned(device_id: str) -> dict:
-    p = _learned_path_for(device_id)
-    if not p.exists():
-        return {"device_id": device_id, "seen": {}}
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return {"device_id": device_id, "seen": {}}
-
-
-def _save_learned(device_id: str, data: dict) -> None:
-    p = _learned_path_for(device_id)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp.replace(p)
-
-
-def _learn_record(device_id: str, topic_key: str, utc: Optional[str], op: Optional[str], items: dict) -> bool:
-    learned = _load_learned(device_id)
-    seen: dict = learned.setdefault("seen", {})
-    now = datetime.utcnow().isoformat() + "Z"
-
-    ent = seen.get(topic_key)
-    is_new = ent is None
-    if ent is None:
-        ent = {
-            "count": 0,
-            "first_seen": now,
-            "last_seen": now,
-            "keys": {"source": [], "data": []},
-            "examples": [],
-        }
-        seen[topic_key] = ent
-
-    ent["count"] = int(ent.get("count", 0)) + 1
-    ent["last_seen"] = now
-
-    src_keys = sorted(list(items.get("source", {}).keys()))
-    data_keys = sorted(list(items.get("data", {}).keys()))
-    ent["keys"]["source"] = sorted(list(set(ent["keys"].get("source", [])) | set(src_keys)))
-    ent["keys"]["data"] = sorted(list(set(ent["keys"].get("data", [])) | set(data_keys)))
-
-    ex = {
-        "utc": utc,
-        "op": op,
-        "source": items.get("source", {}),
-        "data": items.get("data", {}),
-    }
-    exs = ent.get("examples", [])
-    exs.append(ex)
-    ent["examples"] = exs[-5:]
-
-    _save_learned(device_id, learned)
-    return is_new
-
-
-# -------------------------
-# Events helpers
-# -------------------------
-def _broadcast_event(device_id: str, payload: dict) -> None:
-    with _event_sub_lock:
-        qs = list(_event_subscribers.get(device_id, []))
-
-    for q in qs:
-        try:
-            q.put_nowait(payload)
-        except Exception:
-            pass
-
-
-def _extract_simple_items(message_elem) -> dict:
-    out = {"source": {}, "data": {}}
-    if message_elem is None:
-        return out
-
-    for si in message_elem.findall(".//{*}Source//{*}SimpleItem"):
-        name = si.attrib.get("Name")
-        val = si.attrib.get("Value")
-        if name:
-            out["source"][name] = val
-
-    for si in message_elem.findall(".//{*}Data//{*}SimpleItem"):
-        name = si.attrib.get("Name")
-        val = si.attrib.get("Value")
-        if name:
-            out["data"][name] = val
-
-    return out
-
-
-def _topic_to_key(topic_obj, items: dict) -> str:
-    topic_str = None
-    try:
-        v = getattr(topic_obj, "_value_1", None)
-        if isinstance(v, str) and v.strip():
-            topic_str = v.strip()
-        elif isinstance(v, list) and v:
-            topic_str = str(v[0])
-    except Exception:
-        pass
-
-    if not topic_str:
-        try:
-            if isinstance(topic_obj, str) and topic_obj.strip():
-                topic_str = topic_obj.strip()
-        except Exception:
-            pass
-
-    if not topic_str or ("Dialect" in str(topic_obj) and "_value_1" in str(topic_obj)):
-        src_keys = ",".join(sorted(items.get("source", {}).keys()))
-        data_keys = ",".join(sorted(items.get("data", {}).keys()))
-        topic_str = f"sig:source[{src_keys}] data[{data_keys}]"
-
-    src = items.get("source", {})
-    src_id = (
-        src.get("InputToken")
-        or src.get("RelayToken")
-        or src.get("Source")
-        or src.get("Token")
-        or src.get("VideoSource")
-        or ""
-    )
-    if src_id:
-        return f"{topic_str} :: {src_id}"
-    return topic_str
-
-
 def _cam(req: OnvifBase) -> ONVIFCamera:
     return ONVIFCamera(req.ip, req.onvif_port, req.username, req.password)
 
@@ -443,36 +353,350 @@ def _device_fingerprint(device: Device) -> str:
             device.username,
             device.password,
             str(device.profile_token or ""),
+            str(device.preload_stream),
         ]
     )
+
+
+def _req_fingerprint(req: OnvifBase) -> str:
+    return "|".join([req.ip, str(req.onvif_port), req.username, req.password])
+
+
+def _strip_ns(tag: str) -> str:
+    if not tag:
+        return tag
+    if "}" in tag:
+        return tag.split("}", 1)[1]
+    if ":" in tag:
+        return tag.split(":", 1)[1]
+    return tag
+
+
+def _serialize_zeep_obj(obj):
+    try:
+        if obj is None:
+            return None
+
+        if isinstance(obj, (str, int, float, bool)):
+            return obj
+
+        if isinstance(obj, (list, tuple)):
+            return [_serialize_zeep_obj(x) for x in obj]
+
+        if isinstance(obj, dict):
+            return {str(k): _serialize_zeep_obj(v) for k, v in obj.items()}
+
+        # lxml / element-like object
+        if hasattr(obj, "tag"):
+            return {
+                "tag": _strip_ns(getattr(obj, "tag", "")),
+                "children": [_serialize_zeep_obj(child) for child in list(obj)],
+                "attributes": dict(getattr(obj, "attrib", {}) or {}),
+                "text": (getattr(obj, "text", None) or "").strip() or None,
+            }
+
+        if hasattr(obj, "__values__"):
+            return {str(k): _serialize_zeep_obj(v) for k, v in obj.__values__.items()}
+
+        if hasattr(obj, "__dict__"):
+            return {
+                str(k): _serialize_zeep_obj(v)
+                for k, v in obj.__dict__.items()
+                if not str(k).startswith("_")
+            }
+
+        return str(obj)
+    except Exception:
+        return str(obj)
+
+
+def _collect_topic_paths(topic_set_obj) -> List[dict]:
+    """
+    Flatten ONVIF TopicSet from zeep/lxml objects into:
+    [{"path": "RuleEngine/CellMotionDetector/Motion", "name": "Motion"}, ...]
+    """
+    results: List[dict] = []
+    seen: set[str] = set()
+
+    def add_path(path: str) -> None:
+        path = _normalize_allow_topic(path)
+        if not path or path in seen:
+            return
+        seen.add(path)
+        parts = [p for p in path.split("/") if p]
+        results.append({
+            "path": path,
+            "name": parts[-1] if parts else path,
+        })
+
+    def walk_elem(elem, prefix: str = "") -> None:
+        if elem is None:
+            return
+
+        tag = getattr(elem, "tag", None)
+        name = _strip_ns(tag) if tag else None
+
+        current = prefix
+        if name:
+            current = f"{prefix}/{name}" if prefix else name
+            add_path(current)
+
+        try:
+            children = list(elem)
+        except Exception:
+            children = []
+
+        for child in children:
+            walk_elem(child, current)
+
+    if topic_set_obj is None:
+        return results
+
+    try:
+        nodes = getattr(topic_set_obj, "_value_1", None)
+        if isinstance(nodes, list):
+            for node in nodes:
+                if hasattr(node, "tag"):
+                    walk_elem(node, "")
+    except Exception:
+        pass
+
+    if not results:
+        try:
+            for node in list(topic_set_obj):
+                if hasattr(node, "tag"):
+                    walk_elem(node, "")
+        except Exception:
+            pass
+
+    results.sort(key=lambda x: x["path"].lower())
+    return results
+
+
+def _get_event_properties(req: OnvifBase) -> dict:
+    cam = _cam(req)
+    events = cam.create_events_service()
+    props = events.GetEventProperties({})
+
+    topic_set = getattr(props, "TopicSet", None)
+    fixed_topic_set = getattr(props, "FixedTopicSet", None)
+    topic_ns_location = getattr(props, "TopicNamespaceLocation", None)
+    topic_expression_dialect = getattr(props, "TopicExpressionDialect", None)
+    message_content_filter_dialect = getattr(props, "MessageContentFilterDialect", None)
+    producer_properties_filter_dialect = getattr(props, "ProducerPropertiesFilterDialect", None)
+    message_content_schema_location = getattr(props, "MessageContentSchemaLocation", None)
+
+    topics = _collect_topic_paths(topic_set)
+
+    return {
+        "fixed_topic_set": bool(fixed_topic_set) if fixed_topic_set is not None else None,
+        "topic_namespace_location": _serialize_zeep_obj(topic_ns_location),
+        "topic_expression_dialect": _serialize_zeep_obj(topic_expression_dialect),
+        "message_content_filter_dialect": _serialize_zeep_obj(message_content_filter_dialect),
+        "producer_properties_filter_dialect": _serialize_zeep_obj(producer_properties_filter_dialect),
+        "message_content_schema_location": _serialize_zeep_obj(message_content_schema_location),
+        "topics": topics,
+        "raw_topic_set": _serialize_zeep_obj(topic_set),
+        "raw": _serialize_zeep_obj(props),
+    }
+
+
+def _extract_simple_items(message_elem) -> dict:
+    out = {"source": {}, "data": {}}
+    if message_elem is None:
+        return out
+
+    try:
+        source_items = message_elem.findall(".//{*}Source//{*}SimpleItem")
+    except Exception:
+        source_items = []
+
+    for si in source_items:
+        name = si.attrib.get("Name")
+        val = si.attrib.get("Value")
+        if name:
+            out["source"][name] = val
+
+    try:
+        data_items = message_elem.findall(".//{*}Data//{*}SimpleItem")
+    except Exception:
+        data_items = []
+
+    for si in data_items:
+        name = si.attrib.get("Name")
+        val = si.attrib.get("Value")
+        if name:
+            out["data"][name] = val
+
+    return out
+
+
+def _topic_obj_to_text(topic_obj) -> Optional[str]:
+    if topic_obj is None:
+        return None
+
+    try:
+        v = getattr(topic_obj, "_value_1", None)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        if isinstance(v, list) and v:
+            first = v[0]
+            if isinstance(first, str) and first.strip():
+                return first.strip()
+    except Exception:
+        pass
+
+    try:
+        txt = str(topic_obj).strip()
+        if txt and "Dialect" not in txt and "TopicExpression" not in txt:
+            return txt
+    except Exception:
+        pass
+
+    return None
+
+
+def _normalize_topic_for_match(topic_text: Optional[str]) -> Optional[str]:
+    if not topic_text:
+        return None
+
+    txt = topic_text.strip()
+    if not txt:
+        return None
+
+    parts = [p for p in txt.split("/") if p]
+    cleaned = []
+    for p in parts:
+        if ":" in p:
+            p = p.split(":", 1)[1]
+        p = p.strip()
+        if p:
+            cleaned.append(p)
+
+    if not cleaned:
+        return None
+    return "/".join(cleaned)
+
+
+def _topic_fallback_key(items: dict) -> str:
+    src_keys = ",".join(sorted(items.get("source", {}).keys()))
+    data_keys = ",".join(sorted(items.get("data", {}).keys()))
+    src = items.get("source", {})
+    src_id = (
+        src.get("InputToken")
+        or src.get("RelayToken")
+        or src.get("Source")
+        or src.get("Token")
+        or src.get("VideoSource")
+        or ""
+    )
+
+    base = f"sig:source[{src_keys}] data[{data_keys}]"
+    return f"{base} :: {src_id}" if src_id else base
+
+
+def _guess_topic_from_items(items: dict) -> Optional[str]:
+    """
+    Some cameras advertise proper ONVIF topics in GetEventProperties() but omit
+    a usable runtime Topic field in PullMessages. For those, infer likely ONVIF
+    topic paths from payload structure.
+    """
+    source_keys = sorted(items.get("source", {}).keys())
+    data_keys = sorted(items.get("data", {}).keys())
+
+    # Common generic motion alarm shape
+    if source_keys == ["Source"] and data_keys == ["State"]:
+        return "VideoSource/MotionAlarm"
+
+    # Common analytics shapes
+    if (
+        source_keys == ["Rule", "VideoAnalyticsConfigurationToken", "VideoSourceConfigurationToken"]
+        and data_keys == ["IsInside"]
+    ):
+        return "RuleEngine/FieldDetector/ObjectsInside"
+
+    if (
+        source_keys == ["Rule", "VideoAnalyticsConfigurationToken", "VideoSourceConfigurationToken"]
+        and data_keys == ["IsMotion"]
+    ):
+        return "RuleEngine/CellMotionDetector/Motion"
+
+    # Some vendors report object presence as State too
+    if (
+        source_keys == ["Rule", "VideoAnalyticsConfigurationToken", "VideoSourceConfigurationToken"]
+        and data_keys == ["State"]
+    ):
+        return "RuleEngine/FieldDetector/ObjectsInside"
+
+    return None
+
+
+def _topic_matches_allowlist(match_key: str, allow_set: set[str]) -> bool:
+    """
+    Accept exact matches and parent-topic matches.
+    Example:
+      allow: RuleEngine/CellMotionDetector
+      event: RuleEngine/CellMotionDetector/Motion
+    """
+    if not match_key:
+        return False
+
+    if match_key in allow_set:
+        return True
+
+    for allow in allow_set:
+        if not allow:
+            continue
+        if match_key.startswith(allow + "/"):
+            return True
+
+    return False
+
+
+# -------------------------
+# Event runtime
+# -------------------------
+def _broadcast_event(device_id: str, payload: dict) -> None:
+    with _event_sub_lock:
+        qs = list(_event_subscribers.get(device_id, []))
+
+    for q in qs:
+        try:
+            q.put_nowait(payload)
+        except Exception:
+            pass
+
+
+def _emit_event(device_id: str, level: str, msg: str, extra: Optional[dict] = None) -> None:
+    payload = {
+        "ts": datetime.utcnow().isoformat() + "Z",
+        "level": level,
+        "device_id": device_id,
+        "message": msg,
+    }
+    if extra is not None:
+        payload["extra"] = extra
+    _broadcast_event(device_id, payload)
 
 
 def _get_allowlist_snapshot(device_id: str) -> List[str]:
     try:
         d = _get_device(device_id)
-        return list(d.allow_topics or [])
+        return [_normalize_allow_topic(x) for x in (d.allow_topics or []) if _normalize_allow_topic(x)]
     except Exception:
         return []
 
 
-def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages: int = 20):
-    with _event_worker_lock:
-        stop_flag = _event_workers[device_id].stop_flag
-
+def _onvif_event_worker(
+    device_id: str,
+    req: OnvifBase,
+    stop_flag: threading.Event,
+    fingerprint: str,
+    max_messages: int = 20,
+):
     allow_set: set[str] = set()
     last_allow_refresh = 0.0
     ALLOW_REFRESH_S = 2.0
-
-    def emit(level: str, msg: str, extra: Optional[dict] = None):
-        payload = {
-            "ts": datetime.utcnow().isoformat() + "Z",
-            "level": level,
-            "device_id": device_id,
-            "message": msg,
-        }
-        if extra is not None:
-            payload["extra"] = extra
-        _broadcast_event(device_id, payload)
 
     try:
         cam = _cam(req)
@@ -485,17 +709,23 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages:
 
         pullpoint = cam.create_pullpoint_service()
 
-        if mode == "learn":
-            emit("ok", "Learning ONVIF topics (unfiltered).")
-        else:
-            emit("ok", "Subscribed to ONVIF events (filtered, allowlist hot-reload enabled).")
+        _emit_event(device_id, "ok", "Subscribed to ONVIF events (filtered, allowlist hot-reload enabled).")
 
         while not stop_flag.is_set():
-            if mode == "filtered":
-                now = time.time()
-                if (now - last_allow_refresh) >= ALLOW_REFRESH_S:
-                    allow_set = set(_get_allowlist_snapshot(device_id))
-                    last_allow_refresh = now
+            now = time.time()
+            if (now - last_allow_refresh) >= ALLOW_REFRESH_S:
+                allow_set = set(_get_allowlist_snapshot(device_id))
+                last_allow_refresh = now
+                if EVENT_DEBUG:
+                    _emit_event(
+                        device_id,
+                        "debug",
+                        "Allowlist refreshed",
+                        {
+                            "allow_count": len(allow_set),
+                            "allow_topics": sorted(list(allow_set)),
+                        },
+                    )
 
             try:
                 resp = pullpoint.PullMessages({"Timeout": "PT2S", "MessageLimit": max_messages})
@@ -507,6 +737,8 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages:
 
                 for m in msgs:
                     topic_obj = getattr(m, "Topic", None)
+                    topic_text = _topic_obj_to_text(topic_obj)
+                    topic_path = _normalize_topic_for_match(topic_text)
 
                     msg_elem = None
                     try:
@@ -519,31 +751,86 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages:
                     op = None
                     utc = None
                     try:
-                        op = getattr(msg_elem, "attrib", {}).get("PropertyOperation")
-                        utc = getattr(msg_elem, "attrib", {}).get("UtcTime")
+                        msg_attrib = getattr(msg_elem, "attrib", {}) or {}
+                        op = msg_attrib.get("PropertyOperation")
+                        utc = msg_attrib.get("UtcTime")
                     except Exception:
                         pass
 
-                    topic_key = _topic_to_key(topic_obj, items)
+                    fallback_key = _topic_fallback_key(items)
+                    guessed_topic = _guess_topic_from_items(items)
 
-                    if mode == "learn":
-                        is_new = _learn_record(device_id, topic_key, utc, op, items)
-                        if is_new:
-                            emit(
-                                "event",
-                                "New topic discovered",
+                    match_candidates: List[str] = []
+                    if topic_path:
+                        match_candidates.append(topic_path)
+                    if guessed_topic and guessed_topic not in match_candidates:
+                        match_candidates.append(guessed_topic)
+                    if fallback_key not in match_candidates:
+                        match_candidates.append(fallback_key)
+
+                    matched = False
+                    matched_by = None
+                    if allow_set:
+                        for candidate in match_candidates:
+                            if _topic_matches_allowlist(candidate, allow_set):
+                                matched = True
+                                matched_by = candidate
+                                break
+
+                    match_key = matched_by or (match_candidates[0] if match_candidates else None)
+
+                    if EVENT_DEBUG:
+                        _emit_event(
+                            device_id,
+                            "debug",
+                            "Camera emitted event",
+                            {
+                                "topic_text": topic_text,
+                                "topic_path": topic_path,
+                                "guessed_topic": guessed_topic,
+                                "fallback_key": fallback_key,
+                                "match_candidates": match_candidates,
+                                "match_key": match_key,
+                                "matched_allowlist": matched,
+                                "matched_by": matched_by,
+                                "allow_count": len(allow_set),
+                                "op": op,
+                                "utc": utc,
+                                "source": items.get("source", {}),
+                                "data": items.get("data", {}),
+                            },
+                        )
+
+                    if not allow_set:
+                        if EVENT_DEBUG:
+                            _emit_event(
+                                device_id,
+                                "warn",
+                                "Dropped event because allowlist is empty",
                                 {
-                                    "topic_key": topic_key,
-                                    "utc": utc,
-                                    "op": op,
-                                    "items": items,
+                                    "topic_text": topic_text,
+                                    "topic_path": topic_path,
+                                    "guessed_topic": guessed_topic,
+                                    "match_candidates": match_candidates,
                                 },
                             )
                         continue
 
-                    if not allow_set:
-                        continue
-                    if topic_key not in allow_set:
+                    if not matched:
+                        if EVENT_DEBUG:
+                            _emit_event(
+                                device_id,
+                                "warn",
+                                "Dropped event because it did not match allowlist",
+                                {
+                                    "topic_text": topic_text,
+                                    "topic_path": topic_path,
+                                    "guessed_topic": guessed_topic,
+                                    "fallback_key": fallback_key,
+                                    "match_candidates": match_candidates,
+                                    "allow_topics": sorted(list(allow_set)),
+                                },
+                            )
                         continue
 
                     data = items.get("data", {})
@@ -558,7 +845,8 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages:
                     )
 
                     def kk(k: str) -> str:
-                        return f"{topic_key}::{k}::{src_id}" if src_id else f"{topic_key}::{k}"
+                        base = matched_by or match_key or "event"
+                        return f"{base}::{k}::{src_id}" if src_id else f"{base}::{k}"
 
                     changed: Dict[str, str] = {}
                     with _event_last_lock:
@@ -571,30 +859,91 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, mode: str, max_messages:
                                 last[kfull] = v
 
                     if op == "Initialized" and not changed:
+                        if EVENT_DEBUG:
+                            _emit_event(
+                                device_id,
+                                "debug",
+                                "Skipped initialized event with no changes",
+                                {
+                                    "topic_text": topic_text,
+                                    "topic_path": topic_path,
+                                    "guessed_topic": guessed_topic,
+                                    "matched_by": matched_by,
+                                    "items": items,
+                                },
+                            )
                         continue
 
-                    emit(
+                    _emit_event(
+                        device_id,
                         "event",
                         "ONVIF event",
                         {
                             "op": op,
                             "utc": utc,
-                            "topic_key": topic_key,
+                            "topic_text": topic_text,
+                            "topic_path": topic_path,
+                            "guessed_topic": guessed_topic,
+                            "fallback_key": fallback_key,
+                            "match_candidates": match_candidates,
+                            "matched_by": matched_by,
                             "changed": changed,
                             "items": items,
                         },
                     )
 
             except Exception as e:
-                emit("warn", f"PullMessages error: {e}")
+                _emit_event(device_id, "warn", f"PullMessages error: {e}")
                 time.sleep(0.5)
 
     except Exception as e:
-        emit("bad", f"Event subscription failed: {e}")
+        _emit_event(device_id, "bad", f"Event subscription failed: {e}")
     finally:
         with _event_worker_lock:
-            _event_workers.pop(device_id, None)
-        emit("warn", "Event worker stopped.")
+            cur = _event_workers.get(device_id)
+            if cur and cur.fingerprint == fingerprint:
+                _event_workers.pop(device_id, None)
+        _emit_event(device_id, "warn", "Event worker stopped.")
+
+
+def _start_event_worker(device_id: str, req: OnvifBase) -> None:
+    fingerprint = _req_fingerprint(req)
+    old_worker: Optional[EventWorker] = None
+
+    with _event_worker_lock:
+        cur = _event_workers.get(device_id)
+        if cur and cur.fingerprint == fingerprint and cur.thread and cur.thread.is_alive():
+            return
+
+        if cur:
+            cur.stop_flag.set()
+            old_worker = cur
+
+        stop_flag = threading.Event()
+        thread = threading.Thread(
+            target=_onvif_event_worker,
+            args=(device_id, req, stop_flag, fingerprint),
+            daemon=True,
+            name=f"onvif-events-{device_id}",
+        )
+        worker = EventWorker(
+            device_id=device_id,
+            fingerprint=fingerprint,
+            stop_flag=stop_flag,
+            thread=thread,
+        )
+        _event_workers[device_id] = worker
+        thread.start()
+
+    if old_worker:
+        _emit_event(device_id, "warn", "Restarted event worker due to device settings change.")
+
+
+def _stop_event_worker(device_id: str) -> None:
+    with _event_worker_lock:
+        cur = _event_workers.pop(device_id, None)
+    if cur:
+        cur.stop_flag.set()
 
 
 # -------------------------
@@ -742,7 +1091,7 @@ def _http_get_bytes_with_auth(
         raise RuntimeError(f"Snapshot download failed: {e.code} {detail}")
     except Exception as e:
         raise RuntimeError(f"Snapshot download failed: {e}")
-    
+
 
 def _take_snapshot(device_id: str, event_name: str = "manual") -> dict:
     device = _get_device(device_id)
@@ -754,7 +1103,7 @@ def _take_snapshot(device_id: str, event_name: str = "manual") -> dict:
         device.username,
         device.password,
     )
-    
+
     ext = ".jpg"
     if content_type:
         guessed = guess_extension(content_type.split(";")[0].strip().lower())
@@ -1189,15 +1538,8 @@ def _ptz_status(device_id: str) -> dict:
 
     out = {
         "ok": True,
-        "position": {
-            "pan": None,
-            "tilt": None,
-            "zoom": None,
-        },
-        "move_status": {
-            "pan_tilt": None,
-            "zoom": None,
-        },
+        "position": {"pan": None, "tilt": None, "zoom": None},
+        "move_status": {"pan_tilt": None, "zoom": None},
     }
 
     try:
@@ -1233,13 +1575,13 @@ async def events_stream(device_id: str):
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
 
-    q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    q: asyncio.Queue = asyncio.Queue(maxsize=500)
 
     with _event_sub_lock:
         _event_subscribers.setdefault(device_id, []).append(q)
 
     async def gen():
-        yield f"event: hello\ndata: {json.dumps({'device_id': device_id})}\n\n"
+        yield f"event: hello\ndata: {json.dumps({'device_id': device_id, 'event_debug': EVENT_DEBUG})}\n\n"
         try:
             while True:
                 item = await q.get()
@@ -1254,26 +1596,15 @@ async def events_stream(device_id: str):
                 if not lst:
                     _event_subscribers.pop(device_id, None)
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
-
-
-def _start_event_worker(device_id: str, req: OnvifBase, mode: str) -> None:
-    with _event_worker_lock:
-        if device_id in _event_workers:
-            return
-        stop_flag = threading.Event()
-        worker = EventWorker(stop_flag=stop_flag, thread=None, mode=mode)
-
-        _event_workers[device_id] = worker
-
-        t = threading.Thread(
-            target=_onvif_event_worker,
-            args=(device_id, req, mode),
-            daemon=True,
-            name=f"onvif-events-{mode}-{device_id}",
-        )
-        worker.thread = t
-        t.start()
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/events/start")
@@ -1282,18 +1613,8 @@ async def events_start(req: EventsStartRequest):
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
 
-    _start_event_worker(device_id, req, mode="filtered")
-    return {"ok": True, "device_id": device_id, "running": True, "mode": "filtered"}
-
-
-@app.post("/api/events/learn/start")
-async def events_learn_start(req: EventsStartRequest):
-    device_id = req.device_id.strip()
-    if not device_id:
-        raise HTTPException(status_code=400, detail="Missing device_id")
-
-    _start_event_worker(device_id, req, mode="learn")
-    return {"ok": True, "device_id": device_id, "running": True, "mode": "learn"}
+    _start_event_worker(device_id, req)
+    return {"ok": True, "device_id": device_id, "running": True}
 
 
 @app.post("/api/events/stop/{device_id}")
@@ -1301,15 +1622,25 @@ async def events_stop(device_id: str):
     device_id = device_id.strip()
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
-    return {"ok": True, "device_id": device_id, "running": True, "note": "stop disabled"}
+
+    _stop_event_worker(device_id)
+    return {"ok": True, "device_id": device_id, "running": False}
 
 
-@app.get("/api/events/learned/{device_id}")
-def events_learned(device_id: str):
+@app.get("/api/events/properties/{device_id}")
+async def events_properties(device_id: str):
     device_id = device_id.strip()
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
-    return _load_learned(device_id)
+
+    d = _get_device(device_id)
+    req = _device_req(d)
+
+    try:
+        data = await asyncio.to_thread(_get_event_properties, req)
+        return {"ok": True, "device_id": device_id, **data}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"GetEventProperties failed: {e}")
 
 
 @app.get("/api/events/allowlist/{device_id}")
@@ -1327,15 +1658,15 @@ def events_allowlist_set(device_id: str, req: AllowListRequest):
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
 
-    allow = []
+    allow: List[str] = []
     seen = set()
     for t in req.allow_topics:
-        t = (t or "").strip()
-        if not t:
+        t2 = _normalize_allow_topic(t)
+        if not t2:
             continue
-        if t not in seen:
-            seen.add(t)
-            allow.append(t)
+        if t2 not in seen:
+            seen.add(t2)
+            allow.append(t2)
 
     _update_device_allowlist(device_id, allow)
     return {"ok": True, "device_id": device_id, "allow_topics": allow}
@@ -1386,7 +1717,7 @@ def create_device(dev: DeviceIn):
         username=new.username,
         password=new.password,
     )
-    _start_event_worker(new.id, req, mode="filtered")
+    _start_event_worker(new.id, req)
 
     try:
         _preload_stream_for_device(new)
@@ -1416,7 +1747,7 @@ def update_device(device_id: str, dev: DeviceIn):
         username=updated.username,
         password=updated.password,
     )
-    _start_event_worker(device_id, req, mode="filtered")
+    _start_event_worker(device_id, req)
 
     if updated.preload_stream and updated.profile_token:
         try:
@@ -1436,11 +1767,14 @@ def delete_device(device_id: str):
     if len(new_devs) == len(devs):
         raise HTTPException(status_code=404, detail="Device not found")
     _save_devices(new_devs)
+    _stop_event_worker(device_id)
     _delete_mediamtx_path(device_id)
     _cancel_ptz_watchdog(device_id)
     _invalidate_ptz_cache(device_id)
     with _ptz_command_locks_lock:
         _ptz_command_locks.pop(device_id, None)
+    with _event_last_lock:
+        _event_last.pop(device_id, None)
     return {"ok": True}
 
 
@@ -1668,6 +2002,7 @@ async def ptz_stop(device_id: str):
 def _on_startup():
     try:
         devs = _load_devices()
+
         for d in devs:
             req = EventsStartRequest(
                 device_id=d.id,
@@ -1676,7 +2011,7 @@ def _on_startup():
                 username=d.username,
                 password=d.password,
             )
-            _start_event_worker(d.id, req, mode="filtered")
+            _start_event_worker(d.id, req)
 
         for d in devs:
             try:
@@ -1690,11 +2025,19 @@ def _on_startup():
 @app.on_event("shutdown")
 def _on_shutdown():
     with _event_worker_lock:
-        for _, w in list(_event_workers.items()):
+        workers = list(_event_workers.values())
+        _event_workers.clear()
+
+    for w in workers:
+        try:
             w.stop_flag.set()
+        except Exception:
+            pass
+
     with _ptz_watchdog_lock:
         timers = list(_ptz_watchdogs.values())
         _ptz_watchdogs.clear()
+
     for t in timers:
         try:
             t.cancel()
