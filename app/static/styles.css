@@ -361,7 +361,7 @@ code{
   background: rgba(0,0,0,.20);
   color: var(--text);
   cursor:pointer;
-  transition: background .12s ease, border-color .12s ease;
+  transition: background .12s ease, border-color .12s ease, box-shadow .12s ease;
 }
 .camItem:hover{
   background: rgba(0,0,0,.26);
@@ -383,6 +383,7 @@ code{
   font-size: 12px;
   color: var(--muted);
   margin-top: 4px;
+  word-break: break-word;
 }
 
 .camBadge{
@@ -405,14 +406,47 @@ code{
   border-color: rgba(246,196,83,.22);
   background: rgba(246,196,83,.07);
 }
+
+/* active just means present on grid, not state-colored */
 .camItem.active{
+  box-shadow: 0 0 0 3px rgba(124,156,255,.08);
+}
+
+/* state coloring */
+.camItem.is-live{
   border-color: rgba(124,156,255,.45);
   box-shadow: 0 0 0 3px rgba(124,156,255,.12);
 }
-.camItem.active .camBadge{
+.camItem.is-live .camBadge{
   color: #0b1020;
   border-color: transparent;
   background: var(--accent);
+}
+
+.camItem.is-starting{
+  border-color: rgba(246,196,83,.34);
+  box-shadow: 0 0 0 3px rgba(246,196,83,.10);
+}
+.camItem.is-starting .camBadge{
+  color: #241a00;
+  border-color: rgba(246,196,83,.28);
+  background: rgba(246,196,83,.88);
+}
+.camItem.is-starting .camSub{
+  color: rgba(255,221,140,.95);
+}
+
+.camItem.is-error{
+  border-color: rgba(255,90,100,.36);
+  box-shadow: 0 0 0 3px rgba(255,90,100,.10);
+}
+.camItem.is-error .camBadge{
+  color: #fff;
+  border-color: rgba(255,90,100,.18);
+  background: rgba(255,90,100,.90);
+}
+.camItem.is-error .camSub{
+  color: rgba(255,200,205,.95);
 }
 
 .tile{
@@ -421,6 +455,16 @@ code{
   border-radius: 0;
   overflow: hidden;
   background: #000;
+}
+
+.tile.is-live{
+  box-shadow: inset 0 0 0 2px rgba(124,156,255,.30);
+}
+.tile.is-starting{
+  box-shadow: inset 0 0 0 2px rgba(246,196,83,.34);
+}
+.tile.is-error{
+  box-shadow: inset 0 0 0 2px rgba(255,90,100,.34);
 }
 
 .tilePlayer{
@@ -476,6 +520,18 @@ code{
   background: rgba(0,0,0,.42);
   backdrop-filter: blur(2px);
   pointer-events:none;
+  text-align:center;
+  padding: 18px;
+}
+
+.tile.is-starting .tileOverlay{
+  color: #ffe08a;
+  background: rgba(60,45,0,.34);
+}
+
+.tile.is-error .tileOverlay{
+  color: #ffd9dd;
+  background: rgba(70,0,8,.34);
 }
 
 .tilePtzPanel{

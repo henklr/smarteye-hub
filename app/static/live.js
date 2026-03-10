@@ -24,6 +24,12 @@ const streams = new Map();
 const ptzCapsCache = new Map();
 let lastStatusMessage = "Idle.";
 
+const STREAM_STATE = {
+  STARTING: "starting",
+  LIVE: "live",
+  ERROR: "error",
+};
+
 function setPill(state, text) {
   pillText.textContent = text;
   dot.className = "dot";
@@ -102,13 +108,77 @@ function isStreaming(deviceId) {
   return streams.has(deviceId);
 }
 
-function streamBadge(entry) {
-  if (!entry) return null;
-  if (entry.state === "live") return "LIVE";
-  if (entry.state === "error") return "ERROR";
-  if (entry.state === "starting") return "STARTING";
-  if (entry.state === "stopped") return "READY";
-  return "READY";
+function getEntry(deviceId) {
+  return streams.get(deviceId) || null;
+}
+
+function setEntryState(deviceId, state, errorMessage = "") {
+  const entry = getEntry(deviceId);
+  if (!entry) return;
+
+  entry.state = state;
+  entry.errorMessage = errorMessage || "";
+
+  if (state === STREAM_STATE.LIVE) {
+    setTileOverlay(entry, "", false);
+  } else if (state === STREAM_STATE.STARTING) {
+    setTileOverlay(entry, entry.restore ? "Restoring…" : "Starting…", true);
+  } else if (state === STREAM_STATE.ERROR) {
+    setTileOverlay(entry, entry.errorMessage || "Stream failed", true);
+  }
+
+  applyTileStateClasses(entry);
+  renderList();
+}
+
+function getVisualState(entry, ready) {
+  if (!entry) {
+    return {
+      className: "",
+      badge: ready ? "READY" : "SETUP",
+      subtitle: ready ? null : "Not ready (select profile in Devices)",
+    };
+  }
+
+  if (entry.state === STREAM_STATE.LIVE) {
+    return {
+      className: "is-live",
+      badge: "LIVE",
+      subtitle: "Streaming",
+    };
+  }
+
+  if (entry.state === STREAM_STATE.STARTING) {
+    return {
+      className: "is-starting",
+      badge: "STARTING",
+      subtitle: "Starting…",
+    };
+  }
+
+  if (entry.state === STREAM_STATE.ERROR) {
+    return {
+      className: "is-error",
+      badge: "ERROR",
+      subtitle: entry.errorMessage || "Stream error",
+    };
+  }
+
+  return {
+    className: "",
+    badge: ready ? "READY" : "SETUP",
+    subtitle: ready ? null : "Not ready (select profile in Devices)",
+  };
+}
+
+function applyTileStateClasses(entry) {
+  if (!entry?.tileEl) return;
+
+  entry.tileEl.classList.remove("is-live", "is-starting", "is-error");
+
+  if (entry.state === STREAM_STATE.LIVE) entry.tileEl.classList.add("is-live");
+  if (entry.state === STREAM_STATE.STARTING) entry.tileEl.classList.add("is-starting");
+  if (entry.state === STREAM_STATE.ERROR) entry.tileEl.classList.add("is-error");
 }
 
 function renderList() {
@@ -119,34 +189,24 @@ function renderList() {
 
   camListEl.innerHTML = devices.map((d) => {
     const ready = profileReady(d);
-    const entry = streams.get(d.id);
+    const entry = getEntry(d.id);
     const present = !!entry;
+
+    const visual = getVisualState(entry, ready);
+    const subtitle = visual.subtitle ?? (d.profile_label || d.profile_token);
 
     const cls = [
       "camItem",
       ready ? "ready" : "notReady",
       present ? "active" : "",
+      visual.className,
     ].join(" ");
-
-    let subtitle = ready
-      ? (d.profile_label || d.profile_token)
-      : "Not ready (select profile in Devices)";
-
-    if (entry?.state === "error" && entry?.errorMessage) {
-      subtitle = entry.errorMessage;
-    } else if (entry?.state === "starting") {
-      subtitle = "Starting…";
-    } else if (entry?.state === "live") {
-      subtitle = "Streaming";
-    }
-
-    const badge = present ? streamBadge(entry) : (ready ? "READY" : "SETUP");
 
     return `
       <button class="${cls}" data-id="${d.id}" ${ready ? "" : "disabled"}>
         <div class="camItemTop">
           <div class="camName">${escapeHtml(d.name || d.ip || d.id)}</div>
-          <div class="camBadge">${escapeHtml(badge)}</div>
+          <div class="camBadge">${escapeHtml(visual.badge)}</div>
         </div>
         <div class="camSub">${escapeHtml(subtitle)}</div>
       </button>
@@ -257,28 +317,11 @@ function setTileOverlay(entry, text, visible = true) {
   entry.overlayEl.style.display = visible ? "flex" : "none";
 }
 
-function setEntryState(deviceId, state, errorMessage = "") {
-  const entry = streams.get(deviceId);
-  if (!entry) return;
-  entry.state = state;
-  entry.errorMessage = errorMessage || "";
-
-  if (state === "live") {
-    setTileOverlay(entry, "", false);
-  } else if (state === "starting") {
-    setTileOverlay(entry, "Starting…", true);
-  } else if (state === "error") {
-    setTileOverlay(entry, errorMessage || "Stream failed", true);
-  }
-
-  renderList();
-}
-
 function summarizeGridState() {
   const values = Array.from(streams.values());
-  const liveCount = values.filter((x) => x.state === "live").length;
-  const errorCount = values.filter((x) => x.state === "error").length;
-  const startingCount = values.filter((x) => x.state === "starting").length;
+  const liveCount = values.filter((x) => x.state === STREAM_STATE.LIVE).length;
+  const errorCount = values.filter((x) => x.state === STREAM_STATE.ERROR).length;
+  const startingCount = values.filter((x) => x.state === STREAM_STATE.STARTING).length;
   return { liveCount, errorCount, startingCount, total: values.length };
 }
 
@@ -383,7 +426,7 @@ function installPtzControls(device, entry, caps) {
   async function flushMove() {
     scheduled = null;
     if (entry.cancelled) return;
-    if (entry.state !== "live") return;
+    if (entry.state !== STREAM_STATE.LIVE) return;
 
     const next = {
       pan: Number(desired.pan.toFixed(3)),
@@ -547,13 +590,10 @@ function installPtzControls(device, entry, caps) {
 }
 
 async function startDevice(device, { restore = false } = {}) {
-  const existing = streams.get(device.id);
+  const existing = getEntry(device.id);
   if (existing?.startingPromise) return existing.startingPromise;
   if (existing) return Promise.resolve();
-  if (!profileReady(device)) {
-    setStatus(`Camera "${device.name || device.id}" is not configured for streaming.`, "bad");
-    return Promise.resolve();
-  }
+  if (!profileReady(device)) return Promise.resolve();
 
   const { tile, videoEl, overlayEl } = makeTile(device);
   videoGrid.appendChild(tile);
@@ -567,15 +607,17 @@ async function startDevice(device, { restore = false } = {}) {
     cancelled: false,
     stopPtz: null,
     cleanupPtzListeners: null,
-    state: "starting",
+    state: STREAM_STATE.STARTING,
     errorMessage: "",
+    restore,
   };
 
   streams.set(device.id, entry);
+  applyTileStateClasses(entry);
   saveGridState();
   recomputeGrid();
   renderList();
-  setTileOverlay(entry, restore ? "Restoring…" : "Starting…", true);
+  updateOverallStatusForGrid();
 
   entry.startingPromise = (async () => {
     try {
@@ -592,7 +634,7 @@ async function startDevice(device, { restore = false } = {}) {
         }),
       });
 
-      const curAfterApi = streams.get(device.id);
+      const curAfterApi = getEntry(device.id);
       if (!curAfterApi || curAfterApi.cancelled) return;
 
       try {
@@ -603,25 +645,19 @@ async function startDevice(device, { restore = false } = {}) {
       setTileOverlay(curAfterApi, "Connecting WebRTC…", true);
 
       const pc = await startWhep(device.id, videoEl, (st) => {
-        const cur = streams.get(device.id);
+        const cur = getEntry(device.id);
         if (!cur || cur.cancelled) return;
 
         if (st === "connected") {
-          cur.state = "live";
-          cur.errorMessage = "";
-          setTileOverlay(cur, "", false);
-          renderList();
+          setEntryState(device.id, STREAM_STATE.LIVE);
           updateOverallStatusForGrid();
         } else if (st === "failed" || st === "disconnected") {
-          cur.state = "error";
-          cur.errorMessage = `WebRTC ${st}`;
-          setTileOverlay(cur, `WebRTC ${st}`, true);
-          renderList();
+          setEntryState(device.id, STREAM_STATE.ERROR, `WebRTC ${st}`);
           updateOverallStatusForGrid();
         }
       });
 
-      const cur = streams.get(device.id);
+      const cur = getEntry(device.id);
       if (!cur || cur.cancelled) {
         try {
           pc.close();
@@ -630,28 +666,20 @@ async function startDevice(device, { restore = false } = {}) {
       }
 
       cur.pc = pc;
-      cur.state = "live";
-      cur.errorMessage = "";
-      setTileOverlay(cur, "", false);
-
-      renderList();
+      setEntryState(device.id, STREAM_STATE.LIVE);
       saveGridState();
       updateOverallStatusForGrid();
     } catch (e) {
-      const cur = streams.get(device.id);
+      const cur = getEntry(device.id);
       if (cur && !cur.cancelled) {
         stopPc(cur.pc, cur.videoEl);
         cur.pc = null;
-        cur.state = "error";
-        cur.errorMessage = e?.message || String(e);
-        setTileOverlay(cur, cur.errorMessage, true);
-        renderList();
+        setEntryState(device.id, STREAM_STATE.ERROR, e?.message || String(e));
         saveGridState();
         updateOverallStatusForGrid();
       }
-      setStatus(`Error: ${e?.message || e}`, "bad");
     } finally {
-      const cur = streams.get(device.id);
+      const cur = getEntry(device.id);
       if (cur) cur.startingPromise = null;
     }
   })();
@@ -660,7 +688,7 @@ async function startDevice(device, { restore = false } = {}) {
 }
 
 async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
-  const entry = streams.get(deviceId);
+  const entry = getEntry(deviceId);
   if (!entry) return;
 
   entry.cancelled = true;
@@ -720,7 +748,7 @@ camListEl.addEventListener("click", (ev) => {
   const d = devices.find((x) => x.id === id);
   if (!d) return;
 
-  if (streams.has(d.id)) stopDevice(d.id).catch(() => {});
+  if (isStreaming(d.id)) stopDevice(d.id).catch(() => {});
   else startDevice(d).catch(() => {});
 });
 
@@ -728,7 +756,7 @@ reloadBtn.addEventListener("click", () => loadDevices());
 
 startAllBtn.addEventListener("click", async () => {
   const ready = devices.filter(profileReady);
-  const toStart = ready.filter((d) => !streams.has(d.id));
+  const toStart = ready.filter((d) => !isStreaming(d.id));
   if (!toStart.length) return;
 
   setStatus(`Starting ${toStart.length} camera(s)…`, "warn");
