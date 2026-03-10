@@ -597,9 +597,19 @@ def _ensure_mediamtx_path(device_id: str, source_rtsp: str) -> dict:
 
     try:
         return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
-    except Exception:
-        return _mediamtx_api_request("PATCH", f"/v3/config/paths/edit/{name}", payload)
+    except Exception as add_err:
+        msg = str(add_err)
 
+        if "already exists" in msg or "409" in msg:
+            try:
+                return _mediamtx_api_request("PATCH", f"/v3/config/paths/edit/{name}", payload)
+            except Exception as edit_err:
+                raise RuntimeError(
+                    f"MediaMTX add said path exists, but edit failed. "
+                    f"add_error={add_err}; edit_error={edit_err}"
+                ) from edit_err
+
+        raise RuntimeError(f"MediaMTX path add failed: {add_err}") from add_err
 
 def _delete_mediamtx_path(device_id: str) -> None:
     name = _path_for(device_id)
