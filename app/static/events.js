@@ -8,6 +8,11 @@ let allowTopics = [];   // [topicPath, ...]
 
 let es = null;
 
+// log state
+let logEntries = [];
+let logLevelFilters = new Set(["event", "debug", "ok", "warn", "bad"]);
+let logSearchText = "";
+
 // ---------- utils ----------
 function escapeHtml(s) {
   return (s ?? "").toString()
@@ -24,28 +29,6 @@ function setPill(state, text) {
   dot.classList.remove("ok", "bad");
   if (state === "ok") dot.classList.add("ok");
   if (state === "bad") dot.classList.add("bad");
-}
-
-function logLine(level, msg, obj) {
-  const box = el("log");
-  const ts = new Date().toISOString();
-
-  const div = document.createElement("div");
-  div.className = "logLine";
-
-  const lvlClass =
-    level === "ok" ? "ok" :
-    level === "warn" ? "warn" :
-    level === "bad" ? "bad" : "";
-
-  div.innerHTML =
-    `<span class="k">[${escapeHtml(ts)}]</span> ` +
-    `<span class="lvl ${lvlClass}">${escapeHtml(level)}</span> ` +
-    `<span class="v">${escapeHtml(msg)}</span>` +
-    (obj ? ` <span class="k">${escapeHtml(JSON.stringify(obj))}</span>` : "");
-
-  box.appendChild(div);
-  box.scrollTop = box.scrollHeight;
 }
 
 async function api(path, opts = {}) {
@@ -103,7 +86,129 @@ function renderRawProps() {
     box.textContent = "(nothing loaded yet)";
     return;
   }
-  box.textContent = prettyJson(supported.raw ?? supported);
+  box.textContent = prettyJson(supported.raw_topic_set ?? supported.raw ?? supported);
+}
+
+// ---------- log ----------
+function makeLogSearchText(entry) {
+  return [
+    entry.ts || "",
+    entry.level || "",
+    entry.msg || "",
+    entry.obj ? JSON.stringify(entry.obj) : ""
+  ].join(" ").toLowerCase();
+}
+
+function isLogVisible(entry) {
+  const level = entry.level || "event";
+  if (!logLevelFilters.has(level)) return false;
+  if (!logSearchText) return true;
+  return makeLogSearchText(entry).includes(logSearchText);
+}
+
+function renderLog() {
+  const box = el("log");
+  box.innerHTML = "";
+
+  let shown = 0;
+  for (const entry of logEntries) {
+    if (!isLogVisible(entry)) continue;
+    shown += 1;
+
+    const div = document.createElement("div");
+    div.className = "logLine";
+
+    const lvlClass =
+      entry.level === "ok" ? "ok" :
+      entry.level === "warn" ? "warn" :
+      entry.level === "bad" ? "bad" :
+      entry.level === "debug" ? "debug" :
+      entry.level === "event" ? "event" : "";
+
+    div.innerHTML =
+      `<span class="k">[${escapeHtml(entry.ts)}]</span> ` +
+      `<span class="lvl ${lvlClass}">${escapeHtml(entry.level)}</span> ` +
+      `<span class="v">${escapeHtml(entry.msg)}</span>` +
+      (entry.obj ? ` <span class="k">${escapeHtml(JSON.stringify(entry.obj))}</span>` : "");
+
+    box.appendChild(div);
+  }
+
+  el("logShownCount").textContent = String(shown);
+  el("logTotalCount").textContent = String(logEntries.length);
+
+  syncFilterChips();
+}
+
+function addLogEntry(level, msg, obj) {
+  const entry = {
+    ts: new Date().toISOString(),
+    level: level || "event",
+    msg: msg || "",
+    obj: obj || null
+  };
+
+  logEntries.push(entry);
+
+  if (logEntries.length > 3000) {
+    logEntries = logEntries.slice(-3000);
+  }
+
+  renderLog();
+}
+
+function clearLog() {
+  logEntries = [];
+  renderLog();
+}
+
+function syncFilterChips() {
+  const allChip = el("chip-all");
+  const allLevels = ["event", "debug", "ok", "warn", "bad"];
+  const allOn = allLevels.every((lvl) => logLevelFilters.has(lvl));
+
+  allChip.classList.toggle("active", allOn);
+
+  for (const lvl of allLevels) {
+    const chip = document.querySelector(`.filterChip[data-level="${lvl}"]`);
+    chip?.classList.toggle("active", logLevelFilters.has(lvl));
+  }
+}
+
+function toggleLogLevel(level) {
+  const allLevels = ["event", "debug", "ok", "warn", "bad"];
+
+  if (level === "all") {
+    const allOn = allLevels.every((lvl) => logLevelFilters.has(lvl));
+    logLevelFilters = allOn ? new Set() : new Set(allLevels);
+    renderLog();
+    return;
+  }
+
+  if (logLevelFilters.has(level)) {
+    logLevelFilters.delete(level);
+  } else {
+    logLevelFilters.add(level);
+  }
+
+  renderLog();
+}
+
+async function copyVisibleLog() {
+  const visible = logEntries
+    .filter(isLogVisible)
+    .map((entry) => {
+      const extra = entry.obj ? ` ${JSON.stringify(entry.obj)}` : "";
+      return `[${entry.ts}] ${entry.level} ${entry.msg}${extra}`;
+    })
+    .join("\n");
+
+  try {
+    await navigator.clipboard.writeText(visible);
+    addLogEntry("ok", "Copied visible log.");
+  } catch (err) {
+    addLogEntry("warn", "Copy visible log failed.", { error: String(err?.message || err) });
+  }
 }
 
 // ---------- SSE ----------
@@ -126,9 +231,9 @@ function startSSE(deviceId) {
     try {
       const p = JSON.parse(ev.data);
       const lvl = p.level || "event";
-      logLine(lvl, p.message || "event", p.extra || null);
+      addLogEntry(lvl, p.message || "event", p.extra || null);
     } catch {
-      logLine("warn", "bad SSE message", { data: ev.data });
+      addLogEntry("warn", "bad SSE message", { data: ev.data });
     }
   };
 
@@ -287,7 +392,7 @@ async function refreshSupportedAndAllow() {
   renderAllowList();
   renderRawProps();
 
-  logLine("ok", "Loaded ONVIF event properties + allowlist", {
+  addLogEntry("ok", "Loaded ONVIF event properties + allowlist", {
     supported_topics: supported?.topics?.length || 0,
     allow: allowTopics.length,
     fixed_topic_set: supported?.fixed_topic_set ?? null
@@ -297,7 +402,7 @@ async function refreshSupportedAndAllow() {
 async function selectDevice(deviceId) {
   currentDevice = devices.find((d) => d.id === deviceId) || null;
 
-  el("log").innerHTML = "";
+  clearLog();
   supported = null;
   allowTopics = [];
   renderSupportedList();
@@ -351,38 +456,38 @@ async function saveAllowlist() {
     body: JSON.stringify({ allow_topics: allowTopics })
   });
 
-  logLine("ok", "Allowlist saved to device.", { allow: allowTopics.length });
+  addLogEntry("ok", "Allowlist saved to device.", { allow: allowTopics.length });
 }
 
 async function copyRaw() {
   const txt = el("rawProps").textContent || "";
   try {
     await navigator.clipboard.writeText(txt);
-    logLine("ok", "Copied raw ONVIF properties.");
+    addLogEntry("ok", "Copied raw ONVIF properties.");
   } catch (err) {
-    logLine("warn", "Copy failed.", { error: String(err?.message || err) });
+    addLogEntry("warn", "Copy failed.", { error: String(err?.message || err) });
   }
 }
 
 // ---------- UI wiring ----------
 el("deviceSelect").addEventListener("change", async (e) => {
   try { await selectDevice(e.target.value); }
-  catch (err) { logLine("bad", err.message); }
+  catch (err) { addLogEntry("bad", err.message); }
 });
 
 el("btnRefresh").addEventListener("click", async () => {
   try { await refreshSupportedAndAllow(); }
-  catch (err) { logLine("bad", err.message); }
+  catch (err) { addLogEntry("bad", err.message); }
 });
 
 el("btnLoadTopics").addEventListener("click", async () => {
   try { await refreshSupportedAndAllow(); }
-  catch (err) { logLine("bad", err.message); }
+  catch (err) { addLogEntry("bad", err.message); }
 });
 
 el("btnSaveAllow").addEventListener("click", async () => {
   try { await saveAllowlist(); }
-  catch (err) { logLine("bad", err.message); }
+  catch (err) { addLogEntry("bad", err.message); }
 });
 
 el("btnClearAllow").addEventListener("click", () => {
@@ -392,14 +497,29 @@ el("btnClearAllow").addEventListener("click", () => {
 });
 
 el("btnClearLog").addEventListener("click", () => {
-  el("log").innerHTML = "";
+  clearLog();
 });
 
 el("btnCopyRaw").addEventListener("click", async () => {
   await copyRaw();
 });
 
+el("btnExportLog").addEventListener("click", async () => {
+  await copyVisibleLog();
+});
+
 el("filterInput").addEventListener("input", () => renderSupportedList());
 
+el("logSearch").addEventListener("input", (e) => {
+  logSearchText = (e.target.value || "").trim().toLowerCase();
+  renderLog();
+});
+
+document.querySelectorAll(".filterChip").forEach((chip) => {
+  chip.addEventListener("click", () => {
+    toggleLogLevel(chip.dataset.level);
+  });
+});
+
 // boot
-loadDevices().catch((err) => logLine("bad", err.message));
+loadDevices().catch((err) => addLogEntry("bad", err.message));
