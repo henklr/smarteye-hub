@@ -11,7 +11,9 @@ import time
 import urllib.request
 import urllib.error
 import base64
+from mimetypes import guess_extension
 from typing import Optional, Dict, Any, List
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -19,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from onvif import ONVIFCamera
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 app = FastAPI()
 
@@ -29,6 +31,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/data", StaticFiles(directory=DATA_DIR), name="data")
 
 DEVICES_JSON = DATA_DIR / "devices.json"
 
@@ -37,6 +40,10 @@ MEDIAMTX_API_USER = os.getenv("MEDIAMTX_API_USER", "apiuser")
 MEDIAMTX_API_PASS = os.getenv("MEDIAMTX_API_PASS", "apipass")
 
 PTZ_WATCHDOG_SEC = float(os.getenv("PTZ_WATCHDOG_SEC", "0.25"))
+
+SNAPSHOTS_DIR = DATA_DIR / "snapshots"
+SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+SNAPSHOTS_INDEX_JSON = DATA_DIR / "snapshots.json"
 
 
 def _dump(model) -> dict:
@@ -90,6 +97,8 @@ _ptz_context_cache_lock = threading.RLock()
 _ptz_command_locks: Dict[str, threading.Lock] = {}
 _ptz_command_locks_lock = threading.RLock()
 
+_snapshots_lock = threading.RLock()
+
 
 def _ptz_device_lock(device_id: str) -> threading.Lock:
     with _ptz_command_locks_lock:
@@ -126,6 +135,11 @@ def devices_page():
 @app.get("/events", response_class=HTMLResponse)
 def events_page():
     return (STATIC_DIR / "events.html").read_text(encoding="utf-8")
+
+
+@app.get("/playback", response_class=HTMLResponse)
+def playback_page():
+    return (STATIC_DIR / "playback.html").read_text(encoding="utf-8")
 
 
 @app.get("/health")
@@ -181,6 +195,10 @@ class PTZMoveRequest(BaseModel):
     zoom: float = 0.0
 
 
+class SnapshotRequest(BaseModel):
+    event: str = Field(default="manual", min_length=1)
+
+
 # -------------------------
 # Device storage
 # -------------------------
@@ -225,6 +243,49 @@ def _update_device_allowlist(device_id: str, allow_topics: List[str]) -> None:
     d = devs[idx]
     devs[idx] = Device(**{**_dump(d), "id": d.id, "allow_topics": allow_topics})
     _save_devices(devs)
+
+
+# -------------------------
+# Snapshot storage
+# -------------------------
+def _load_snapshot_index() -> dict:
+    if not SNAPSHOTS_INDEX_JSON.exists():
+        return {"items": []}
+    try:
+        raw = json.loads(SNAPSHOTS_INDEX_JSON.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("items"), list):
+            return raw
+    except Exception:
+        pass
+    return {"items": []}
+
+
+def _save_snapshot_index(data: dict) -> None:
+    tmp = SNAPSHOTS_INDEX_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(SNAPSHOTS_INDEX_JSON)
+
+
+def _append_snapshot_item(item: dict) -> None:
+    with _snapshots_lock:
+        data = _load_snapshot_index()
+        items = list(data.get("items", []))
+        items.insert(0, item)
+        data["items"] = items[:1000]
+        _save_snapshot_index(data)
+
+
+def _list_snapshot_items(device_id: Optional[str] = None) -> List[dict]:
+    with _snapshots_lock:
+        items = list(_load_snapshot_index().get("items", []))
+    if device_id:
+        items = [x for x in items if x.get("device_id") == device_id]
+    return items
+
+
+def _snapshot_rel_url(path: Path) -> str:
+    rel = path.relative_to(DATA_DIR).as_posix()
+    return f"/data/{rel}"
 
 
 # -------------------------
@@ -612,6 +673,116 @@ def _get_stream_uri(req: OnvifBase, profile_token: str) -> str:
         rtsp = rtsp.replace("rtsp://", f"rtsp://{req.username}:{req.password}@", 1)
 
     return rtsp
+
+
+def _get_snapshot_uri(req: OnvifBase, profile_token: Optional[str]) -> str:
+    cam = _cam(req)
+    media = cam.create_media_service()
+
+    token = profile_token
+    if not token:
+        profs = media.GetProfiles()
+        p = next((x for x in profs if getattr(x, "token", None)), None)
+        token = getattr(p, "token", None) if p is not None else None
+
+    if not token:
+        raise RuntimeError("No usable profile token for snapshot")
+
+    resp = media.GetSnapshotUri({"ProfileToken": token})
+    uri = getattr(resp, "Uri", None)
+    if not uri:
+        raise RuntimeError("Camera did not return a snapshot URI")
+    return uri
+
+
+def _split_url_auth(url: str) -> tuple[str, Optional[str], Optional[str]]:
+    parts = urlsplit(url)
+    username = parts.username
+    password = parts.password
+
+    if "@" in parts.netloc:
+        host = parts.hostname or ""
+        port = f":{parts.port}" if parts.port else ""
+        clean_netloc = f"{host}{port}"
+        clean_url = urlunsplit((parts.scheme, clean_netloc, parts.path, parts.query, parts.fragment))
+        return clean_url, username, password
+
+    return url, username, password
+
+
+def _http_get_bytes_with_auth(
+    url: str,
+    username: Optional[str],
+    password: Optional[str],
+) -> tuple[bytes, Optional[str]]:
+    clean_url, url_user, url_pass = _split_url_auth(url)
+
+    user = url_user if url_user is not None else username
+    pw = url_pass if url_pass is not None else password
+    user = user or ""
+    pw = pw or ""
+
+    password_mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+    password_mgr.add_password(None, clean_url, user, pw)
+
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPDigestAuthHandler(password_mgr),
+        urllib.request.HTTPBasicAuthHandler(password_mgr),
+    )
+    opener.addheaders = [("User-Agent", "smarteye-playback/1.0")]
+
+    req = urllib.request.Request(clean_url, method="GET")
+
+    try:
+        with opener.open(req, timeout=10) as resp:
+            content_type = resp.headers.get("Content-Type")
+            return resp.read(), content_type
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Snapshot download failed: {e.code} {detail}")
+    except Exception as e:
+        raise RuntimeError(f"Snapshot download failed: {e}")
+    
+
+def _take_snapshot(device_id: str, event_name: str = "manual") -> dict:
+    device = _get_device(device_id)
+    req = _device_req(device)
+
+    snapshot_uri = _get_snapshot_uri(req, device.profile_token)
+    content, content_type = _http_get_bytes_with_auth(
+        snapshot_uri,
+        device.username,
+        device.password,
+    )
+    
+    ext = ".jpg"
+    if content_type:
+        guessed = guess_extension(content_type.split(";")[0].strip().lower())
+        if guessed:
+            ext = ".jpg" if guessed == ".jpe" else guessed
+
+    ts = datetime.now(timezone.utc)
+    stamp = ts.strftime("%Y%m%dT%H%M%S.%fZ")
+    device_dir = SNAPSHOTS_DIR / device_id
+    device_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{stamp}-{uuid.uuid4().hex[:8]}{ext}"
+    path = device_dir / filename
+    path.write_bytes(content)
+
+    item = {
+        "id": uuid.uuid4().hex[:12],
+        "device_id": device_id,
+        "device_name": device.name,
+        "event": (event_name or "manual").strip() or "manual",
+        "ts": ts.isoformat().replace("+00:00", "Z"),
+        "filename": filename,
+        "content_type": content_type or "image/jpeg",
+        "url": _snapshot_rel_url(path),
+        "size_bytes": len(content),
+    }
+    _append_snapshot_item(item)
+    return item
 
 
 def _mediamtx_api_request(method: str, path: str, body: Optional[dict] = None) -> dict:
@@ -1168,6 +1339,27 @@ def events_allowlist_set(device_id: str, req: AllowListRequest):
 
     _update_device_allowlist(device_id, allow)
     return {"ok": True, "device_id": device_id, "allow_topics": allow}
+
+
+# -------------------------
+# Playback API
+# -------------------------
+@app.get("/api/playback/snapshots")
+def playback_snapshots(device_id: Optional[str] = None):
+    items = _list_snapshot_items(device_id=device_id.strip() if device_id else None)
+    return {"items": items}
+
+
+@app.post("/api/playback/snapshot/{device_id}")
+async def playback_snapshot(device_id: str, req: SnapshotRequest):
+    device_id = device_id.strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Missing device_id")
+    try:
+        item = await asyncio.to_thread(_take_snapshot, device_id, req.event)
+        return {"ok": True, "item": item}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Snapshot failed: {e}")
 
 
 # -------------------------

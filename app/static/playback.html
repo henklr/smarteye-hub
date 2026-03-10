@@ -1,0 +1,77 @@
+<!-- static/playback.html -->
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Playback</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+
+<body>
+  <div class="wrap full">
+    <div class="topbar">
+      <div class="tabs">
+        <a class="tab" href="/"><span class="tabDot"></span>Home</a>
+        <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
+        <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
+        <a class="tab" href="/events"><span class="tabDot"></span>Events</a>
+        <a class="tab active" href="/playback"><span class="tabDot"></span>Playback</a>
+      </div>
+
+      <div class="pill" id="statusPill" title="Click to view full status">
+        <span class="dot" id="dot"></span>
+        <span id="pillText">Idle</span>
+      </div>
+    </div>
+
+    <div class="split" style="display:grid; grid-template-columns: 360px 1fr; gap:14px; align-items:start;">
+      <div class="card">
+        <div class="listHeader">
+          <div>
+            <div class="listTitle">Snapshot trigger</div>
+            <div class="listSub">Manual event snapshot per camera</div>
+          </div>
+          <button class="btn" id="reloadBtn" type="button">Reload</button>
+        </div>
+
+        <label for="cameraSelect">Camera</label>
+        <select id="cameraSelect"></select>
+
+        <div class="row2">
+          <div class="grow">
+            <label for="eventName">Event name</label>
+            <input id="eventName" type="text" value="manual_button" placeholder="event name" />
+          </div>
+        </div>
+
+        <div class="row2">
+          <button class="btn btn-primary" id="snapshotBtn" type="button">Trigger snapshot event</button>
+        </div>
+
+        <div class="statusLine" id="snapshotStatus">
+          <strong>Status:</strong>
+          <span id="snapshotStatusText">Ready.</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="listHeader">
+          <div>
+            <div class="listTitle">Snapshots</div>
+            <div class="listSub">Newest first</div>
+          </div>
+        </div>
+
+        <div id="snapshotList">
+          <div class="muted">Loading…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/playback.js"></script>
+</body>
+
+</html>
