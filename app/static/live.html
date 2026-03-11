@@ -1,11 +1,41 @@
 <!doctype html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Live</title>
   <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    .tile {
+      cursor: default;
+    }
+
+    .tile.drag-armed {
+      cursor: grab;
+    }
+
+    .tile.is-dragging {
+      opacity: 0.5;
+      cursor: grabbing;
+    }
+
+    .tile video,
+    .tileOverlay,
+    .tilePtzPanel,
+    .tilePtzJoystick,
+    .tilePtzZoomBtn,
+    .tileStopBtn {
+      cursor: default;
+    }
+
+    .tilePtzPanel,
+    .tilePtzJoystick,
+    .tilePtzZoomBtn,
+    .tileStopBtn {
+      -webkit-user-drag: none;
+      user-select: none;
+    }
+  </style>
 </head>
 
 <body>
@@ -61,5 +91,4 @@
 
   <script src="/static/live.js"></script>
 </body>
-
 </html>

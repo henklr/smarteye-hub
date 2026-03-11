@@ -17,12 +17,15 @@ const toggleSidebarBtn = document.getElementById("toggleSidebar");
 const showSidebarBtn = document.getElementById("showSidebar");
 
 const LS_KEY = "live.sidebarHidden";
-const LS_GRID_KEY = "live.gridDeviceIds";
+const LS_GRID_KEY = "live.gridState";
 
 let devices = [];
 const streams = new Map();
 const ptzCapsCache = new Map();
 let lastStatusMessage = "Idle.";
+
+let restoringGrid = false;
+let desiredTileOrder = [];
 
 const STREAM_STATE = {
   STARTING: "starting",
@@ -97,19 +100,61 @@ function escapeHtml(s) {
   }[c]));
 }
 
-function saveGridState() {
-  const ids = Array.from(streams.keys());
-  localStorage.setItem(LS_GRID_KEY, JSON.stringify(ids));
+function getTileOrder() {
+  return Array.from(videoGrid.querySelectorAll(".tile[data-id]"))
+    .map((el) => el.getAttribute("data-id"))
+    .filter(Boolean);
 }
 
 function loadGridState() {
   try {
     const raw = localStorage.getItem(LS_GRID_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    const parsed = raw ? JSON.parse(raw) : null;
+
+    if (Array.isArray(parsed)) {
+      const ids = parsed.filter(Boolean);
+      return { openIds: ids, order: ids };
+    }
+
+    const openIds = Array.isArray(parsed?.openIds) ? parsed.openIds.filter(Boolean) : [];
+    const order = Array.isArray(parsed?.order) ? parsed.order.filter(Boolean) : openIds.slice();
+
+    return { openIds, order };
   } catch {
-    return [];
+    return { openIds: [], order: [] };
   }
+}
+
+function saveGridState() {
+  const ids = getTileOrder();
+  localStorage.setItem(
+    LS_GRID_KEY,
+    JSON.stringify({
+      openIds: ids,
+      order: ids,
+    })
+  );
+}
+
+function applyTileOrder(orderIds) {
+  if (!Array.isArray(orderIds) || !orderIds.length) return;
+
+  const tilesById = new Map(
+    Array.from(videoGrid.querySelectorAll(".tile[data-id]")).map((el) => [
+      el.getAttribute("data-id"),
+      el,
+    ])
+  );
+
+  for (const id of orderIds) {
+    const tile = tilesById.get(id);
+    if (tile) videoGrid.appendChild(tile);
+  }
+}
+
+function applySavedTileOrder() {
+  const { order } = loadGridState();
+  applyTileOrder(order);
 }
 
 function recomputeGrid() {
@@ -386,6 +431,7 @@ function makeTile(device) {
   const tile = document.createElement("div");
   tile.className = "tile";
   tile.setAttribute("data-id", device.id);
+  tile.draggable = true;
 
   tile.innerHTML = `
     <div class="tilePlayer">
@@ -396,17 +442,17 @@ function makeTile(device) {
         <button class="btn btn-mini btn-danger tileStopBtn" type="button">Remove</button>
       </div>
 
-      <div class="tilePtzPanel hidden">
+      <div class="tilePtzPanel hidden" draggable="false">
         <div class="tilePtzJoystickWrap">
-          <div class="tilePtzJoystick" data-role="joystick">
+          <div class="tilePtzJoystick" data-role="joystick" draggable="false">
             <div class="tilePtzCross"></div>
             <div class="tilePtzKnob"></div>
           </div>
         </div>
 
         <div class="tilePtzZoom">
-          <button class="btn btn-mini tilePtzZoomBtn" data-zoom="0.45" type="button">＋</button>
-          <button class="btn btn-mini tilePtzZoomBtn" data-zoom="-0.45" type="button">－</button>
+          <button class="btn btn-mini tilePtzZoomBtn" data-zoom="0.45" type="button" draggable="false">＋</button>
+          <button class="btn btn-mini tilePtzZoomBtn" data-zoom="-0.45" type="button" draggable="false">－</button>
         </div>
       </div>
 
@@ -425,6 +471,80 @@ function makeTile(device) {
   });
 
   return { tile, videoEl, overlayEl };
+}
+
+function canStartTileDrag(ev) {
+  const target = ev.target;
+  if (!target) return false;
+
+  return !target.closest(
+    ".tileStopBtn, .tilePtzPanel, .tilePtzJoystick, .tilePtzZoomBtn, .tileOverlay, video"
+  );
+}
+
+function installTileDnD(tile) {
+  tile.addEventListener("dragstart", (ev) => {
+    if (!canStartTileDrag(ev)) {
+      ev.preventDefault();
+      return;
+    }
+
+    tile.classList.add("is-dragging");
+
+    if (ev.dataTransfer) {
+      ev.dataTransfer.effectAllowed = "move";
+      ev.dataTransfer.setData("text/plain", tile.getAttribute("data-id") || "");
+    }
+  });
+
+  tile.addEventListener("dragend", () => {
+    tile.classList.remove("is-dragging");
+    tile.classList.remove("drag-armed");
+    saveGridState();
+  });
+
+  tile.addEventListener("dragover", (ev) => {
+    ev.preventDefault();
+
+    const dragging = videoGrid.querySelector(".tile.is-dragging");
+    if (!dragging || dragging === tile) return;
+
+    const rect = tile.getBoundingClientRect();
+    const before = ev.clientY < rect.top + rect.height / 2;
+
+    if (before) {
+      videoGrid.insertBefore(dragging, tile);
+    } else {
+      videoGrid.insertBefore(dragging, tile.nextSibling);
+    }
+  });
+
+  tile.addEventListener("drop", (ev) => {
+    ev.preventDefault();
+    saveGridState();
+  });
+
+  tile.addEventListener("pointerdown", (ev) => {
+    if (canStartTileDrag(ev)) {
+      tile.classList.add("drag-armed");
+    } else {
+      tile.classList.remove("drag-armed");
+    }
+  });
+
+  tile.addEventListener("pointerup", () => {
+    tile.classList.remove("drag-armed");
+  });
+
+  tile.addEventListener("pointercancel", () => {
+    tile.classList.remove("drag-armed");
+  });
+
+  tile.addEventListener("mouseleave", () => {
+    if (!tile.classList.contains("is-dragging")) {
+      tile.classList.remove("drag-armed");
+    }
+  });
 }
 
 function installPtzControls(device, entry, caps) {
@@ -650,6 +770,10 @@ function installPtzControls(device, entry, caps) {
 
       applyPointer(ev.clientX, ev.clientY, true);
     });
+
+    joystick.addEventListener("dragstart", (ev) => {
+      ev.preventDefault();
+    });
   }
 
   if (caps.zoom) {
@@ -691,6 +815,9 @@ function installPtzControls(device, entry, caps) {
       btn.addEventListener("pointercancel", onUp);
       btn.addEventListener("pointerleave", onUp);
       btn.addEventListener("lostpointercapture", onUp);
+      btn.addEventListener("dragstart", (ev) => {
+        ev.preventDefault();
+      });
     });
   }
 
@@ -718,6 +845,7 @@ async function startDevice(device, { restore = false } = {}) {
 
   const { tile, videoEl, overlayEl } = makeTile(device);
   videoGrid.appendChild(tile);
+  installTileDnD(tile);
 
   const entry = {
     pc: null,
@@ -734,11 +862,17 @@ async function startDevice(device, { restore = false } = {}) {
   };
 
   streams.set(device.id, entry);
+
+  if (desiredTileOrder.length) applyTileOrder(desiredTileOrder);
+
   applyTileStateClasses(entry);
-  saveGridState();
   recomputeGrid();
   renderList();
   updateOverallStatusForGrid();
+
+  if (!restoringGrid) {
+    saveGridState();
+  }
 
   entry.startingPromise = (async () => {
     try {
@@ -791,7 +925,11 @@ async function startDevice(device, { restore = false } = {}) {
 
       cur.pc = pc;
       setEntryState(device.id, STREAM_STATE.LIVE);
-      saveGridState();
+
+      if (!restoringGrid) {
+        saveGridState();
+      }
+
       updateOverallStatusForGrid();
     } catch (e) {
       const cur = getEntry(device.id);
@@ -799,7 +937,11 @@ async function startDevice(device, { restore = false } = {}) {
         stopPc(cur.pc, cur.videoEl);
         cur.pc = null;
         setEntryState(device.id, STREAM_STATE.ERROR, e?.message || String(e));
-        saveGridState();
+
+        if (!restoringGrid) {
+          saveGridState();
+        }
+
         updateOverallStatusForGrid();
       }
     } finally {
@@ -811,7 +953,7 @@ async function startDevice(device, { restore = false } = {}) {
   return entry.startingPromise;
 }
 
-async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
+async function stopDevice(deviceId) {
   const entry = getEntry(deviceId);
   if (!entry) return;
 
@@ -833,30 +975,42 @@ async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
   } catch {}
 
   streams.delete(deviceId);
-  saveGridState();
 
   recomputeGrid();
   renderList();
-
   updateOverallStatusForGrid();
+
+  if (!restoringGrid) {
+    saveGridState();
+  }
 }
 
 async function restoreGrid() {
-  const savedIds = loadGridState();
-  if (!savedIds.length) return;
+  const { openIds, order } = loadGridState();
+  if (!openIds.length) return;
 
   const byId = new Map(devices.map((d) => [d.id, d]));
-  const toRestore = savedIds
+  const toRestore = openIds
     .map((id) => byId.get(id))
     .filter((d) => d && profileReady(d));
 
   if (!toRestore.length) return;
 
+  restoringGrid = true;
+  desiredTileOrder = order.length ? order.slice() : openIds.slice();
+
   setStatus(`Restoring ${toRestore.length} camera(s)…`, "warn");
 
-  await Promise.allSettled(
-    toRestore.map((d) => startDevice(d, { restore: true }))
-  );
+  try {
+    for (const d of toRestore) {
+      await startDevice(d, { restore: true });
+    }
+  } finally {
+    restoringGrid = false;
+    applyTileOrder(desiredTileOrder);
+    desiredTileOrder = [];
+    saveGridState();
+  }
 
   updateOverallStatusForGrid(`Restored ${toRestore.length} camera(s).`);
 }
@@ -881,18 +1035,23 @@ startAllBtn.addEventListener("click", async () => {
 
   setStatus(`Starting ${toStart.length} camera(s)…`, "warn");
 
-  await Promise.allSettled(
-    toStart.map((d) => startDevice(d))
-  );
+  for (const d of toStart) {
+    await startDevice(d);
+  }
 
+  saveGridState();
   updateOverallStatusForGrid(`Showing ${streams.size} camera(s).`);
 });
 
 stopAllBtn.addEventListener("click", async () => {
   setStatus("Stopping all…", "warn");
-  await Promise.allSettled(
-    Array.from(streams.keys()).map((id) => stopDevice(id))
-  );
+
+  const ids = Array.from(streams.keys());
+  for (const id of ids) {
+    await stopDevice(id);
+  }
+
+  saveGridState();
   setStatus("Stopped.", "warn");
 });
 
