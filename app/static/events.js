@@ -80,13 +80,12 @@ function setDeviceChip() {
   chip.textContent = `${currentDevice.name} (${currentDevice.id})`;
 }
 
-function renderRawProps() {
-  const box = el("rawProps");
-  if (!supported) {
-    box.textContent = "(nothing loaded yet)";
-    return;
-  }
-  box.textContent = prettyJson(supported.raw_topic_set ?? supported.raw ?? supported);
+function getRawTopicsText() {
+  return prettyJson(supported?.raw_topic_set ?? supported?.raw ?? "(nothing loaded yet)");
+}
+
+function renderRawTopicsDialogBody() {
+  el("rawTopicsBody").textContent = getRawTopicsText();
 }
 
 // ---------- log ----------
@@ -209,6 +208,17 @@ async function copyVisibleLog() {
   } catch (err) {
     addLogEntry("warn", "Copy visible log failed.", { error: String(err?.message || err) });
   }
+}
+
+// ---------- raw topics dialog ----------
+function openRawTopicsDialog() {
+  renderRawTopicsDialogBody();
+  const dlg = el("rawTopicsDialog");
+  if (typeof dlg.showModal === "function") dlg.showModal();
+}
+
+function closeRawTopicsDialog() {
+  el("rawTopicsDialog").close();
 }
 
 // ---------- SSE ----------
@@ -390,7 +400,7 @@ async function refreshSupportedAndAllow() {
 
   renderSupportedList();
   renderAllowList();
-  renderRawProps();
+  renderRawTopicsDialogBody();
 
   addLogEntry("ok", "Loaded ONVIF event properties + allowlist", {
     supported_topics: supported?.topics?.length || 0,
@@ -407,7 +417,7 @@ async function selectDevice(deviceId) {
   allowTopics = [];
   renderSupportedList();
   renderAllowList();
-  renderRawProps();
+  renderRawTopicsDialogBody();
   setDeviceChip();
 
   if (!currentDevice) {
@@ -459,16 +469,6 @@ async function saveAllowlist() {
   addLogEntry("ok", "Allowlist saved to device.", { allow: allowTopics.length });
 }
 
-async function copyRaw() {
-  const txt = el("rawProps").textContent || "";
-  try {
-    await navigator.clipboard.writeText(txt);
-    addLogEntry("ok", "Copied raw ONVIF properties.");
-  } catch (err) {
-    addLogEntry("warn", "Copy failed.", { error: String(err?.message || err) });
-  }
-}
-
 // ---------- UI wiring ----------
 el("deviceSelect").addEventListener("change", async (e) => {
   try { await selectDevice(e.target.value); }
@@ -500,12 +500,16 @@ el("btnClearLog").addEventListener("click", () => {
   clearLog();
 });
 
-el("btnCopyRaw").addEventListener("click", async () => {
-  await copyRaw();
-});
-
 el("btnExportLog").addEventListener("click", async () => {
   await copyVisibleLog();
+});
+
+el("btnShowRawTopics").addEventListener("click", () => {
+  openRawTopicsDialog();
+});
+
+el("btnCloseRawTopics").addEventListener("click", () => {
+  closeRawTopicsDialog();
 });
 
 el("filterInput").addEventListener("input", () => renderSupportedList());
@@ -519,6 +523,17 @@ document.querySelectorAll(".filterChip").forEach((chip) => {
   chip.addEventListener("click", () => {
     toggleLogLevel(chip.dataset.level);
   });
+});
+
+el("rawTopicsDialog").addEventListener("click", (e) => {
+  const dlg = el("rawTopicsDialog");
+  const rect = dlg.getBoundingClientRect();
+  const inside =
+    e.clientX >= rect.left &&
+    e.clientX <= rect.right &&
+    e.clientY >= rect.top &&
+    e.clientY <= rect.bottom;
+  if (!inside) dlg.close();
 });
 
 // boot

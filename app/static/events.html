@@ -232,34 +232,6 @@
     .lvl.debug{ color: rgba(160, 180, 255, .88); }
     .lvl.event{ color: rgba(126, 214, 255, .95); }
 
-    .rawBox{
-      margin-top:14px;
-      border: 1px solid var(--stroke);
-      border-radius: 10px;
-      overflow:hidden;
-      background: rgba(0,0,0,.22);
-    }
-    .rawHead{
-      padding:10px 12px;
-      border-bottom:1px solid var(--stroke);
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap:10px;
-      background: rgba(255,255,255,.02);
-    }
-    .rawBody{
-      max-height: 420px;
-      overflow:auto;
-      padding:10px 12px;
-      font-size:12px;
-      line-height:1.5;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      color: rgba(233,238,252,.84);
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
     .miniStat{
       display:inline-flex;
       align-items:center;
@@ -272,6 +244,41 @@
       font-size:11px;
       font-weight:900;
     }
+
+    dialog.rawDialog{
+      width:min(1100px, 94vw);
+      max-height:86vh;
+      border:none;
+      border-radius:16px;
+      padding:0;
+      background:#151720;
+      color:#fff;
+      box-shadow: 0 24px 90px rgba(0,0,0,.5);
+    }
+    dialog.rawDialog::backdrop{
+      background: rgba(0,0,0,.6);
+      backdrop-filter: blur(2px);
+    }
+    .rawDialogHead{
+      padding:12px 14px;
+      border-bottom:1px solid rgba(255,255,255,.08);
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:12px;
+      background: rgba(255,255,255,.02);
+    }
+    .rawDialogBody{
+      max-height: calc(86vh - 72px);
+      overflow:auto;
+      padding:12px 14px;
+      font-size:12px;
+      line-height:1.5;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: rgba(233,238,252,.84);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
   </style>
 </head>
 
@@ -282,7 +289,7 @@
         <a class="tab" href="/"><span class="tabDot"></span>Home</a>
         <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
         <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
-        <a class="tab" href="/events"><span class="tabDot"></span>Events</a>
+        <a class="tab active" href="/events"><span class="tabDot"></span>Events</a>
         <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
       </div>
 
@@ -297,7 +304,7 @@
         <div>
           <div class="listTitle">ONVIF Events</div>
           <div class="listSub">
-            Load supported topics directly from the device with ONVIF GetEventProperties(), choose an allowlist, and inspect the raw properties.
+            Load supported topics directly from the device with ONVIF GetEventProperties(), choose an allowlist, and inspect raw topic data when needed.
           </div>
         </div>
         <div class="camBadge" id="deviceChip">No device</div>
@@ -336,6 +343,9 @@
               <div class="listTitle">Supported topics</div>
               <div class="listSub">Loaded from ONVIF GetEventProperties(). Click “Add” to include in allowlist.</div>
             </div>
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+              <button class="btn btn-mini" id="btnShowRawTopics">Show raw topics</button>
+            </div>
           </div>
 
           <div class="listBox">
@@ -355,17 +365,6 @@
             <div class="listBody" id="allowList"></div>
           </div>
         </div>
-      </div>
-
-      <div class="rawBox">
-        <div class="rawHead">
-          <div>
-            <div class="listTitle">Raw ONVIF properties</div>
-            <div class="listSub">Full response from GetEventProperties() for debugging vendor-specific cameras.</div>
-          </div>
-          <button class="btn btn-mini" id="btnCopyRaw">Copy</button>
-        </div>
-        <div class="rawBody" id="rawProps">(nothing loaded yet)</div>
       </div>
 
       <div class="log">
@@ -396,6 +395,19 @@
       </div>
     </div>
   </div>
+
+  <dialog id="rawTopicsDialog" class="rawDialog">
+    <div class="rawDialogHead">
+      <div>
+        <div class="listTitle">Raw ONVIF topics</div>
+        <div class="listSub">Topic tree returned by GetEventProperties().</div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button class="btn btn-mini" id="btnCloseRawTopics">Close</button>
+      </div>
+    </div>
+    <div class="rawDialogBody" id="rawTopicsBody">(nothing loaded yet)</div>
+  </dialog>
 
   <script src="/static/events.js"></script>
 </body>
