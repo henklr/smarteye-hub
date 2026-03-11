@@ -447,7 +447,7 @@ function canToggleTileFullscreen(target) {
   if (!target) return false;
 
   return !target.closest(
-    ".tileStopBtn, .tilePtzPanel, .tilePtzJoystick, .tilePtzZoomBtn"
+    ".tilePtzPanel, .tilePtzJoystick, .tilePtzZoomBtn"
   );
 }
 
@@ -501,7 +501,6 @@ function makeTile(device) {
 
       <div class="tileHud">
         <div class="tileName">${escapeHtml(device.name || device.ip || device.id)}</div>
-        <button class="btn btn-mini btn-danger tileStopBtn" type="button">Remove</button>
       </div>
 
       <div class="tilePtzPanel hidden" draggable="false">
@@ -524,13 +523,6 @@ function makeTile(device) {
 
   const videoEl = tile.querySelector("video");
   const overlayEl = tile.querySelector(".tileOverlay");
-  const stopBtn = tile.querySelector(".tileStopBtn");
-
-  stopBtn.addEventListener("click", (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    stopDevice(device.id).catch(() => {});
-  });
 
   return { tile, videoEl, overlayEl };
 }
@@ -540,7 +532,7 @@ function canStartTileDrag(ev) {
   if (!target) return false;
 
   return !target.closest(
-    ".tileStopBtn, .tilePtzPanel, .tilePtzJoystick, .tilePtzZoomBtn, .tileOverlay, video"
+    ".tilePtzPanel, .tilePtzJoystick, .tilePtzZoomBtn, .tileOverlay, video"
   );
 }
 
