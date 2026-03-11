@@ -470,6 +470,7 @@ def _canonical_topic_aliases(topic: Optional[str]) -> set[str]:
     if (
         "motion" in low
         or "ismotion" in low
+        or "motionalarm" in low
         or "cellmotiondetector" in low
         or t == "VideoSource/MotionAlarm"
     ):
@@ -482,14 +483,17 @@ def _canonical_topic_aliases(topic: Optional[str]) -> set[str]:
     # Objects inside / field detector
     if (
         "objectsinside" in low
+        or "objectinside" in low
         or "fielddetector" in low
         or "isinside" in low
     ):
         aliases.update({
             "RuleEngine/FieldDetector/ObjectsInside",
+            "RuleEngine/FieldDetector/ObjectInside",
+            "VideoSource/ObjectInside",
             "IsInside/Rule/VideoAnalyticsConfigurationToken/VideoSourceConfigurationToken",
         })
-
+                
     # Digital input
     if "digitalinput" in low or "inputtoken" in low:
         aliases.update({
@@ -575,22 +579,44 @@ def _match_onvif_condition(condition: dict, event_payload: dict) -> bool:
 
 def _run_action_rule(rule: dict, trigger: dict) -> None:
     action_results = []
+    should_create_feed_event = False
+
     for action in rule.get("actions", []):
         atype = action.get("type")
+
         if atype == "create_log_event":
+            should_create_feed_event = True
             action_results.append({"type": atype, "ok": True})
+
         elif atype == "take_snapshot":
             cam = action.get("camera_device_id")
             try:
                 snap = _take_snapshot(cam, f"action:{rule.get('name') or rule.get('id')}")
-                action_results.append({"type": atype, "ok": True, "camera_device_id": cam, "snapshot": snap})
+                action_results.append({
+                    "type": atype,
+                    "ok": True,
+                    "camera_device_id": cam,
+                    "snapshot": snap,
+                })
             except Exception as e:
-                action_results.append({"type": atype, "ok": False, "camera_device_id": cam, "error": str(e)})
+                action_results.append({
+                    "type": atype,
+                    "ok": False,
+                    "camera_device_id": cam,
+                    "error": str(e),
+                })
+
+    if not should_create_feed_event:
+        return
+
     device_name = None
     try:
-        device_name = _get_device(trigger.get("device_id") or trigger.get("source_device_id")).name
+        device_name = _get_device(
+            trigger.get("device_id") or trigger.get("source_device_id")
+        ).name
     except Exception:
         pass
+
     item = {
         "id": uuid.uuid4().hex[:12],
         "ts": _utc_now_iso(),
@@ -606,8 +632,63 @@ def _run_action_rule(rule: dict, trigger: dict) -> None:
         "results": action_results,
     }
     _append_action_event(item)
+    
 
+def _poll_device_state_changes() -> None:
+    while not _action_monitor_stop.wait(5.0):
+        try:
+            devs = _load_devices()
+            snapshot = _mediamtx_paths_snapshot()
 
+            for d in devs:
+                st = _device_stream_status_from_snapshot(d, snapshot)
+                is_online = bool(st.get("stream_up"))
+
+                with _action_runtime_lock:
+                    prev = _last_device_states.get(d.id)
+                    _last_device_states[d.id] = is_online
+
+                if prev is None:
+                    continue
+
+                if prev and not is_online:
+                    _evaluate_actions_for_trigger({
+                        "kind": "device_offline",
+                        "device_id": d.id,
+                        "message": "Device offline",
+                        "status": st,
+                    })
+                    if EVENT_DEBUG:
+                        _emit_event(
+                            d.id,
+                            "debug",
+                            "Detected device offline transition",
+                            {"previous_online": prev, "current_online": is_online, "status": st},
+                        )
+
+                elif (not prev) and is_online:
+                    _evaluate_actions_for_trigger({
+                        "kind": "device_back_online",
+                        "device_id": d.id,
+                        "message": "Device back online",
+                        "status": st,
+                    })
+                    if EVENT_DEBUG:
+                        _emit_event(
+                            d.id,
+                            "debug",
+                            "Detected device back online transition",
+                            {"previous_online": prev, "current_online": is_online, "status": st},
+                        )
+
+        except Exception as e:
+            if EVENT_DEBUG:
+                try:
+                    _emit_event("system", "warn", f"Action monitor poll failed: {e}")
+                except Exception:
+                    pass
+                
+                
 def _evaluate_actions_for_trigger(trigger: dict) -> None:
     try:
         with _actions_lock:
@@ -636,21 +717,85 @@ def _poll_device_state_changes() -> None:
         try:
             devs = _load_devices()
             snapshot = _mediamtx_paths_snapshot()
+
             for d in devs:
                 st = _device_stream_status_from_snapshot(d, snapshot)
                 is_online = bool(st.get("stream_up"))
-                with _action_runtime_lock:
-                    prev = _last_device_states.get(d.id)
-                    _last_device_states[d.id] = is_online
-                if prev is None:
-                    continue
-                if prev and not is_online:
-                    _evaluate_actions_for_trigger({"kind": "device_offline", "device_id": d.id, "message": "Device offline"})
-                elif (not prev) and is_online:
-                    _evaluate_actions_for_trigger({"kind": "device_back_online", "device_id": d.id, "message": "Device back online"})
-        except Exception:
-            pass
 
+                with _action_runtime_lock:
+                    prev = _last_device_states.get(d.id, None)
+
+                    # First observation: store only, do not fire.
+                    if prev is None:
+                        _last_device_states[d.id] = is_online
+                        if EVENT_DEBUG:
+                            _emit_event(
+                                d.id,
+                                "debug",
+                                "Initialized device state tracker",
+                                {"current_online": is_online, "status": st},
+                            )
+                        continue
+
+                    # No change
+                    if prev == is_online:
+                        if EVENT_DEBUG:
+                            _emit_event(
+                                d.id,
+                                "debug",
+                                "No device state change",
+                                {"previous_online": prev, "current_online": is_online, "status": st},
+                            )
+                        continue
+
+                    # Store new state before firing actions
+                    _last_device_states[d.id] = is_online
+
+                if prev and not is_online:
+                    if EVENT_DEBUG:
+                        _emit_event(
+                            d.id,
+                            "debug",
+                            "Detected device offline transition",
+                            {"previous_online": prev, "current_online": is_online, "status": st},
+                        )
+
+                    _evaluate_actions_for_trigger({
+                        "kind": "device_offline",
+                        "device_id": d.id,
+                        "message": "Device offline",
+                        "status": st,
+                    })
+
+                elif (not prev) and is_online:
+                    if EVENT_DEBUG:
+                        _emit_event(
+                            d.id,
+                            "debug",
+                            "Detected device back online transition",
+                            {"previous_online": prev, "current_online": is_online, "status": st},
+                        )
+
+                    _evaluate_actions_for_trigger({
+                        "kind": "device_back_online",
+                        "device_id": d.id,
+                        "message": "Device back online",
+                        "status": st,
+                    })
+
+        except Exception as e:
+            if EVENT_DEBUG:
+                try:
+                    _broadcast_event("system", {
+                        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        "device_id": "system",
+                        "level": "warn",
+                        "message": f"Action monitor poll failed: {e}",
+                        "extra": {},
+                    })
+                except Exception:
+                    pass
+                
 
 def _cam(req: OnvifBase) -> ONVIFCamera:
     return ONVIFCamera(req.ip, req.onvif_port, req.username, req.password)
@@ -1048,6 +1193,7 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, stop_flag: threading.Eve
                                     "fallback_key": fallback_key,
                                     "match_candidates": match_candidates,
                                     "allow_topics": sorted(list(allow_set)),
+                                    "expanded_allow_topics": sorted(list(_expanded_allow_topics(allow_set))),
                                 },
                             )
                         continue
