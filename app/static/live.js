@@ -427,6 +427,68 @@ function updateOverallStatusForGrid(defaultOkMessage = null) {
   setStatus("Stopped.", "warn");
 }
 
+async function toggleTileFullscreen(tile) {
+  if (!tile) return;
+
+  const fullscreenEl = document.fullscreenElement;
+  if (fullscreenEl === tile) {
+    await document.exitFullscreen?.().catch(() => {});
+    return;
+  }
+
+  if (fullscreenEl && fullscreenEl !== tile) {
+    await document.exitFullscreen?.().catch(() => {});
+  }
+
+  await tile.requestFullscreen?.().catch(() => {});
+}
+
+function canToggleTileFullscreen(target) {
+  if (!target) return false;
+
+  return !target.closest(
+    ".tileStopBtn, .tilePtzPanel, .tilePtzJoystick, .tilePtzZoomBtn"
+  );
+}
+
+function installTileFullscreen(tile) {
+  let lastTapAt = 0;
+  let lastTapX = 0;
+  let lastTapY = 0;
+  const maxDelay = 320;
+  const maxMove = 24;
+
+  tile.addEventListener("dblclick", (ev) => {
+    if (!canToggleTileFullscreen(ev.target)) return;
+    ev.preventDefault();
+    toggleTileFullscreen(tile).catch(() => {});
+  });
+
+  tile.addEventListener("pointerup", (ev) => {
+    if (ev.pointerType !== "touch") return;
+    if (!canToggleTileFullscreen(ev.target)) return;
+
+    const now = Date.now();
+    const dx = ev.clientX - lastTapX;
+    const dy = ev.clientY - lastTapY;
+    const closeEnough = Math.hypot(dx, dy) <= maxMove;
+    const quickEnough = now - lastTapAt <= maxDelay;
+
+    if (quickEnough && closeEnough) {
+      lastTapAt = 0;
+      lastTapX = 0;
+      lastTapY = 0;
+      ev.preventDefault();
+      toggleTileFullscreen(tile).catch(() => {});
+      return;
+    }
+
+    lastTapAt = now;
+    lastTapX = ev.clientX;
+    lastTapY = ev.clientY;
+  });
+}
+
 function makeTile(device) {
   const tile = document.createElement("div");
   tile.className = "tile";
@@ -846,6 +908,7 @@ async function startDevice(device, { restore = false } = {}) {
   const { tile, videoEl, overlayEl } = makeTile(device);
   videoGrid.appendChild(tile);
   installTileDnD(tile);
+  installTileFullscreen(tile);
 
   const entry = {
     pc: null,
