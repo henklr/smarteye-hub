@@ -640,6 +640,30 @@ def _run_action_rule(rule: dict, trigger: dict) -> None:
     _append_action_event(item)
         
 
+                
+def _evaluate_actions_for_trigger(trigger: dict) -> None:
+    try:
+        with _actions_lock:
+            rules = _load_actions()
+        for rule in rules:
+            if not rule.get("enabled", True):
+                continue
+            matched = False
+            for condition in rule.get("conditions", []):
+                ctype = condition.get("type")
+                if ctype == "onvif_event" and trigger.get("kind") == "onvif_event":
+                    matched = _match_onvif_condition(condition, trigger)
+                elif ctype == "device_offline" and trigger.get("kind") == "device_offline":
+                    matched = condition.get("device_id") == trigger.get("device_id")
+                elif ctype == "device_back_online" and trigger.get("kind") == "device_back_online":
+                    matched = condition.get("device_id") == trigger.get("device_id")
+                if matched:
+                    _run_action_rule(rule, {"condition": condition, **trigger})
+                    break
+    except Exception:
+        pass
+
+
 def _poll_device_state_changes() -> None:
     while not _action_monitor_stop.wait(PATH_PROGRESS_POLL_SEC):
         try:
@@ -728,114 +752,6 @@ def _poll_device_state_changes() -> None:
                 except Exception:
                     pass
                                 
-                
-def _evaluate_actions_for_trigger(trigger: dict) -> None:
-    try:
-        with _actions_lock:
-            rules = _load_actions()
-        for rule in rules:
-            if not rule.get("enabled", True):
-                continue
-            matched = False
-            for condition in rule.get("conditions", []):
-                ctype = condition.get("type")
-                if ctype == "onvif_event" and trigger.get("kind") == "onvif_event":
-                    matched = _match_onvif_condition(condition, trigger)
-                elif ctype == "device_offline" and trigger.get("kind") == "device_offline":
-                    matched = condition.get("device_id") == trigger.get("device_id")
-                elif ctype == "device_back_online" and trigger.get("kind") == "device_back_online":
-                    matched = condition.get("device_id") == trigger.get("device_id")
-                if matched:
-                    _run_action_rule(rule, {"condition": condition, **trigger})
-                    break
-    except Exception:
-        pass
-
-
-def _poll_device_state_changes() -> None:
-    while not _action_monitor_stop.wait(5.0):
-        try:
-            devs = _load_devices()
-            snapshot = _mediamtx_paths_snapshot()
-
-            for d in devs:
-                st = _device_stream_status_from_snapshot(d, snapshot)
-                is_online = bool(st.get("stream_up"))
-
-                with _action_runtime_lock:
-                    prev = _last_device_states.get(d.id, None)
-
-                    # First observation: store only, do not fire.
-                    if prev is None:
-                        _last_device_states[d.id] = is_online
-                        if EVENT_DEBUG:
-                            _emit_event(
-                                d.id,
-                                "debug",
-                                "Initialized device state tracker",
-                                {"current_online": is_online, "status": st},
-                            )
-                        continue
-
-                    # No change
-                    if prev == is_online:
-                        if EVENT_DEBUG:
-                            _emit_event(
-                                d.id,
-                                "debug",
-                                "No device state change",
-                                {"previous_online": prev, "current_online": is_online, "status": st},
-                            )
-                        continue
-
-                    # Store new state before firing actions
-                    _last_device_states[d.id] = is_online
-
-                if prev and not is_online:
-                    if EVENT_DEBUG:
-                        _emit_event(
-                            d.id,
-                            "debug",
-                            "Detected device offline transition",
-                            {"previous_online": prev, "current_online": is_online, "status": st},
-                        )
-
-                    _evaluate_actions_for_trigger({
-                        "kind": "device_offline",
-                        "device_id": d.id,
-                        "message": "Device offline",
-                        "status": st,
-                    })
-
-                elif (not prev) and is_online:
-                    if EVENT_DEBUG:
-                        _emit_event(
-                            d.id,
-                            "debug",
-                            "Detected device back online transition",
-                            {"previous_online": prev, "current_online": is_online, "status": st},
-                        )
-
-                    _evaluate_actions_for_trigger({
-                        "kind": "device_back_online",
-                        "device_id": d.id,
-                        "message": "Device back online",
-                        "status": st,
-                    })
-
-        except Exception as e:
-            if EVENT_DEBUG:
-                try:
-                    _broadcast_event("system", {
-                        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                        "device_id": "system",
-                        "level": "warn",
-                        "message": f"Action monitor poll failed: {e}",
-                        "extra": {},
-                    })
-                except Exception:
-                    pass
-                
 
 def _cam(req: OnvifBase) -> ONVIFCamera:
     return ONVIFCamera(req.ip, req.onvif_port, req.username, req.password)
