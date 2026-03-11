@@ -110,6 +110,12 @@ _path_progress_state: Dict[str, Dict[str, Any]] = {}
 
 STREAM_STALE_SEC = float(os.getenv("STREAM_STALE_SEC", "20"))
 
+_path_monitor_lock = threading.RLock()
+_path_monitor_state: Dict[str, Dict[str, Any]] = {}
+
+PATH_PROGRESS_POLL_SEC = float(os.getenv("PATH_PROGRESS_POLL_SEC", "1.0"))
+PATH_NO_PROGRESS_LIMIT = int(os.getenv("PATH_NO_PROGRESS_LIMIT", "4"))
+
 
 def _ptz_device_lock(device_id: str) -> threading.Lock:
     with _ptz_command_locks_lock:
@@ -632,62 +638,96 @@ def _run_action_rule(rule: dict, trigger: dict) -> None:
         "results": action_results,
     }
     _append_action_event(item)
-    
+        
 
 def _poll_device_state_changes() -> None:
-    while not _action_monitor_stop.wait(5.0):
+    while not _action_monitor_stop.wait(PATH_PROGRESS_POLL_SEC):
         try:
             devs = _load_devices()
             snapshot = _mediamtx_paths_snapshot()
 
             for d in devs:
-                st = _device_stream_status_from_snapshot(d, snapshot)
-                is_online = bool(st.get("stream_up"))
+                row = _path_row_for_device(snapshot, d.id)
+                monitor = _update_path_monitor_state(d.id, row)
 
-                with _action_runtime_lock:
-                    prev = _last_device_states.get(d.id)
-                    _last_device_states[d.id] = is_online
+                prev = monitor["previous_online"]
+                curr = monitor["current_online"]
 
+                # first observation only initializes state
                 if prev is None:
+                    if EVENT_DEBUG:
+                        _emit_event(
+                            d.id,
+                            "debug",
+                            "Initialized device state tracker",
+                            {
+                                "current_online": curr,
+                                "no_progress_count": monitor["no_progress_count"],
+                                "seconds_since_progress": monitor["seconds_since_progress"],
+                                "bytes_received": monitor["bytes_received"],
+                                "readers": monitor["readers"],
+                            },
+                        )
                     continue
 
-                if prev and not is_online:
+                if prev == curr:
+                    continue
+
+                st = _device_stream_status_from_snapshot(d, snapshot)
+
+                if prev and not curr:
+                    if EVENT_DEBUG:
+                        _emit_event(
+                            d.id,
+                            "debug",
+                            "Detected device offline transition",
+                            {
+                                "previous_online": prev,
+                                "current_online": curr,
+                                "status": st,
+                            },
+                        )
+
                     _evaluate_actions_for_trigger({
                         "kind": "device_offline",
                         "device_id": d.id,
                         "message": "Device offline",
                         "status": st,
                     })
+
+                elif (not prev) and curr:
                     if EVENT_DEBUG:
                         _emit_event(
                             d.id,
                             "debug",
-                            "Detected device offline transition",
-                            {"previous_online": prev, "current_online": is_online, "status": st},
+                            "Detected device back online transition",
+                            {
+                                "previous_online": prev,
+                                "current_online": curr,
+                                "status": st,
+                            },
                         )
 
-                elif (not prev) and is_online:
                     _evaluate_actions_for_trigger({
                         "kind": "device_back_online",
                         "device_id": d.id,
                         "message": "Device back online",
                         "status": st,
                     })
-                    if EVENT_DEBUG:
-                        _emit_event(
-                            d.id,
-                            "debug",
-                            "Detected device back online transition",
-                            {"previous_online": prev, "current_online": is_online, "status": st},
-                        )
 
         except Exception as e:
             if EVENT_DEBUG:
                 try:
-                    _emit_event("system", "warn", f"Action monitor poll failed: {e}")
+                    _broadcast_event("system", {
+                        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        "device_id": "system",
+                        "level": "warn",
+                        "message": f"Action monitor poll failed: {e}",
+                        "extra": {},
+                    })
                 except Exception:
                     pass
-                
+                                
                 
 def _evaluate_actions_for_trigger(trigger: dict) -> None:
     try:
@@ -1588,16 +1628,104 @@ def _stream_progress_state(device_id: str, bytes_received: int, online: bool, re
         "stalled": stalled,
     }
     
+def _path_bytes_from_snapshot_row(row: Optional[dict]) -> int:
+    if not row:
+        return 0
+    for key in ("bytesReceived", "bytes_received", "bytesreceived"):
+        if key in row:
+            try:
+                return int(row.get(key) or 0)
+            except Exception:
+                return 0
+    return 0
 
+
+def _path_readers_from_snapshot_row(row: Optional[dict]) -> int:
+    if not row:
+        return 0
+    readers_raw = row.get("readers", [])
+    if isinstance(readers_raw, list):
+        return len(readers_raw)
+    try:
+        return int(readers_raw or 0)
+    except Exception:
+        return 0
+
+
+def _path_row_for_device(snapshot: dict, device_id: str) -> Optional[dict]:
+    path_name = _path_for(device_id)
+    for row in list(snapshot.get("items") or []):
+        if row.get("name") == path_name:
+            return row
+    return None
+
+
+def _update_path_monitor_state(device_id: str, row: Optional[dict]) -> dict:
+    now = time.time()
+
+    bytes_received = _path_bytes_from_snapshot_row(row)
+    readers = _path_readers_from_snapshot_row(row)
+
+    online = bool((row or {}).get("online", False))
+    available = bool((row or {}).get("available", False))
+    ready = bool((row or {}).get("ready", False))
+    source_ready = bool((row or {}).get("sourceReady", False) or (row or {}).get("source_ready", False))
+
+    with _path_monitor_lock:
+        st = _path_monitor_state.get(device_id)
+        if st is None:
+            st = {
+                "last_bytes": int(bytes_received),
+                "last_progress_ts": now,
+                "no_progress_count": 0,
+                "is_online": bool(bytes_received > 0 or readers > 0 or online or available or ready or source_ready),
+            }
+            _path_monitor_state[device_id] = st
+            return {
+                "progressed": True,
+                "previous_online": None,
+                "current_online": bool(st["is_online"]),
+                "no_progress_count": int(st["no_progress_count"]),
+                "seconds_since_progress": 0.0,
+                "bytes_received": int(bytes_received),
+                "readers": int(readers),
+            }
+
+        prev_bytes = int(st.get("last_bytes", 0))
+        progressed = int(bytes_received) > prev_bytes
+
+        if progressed:
+            st["last_bytes"] = int(bytes_received)
+            st["last_progress_ts"] = now
+            st["no_progress_count"] = 0
+        else:
+            # If there are active readers but no new bytes, count that as no progress.
+            st["no_progress_count"] = int(st.get("no_progress_count", 0)) + 1
+
+        previous_online = bool(st.get("is_online", False))
+
+        current_online = (
+            progressed
+            or int(readers) > 0
+            or int(st["no_progress_count"]) < PATH_NO_PROGRESS_LIMIT
+        ) and bool(row is not None)
+
+        st["is_online"] = current_online
+
+        return {
+            "progressed": progressed,
+            "previous_online": previous_online,
+            "current_online": current_online,
+            "no_progress_count": int(st["no_progress_count"]),
+            "seconds_since_progress": round(now - float(st.get("last_progress_ts", now)), 1),
+            "bytes_received": int(bytes_received),
+            "readers": int(readers),
+        }
+        
+        
 def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
+    row = _path_row_for_device(snapshot, device.id)
     path_name = _path_for(device.id)
-    items = list(snapshot.get("items") or [])
-
-    row = None
-    for x in items:
-        if x.get("name") == path_name:
-            row = x
-            break
 
     out = {
         "device_id": device.id,
@@ -1616,6 +1744,15 @@ def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
 
     if row is None:
         out["status"] = "down"
+        out["online"] = False
+        out["available"] = False
+        out["ready"] = False
+        out["source_ready"] = False
+        out["bytes_received"] = 0
+        out["readers"] = 0
+        out["stalled"] = True
+        out["seconds_since_progress"] = None
+        out["no_progress_count"] = None
         return out
 
     def g(d, *names, default=None):
@@ -1630,17 +1767,12 @@ def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
     available = bool(g(row, "available", default=False))
     source_on_demand = g(row, "sourceOnDemand", "source_on_demand", default=None)
     source = g(row, "source", default=None)
-    bytes_received = g(row, "bytesReceived", "bytes_received", "bytesreceived", default=0) or 0
-    readers_raw = g(row, "readers", default=[])
-    readers = len(readers_raw) if isinstance(readers_raw, list) else int(readers_raw or 0)
+    bytes_received = _path_bytes_from_snapshot_row(row)
+    readers = _path_readers_from_snapshot_row(row)
 
-    progress = _stream_progress_state(
-        device.id,
-        bytes_received=bytes_received,
-        online=online,
-        ready=ready,
-        source_ready=source_ready,
-    )
+    monitor = _update_path_monitor_state(device.id, row)
+    stream_up = bool(monitor["current_online"])
+    stalled = not stream_up
 
     out.update({
         "source_ready": source_ready,
@@ -1651,27 +1783,12 @@ def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
         "source": source,
         "bytes_received": bytes_received,
         "readers": readers,
-        "stale_for_sec": progress["stale_for_sec"],
-        "stalled": progress["stalled"],
+        "seconds_since_progress": monitor["seconds_since_progress"],
+        "no_progress_count": monitor["no_progress_count"],
+        "stalled": stalled,
+        "stream_up": stream_up,
+        "status": "live" if stream_up else "down",
     })
-
-    # Live only if the source looks healthy and is still making progress.
-    healthy_flags = any([
-        online,
-        available,
-        source_ready,
-        ready,
-        readers > 0,
-    ])
-
-    stream_up = healthy_flags and not progress["stalled"]
-
-    out["stream_up"] = stream_up
-
-    if stream_up:
-        out["status"] = "live"
-    else:
-        out["status"] = "down" if device.preload_stream else "down"
 
     return out
 
