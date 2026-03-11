@@ -478,16 +478,76 @@ def _normalize_action_rule_payload(data: dict, existing_id: Optional[str] = None
     }
 
 
+def _canonical_topic_aliases(topic: Optional[str]) -> set[str]:
+    t = _normalize_allow_topic(topic)
+    if not t:
+        return set()
+
+    aliases = {t}
+
+    low = t.lower()
+
+    # Motion
+    if (
+        "motion" in low
+        or "ismotion" in low
+        or "cellmotiondetector" in low
+        or t == "VideoSource/MotionAlarm"
+    ):
+        aliases.update({
+            "VideoSource/MotionAlarm",
+            "RuleEngine/CellMotionDetector/Motion",
+            "IsMotion/Rule/VideoAnalyticsConfigurationToken/VideoSourceConfigurationToken",
+        })
+
+    # Objects inside / field detector
+    if (
+        "objectsinside" in low
+        or "fielddetector" in low
+        or "isinside" in low
+    ):
+        aliases.update({
+            "RuleEngine/FieldDetector/ObjectsInside",
+            "IsInside/Rule/VideoAnalyticsConfigurationToken/VideoSourceConfigurationToken",
+        })
+
+    # Digital input
+    if "digitalinput" in low or "inputtoken" in low:
+        aliases.update({
+            "Device/Trigger/DigitalInput",
+        })
+
+    # Relay
+    if "relay" in low or "relaytoken" in low:
+        aliases.update({
+            "Device/Trigger/Relay",
+        })
+
+    return {_normalize_allow_topic(x) for x in aliases if _normalize_allow_topic(x)}
+
+
+def _expanded_allow_topics(allow_set: set[str]) -> set[str]:
+    out = set()
+    for topic in allow_set:
+        out.update(_canonical_topic_aliases(topic))
+    return out
+
+
 def _topic_matches_allowlist(candidate: str, allow_set: set[str]) -> bool:
     c = _normalize_allow_topic(candidate)
     if not c:
         return False
 
-    parts = c.split("/")
-    prefixes = ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
-    for p in prefixes:
-        if p in allow_set:
-            return True
+    expanded_allow = _expanded_allow_topics(allow_set)
+    candidate_aliases = _canonical_topic_aliases(c)
+
+    for cand in candidate_aliases:
+        parts = cand.split("/")
+        prefixes = ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
+        for p in prefixes:
+            if p in expanded_allow:
+                return True
+
     return False
 
 
@@ -731,35 +791,36 @@ def _collect_topic_paths(topic_set_obj) -> List[dict]:
 def _guess_topic_from_items(items: dict) -> str:
     data = items.get("data", {}) or {}
     src = items.get("source", {}) or {}
-
     merged = {**src, **data}
     keys = {str(k).lower(): str(v) for k, v in merged.items()}
 
-    has_motion_flag = "ismotion" in keys
     has_vs_token = (
         "videosourcetoken" in keys
         or "videosourceconfigurationtoken" in keys
-        or "video_source_configuration_token" in keys
     )
     has_va_token = (
         "videoanalyticstoken" in keys
         or "videoanalyticsconfigurationtoken" in keys
-        or "video_analytics_configuration_token" in keys
     )
     has_rule = "rule" in keys
 
-    # Common camera motion event payloads
-    if has_motion_flag and (has_vs_token or has_va_token or has_rule):
-        # Return both common ONVIF-style possibilities in priority order
-        # by preferring the more generic one that matches your configured rule.
-        return "VideoSource/MotionAlarm"
+    # Motion
+    if "ismotion" in keys and (has_vs_token or has_va_token or has_rule):
+        return "RuleEngine/CellMotionDetector/Motion"
 
+    # Objects inside / field detector
+    if "isinside" in keys and (has_vs_token or has_va_token or has_rule):
+        return "RuleEngine/FieldDetector/ObjectsInside"
+
+    # Digital input
     if "inputtoken" in keys:
         return "Device/Trigger/DigitalInput"
 
+    # Relay
     if "relaytoken" in keys:
         return "Device/Trigger/Relay"
 
+    # Tamper
     if "tamper" in "".join(keys.keys()).lower():
         return "VideoSource/ImageTooDark/Tamper"
 

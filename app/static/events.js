@@ -4,9 +4,12 @@ let devices = [];
 let currentDevice = null;
 let eventSources = new Map();
 
-let logEntries = [];
+let debugEntries = [];
+let feedEntries = [];
+
 let logLevelFilters = new Set(["event", "debug", "ok", "warn", "bad"]);
-let logSearchText = "";
+let searchText = "";
+let currentView = "feed";
 
 // ---------- utils ----------
 function escapeHtml(s) {
@@ -16,12 +19,19 @@ function escapeHtml(s) {
     .replaceAll(">", "&gt;");
 }
 
+function prettyJson(obj) {
+  try {
+    return JSON.stringify(obj, null, 2);
+  } catch {
+    return String(obj ?? "");
+  }
+}
+
 function setPill(state, text) {
   const dot = el("dot");
   const pillText = el("pillText");
-  if (!dot || !pillText) return;
-
   pillText.textContent = text;
+
   dot.classList.remove("ok", "bad");
   if (state === "ok") dot.classList.add("ok");
   if (state === "bad") dot.classList.add("bad");
@@ -35,11 +45,7 @@ async function api(path, opts = {}) {
 
   const txt = await res.text();
   let data = null;
-  try {
-    data = txt ? JSON.parse(txt) : null;
-  } catch {
-    data = txt;
-  }
+  try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
 
   if (!res.ok) {
     throw new Error((data && data.detail) ? data.detail : (txt || res.statusText));
@@ -49,8 +55,6 @@ async function api(path, opts = {}) {
 
 function setDeviceChip() {
   const chip = el("deviceChip");
-  if (!chip) return;
-
   if (!currentDevice) {
     chip.textContent = devices.length ? "All cameras" : "No device";
     return;
@@ -58,8 +62,83 @@ function setDeviceChip() {
   chip.textContent = `${currentDevice.name} (${currentDevice.id})`;
 }
 
-// ---------- log ----------
-function makeLogSearchText(entry) {
+function formatWhen(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return d.toLocaleString();
+}
+
+// ---------- event feed ----------
+function feedSearchText(item) {
+  return JSON.stringify(item).toLowerCase();
+}
+
+function isFeedVisible(item) {
+  if (!searchText) return true;
+  return feedSearchText(item).includes(searchText);
+}
+
+function renderFeed() {
+  const box = el("feedBody");
+  const visible = feedEntries.filter(isFeedVisible);
+
+  if (!visible.length) {
+    box.innerHTML = `<div class="feedEmpty">No action log events found.</div>`;
+  } else {
+    box.innerHTML = visible.map((item) => {
+      const trigger = item.trigger || {};
+      const condition = item.condition || {};
+      const results = Array.isArray(item.results) ? item.results : [];
+      const okResults = results.filter((r) => r && r.ok !== false && r.type);
+      const failedResults = results.filter((r) => r && r.ok === false && r.type);
+
+      return `
+        <div class="eventItem">
+          <div class="eventItemTop">
+            <div>
+              <div class="eventItemTitle">${escapeHtml(item.message || item.action_rule_name || "Action event")}</div>
+              <div class="eventItemMeta">
+                ${item.device_name ? `${escapeHtml(item.device_name)} · ` : ""}
+                ${item.action_rule_name ? `Rule: ${escapeHtml(item.action_rule_name)} · ` : ""}
+                ${escapeHtml(formatWhen(item.ts))}
+              </div>
+            </div>
+            <div class="eventItemTime">${escapeHtml(trigger.kind || item.kind || "event")}</div>
+          </div>
+
+          <div class="eventTags">
+            ${condition.type ? `<span class="eventTag">${escapeHtml(condition.type)}</span>` : ""}
+            ${okResults.map((r) => `<span class="eventTag">${escapeHtml(r.type)}</span>`).join("")}
+            ${failedResults.map((r) => `<span class="eventTag">${escapeHtml(r.type)} failed</span>`).join("")}
+          </div>
+
+          <details class="eventDetails">
+            <summary>Details</summary>
+            <div class="eventJson">${escapeHtml(prettyJson(item))}</div>
+          </details>
+        </div>
+      `;
+    }).join("");
+  }
+
+  el("shownCount").textContent = String(visible.length);
+  el("totalCount").textContent = String(feedEntries.length);
+}
+
+async function loadFeed() {
+  const did = currentDevice ? currentDevice.id : "";
+  const url = did
+    ? `/api/action-events?device_id=${encodeURIComponent(did)}&limit=300`
+    : `/api/action-events?limit=300`;
+
+  const out = await api(url);
+  feedEntries = Array.isArray(out.items) ? out.items : [];
+  if (currentView === "feed") renderFeed();
+}
+
+// ---------- debug log ----------
+function makeDebugSearchText(entry) {
   return [
     entry.ts || "",
     entry.deviceName || "",
@@ -70,24 +149,20 @@ function makeLogSearchText(entry) {
   ].join(" ").toLowerCase();
 }
 
-function isLogVisible(entry) {
+function isDebugVisible(entry) {
   const level = entry.level || "event";
   if (!logLevelFilters.has(level)) return false;
-  if (!logSearchText) return true;
-  return makeLogSearchText(entry).includes(logSearchText);
+  if (!searchText) return true;
+  return makeDebugSearchText(entry).includes(searchText);
 }
 
-function renderLog() {
-  const box = el("log");
-  const shownEl = el("logShownCount");
-  const totalEl = el("logTotalCount");
-  if (!box || !shownEl || !totalEl) return;
-
+function renderDebugLog() {
+  const box = el("logBody");
   box.innerHTML = "";
 
   let shown = 0;
-  for (const entry of logEntries) {
-    if (!isLogVisible(entry)) continue;
+  for (const entry of debugEntries) {
+    if (!isDebugVisible(entry)) continue;
     shown += 1;
 
     const div = document.createElement("div");
@@ -114,13 +189,12 @@ function renderLog() {
     box.appendChild(div);
   }
 
-  shownEl.textContent = String(shown);
-  totalEl.textContent = String(logEntries.length);
-
+  el("shownCount").textContent = String(shown);
+  el("totalCount").textContent = String(debugEntries.length);
   syncFilterChips();
 }
 
-function addLogEntry(level, msg, obj, deviceMeta = null, explicitTs = null) {
+function addDebugEntry(level, msg, obj, deviceMeta = null, explicitTs = null) {
   const entry = {
     ts: explicitTs || new Date().toISOString(),
     level: level || "event",
@@ -130,18 +204,13 @@ function addLogEntry(level, msg, obj, deviceMeta = null, explicitTs = null) {
     deviceName: deviceMeta?.deviceName || ""
   };
 
-  logEntries.push(entry);
+  debugEntries.push(entry);
 
-  if (logEntries.length > 3000) {
-    logEntries = logEntries.slice(-3000);
+  if (debugEntries.length > 3000) {
+    debugEntries = debugEntries.slice(-3000);
   }
 
-  renderLog();
-}
-
-function clearLog() {
-  logEntries = [];
-  renderLog();
+  if (currentView === "debug") renderDebugLog();
 }
 
 function syncFilterChips() {
@@ -149,7 +218,7 @@ function syncFilterChips() {
   const allLevels = ["event", "debug", "ok", "warn", "bad"];
   const allOn = allLevels.every((lvl) => logLevelFilters.has(lvl));
 
-  if (allChip) allChip.classList.toggle("active", allOn);
+  allChip.classList.toggle("active", allOn);
 
   for (const lvl of allLevels) {
     const chip = document.querySelector(`.filterChip[data-level="${lvl}"]`);
@@ -163,7 +232,7 @@ function toggleLogLevel(level) {
   if (level === "all") {
     const allOn = allLevels.every((lvl) => logLevelFilters.has(lvl));
     logLevelFilters = allOn ? new Set() : new Set(allLevels);
-    renderLog();
+    if (currentView === "debug") renderDebugLog();
     return;
   }
 
@@ -173,7 +242,39 @@ function toggleLogLevel(level) {
     logLevelFilters.add(level);
   }
 
-  renderLog();
+  if (currentView === "debug") renderDebugLog();
+}
+
+// ---------- current view ----------
+function clearCurrentView() {
+  if (currentView === "feed") {
+    feedEntries = [];
+    renderFeed();
+  } else {
+    debugEntries = [];
+    renderDebugLog();
+  }
+}
+
+function setView(view) {
+  currentView = view;
+
+  const isFeed = view === "feed";
+
+  el("btnShowFeed").classList.toggle("active", isFeed);
+  el("btnShowDebug").classList.toggle("active", !isFeed);
+
+  el("feedBody").style.display = isFeed ? "" : "none";
+  el("logBody").style.display = isFeed ? "none" : "";
+  el("debugFilters").style.display = isFeed ? "none" : "";
+
+  el("viewTitle").textContent = isFeed ? "Event feed" : "Debug log";
+  el("viewSub").textContent = isFeed
+    ? "Action-created log events only."
+    : "Raw worker messages + ONVIF event/debug output.";
+
+  if (isFeed) renderFeed();
+  else renderDebugLog();
 }
 
 // ---------- SSE ----------
@@ -194,7 +295,7 @@ function onSsePayload(payload, device) {
   const msg = payload.message || "event";
   const ts = payload.ts || new Date().toISOString();
 
-  addLogEntry(
+  addDebugEntry(
     lvl,
     msg,
     payload.extra || null,
@@ -209,7 +310,7 @@ function attachSSEForDevice(device) {
 
   src.onopen = () => {
     setPill("ok", connectionSummaryText());
-    addLogEntry("ok", "SSE connected", null, { deviceId: device.id, deviceName: device.name });
+    addDebugEntry("ok", "SSE connected", null, { deviceId: device.id, deviceName: device.name });
   };
 
   src.onmessage = (ev) => {
@@ -217,13 +318,13 @@ function attachSSEForDevice(device) {
       const p = JSON.parse(ev.data);
       onSsePayload(p, device);
     } catch {
-      addLogEntry("warn", "bad SSE message", { data: ev.data }, { deviceId: device.id, deviceName: device.name });
+      addDebugEntry("warn", "bad SSE message", { data: ev.data }, { deviceId: device.id, deviceName: device.name });
     }
   };
 
   src.onerror = () => {
     setPill("bad", "Disconnected");
-    addLogEntry("warn", "SSE disconnected / reconnecting", null, { deviceId: device.id, deviceName: device.name });
+    addDebugEntry("warn", "SSE disconnected / reconnecting", null, { deviceId: device.id, deviceName: device.name });
   };
 }
 
@@ -251,12 +352,14 @@ function startSSEForSelection() {
 async function selectDevice(deviceId) {
   currentDevice = devices.find((d) => d.id === deviceId) || null;
   setDeviceChip();
+
+  await loadFeed();
   startSSEForSelection();
 
   if (!currentDevice) {
-    addLogEntry("ok", "Listening to all cameras.");
+    addDebugEntry("ok", "Listening to all cameras.");
   } else {
-    addLogEntry("ok", "Listening to one camera.", null, {
+    addDebugEntry("ok", "Listening to one camera.", null, {
       deviceId: currentDevice.id,
       deviceName: currentDevice.name
     });
@@ -264,13 +367,10 @@ async function selectDevice(deviceId) {
 }
 
 async function loadDevices() {
-  addLogEntry("debug", "Loading devices…");
   const out = await api("/api/devices");
   devices = out.devices || [];
 
   const sel = el("deviceSelect");
-  if (!sel) throw new Error("deviceSelect element not found");
-
   sel.innerHTML = "";
 
   if (!devices.length) {
@@ -282,7 +382,8 @@ async function loadDevices() {
     setDeviceChip();
     stopSSE();
     setPill("warn", "Idle");
-    addLogEntry("warn", "No devices returned from /api/devices");
+    feedEntries = [];
+    renderFeed();
     return;
   }
 
@@ -299,68 +400,54 @@ async function loadDevices() {
   }
 
   sel.value = "__all__";
-  addLogEntry("ok", `Loaded ${devices.length} device(s).`);
   await selectDevice("__all__");
 }
 
-// ---------- UI wiring ----------
-function wireUi() {
-  const deviceSelect = el("deviceSelect");
-  const btnRefresh = el("btnRefresh");
-  const btnClearLog = el("btnClearLog");
-  const logSearch = el("logSearch");
-
-  if (!deviceSelect) throw new Error("Missing #deviceSelect");
-  if (!btnRefresh) throw new Error("Missing #btnRefresh");
-  if (!btnClearLog) throw new Error("Missing #btnClearLog");
-  if (!logSearch) throw new Error("Missing #logSearch");
-
-  deviceSelect.addEventListener("change", async (e) => {
-    try {
-      await selectDevice(e.target.value === "__all__" ? "" : e.target.value);
-    } catch (err) {
-      addLogEntry("bad", err.message);
-    }
-  });
-
-  btnRefresh.addEventListener("click", async () => {
-    try {
-      await loadDevices();
-    } catch (err) {
-      addLogEntry("bad", err.message);
-    }
-  });
-
-  btnClearLog.addEventListener("click", () => {
-    clearLog();
-  });
-
-  logSearch.addEventListener("input", (e) => {
-    logSearchText = (e.target.value || "").trim().toLowerCase();
-    renderLog();
-  });
-
-  document.querySelectorAll(".filterChip").forEach((chip) => {
-    chip.addEventListener("click", () => {
-      toggleLogLevel(chip.dataset.level);
-    });
-  });
-
-  window.addEventListener("beforeunload", () => {
-    stopSSE();
-  });
-}
-
-async function init() {
+// ---------- UI ----------
+el("deviceSelect").addEventListener("change", async (e) => {
   try {
-    wireUi();
-    addLogEntry("ok", "Events page initialized.");
+    await selectDevice(e.target.value === "__all__" ? "" : e.target.value);
+  } catch (err) {
+    addDebugEntry("bad", err.message);
+  }
+});
+
+el("btnRefresh").addEventListener("click", async () => {
+  try {
     await loadDevices();
   } catch (err) {
-    console.error("events.js init failed", err);
-    addLogEntry("bad", `Init failed: ${err.message || err}`);
-    setPill("bad", "Init failed");
+    addDebugEntry("bad", err.message);
   }
-}
+});
 
-init();
+el("btnClearLog").addEventListener("click", () => {
+  clearCurrentView();
+});
+
+el("searchInput").addEventListener("input", (e) => {
+  searchText = (e.target.value || "").trim().toLowerCase();
+  if (currentView === "feed") renderFeed();
+  else renderDebugLog();
+});
+
+el("btnShowFeed").addEventListener("click", () => {
+  setView("feed");
+});
+
+el("btnShowDebug").addEventListener("click", () => {
+  setView("debug");
+});
+
+document.querySelectorAll(".filterChip[data-level]").forEach((chip) => {
+  chip.addEventListener("click", () => {
+    toggleLogLevel(chip.dataset.level);
+  });
+});
+
+window.addEventListener("beforeunload", () => {
+  stopSSE();
+});
+
+// boot
+setView("feed");
+loadDevices().catch((err) => addDebugEntry("bad", err.message));
