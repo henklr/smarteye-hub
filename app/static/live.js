@@ -19,6 +19,8 @@ const showSidebarBtn = document.getElementById("showSidebar");
 const LS_KEY = "live.sidebarHidden";
 const LS_GRID_KEY = "live.gridState";
 
+const RETRY_DELAY_MS = 4000;
+
 let devices = [];
 const streams = new Map();
 const ptzCapsCache = new Map();
@@ -175,6 +177,12 @@ function getEntry(deviceId) {
   return streams.get(deviceId) || null;
 }
 
+function clearRetryTimer(entry) {
+  if (!entry?.retryTimer) return;
+  clearTimeout(entry.retryTimer);
+  entry.retryTimer = null;
+}
+
 function setEntryState(deviceId, state, errorMessage = "") {
   const entry = getEntry(deviceId);
   if (!entry) return;
@@ -185,7 +193,10 @@ function setEntryState(deviceId, state, errorMessage = "") {
   if (state === STREAM_STATE.LIVE) {
     setTileOverlay(entry, "", false);
   } else if (state === STREAM_STATE.STARTING) {
-    setTileOverlay(entry, entry.restore ? "Restoring…" : "Starting…", true);
+    const label = entry.retryCount > 0
+      ? `Retrying${entry.retryCount > 1 ? ` (${entry.retryCount})` : ""}…`
+      : (entry.restore ? "Restoring…" : "Starting…");
+    setTileOverlay(entry, label, true);
   } else if (state === STREAM_STATE.ERROR) {
     setTileOverlay(entry, entry.errorMessage || "Stream failed", true);
   }
@@ -214,8 +225,8 @@ function getVisualState(entry, ready) {
   if (entry.state === STREAM_STATE.STARTING) {
     return {
       className: "is-starting",
-      badge: "STARTING",
-      subtitle: "Starting…",
+      badge: entry.retryCount > 0 ? "RETRYING" : "STARTING",
+      subtitle: entry.retryCount > 0 ? "Retrying…" : "Starting…",
     };
   }
 
@@ -223,7 +234,9 @@ function getVisualState(entry, ready) {
     return {
       className: "is-error",
       badge: "ERROR",
-      subtitle: entry.errorMessage || "Stream error",
+      subtitle: entry.retryScheduled
+        ? `${entry.errorMessage || "Stream error"} — retrying soon`
+        : (entry.errorMessage || "Stream error"),
     };
   }
 
@@ -601,6 +614,121 @@ function installTileDnD(tile) {
   });
 }
 
+function scheduleRetry(device, entry) {
+  if (!entry || entry.cancelled || entry.retryTimer || entry.connecting) return;
+
+  entry.retryScheduled = true;
+  clearRetryTimer(entry);
+
+  entry.retryTimer = setTimeout(() => {
+    entry.retryTimer = null;
+    entry.retryScheduled = false;
+
+    if (entry.cancelled) return;
+    connectEntry(device, entry).catch(() => {});
+  }, RETRY_DELAY_MS);
+
+  renderList();
+}
+
+function handleEntryFailure(device, entry, error) {
+  if (!entry || entry.cancelled) return;
+
+  stopPc(entry.pc, entry.videoEl);
+  entry.pc = null;
+  entry.connecting = false;
+
+  const message = error?.message || String(error) || "Stream failed";
+  setEntryState(device.id, STREAM_STATE.ERROR, message);
+
+  if (!restoringGrid) {
+    saveGridState();
+  }
+
+  scheduleRetry(device, entry);
+  updateOverallStatusForGrid();
+}
+
+async function connectEntry(device, entry) {
+  if (!entry || entry.cancelled || entry.connecting) return;
+  if (!profileReady(device)) return;
+
+  clearRetryTimer(entry);
+  entry.retryScheduled = false;
+  entry.connecting = true;
+  entry.retryCount += 1;
+
+  stopPc(entry.pc, entry.videoEl);
+  entry.pc = null;
+
+  setEntryState(device.id, STREAM_STATE.STARTING);
+
+  try {
+    await api("/api/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ip: device.ip,
+        onvif_port: device.onvif_port ?? 80,
+        username: device.username,
+        password: device.password,
+        profile_token: device.profile_token,
+        device_id: device.id,
+      }),
+    });
+
+    const curAfterApi = getEntry(device.id);
+    if (!curAfterApi || curAfterApi.cancelled) return;
+
+    try {
+      const caps = await getPtzCaps(device.id);
+      if (!curAfterApi.ptzInstalled) {
+        installPtzControls(device, curAfterApi, caps);
+        curAfterApi.ptzInstalled = true;
+      }
+    } catch (e) {
+      console.error("PTZ init failed", device.id, e);
+    }
+
+    setTileOverlay(curAfterApi, "Connecting WebRTC…", true);
+
+    const pc = await startWhep(device.id, entry.videoEl, (st) => {
+      const cur = getEntry(device.id);
+      if (!cur || cur.cancelled) return;
+
+      if (st === "connected") {
+        cur.retryCount = 0;
+        clearRetryTimer(cur);
+        cur.retryScheduled = false;
+        setEntryState(device.id, STREAM_STATE.LIVE);
+        updateOverallStatusForGrid();
+        if (!restoringGrid) saveGridState();
+      } else if (st === "failed" || st === "disconnected" || st === "closed") {
+        handleEntryFailure(device, cur, new Error(`WebRTC ${st}`));
+      }
+    });
+
+    const cur = getEntry(device.id);
+    if (!cur || cur.cancelled) {
+      try {
+        pc.close();
+      } catch {}
+      return;
+    }
+
+    cur.pc = pc;
+    cur.connecting = false;
+  } catch (e) {
+    handleEntryFailure(device, entry, e);
+  } finally {
+    const cur = getEntry(device.id);
+    if (cur) {
+      cur.connecting = false;
+      cur.startingPromise = null;
+    }
+  }
+}
+
 function installPtzControls(device, entry, caps) {
   const panel = entry.tileEl.querySelector(".tilePtzPanel");
   const joystick = entry.tileEl.querySelector(".tilePtzJoystick");
@@ -914,6 +1042,11 @@ async function startDevice(device, { restore = false } = {}) {
     state: STREAM_STATE.STARTING,
     errorMessage: "",
     restore,
+    retryTimer: null,
+    retryCount: 0,
+    retryScheduled: false,
+    connecting: false,
+    ptzInstalled: false,
   };
 
   streams.set(device.id, entry);
@@ -929,82 +1062,7 @@ async function startDevice(device, { restore = false } = {}) {
     saveGridState();
   }
 
-  entry.startingPromise = (async () => {
-    try {
-      await api("/api/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ip: device.ip,
-          onvif_port: device.onvif_port ?? 80,
-          username: device.username,
-          password: device.password,
-          profile_token: device.profile_token,
-          device_id: device.id,
-        }),
-      });
-
-      const curAfterApi = getEntry(device.id);
-      if (!curAfterApi || curAfterApi.cancelled) return;
-
-      try {
-        const caps = await getPtzCaps(device.id);
-        console.log("PTZ caps", device.id, caps);
-        installPtzControls(device, curAfterApi, caps);
-      } catch (e) {
-        console.error("PTZ init failed", device.id, e);
-      }
-
-      setTileOverlay(curAfterApi, "Connecting WebRTC…", true);
-
-      const pc = await startWhep(device.id, videoEl, (st) => {
-        const cur = getEntry(device.id);
-        if (!cur || cur.cancelled) return;
-
-        if (st === "connected") {
-          setEntryState(device.id, STREAM_STATE.LIVE);
-          updateOverallStatusForGrid();
-        } else if (st === "failed" || st === "disconnected") {
-          setEntryState(device.id, STREAM_STATE.ERROR, `WebRTC ${st}`);
-          updateOverallStatusForGrid();
-        }
-      });
-
-      const cur = getEntry(device.id);
-      if (!cur || cur.cancelled) {
-        try {
-          pc.close();
-        } catch {}
-        return;
-      }
-
-      cur.pc = pc;
-      setEntryState(device.id, STREAM_STATE.LIVE);
-
-      if (!restoringGrid) {
-        saveGridState();
-      }
-
-      updateOverallStatusForGrid();
-    } catch (e) {
-      const cur = getEntry(device.id);
-      if (cur && !cur.cancelled) {
-        stopPc(cur.pc, cur.videoEl);
-        cur.pc = null;
-        setEntryState(device.id, STREAM_STATE.ERROR, e?.message || String(e));
-
-        if (!restoringGrid) {
-          saveGridState();
-        }
-
-        updateOverallStatusForGrid();
-      }
-    } finally {
-      const cur = getEntry(device.id);
-      if (cur) cur.startingPromise = null;
-    }
-  })();
-
+  entry.startingPromise = connectEntry(device, entry);
   return entry.startingPromise;
 }
 
@@ -1013,6 +1071,8 @@ async function stopDevice(deviceId) {
   if (!entry) return;
 
   entry.cancelled = true;
+  clearRetryTimer(entry);
+  entry.retryScheduled = false;
 
   try {
     entry.stopPtz?.();
