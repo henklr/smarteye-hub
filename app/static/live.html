@@ -12,16 +12,15 @@
   <div class="wrap full">
     <div class="topbar">
 
-      <!-- LEFT: Tabs -->
       <div class="tabs">
         <a class="tab" href="/"><span class="tabDot"></span>Home</a>
         <a class="tab active" href="/live"><span class="tabDot"></span>Live</a>
         <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
+        <a class="tab" href="/actions"><span class="tabDot"></span>Actions</a>
         <a class="tab" href="/events"><span class="tabDot"></span>Events</a>
         <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
       </div>
 
-      <!-- RIGHT: Status pill -->
       <div class="pill" id="statusPill" title="Click to view full status">
         <span class="dot" id="dot"></span>
         <span id="pillText">Idle</span>
@@ -30,7 +29,6 @@
     </div>
 
     <div class="liveLayout" id="liveLayout">
-      <!-- LEFT: camera list -->
       <div class="card liveSidebar" id="sidebar">
         <div class="listHeader">
           <div>
@@ -52,13 +50,10 @@
         </div>
       </div>
 
-      <!-- RIGHT: grid -->
       <div class="card liveMain">
         <div class="row2 liveMainTop" style="margin-top:0;">
           <button class="btn" id="showSidebar" style="display:none;">Show cameras</button>
         </div>
-
-        <!-- removed statusLine -->
 
         <div class="videoGrid" id="videoGrid"></div>
       </div>

@@ -1,0 +1,306 @@
+<!-- actions.html -->
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Actions</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    .grid2 {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
+      gap: 14px;
+      align-items: start;
+    }
+
+    @media (max-width: 1000px) {
+      .grid2 {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      align-items: end;
+      flex-wrap: wrap;
+    }
+
+    .grow {
+      flex: 1 1 220px;
+    }
+
+    .conditionCard,
+    .actionCard,
+    .ruleCard {
+      border: 1px solid var(--stroke);
+      background: rgba(255, 255, 255, .03);
+      border-radius: 12px;
+      padding: 12px;
+    }
+
+    .ruleCard {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .ruleMeta {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .ruleTitle {
+      font-weight: 900;
+    }
+
+    .mini {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: 70vh;
+      overflow: auto;
+    }
+
+    .tagRow {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--stroke);
+      background: rgba(255, 255, 255, .04);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .empty {
+      padding: 10px 2px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .topicPicker {
+      display: none;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--stroke);
+    }
+
+    .topicPicker.open {
+      display: block;
+    }
+
+    .topicList {
+      max-height: 240px;
+      overflow: auto;
+      border: 1px solid var(--stroke);
+      border-radius: 10px;
+      background: rgba(0, 0, 0, .18);
+    }
+
+    .topicItem {
+      padding: 9px 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, .06);
+      cursor: pointer;
+    }
+
+    .topicItem:last-child {
+      border-bottom: 0;
+    }
+
+    .topicItem:hover {
+      background: rgba(255, 255, 255, .04);
+    }
+
+    .topicItem.active {
+      background: rgba(124, 156, 255, .14);
+      border-left: 3px solid var(--accent);
+    }
+
+    .hr {
+      height: 1px;
+      background: var(--stroke);
+      margin: 4px 0;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+      gap: 12px;
+    }
+
+    .topbarLeft {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .topbarRight {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-left: auto;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap full">
+    <div class="topbar">
+      <div class="topbarLeft">
+        <div class="tabs">
+          <a class="tab" href="/"><span class="tabDot"></span>Home</a>
+          <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
+          <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
+          <a class="tab active" href="/actions"><span class="tabDot"></span>Actions</a>
+          <a class="tab" href="/events"><span class="tabDot"></span>Events</a>
+          <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
+        </div>
+      </div>
+
+      <div class="topbarRight">
+        <button class="btn" id="btnNew" type="button">New rule</button>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <section class="card stack">
+        <div>
+          <div class="listTitle">Rule editor</div>
+          <div class="listSub">Create conditions and actions for ONVIF events and device online state.</div>
+        </div>
+
+        <div>
+          <label for="ruleName">Rule name</label>
+          <input id="ruleName" placeholder="Example: Front door offline" />
+        </div>
+
+        <label style="display:flex;gap:8px;align-items:center;margin:0">
+          <input id="ruleEnabled" type="checkbox" checked style="width:auto" />
+          <span>Enabled</span>
+        </label>
+
+        <div class="hr"></div>
+
+        <div class="stack">
+          <div class="row" style="justify-content:space-between;align-items:center">
+            <div>
+              <div style="font-weight:900">Conditions</div>
+              <div class="mini">Supported: ONVIF event, device offline, device back online.</div>
+            </div>
+            <button class="btn" id="btnAddCondition" type="button">Add condition</button>
+          </div>
+          <div id="conditionsList" class="stack"></div>
+        </div>
+
+        <div class="hr"></div>
+
+        <div class="stack">
+          <div class="row" style="justify-content:space-between;align-items:center">
+            <div>
+              <div style="font-weight:900">Actions</div>
+              <div class="mini">Create log event or take snapshot.</div>
+            </div>
+            <button class="btn" id="btnAddAction" type="button">Add action</button>
+          </div>
+          <div id="actionsList" class="stack"></div>
+        </div>
+
+        <div class="row">
+          <button class="btn btn-primary" id="btnSave" type="button">Save rule</button>
+          <button class="btn btn-danger" id="btnDelete" type="button">Delete selected</button>
+          <div id="formStatus" class="mini"></div>
+        </div>
+      </section>
+
+      <section class="card stack">
+        <div class="listHeader">
+          <div>
+            <div class="listTitle">Saved rules</div>
+            <div class="listSub">Rules are evaluated when matching ONVIF events arrive or when device stream status changes.</div>
+          </div>
+        </div>
+        <div id="rulesList" class="list"></div>
+      </section>
+    </div>
+  </div>
+
+  <template id="conditionTemplate">
+    <div class="conditionCard stack">
+      <div class="row">
+        <div class="grow">
+          <label>Condition</label>
+          <select class="condType">
+            <option value="onvif_event">ONVIF event</option>
+            <option value="device_offline">Device offline</option>
+            <option value="device_back_online">Device back online</option>
+          </select>
+        </div>
+        <div class="grow">
+          <label>Device</label>
+          <select class="condDevice"></select>
+        </div>
+        <button class="btn btn-danger btnRemoveCondition" type="button">Remove</button>
+      </div>
+      <div class="topicPicker">
+        <div class="row" style="align-items:center">
+          <div class="grow">
+            <label>ONVIF topic filter</label>
+            <input class="topicSearch" placeholder="Filter topics" />
+          </div>
+          <button class="btn btnLoadTopics" type="button">Load topics</button>
+        </div>
+        <div class="mini selectedTopicText">No topic selected.</div>
+        <div class="topicList"></div>
+      </div>
+    </div>
+  </template>
+
+  <template id="actionTemplate">
+    <div class="actionCard stack">
+      <div class="row">
+        <div class="grow">
+          <label>Action</label>
+          <select class="actionType">
+            <option value="create_log_event">Create log event</option>
+            <option value="take_snapshot">Take snapshot</option>
+          </select>
+        </div>
+        <div class="grow snapshotDeviceWrap" style="display:none">
+          <label>Camera</label>
+          <select class="snapshotDevice"></select>
+        </div>
+        <button class="btn btn-danger btnRemoveAction" type="button">Remove</button>
+      </div>
+    </div>
+  </template>
+
+  <script src="/static/actions.js"></script>
+</body>
+
+</html>

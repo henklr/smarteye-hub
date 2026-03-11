@@ -1,3 +1,4 @@
+# main.py
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,7 +10,9 @@ import asyncio
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 import base64
+import ssl
 from mimetypes import guess_extension
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlsplit, urlunsplit
@@ -40,14 +43,13 @@ MEDIAMTX_API_PASS = os.getenv("MEDIAMTX_API_PASS", "apipass")
 
 PTZ_WATCHDOG_SEC = float(os.getenv("PTZ_WATCHDOG_SEC", "0.25"))
 
-# Event debugging:
-# 1 / true / yes / on => emit verbose event diagnostics to SSE log
-# default is enabled to help understand vendor behavior
 EVENT_DEBUG = str(os.getenv("EVENT_DEBUG", "1")).strip().lower() in {"1", "true", "yes", "on"}
 
 SNAPSHOTS_DIR = DATA_DIR / "snapshots"
 SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 SNAPSHOTS_INDEX_JSON = DATA_DIR / "snapshots.json"
+ACTIONS_JSON = DATA_DIR / "actions.json"
+ACTION_EVENTS_JSON = DATA_DIR / "action_events.json"
 
 
 def _dump(model) -> dict:
@@ -56,9 +58,6 @@ def _dump(model) -> dict:
     return model.dict()
 
 
-# -------------------------
-# Events subsystem
-# -------------------------
 @dataclass
 class EventWorker:
     device_id: str
@@ -76,14 +75,10 @@ _event_worker_lock = threading.RLock()
 _event_last: Dict[str, Dict[str, str]] = {}
 _event_last_lock = threading.RLock()
 
-# PTZ watchdog timers
 _ptz_watchdogs: Dict[str, threading.Timer] = {}
 _ptz_watchdog_lock = threading.RLock()
 
 
-# -------------------------
-# PTZ runtime cache
-# -------------------------
 @dataclass
 class PTZContextCache:
     fingerprint: str
@@ -103,6 +98,12 @@ _ptz_command_locks: Dict[str, threading.Lock] = {}
 _ptz_command_locks_lock = threading.RLock()
 
 _snapshots_lock = threading.RLock()
+_actions_lock = threading.RLock()
+_action_events_lock = threading.RLock()
+_action_runtime_lock = threading.RLock()
+_last_device_states: Dict[str, bool] = {}
+_action_monitor_stop = threading.Event()
+_action_monitor_thread: Optional[threading.Thread] = None
 
 
 def _ptz_device_lock(device_id: str) -> threading.Lock:
@@ -119,9 +120,6 @@ def _invalidate_ptz_cache(device_id: str) -> None:
         _ptz_context_cache.pop(device_id, None)
 
 
-# -------------------------
-# Pages
-# -------------------------
 @app.get("/", response_class=HTMLResponse)
 def index_page():
     return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
@@ -140,6 +138,11 @@ def devices_page():
 @app.get("/events", response_class=HTMLResponse)
 def events_page():
     return (STATIC_DIR / "events.html").read_text(encoding="utf-8")
+
+
+@app.get("/actions", response_class=HTMLResponse)
+def actions_page():
+    return (STATIC_DIR / "actions.html").read_text(encoding="utf-8")
 
 
 @app.get("/playback", response_class=HTMLResponse)
@@ -164,9 +167,6 @@ def health():
     }
 
 
-# -------------------------
-# Models
-# -------------------------
 class OnvifBase(BaseModel):
     ip: str
     onvif_port: int = 80
@@ -214,9 +214,30 @@ class SnapshotRequest(BaseModel):
     event: str = Field(default="manual", min_length=1)
 
 
-# -------------------------
-# Device storage
-# -------------------------
+class ActionConditionModel(BaseModel):
+    type: str = Field(..., min_length=1)
+    device_id: str = Field(..., min_length=1)
+    topic: Optional[str] = None
+
+
+class ActionTargetModel(BaseModel):
+    type: str = Field(..., min_length=1)
+    camera_device_id: Optional[str] = None
+
+
+class ActionRuleIn(BaseModel):
+    name: str = Field(..., min_length=1)
+    enabled: bool = True
+    conditions: List[ActionConditionModel] = Field(default_factory=list)
+    actions: List[ActionTargetModel] = Field(default_factory=list)
+
+
+class ActionRule(ActionRuleIn):
+    id: str
+    created_at: str
+    updated_at: str
+
+
 def _normalize_allow_topic(s: Optional[str]) -> str:
     s = (s or "").strip().strip("/")
     if not s:
@@ -247,6 +268,8 @@ def _load_devices() -> List[Device]:
     try:
         raw = json.loads(DEVICES_JSON.read_text(encoding="utf-8"))
         items = raw.get("devices", [])
+        if not isinstance(items, list):
+            return []
         return [Device(**_normalize_device_dict(d)) for d in items]
     except Exception:
         return []
@@ -261,20 +284,43 @@ def _save_devices(devs: List[Device]) -> None:
 
 def _get_device(device_id: str) -> Device:
     devs = _load_devices()
-    d = next((x for x in devs if x.id == device_id), None)
-    if not d:
-        raise HTTPException(status_code=404, detail="Device not found")
-    return d
+    for d in devs:
+        if d.id == device_id:
+            return d
+    raise HTTPException(status_code=404, detail="Device not found")
+
+
+def _update_device(device_id: str, dev_in: DeviceIn) -> Device:
+    devs = _load_devices()
+    for i, d in enumerate(devs):
+        if d.id == device_id:
+            devs[i] = Device(id=device_id, **_dump(dev_in))
+            _save_devices(devs)
+            _invalidate_ptz_cache(device_id)
+            req = EventsStartRequest(
+                device_id=device_id,
+                ip=dev_in.ip,
+                onvif_port=dev_in.onvif_port,
+                username=dev_in.username,
+                password=dev_in.password,
+            )
+            _start_event_worker(device_id, req)
+            return devs[i]
+    raise HTTPException(status_code=404, detail="Device not found")
 
 
 def _update_device_allowlist(device_id: str, allow_topics: List[str]) -> None:
     devs = _load_devices()
-    idx = next((i for i, d in enumerate(devs) if d.id == device_id), None)
+    idx = None
+    for i, d in enumerate(devs):
+        if d.id == device_id:
+            idx = i
+            break
     if idx is None:
         raise HTTPException(status_code=404, detail="Device not found")
 
     d = devs[idx]
-    normalized = []
+    normalized: List[str] = []
     seen = set()
     for t in allow_topics:
         t2 = _normalize_allow_topic(t)
@@ -286,9 +332,6 @@ def _update_device_allowlist(device_id: str, allow_topics: List[str]) -> None:
     _save_devices(devs)
 
 
-# -------------------------
-# Snapshot storage
-# -------------------------
 def _load_snapshot_index() -> dict:
     if not SNAPSHOTS_INDEX_JSON.exists():
         return {"items": []}
@@ -329,9 +372,249 @@ def _snapshot_rel_url(path: Path) -> str:
     return f"/data/{rel}"
 
 
-# -------------------------
-# ONVIF helpers
-# -------------------------
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _load_actions() -> List[dict]:
+    if not ACTIONS_JSON.exists():
+        return []
+    try:
+        raw = json.loads(ACTIONS_JSON.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("items"), list):
+            return list(raw.get("items", []))
+    except Exception:
+        pass
+    return []
+
+
+def _save_actions(items: List[dict]) -> None:
+    tmp = ACTIONS_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"items": items}, indent=2), encoding="utf-8")
+    tmp.replace(ACTIONS_JSON)
+
+
+def _load_action_events() -> List[dict]:
+    if not ACTION_EVENTS_JSON.exists():
+        return []
+    try:
+        raw = json.loads(ACTION_EVENTS_JSON.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("items"), list):
+            return list(raw.get("items", []))
+    except Exception:
+        pass
+    return []
+
+
+def _save_action_events(items: List[dict]) -> None:
+    tmp = ACTION_EVENTS_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"items": items}, indent=2), encoding="utf-8")
+    tmp.replace(ACTION_EVENTS_JSON)
+
+
+def _append_action_event(item: dict) -> dict:
+    with _action_events_lock:
+        items = _load_action_events()
+        items.insert(0, item)
+        _save_action_events(items[:2000])
+    return item
+
+
+def _list_action_events(device_id: Optional[str] = None, limit: int = 200) -> List[dict]:
+    items = _load_action_events()
+    if device_id:
+        items = [x for x in items if x.get("device_id") == device_id or x.get("source_device_id") == device_id]
+    return items[:max(1, min(int(limit or 200), 1000))]
+
+
+def _normalize_action_condition(c: dict) -> dict:
+    ctype = (c.get("type") or "").strip()
+    did = (c.get("device_id") or "").strip()
+    topic = _normalize_allow_topic(c.get("topic")) if ctype == "onvif_event" else None
+    if ctype not in {"onvif_event", "device_offline", "device_back_online"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported condition type: {ctype}")
+    if not did:
+        raise HTTPException(status_code=400, detail="Condition device_id is required")
+    _get_device(did)
+    out = {"type": ctype, "device_id": did}
+    if ctype == "onvif_event":
+        if not topic:
+            raise HTTPException(status_code=400, detail="ONVIF event condition requires topic")
+        out["topic"] = topic
+    return out
+
+
+def _normalize_action_target(a: dict) -> dict:
+    atype = (a.get("type") or "").strip()
+    if atype == "create_log_event":
+        return {"type": atype}
+    if atype == "take_snapshot":
+        cam = (a.get("camera_device_id") or "").strip()
+        if not cam:
+            raise HTTPException(status_code=400, detail="Snapshot action requires camera_device_id")
+        _get_device(cam)
+        return {"type": atype, "camera_device_id": cam}
+    raise HTTPException(status_code=400, detail=f"Unsupported action type: {atype}")
+
+
+def _normalize_action_rule_payload(data: dict, existing_id: Optional[str] = None, created_at: Optional[str] = None) -> dict:
+    name = (data.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Action name is required")
+    conditions = [_normalize_action_condition(x or {}) for x in list(data.get("conditions") or [])]
+    actions = [_normalize_action_target(x or {}) for x in list(data.get("actions") or [])]
+    if not conditions:
+        raise HTTPException(status_code=400, detail="At least one condition is required")
+    if not actions:
+        raise HTTPException(status_code=400, detail="At least one action is required")
+    return {
+        "id": existing_id or uuid.uuid4().hex[:12],
+        "name": name,
+        "enabled": bool(data.get("enabled", True)),
+        "conditions": conditions,
+        "actions": actions,
+        "created_at": created_at or _utc_now_iso(),
+        "updated_at": _utc_now_iso(),
+    }
+
+
+def _topic_matches_allowlist(candidate: str, allow_set: set[str]) -> bool:
+    c = _normalize_allow_topic(candidate)
+    if not c:
+        return False
+
+    parts = c.split("/")
+    prefixes = ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
+    for p in prefixes:
+        if p in allow_set:
+            return True
+    return False
+
+
+def _get_action_topic_allowlist(device_id: str) -> set[str]:
+    allow = set()
+    try:
+        with _actions_lock:
+            items = _load_actions()
+        for rule in items:
+            if not rule.get("enabled", True):
+                continue
+            for condition in rule.get("conditions", []):
+                if condition.get("type") != "onvif_event":
+                    continue
+                if condition.get("device_id") != device_id:
+                    continue
+                topic = _normalize_allow_topic(condition.get("topic"))
+                if topic:
+                    allow.add(topic)
+    except Exception:
+        pass
+    return allow
+
+
+def _get_effective_event_allowlist(device_id: str) -> set[str]:
+    topics = set(_get_allowlist_snapshot(device_id))
+    topics.update(_get_action_topic_allowlist(device_id))
+    return {t for t in topics if t}
+
+
+def _match_onvif_condition(condition: dict, event_payload: dict) -> bool:
+    extra = event_payload.get("extra") or {}
+    if (condition.get("device_id") or "") != (event_payload.get("device_id") or ""):
+        return False
+    candidates = [
+        extra.get("matched_by"),
+        extra.get("topic_path"),
+        extra.get("guessed_topic"),
+        extra.get("fallback_key"),
+    ]
+    allow = _normalize_allow_topic(condition.get("topic"))
+    for c in candidates:
+        c2 = _normalize_allow_topic(c)
+        if c2 and _topic_matches_allowlist(c2, {allow}):
+            return True
+    return False
+
+
+def _run_action_rule(rule: dict, trigger: dict) -> None:
+    action_results = []
+    for action in rule.get("actions", []):
+        atype = action.get("type")
+        if atype == "create_log_event":
+            action_results.append({"type": atype, "ok": True})
+        elif atype == "take_snapshot":
+            cam = action.get("camera_device_id")
+            try:
+                snap = _take_snapshot(cam, f"action:{rule.get('name') or rule.get('id')}")
+                action_results.append({"type": atype, "ok": True, "camera_device_id": cam, "snapshot": snap})
+            except Exception as e:
+                action_results.append({"type": atype, "ok": False, "camera_device_id": cam, "error": str(e)})
+    device_name = None
+    try:
+        device_name = _get_device(trigger.get("device_id") or trigger.get("source_device_id")).name
+    except Exception:
+        pass
+    item = {
+        "id": uuid.uuid4().hex[:12],
+        "ts": _utc_now_iso(),
+        "kind": trigger.get("kind") or "action",
+        "message": trigger.get("message") or rule.get("name") or "Action event",
+        "action_rule_id": rule.get("id"),
+        "action_rule_name": rule.get("name"),
+        "device_id": trigger.get("device_id") or trigger.get("source_device_id"),
+        "device_name": device_name,
+        "source_device_id": trigger.get("source_device_id") or trigger.get("device_id"),
+        "condition": trigger.get("condition"),
+        "trigger": trigger,
+        "results": action_results,
+    }
+    _append_action_event(item)
+
+
+def _evaluate_actions_for_trigger(trigger: dict) -> None:
+    try:
+        with _actions_lock:
+            rules = _load_actions()
+        for rule in rules:
+            if not rule.get("enabled", True):
+                continue
+            matched = False
+            for condition in rule.get("conditions", []):
+                ctype = condition.get("type")
+                if ctype == "onvif_event" and trigger.get("kind") == "onvif_event":
+                    matched = _match_onvif_condition(condition, trigger)
+                elif ctype == "device_offline" and trigger.get("kind") == "device_offline":
+                    matched = condition.get("device_id") == trigger.get("device_id")
+                elif ctype == "device_back_online" and trigger.get("kind") == "device_back_online":
+                    matched = condition.get("device_id") == trigger.get("device_id")
+                if matched:
+                    _run_action_rule(rule, {"condition": condition, **trigger})
+                    break
+    except Exception:
+        pass
+
+
+def _poll_device_state_changes() -> None:
+    while not _action_monitor_stop.wait(5.0):
+        try:
+            devs = _load_devices()
+            snapshot = _mediamtx_paths_snapshot()
+            for d in devs:
+                st = _device_stream_status_from_snapshot(d, snapshot)
+                is_online = bool(st.get("stream_up"))
+                with _action_runtime_lock:
+                    prev = _last_device_states.get(d.id)
+                    _last_device_states[d.id] = is_online
+                if prev is None:
+                    continue
+                if prev and not is_online:
+                    _evaluate_actions_for_trigger({"kind": "device_offline", "device_id": d.id, "message": "Device offline"})
+                elif (not prev) and is_online:
+                    _evaluate_actions_for_trigger({"kind": "device_back_online", "device_id": d.id, "message": "Device back online"})
+        except Exception:
+            pass
+
+
 def _cam(req: OnvifBase) -> ONVIFCamera:
     return ONVIFCamera(req.ip, req.onvif_port, req.username, req.password)
 
@@ -342,19 +625,6 @@ def _device_req(device: Device) -> OnvifBase:
         onvif_port=device.onvif_port,
         username=device.username,
         password=device.password,
-    )
-
-
-def _device_fingerprint(device: Device) -> str:
-    return "|".join(
-        [
-            device.ip,
-            str(device.onvif_port),
-            device.username,
-            device.password,
-            str(device.profile_token or ""),
-            str(device.preload_stream),
-        ]
     )
 
 
@@ -376,17 +646,12 @@ def _serialize_zeep_obj(obj):
     try:
         if obj is None:
             return None
-
         if isinstance(obj, (str, int, float, bool)):
             return obj
-
         if isinstance(obj, (list, tuple)):
             return [_serialize_zeep_obj(x) for x in obj]
-
         if isinstance(obj, dict):
             return {str(k): _serialize_zeep_obj(v) for k, v in obj.items()}
-
-        # lxml / element-like object
         if hasattr(obj, "tag"):
             return {
                 "tag": _strip_ns(getattr(obj, "tag", "")),
@@ -394,27 +659,20 @@ def _serialize_zeep_obj(obj):
                 "attributes": dict(getattr(obj, "attrib", {}) or {}),
                 "text": (getattr(obj, "text", None) or "").strip() or None,
             }
-
         if hasattr(obj, "__values__"):
             return {str(k): _serialize_zeep_obj(v) for k, v in obj.__values__.items()}
-
         if hasattr(obj, "__dict__"):
             return {
                 str(k): _serialize_zeep_obj(v)
                 for k, v in obj.__dict__.items()
                 if not str(k).startswith("_")
             }
-
         return str(obj)
     except Exception:
         return str(obj)
 
 
 def _collect_topic_paths(topic_set_obj) -> List[dict]:
-    """
-    Flatten ONVIF TopicSet from zeep/lxml objects into:
-    [{"path": "RuleEngine/CellMotionDetector/Motion", "name": "Motion"}, ...]
-    """
     results: List[dict] = []
     seen: set[str] = set()
 
@@ -469,198 +727,114 @@ def _collect_topic_paths(topic_set_obj) -> List[dict]:
         except Exception:
             pass
 
-    results.sort(key=lambda x: x["path"].lower())
     return results
+
+
+def _guess_topic_from_items(items: dict) -> str:
+    data = items.get("data", {}) or {}
+    src = items.get("source", {}) or {}
+    keys = {str(k).lower(): str(v) for k, v in {**src, **data}.items()}
+
+    if "videosourcetoken" in keys and ("ismotion" in keys or "state" in keys):
+        return "RuleEngine/CellMotionDetector/Motion"
+    if "inputtoken" in keys:
+        return "Device/Trigger/DigitalInput"
+    if "relaytoken" in keys:
+        return "Device/Trigger/Relay"
+    if "tamper" in "".join(keys.keys()).lower():
+        return "VideoSource/ImageTooDark/Tamper"
+
+    return ""
+
+
+def _topic_fallback_key(items: dict) -> str:
+    data = items.get("data", {}) or {}
+    src = items.get("source", {}) or {}
+    keys = sorted([str(k) for k in [*src.keys(), *data.keys()] if str(k)])
+    return "/".join(keys)
+
+
+def _normalize_topic_for_match(topic_text: Optional[str]) -> str:
+    topic_text = (topic_text or "").strip().strip("/")
+    if not topic_text:
+        return ""
+    parts = [p.strip() for p in topic_text.split("/") if p.strip()]
+    cleaned = []
+    for p in parts:
+        if ":" in p:
+            p = p.split(":", 1)[1]
+        if p:
+            cleaned.append(p)
+    return "/".join(cleaned)
+
+
+def _topic_obj_to_text(topic_obj) -> str:
+    if topic_obj is None:
+        return ""
+
+    text = getattr(topic_obj, "_value_1", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    try:
+        return str(topic_obj).strip()
+    except Exception:
+        return ""
+
+
+def _extract_simple_items(msg_elem) -> dict:
+    out = {"source": {}, "data": {}}
+    if msg_elem is None:
+        return out
+
+    def walk(elem):
+        tag = _strip_ns(getattr(elem, "tag", ""))
+        if tag == "Source":
+            for child in list(elem):
+                name = child.attrib.get("Name") or _strip_ns(child.tag)
+                value = child.attrib.get("Value") or (child.text or "")
+                out["source"][str(name)] = str(value)
+        elif tag == "Data":
+            for child in list(elem):
+                name = child.attrib.get("Name") or _strip_ns(child.tag)
+                value = child.attrib.get("Value") or (child.text or "")
+                out["data"][str(name)] = str(value)
+        else:
+            for child in list(elem):
+                walk(child)
+
+    try:
+        walk(msg_elem)
+    except Exception:
+        pass
+    return out
 
 
 def _get_event_properties(req: OnvifBase) -> dict:
     cam = _cam(req)
     events = cam.create_events_service()
-    props = events.GetEventProperties({})
-
-    topic_set = getattr(props, "TopicSet", None)
-    fixed_topic_set = getattr(props, "FixedTopicSet", None)
-    topic_ns_location = getattr(props, "TopicNamespaceLocation", None)
-    topic_expression_dialect = getattr(props, "TopicExpressionDialect", None)
-    message_content_filter_dialect = getattr(props, "MessageContentFilterDialect", None)
-    producer_properties_filter_dialect = getattr(props, "ProducerPropertiesFilterDialect", None)
-    message_content_schema_location = getattr(props, "MessageContentSchemaLocation", None)
-
-    topics = _collect_topic_paths(topic_set)
-
+    props = events.GetEventProperties()
+    topics = _collect_topic_paths(getattr(props, "TopicSet", None))
     return {
-        "fixed_topic_set": bool(fixed_topic_set) if fixed_topic_set is not None else None,
-        "topic_namespace_location": _serialize_zeep_obj(topic_ns_location),
-        "topic_expression_dialect": _serialize_zeep_obj(topic_expression_dialect),
-        "message_content_filter_dialect": _serialize_zeep_obj(message_content_filter_dialect),
-        "producer_properties_filter_dialect": _serialize_zeep_obj(producer_properties_filter_dialect),
-        "message_content_schema_location": _serialize_zeep_obj(message_content_schema_location),
         "topics": topics,
-        "raw_topic_set": _serialize_zeep_obj(topic_set),
+        "fixed_topic_set": bool(topics),
+        "raw_topic_set": _serialize_zeep_obj(getattr(props, "TopicSet", None)),
         "raw": _serialize_zeep_obj(props),
     }
 
 
-def _extract_simple_items(message_elem) -> dict:
-    out = {"source": {}, "data": {}}
-    if message_elem is None:
-        return out
-
+def _get_allowlist_snapshot(device_id: str) -> List[str]:
     try:
-        source_items = message_elem.findall(".//{*}Source//{*}SimpleItem")
+        d = _get_device(device_id)
+        return list(d.allow_topics or [])
     except Exception:
-        source_items = []
-
-    for si in source_items:
-        name = si.attrib.get("Name")
-        val = si.attrib.get("Value")
-        if name:
-            out["source"][name] = val
-
-    try:
-        data_items = message_elem.findall(".//{*}Data//{*}SimpleItem")
-    except Exception:
-        data_items = []
-
-    for si in data_items:
-        name = si.attrib.get("Name")
-        val = si.attrib.get("Value")
-        if name:
-            out["data"][name] = val
-
-    return out
+        return []
 
 
-def _topic_obj_to_text(topic_obj) -> Optional[str]:
-    if topic_obj is None:
-        return None
-
-    try:
-        v = getattr(topic_obj, "_value_1", None)
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-        if isinstance(v, list) and v:
-            first = v[0]
-            if isinstance(first, str) and first.strip():
-                return first.strip()
-    except Exception:
-        pass
-
-    try:
-        txt = str(topic_obj).strip()
-        if txt and "Dialect" not in txt and "TopicExpression" not in txt:
-            return txt
-    except Exception:
-        pass
-
-    return None
-
-
-def _normalize_topic_for_match(topic_text: Optional[str]) -> Optional[str]:
-    if not topic_text:
-        return None
-
-    txt = topic_text.strip()
-    if not txt:
-        return None
-
-    parts = [p for p in txt.split("/") if p]
-    cleaned = []
-    for p in parts:
-        if ":" in p:
-            p = p.split(":", 1)[1]
-        p = p.strip()
-        if p:
-            cleaned.append(p)
-
-    if not cleaned:
-        return None
-    return "/".join(cleaned)
-
-
-def _topic_fallback_key(items: dict) -> str:
-    src_keys = ",".join(sorted(items.get("source", {}).keys()))
-    data_keys = ",".join(sorted(items.get("data", {}).keys()))
-    src = items.get("source", {})
-    src_id = (
-        src.get("InputToken")
-        or src.get("RelayToken")
-        or src.get("Source")
-        or src.get("Token")
-        or src.get("VideoSource")
-        or ""
-    )
-
-    base = f"sig:source[{src_keys}] data[{data_keys}]"
-    return f"{base} :: {src_id}" if src_id else base
-
-
-def _guess_topic_from_items(items: dict) -> Optional[str]:
-    """
-    Some cameras advertise proper ONVIF topics in GetEventProperties() but omit
-    a usable runtime Topic field in PullMessages. For those, infer likely ONVIF
-    topic paths from payload structure.
-    """
-    source_keys = sorted(items.get("source", {}).keys())
-    data_keys = sorted(items.get("data", {}).keys())
-
-    # Common generic motion alarm shape
-    if source_keys == ["Source"] and data_keys == ["State"]:
-        return "VideoSource/MotionAlarm"
-
-    # Common analytics shapes
-    if (
-        source_keys == ["Rule", "VideoAnalyticsConfigurationToken", "VideoSourceConfigurationToken"]
-        and data_keys == ["IsInside"]
-    ):
-        return "RuleEngine/FieldDetector/ObjectsInside"
-
-    if (
-        source_keys == ["Rule", "VideoAnalyticsConfigurationToken", "VideoSourceConfigurationToken"]
-        and data_keys == ["IsMotion"]
-    ):
-        return "RuleEngine/CellMotionDetector/Motion"
-
-    # Some vendors report object presence as State too
-    if (
-        source_keys == ["Rule", "VideoAnalyticsConfigurationToken", "VideoSourceConfigurationToken"]
-        and data_keys == ["State"]
-    ):
-        return "RuleEngine/FieldDetector/ObjectsInside"
-
-    return None
-
-
-def _topic_matches_allowlist(match_key: str, allow_set: set[str]) -> bool:
-    """
-    Accept exact matches and parent-topic matches.
-    Example:
-      allow: RuleEngine/CellMotionDetector
-      event: RuleEngine/CellMotionDetector/Motion
-    """
-    if not match_key:
-        return False
-
-    if match_key in allow_set:
-        return True
-
-    for allow in allow_set:
-        if not allow:
-            continue
-        if match_key.startswith(allow + "/"):
-            return True
-
-    return False
-
-
-# -------------------------
-# Event runtime
-# -------------------------
 def _broadcast_event(device_id: str, payload: dict) -> None:
     with _event_sub_lock:
-        qs = list(_event_subscribers.get(device_id, []))
-
-    for q in qs:
+        subs = list(_event_subscribers.get(device_id, []))
+    for q in subs:
         try:
             q.put_nowait(payload)
         except Exception:
@@ -669,34 +843,24 @@ def _broadcast_event(device_id: str, payload: dict) -> None:
 
 def _emit_event(device_id: str, level: str, msg: str, extra: Optional[dict] = None) -> None:
     payload = {
-        "ts": datetime.utcnow().isoformat() + "Z",
-        "level": level,
+        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "device_id": device_id,
+        "level": level,
         "message": msg,
+        "extra": extra or {},
     }
-    if extra is not None:
-        payload["extra"] = extra
     _broadcast_event(device_id, payload)
+    if level == "event" and msg == "ONVIF event":
+        _evaluate_actions_for_trigger({"kind": "onvif_event", "device_id": device_id, "message": msg, "extra": extra or {}, "ts": payload["ts"]})
 
 
-def _get_allowlist_snapshot(device_id: str) -> List[str]:
-    try:
-        d = _get_device(device_id)
-        return [_normalize_allow_topic(x) for x in (d.allow_topics or []) if _normalize_allow_topic(x)]
-    except Exception:
-        return []
+ALLOW_REFRESH_S = 2.0
 
 
-def _onvif_event_worker(
-    device_id: str,
-    req: OnvifBase,
-    stop_flag: threading.Event,
-    fingerprint: str,
-    max_messages: int = 20,
-):
-    allow_set: set[str] = set()
+def _onvif_event_worker(device_id: str, req: OnvifBase, stop_flag: threading.Event, fingerprint: str) -> None:
+    allow_set = _get_effective_event_allowlist(device_id)
     last_allow_refresh = 0.0
-    ALLOW_REFRESH_S = 2.0
+    max_messages = 20
 
     try:
         cam = _cam(req)
@@ -709,12 +873,12 @@ def _onvif_event_worker(
 
         pullpoint = cam.create_pullpoint_service()
 
-        _emit_event(device_id, "ok", "Subscribed to ONVIF events (filtered, allowlist hot-reload enabled).")
+        _emit_event(device_id, "ok", "Subscribed to ONVIF events (actions-aware filtering enabled).")
 
         while not stop_flag.is_set():
             now = time.time()
             if (now - last_allow_refresh) >= ALLOW_REFRESH_S:
-                allow_set = set(_get_allowlist_snapshot(device_id))
+                allow_set = _get_effective_event_allowlist(device_id)
                 last_allow_refresh = now
                 if EVENT_DEBUG:
                     _emit_event(
@@ -765,7 +929,7 @@ def _onvif_event_worker(
                         match_candidates.append(topic_path)
                     if guessed_topic and guessed_topic not in match_candidates:
                         match_candidates.append(guessed_topic)
-                    if fallback_key not in match_candidates:
+                    if fallback_key and fallback_key not in match_candidates:
                         match_candidates.append(fallback_key)
 
                     matched = False
@@ -776,8 +940,9 @@ def _onvif_event_worker(
                                 matched = True
                                 matched_by = candidate
                                 break
-
-                    match_key = matched_by or (match_candidates[0] if match_candidates else None)
+                    else:
+                        matched = True
+                        matched_by = topic_path or guessed_topic or fallback_key
 
                     if EVENT_DEBUG:
                         _emit_event(
@@ -790,7 +955,7 @@ def _onvif_event_worker(
                                 "guessed_topic": guessed_topic,
                                 "fallback_key": fallback_key,
                                 "match_candidates": match_candidates,
-                                "match_key": match_key,
+                                "match_key": matched_by,
                                 "matched_allowlist": matched,
                                 "matched_by": matched_by,
                                 "allow_count": len(allow_set),
@@ -801,27 +966,12 @@ def _onvif_event_worker(
                             },
                         )
 
-                    if not allow_set:
-                        if EVENT_DEBUG:
-                            _emit_event(
-                                device_id,
-                                "warn",
-                                "Dropped event because allowlist is empty",
-                                {
-                                    "topic_text": topic_text,
-                                    "topic_path": topic_path,
-                                    "guessed_topic": guessed_topic,
-                                    "match_candidates": match_candidates,
-                                },
-                            )
-                        continue
-
                     if not matched:
                         if EVENT_DEBUG:
                             _emit_event(
                                 device_id,
                                 "warn",
-                                "Dropped event because it did not match allowlist",
+                                "Dropped event because it did not match action topics",
                                 {
                                     "topic_text": topic_text,
                                     "topic_path": topic_path,
@@ -845,7 +995,7 @@ def _onvif_event_worker(
                     )
 
                     def kk(k: str) -> str:
-                        base = matched_by or match_key or "event"
+                        base = matched_by or (match_candidates[0] if match_candidates else "event")
                         return f"{base}::{k}::{src_id}" if src_id else f"{base}::{k}"
 
                     changed: Dict[str, str] = {}
@@ -946,9 +1096,6 @@ def _stop_event_worker(device_id: str) -> None:
         cur.stop_flag.set()
 
 
-# -------------------------
-# Streaming helpers
-# -------------------------
 def _path_for(device_id: str) -> str:
     return f"cam-{device_id}"
 
@@ -979,118 +1126,83 @@ def _profile_summary(p) -> Dict[str, Any]:
     except Exception:
         pass
 
-    out["browser_compatible"] = out["encoding"] == "H264"
+    out["browser_compatible"] = out.get("encoding") == "H264"
     return out
 
 
 def _find_profile_encoding(req: OnvifBase, profile_token: str) -> Optional[str]:
     cam = _cam(req)
     media = cam.create_media_service()
-    profs = media.GetProfiles()
-
-    for p in profs:
-        if getattr(p, "token", None) != profile_token:
-            continue
-        try:
+    profiles = media.GetProfiles() or []
+    for p in profiles:
+        if getattr(p, "token", None) == profile_token:
             vec = getattr(p, "VideoEncoderConfiguration", None)
             if vec:
-                encoding = getattr(vec, "Encoding", None)
-                if encoding is not None:
-                    return str(encoding).upper()
-        except Exception:
-            pass
-        return None
-
-    raise RuntimeError(f"Profile not found: {profile_token}")
-
-
-def _get_stream_uri(req: OnvifBase, profile_token: str) -> str:
-    cam = _cam(req)
-    media = cam.create_media_service()
-    resp = media.GetStreamUri(
-        {
-            "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
-            "ProfileToken": profile_token,
-        }
-    )
-
-    rtsp = getattr(resp, "Uri", None)
-    if not rtsp or not rtsp.lower().startswith("rtsp://"):
-        raise RuntimeError(f"Unexpected RTSP URI returned: {rtsp}")
-
-    if "@" not in rtsp:
-        rtsp = rtsp.replace("rtsp://", f"rtsp://{req.username}:{req.password}@", 1)
-
-    return rtsp
+                enc = getattr(vec, "Encoding", None)
+                return str(enc).upper() if enc is not None else None
+            return None
+    raise RuntimeError("Profile token not found")
 
 
 def _get_snapshot_uri(req: OnvifBase, profile_token: Optional[str]) -> str:
     cam = _cam(req)
     media = cam.create_media_service()
-
-    token = profile_token
+    profiles = media.GetProfiles() or []
+    token = profile_token or (getattr(profiles[0], "token", None) if profiles else None)
     if not token:
-        profs = media.GetProfiles()
-        p = next((x for x in profs if getattr(x, "token", None)), None)
-        token = getattr(p, "token", None) if p is not None else None
-
-    if not token:
-        raise RuntimeError("No usable profile token for snapshot")
-
+        raise RuntimeError("No media profile available.")
     resp = media.GetSnapshotUri({"ProfileToken": token})
     uri = getattr(resp, "Uri", None)
     if not uri:
-        raise RuntimeError("Camera did not return a snapshot URI")
-    return uri
+        raise RuntimeError("Camera did not provide snapshot URI.")
+    return str(uri)
 
 
-def _split_url_auth(url: str) -> tuple[str, Optional[str], Optional[str]]:
-    parts = urlsplit(url)
-    username = parts.username
-    password = parts.password
-
-    if "@" in parts.netloc:
-        host = parts.hostname or ""
-        port = f":{parts.port}" if parts.port else ""
-        clean_netloc = f"{host}{port}"
-        clean_url = urlunsplit((parts.scheme, clean_netloc, parts.path, parts.query, parts.fragment))
-        return clean_url, username, password
-
-    return url, username, password
-
-
-def _http_get_bytes_with_auth(
-    url: str,
-    username: Optional[str],
-    password: Optional[str],
-) -> tuple[bytes, Optional[str]]:
-    clean_url, url_user, url_pass = _split_url_auth(url)
-
-    user = url_user if url_user is not None else username
-    pw = url_pass if url_pass is not None else password
-    user = user or ""
-    pw = pw or ""
+def _http_get_bytes_with_auth(url: str, username: str, password: str) -> tuple[bytes, Optional[str]]:
+    insecure_ctx = ssl.create_default_context()
+    insecure_ctx.check_hostname = False
+    insecure_ctx.verify_mode = ssl.CERT_NONE
 
     password_mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-    password_mgr.add_password(None, clean_url, user, pw)
+    password_mgr.add_password(None, url, username, password)
 
-    opener = urllib.request.build_opener(
-        urllib.request.HTTPDigestAuthHandler(password_mgr),
-        urllib.request.HTTPBasicAuthHandler(password_mgr),
-    )
-    opener.addheaders = [("User-Agent", "smarteye-playback/1.0")]
+    basic_handler = urllib.request.HTTPBasicAuthHandler(password_mgr)
+    digest_handler = urllib.request.HTTPDigestAuthHandler(password_mgr)
+    https_handler = urllib.request.HTTPSHandler(context=insecure_ctx)
 
-    req = urllib.request.Request(clean_url, method="GET")
+    opener = urllib.request.build_opener(digest_handler, basic_handler, https_handler)
 
-    try:
-        with opener.open(req, timeout=10) as resp:
-            content_type = resp.headers.get("Content-Type")
-            return resp.read(), content_type
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"Snapshot download failed: {e.code} {detail}")
-    except Exception as e:
-        raise RuntimeError(f"Snapshot download failed: {e}")
+    req = urllib.request.Request(url, method="GET")
+    with opener.open(req, timeout=10) as resp:
+        return resp.read(), resp.headers.get("Content-Type")
+        
+
+def _get_stream_uri(req: OnvifBase, profile_token: str) -> str:
+    cam = _cam(req)
+    media = cam.create_media_service()
+    resp = media.GetStreamUri({
+        "StreamSetup": {
+            "Stream": "RTP-Unicast",
+            "Transport": {"Protocol": "RTSP"},
+        },
+        "ProfileToken": profile_token,
+    })
+    uri = getattr(resp, "Uri", None)
+    if not uri:
+        raise RuntimeError("Camera did not provide RTSP stream URI.")
+    return str(uri)
+
+
+def _rtsp_with_auth(uri: str, username: str, password: str) -> str:
+    parts = urlsplit(uri)
+    if parts.scheme.lower() != "rtsp":
+        return uri
+    host = parts.hostname or ""
+    port = f":{parts.port}" if parts.port else ""
+    user = urllib.parse.quote(username, safe="")
+    pwd = urllib.parse.quote(password, safe="")
+    netloc = f"{user}:{pwd}@{host}{port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 def _take_snapshot(device_id: str, event_name: str = "manual") -> dict:
@@ -1174,388 +1286,184 @@ def _ensure_mediamtx_path(device_id: str, source_rtsp: str, preload: bool = Fals
     try:
         return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
     except Exception as add_err:
-        msg = str(add_err)
+        msg = str(add_err).lower()
 
-        if "already exists" in msg or "409" in msg:
-            try:
-                return _mediamtx_api_request("PATCH", f"/v3/config/paths/edit/{name}", payload)
-            except Exception as edit_err:
-                raise RuntimeError(
-                    f"MediaMTX add said path exists, but edit failed. "
-                    f"add_error={add_err}; edit_error={edit_err}"
-                ) from edit_err
+        # If the path already exists, leave it alone.
+        # Do not delete/recreate it, because that briefly breaks WHEP viewers.
+        if "already exists" in msg or "path already exists" in msg:
+            return {"ok": True, "exists": True, "name": name}
 
-        raise RuntimeError(f"MediaMTX path add failed: {add_err}") from add_err
+        raise
+    
 
-
-def _delete_mediamtx_path(device_id: str) -> None:
+def _mediamtx_delete_path(device_id: str) -> dict:
     name = _path_for(device_id)
     try:
-        _mediamtx_api_request("DELETE", f"/v3/config/paths/delete/{name}")
-    except Exception:
-        pass
-
-
-def _preload_stream_for_device(device: Device) -> None:
-    if not device.profile_token:
-        return
-    if not device.preload_stream:
-        return
-
-    req = _device_req(device)
-    encoding = _find_profile_encoding(req, device.profile_token)
-    if (encoding or "").upper() != "H264":
-        raise RuntimeError(
-            f"Selected profile uses {encoding or 'unknown'}; browser playback needs H264."
-        )
-
-    rtsp = _get_stream_uri(req, device.profile_token)
-    _ensure_mediamtx_path(device.id, rtsp, preload=True)
+        return _mediamtx_api_request("DELETE", f"/v3/config/paths/delete/{name}")
+    except Exception as e:
+        msg = str(e)
+        if "404" in msg or "not found" in msg.lower():
+            return {"ok": True, "missing": True}
+        raise
 
 
 def _mediamtx_paths_snapshot() -> dict:
     try:
-        data = _mediamtx_api_request("GET", "/v3/paths/list")
-        raw_items = data.get("items") or data.get("paths") or []
-
-        items_by_name = {}
-        for item in raw_items:
-            name = item.get("name")
-            if name:
-                items_by_name[name] = item
-
-        return {
-            "ok": True,
-            "items": items_by_name,
-            "error": None,
-        }
-    except Exception as e:
-        return {
-            "ok": False,
-            "items": {},
-            "error": str(e),
-        }
+        return _mediamtx_api_request("GET", "/v3/paths/list")
+    except Exception:
+        return {}
 
 
 def _path_row_to_status(row: Optional[dict]) -> dict:
     if not row:
         return {
-            "exists": False,
-            "ready": False,
-            "readers": 0,
             "source_ready": False,
-            "raw": None,
+            "ready": False,
+            "source_on_demand": None,
+            "source": None,
+            "bytes_received": None,
+            "readers": 0,
         }
 
-    readers = (
-        row.get("readersCount")
-        if isinstance(row.get("readersCount"), int)
-        else row.get("numReaders")
-        if isinstance(row.get("numReaders"), int)
-        else row.get("readers")
-        if isinstance(row.get("readers"), int)
-        else 0
-    )
-
-    ready_val = row.get("ready", None)
-    source_ready_val = row.get("sourceReady", None)
-
-    source_ready = False
-    if isinstance(source_ready_val, bool):
-        source_ready = source_ready_val
-    elif isinstance(ready_val, bool):
-        source_ready = ready_val
+    source = row.get("source")
+    source_ready = bool(row.get("sourceReady"))
+    ready = bool(row.get("ready"))
+    source_on_demand = row.get("sourceOnDemand")
+    bytes_received = row.get("bytesReceived")
+    readers = row.get("readers") or []
+    readers_count = len(readers) if isinstance(readers, list) else 0
 
     return {
-        "exists": True,
-        "ready": source_ready,
-        "readers": readers,
         "source_ready": source_ready,
-        "raw": row,
+        "ready": ready,
+        "source_on_demand": source_on_demand,
+        "source": source,
+        "bytes_received": bytes_received,
+        "readers": readers_count,
     }
 
 
 def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
+    path_name = _path_for(device.id)
+    items = list(snapshot.get("items") or [])
+
+    row = None
+    for x in items:
+        if x.get("name") == path_name:
+            row = x
+            break
+
     out = {
         "device_id": device.id,
+        "device_name": device.name,
+        "path": path_name,
         "configured": bool(device.profile_token),
-        "preload_stream": bool(getattr(device, "preload_stream", False)),
-        "stream_up": False,
+        "profile_encoding": (device.profile_encoding or "").upper() or None,
+        "preload_stream": bool(device.preload_stream),
         "status": "down",
-        "detail": None,
+        "stream_up": False,
     }
 
     if not device.profile_token:
         out["status"] = "not_configured"
         return out
 
-    if not snapshot.get("ok"):
-        out["status"] = "unknown"
-        out["detail"] = snapshot.get("error")
+    if row is None:
+        out["status"] = "down"
         return out
 
-    row = snapshot["items"].get(_path_for(device.id))
-    st = _path_row_to_status(row)
+    def g(d, *names, default=None):
+        for name in names:
+            if name in d:
+                return d[name]
+        return default
 
-    if not device.preload_stream and not st.get("exists"):
-        out["status"] = "idle"
-        out["detail"] = {
-            "exists": False,
-            "source_ready": False,
-            "readers": 0,
-        }
-        return out
+    source_ready = bool(g(row, "sourceReady", "source_ready", default=False))
+    ready = bool(g(row, "ready", default=False))
+    source_on_demand = g(row, "sourceOnDemand", "source_on_demand", default=None)
+    source = g(row, "source", default=None)
+    bytes_received = g(row, "bytesReceived", "bytes_received", "bytesreceived", default=0) or 0
+    readers_raw = g(row, "readers", default=[])
+    readers = len(readers_raw) if isinstance(readers_raw, list) else int(readers_raw or 0)
 
-    out["stream_up"] = bool(st.get("ready"))
-    out["status"] = "up" if out["stream_up"] else "down"
-    out["detail"] = {
-        "exists": st.get("exists"),
-        "source_ready": st.get("source_ready"),
-        "readers": st.get("readers", 0),
-    }
+    out.update({
+        "source_ready": source_ready,
+        "ready": ready,
+        "source_on_demand": source_on_demand,
+        "source": source,
+        "bytes_received": bytes_received,
+        "readers": readers,
+    })
+
+    stream_up = any([
+        source_ready,
+        ready,
+        bytes_received > 0,
+        readers > 0,
+        bool(source),
+    ])
+
+    out["stream_up"] = stream_up
+    out["status"] = "live" if stream_up else ("idle" if bool(device.preload_stream) else "down")
     return out
 
 
-# -------------------------
-# PTZ helpers
-# -------------------------
-def _clamp_speed(v: float) -> float:
-    try:
-        v = float(v)
-    except Exception:
-        return 0.0
-    return max(-1.0, min(1.0, v))
-
-
-def _cancel_ptz_watchdog(device_id: str) -> None:
-    with _ptz_watchdog_lock:
-        t = _ptz_watchdogs.pop(device_id, None)
-        if t:
-            try:
-                t.cancel()
-            except Exception:
-                pass
-
-
-def _schedule_ptz_watchdog(device_id: str) -> None:
-    _cancel_ptz_watchdog(device_id)
-
-    def _timeout_stop():
-        try:
-            _ptz_stop(device_id)
-        except Exception:
-            pass
-
-    t = threading.Timer(PTZ_WATCHDOG_SEC, _timeout_stop)
-    t.daemon = True
-    with _ptz_watchdog_lock:
-        _ptz_watchdogs[device_id] = t
-    t.start()
-
-
-def _build_ptz_context(device_id: str) -> PTZContextCache:
-    device = _get_device(device_id)
-    if not device.profile_token:
-        raise RuntimeError("Device has no saved profile_token")
-
+def _preload_stream_for_device(device: Device) -> None:
+    if not device.profile_token or not device.preload_stream:
+        return
     req = _device_req(device)
-    cam = _cam(req)
-    media = cam.create_media_service()
-    ptz = cam.create_ptz_service()
-
-    profiles = media.GetProfiles()
-    profile = next((p for p in profiles if getattr(p, "token", None) == device.profile_token), None)
-    if not profile:
-        raise RuntimeError("Saved profile_token not found on camera")
-
-    ptz_cfg = getattr(profile, "PTZConfiguration", None)
-    if not ptz_cfg:
-        raise RuntimeError("Selected profile has no PTZ configuration")
-
-    cfg_token = getattr(ptz_cfg, "token", None)
-    opts = None
-    try:
-        if cfg_token:
-            opts = ptz.GetConfigurationOptions({"ConfigurationToken": cfg_token})
-    except Exception:
-        opts = None
-
-    pan_tilt_space = None
-    zoom_space = None
-    has_pan_tilt = False
-    has_zoom = False
-
-    try:
-        spaces = getattr(opts, "Spaces", None) if opts is not None else None
-
-        pt_spaces = getattr(spaces, "ContinuousPanTiltVelocitySpace", None) if spaces is not None else None
-        if pt_spaces:
-            first = pt_spaces[0]
-            pan_tilt_space = getattr(first, "URI", None)
-            has_pan_tilt = True
-
-        zoom_spaces = getattr(spaces, "ContinuousZoomVelocitySpace", None) if spaces is not None else None
-        if zoom_spaces:
-            first = zoom_spaces[0]
-            zoom_space = getattr(first, "URI", None)
-            has_zoom = True
-    except Exception:
-        pass
-
-    if not has_pan_tilt:
-        try:
-            if getattr(ptz_cfg, "DefaultContinuousPanTiltVelocitySpace", None):
-                has_pan_tilt = True
-                pan_tilt_space = getattr(ptz_cfg, "DefaultContinuousPanTiltVelocitySpace", None)
-        except Exception:
-            pass
-
-    if not has_zoom:
-        try:
-            if getattr(ptz_cfg, "DefaultContinuousZoomVelocitySpace", None):
-                has_zoom = True
-                zoom_space = getattr(ptz_cfg, "DefaultContinuousZoomVelocitySpace", None)
-        except Exception:
-            pass
-
-    return PTZContextCache(
-        fingerprint=_device_fingerprint(device),
-        profile_token=device.profile_token,
-        ptz=ptz,
-        pan_tilt_space=pan_tilt_space,
-        zoom_space=zoom_space,
-        has_ptz=True,
-        has_pan_tilt=has_pan_tilt,
-        has_zoom=has_zoom,
-    )
-
-
-def _ptz_context(device_id: str, force_refresh: bool = False) -> PTZContextCache:
-    device = _get_device(device_id)
-    fingerprint = _device_fingerprint(device)
-
-    if not force_refresh:
-        with _ptz_context_cache_lock:
-            cached = _ptz_context_cache.get(device_id)
-            if cached and cached.fingerprint == fingerprint:
-                return cached
-
-    with _ptz_context_cache_lock:
-        cached = _ptz_context_cache.get(device_id)
-        if cached and cached.fingerprint == fingerprint and not force_refresh:
-            return cached
-
-        ctx = _build_ptz_context(device_id)
-        _ptz_context_cache[device_id] = ctx
-        return ctx
-
-
-def _ptz_move(device_id: str, pan: float, tilt: float, zoom: float) -> dict:
-    pan = _clamp_speed(pan)
-    tilt = _clamp_speed(tilt)
-    zoom = _clamp_speed(zoom)
-
-    with _ptz_device_lock(device_id):
-        ctx = _ptz_context(device_id)
-
-        velocity: Dict[str, Any] = {}
-
-        if ctx.has_pan_tilt and (abs(pan) > 0.0001 or abs(tilt) > 0.0001):
-            payload = {"x": pan, "y": tilt}
-            if ctx.pan_tilt_space:
-                payload["space"] = ctx.pan_tilt_space
-            velocity["PanTilt"] = payload
-
-        if ctx.has_zoom and abs(zoom) > 0.0001:
-            payload = {"x": zoom}
-            if ctx.zoom_space:
-                payload["space"] = ctx.zoom_space
-            velocity["Zoom"] = payload
-
-        if not velocity:
-            return _ptz_stop(device_id)
-
-        try:
-            ctx.ptz.ContinuousMove(
-                {
-                    "ProfileToken": ctx.profile_token,
-                    "Velocity": velocity,
-                }
-            )
-        except Exception:
-            _invalidate_ptz_cache(device_id)
-            ctx = _ptz_context(device_id, force_refresh=True)
-            ctx.ptz.ContinuousMove(
-                {
-                    "ProfileToken": ctx.profile_token,
-                    "Velocity": velocity,
-                }
-            )
-
-        _schedule_ptz_watchdog(device_id)
-        return {"ok": True, "moving": True, "pan": pan, "tilt": tilt, "zoom": zoom}
-
-
-def _ptz_stop(device_id: str) -> dict:
-    _cancel_ptz_watchdog(device_id)
-
-    with _ptz_device_lock(device_id):
-        ctx = _ptz_context(device_id)
-        try:
-            ctx.ptz.Stop(
-                {
-                    "ProfileToken": ctx.profile_token,
-                    "PanTilt": True,
-                    "Zoom": True,
-                }
-            )
-        except Exception:
-            _invalidate_ptz_cache(device_id)
-            ctx = _ptz_context(device_id, force_refresh=True)
-            ctx.ptz.Stop(
-                {
-                    "ProfileToken": ctx.profile_token,
-                    "PanTilt": True,
-                    "Zoom": True,
-                }
-            )
-
-    return {"ok": True, "moving": False}
+    source_uri = _get_stream_uri(req, device.profile_token)
+    source_rtsp = _rtsp_with_auth(source_uri, device.username, device.password)
+    _ensure_mediamtx_path(device.id, source_rtsp, preload=True)
 
 
 def _ptz_status(device_id: str) -> dict:
-    with _ptz_device_lock(device_id):
-        ctx = _ptz_context(device_id)
+    d = _get_device(device_id)
+    req = _device_req(d)
+    lock = _ptz_device_lock(device_id)
+    with lock:
+        ctx = _get_ptz_context(req, d.profile_token)
+        out = {
+            "device_id": device_id,
+            "has_ptz": bool(ctx.has_ptz),
+            "has_pan_tilt": bool(ctx.has_pan_tilt),
+            "has_zoom": bool(ctx.has_zoom),
+            "move_status": {"pan_tilt": None, "zoom": None},
+        }
+
+        if not ctx.has_ptz:
+            return out
+
         try:
-            st = ctx.ptz.GetStatus({"ProfileToken": ctx.profile_token})
+            status = ctx.ptz.GetStatus({"ProfileToken": ctx.profile_token})
         except Exception:
-            _invalidate_ptz_cache(device_id)
-            ctx = _ptz_context(device_id, force_refresh=True)
-            st = ctx.ptz.GetStatus({"ProfileToken": ctx.profile_token})
+            return out
 
-    pos = getattr(st, "Position", None)
-    move = getattr(st, "MoveStatus", None)
+        pos = getattr(status, "Position", None)
+        move = getattr(status, "MoveStatus", None)
 
-    out = {
-        "ok": True,
-        "position": {"pan": None, "tilt": None, "zoom": None},
-        "move_status": {"pan_tilt": None, "zoom": None},
-    }
+        try:
+            if pos and getattr(pos, "PanTilt", None) is not None:
+                out["pan_tilt"] = {
+                    "x": float(getattr(pos.PanTilt, "x", 0.0)),
+                    "y": float(getattr(pos.PanTilt, "y", 0.0)),
+                    "space": getattr(pos.PanTilt, "space", None),
+                }
+            else:
+                out["pan_tilt"] = None
+        except Exception:
+            out["pan_tilt"] = None
 
-    try:
-        pt = getattr(pos, "PanTilt", None)
-        if pt is not None:
-            out["position"]["pan"] = getattr(pt, "x", None)
-            out["position"]["tilt"] = getattr(pt, "y", None)
-    except Exception:
-        pass
-
-    try:
-        z = getattr(pos, "Zoom", None)
-        if z is not None:
-            out["position"]["zoom"] = getattr(z, "x", None)
-    except Exception:
-        pass
+        try:
+            if pos and getattr(pos, "Zoom", None) is not None:
+                out["zoom"] = {
+                    "x": float(getattr(pos.Zoom, "x", 0.0)),
+                    "space": getattr(pos.Zoom, "space", None),
+                }
+            else:
+                out["zoom"] = None
+        except Exception:
+            out["zoom"] = None
 
     try:
         out["move_status"]["pan_tilt"] = getattr(move, "PanTilt", None)
@@ -1566,9 +1474,148 @@ def _ptz_status(device_id: str) -> dict:
     return out
 
 
-# -------------------------
-# Events API
-# -------------------------
+def _ptz_capabilities(device_id: str) -> dict:
+    d = _get_device(device_id)
+    req = _device_req(d)
+    ctx = _get_ptz_context(req, d.profile_token)
+    return {
+        "device_id": device_id,
+        "has_ptz": bool(ctx.has_ptz),
+        "has_pan_tilt": bool(ctx.has_pan_tilt),
+        "has_zoom": bool(ctx.has_zoom),
+        "profile_token": ctx.profile_token,
+        "pan_tilt_space": ctx.pan_tilt_space,
+        "zoom_space": ctx.zoom_space,
+    }
+
+
+def _get_ptz_context(req: OnvifBase, profile_token: Optional[str]) -> PTZContextCache:
+    fingerprint = _req_fingerprint(req)
+    token = profile_token or ""
+
+    with _ptz_context_cache_lock:
+        cached = _ptz_context_cache.get(fingerprint)
+        if cached and cached.profile_token == token:
+            return cached
+
+    cam = _cam(req)
+    media = cam.create_media_service()
+    profiles = media.GetProfiles() or []
+    ptoken = token or (getattr(profiles[0], "token", None) if profiles else None)
+    if not ptoken:
+        raise RuntimeError("No media profile available.")
+
+    ptz = None
+    try:
+        ptz = cam.create_ptz_service()
+    except Exception:
+        ctx = PTZContextCache(
+            fingerprint=fingerprint,
+            profile_token=ptoken,
+            ptz=None,
+            pan_tilt_space=None,
+            zoom_space=None,
+            has_ptz=False,
+            has_pan_tilt=False,
+            has_zoom=False,
+        )
+        with _ptz_context_cache_lock:
+            _ptz_context_cache[fingerprint] = ctx
+        return ctx
+
+    pan_tilt_space = None
+    zoom_space = None
+    has_pan_tilt = False
+    has_zoom = False
+
+    try:
+        profile_obj = next((p for p in profiles if getattr(p, "token", None) == ptoken), None)
+        ptz_cfg = getattr(profile_obj, "PTZConfiguration", None) if profile_obj is not None else None
+        ptz_cfg_token = getattr(ptz_cfg, "token", None)
+        if ptz_cfg_token:
+            opts = ptz.GetConfigurationOptions({"ConfigurationToken": ptz_cfg_token})
+            pan_spaces = getattr(getattr(opts, "Spaces", None), "ContinuousPanTiltVelocitySpace", None) or []
+            zoom_spaces = getattr(getattr(opts, "Spaces", None), "ContinuousZoomVelocitySpace", None) or []
+            if pan_spaces:
+                has_pan_tilt = True
+                pan_tilt_space = getattr(pan_spaces[0], "URI", None)
+            if zoom_spaces:
+                has_zoom = True
+                zoom_space = getattr(zoom_spaces[0], "URI", None)
+    except Exception:
+        pass
+
+    ctx = PTZContextCache(
+        fingerprint=fingerprint,
+        profile_token=ptoken,
+        ptz=ptz,
+        pan_tilt_space=pan_tilt_space,
+        zoom_space=zoom_space,
+        has_ptz=True,
+        has_pan_tilt=has_pan_tilt,
+        has_zoom=has_zoom,
+    )
+    with _ptz_context_cache_lock:
+        _ptz_context_cache[fingerprint] = ctx
+    return ctx
+
+
+def _ptz_continuous_move(device_id: str, pan: float, tilt: float, zoom: float) -> dict:
+    d = _get_device(device_id)
+    req = _device_req(d)
+    ctx = _get_ptz_context(req, d.profile_token)
+    if not ctx.has_ptz:
+        raise RuntimeError("Device has no PTZ")
+
+    velocity = {}
+    if ctx.has_pan_tilt:
+        velocity["PanTilt"] = {"x": float(pan), "y": float(tilt)}
+        if ctx.pan_tilt_space:
+            velocity["PanTilt"]["space"] = ctx.pan_tilt_space
+    if ctx.has_zoom:
+        velocity["Zoom"] = {"x": float(zoom)}
+        if ctx.zoom_space:
+            velocity["Zoom"]["space"] = ctx.zoom_space
+
+    lock = _ptz_device_lock(device_id)
+    with lock:
+        req_move = {"ProfileToken": ctx.profile_token, "Velocity": velocity}
+        ctx.ptz.ContinuousMove(req_move)
+
+    return {"ok": True, "device_id": device_id}
+
+
+def _ptz_stop(device_id: str) -> dict:
+    d = _get_device(device_id)
+    req = _device_req(d)
+    ctx = _get_ptz_context(req, d.profile_token)
+    if not ctx.has_ptz:
+        return {"ok": True, "device_id": device_id}
+
+    lock = _ptz_device_lock(device_id)
+    with lock:
+        try:
+            ctx.ptz.Stop({"ProfileToken": ctx.profile_token, "PanTilt": True, "Zoom": True})
+        except Exception:
+            pass
+    return {"ok": True, "device_id": device_id}
+
+
+def _schedule_ptz_watchdog_stop(device_id: str) -> None:
+    with _ptz_watchdog_lock:
+        old = _ptz_watchdogs.pop(device_id, None)
+        if old:
+            try:
+                old.cancel()
+            except Exception:
+                pass
+
+        t = threading.Timer(PTZ_WATCHDOG_SEC, lambda: _ptz_stop(device_id))
+        t.daemon = True
+        _ptz_watchdogs[device_id] = t
+        t.start()
+
+
 @app.get("/api/events/stream/{device_id}")
 async def events_stream(device_id: str):
     device_id = device_id.strip()
@@ -1672,9 +1719,53 @@ def events_allowlist_set(device_id: str, req: AllowListRequest):
     return {"ok": True, "device_id": device_id, "allow_topics": allow}
 
 
-# -------------------------
-# Playback API
-# -------------------------
+@app.get("/api/actions")
+def actions_list():
+    with _actions_lock:
+        items = _load_actions()
+    return {"items": items}
+
+
+@app.post("/api/actions")
+def actions_create(req: ActionRuleIn):
+    with _actions_lock:
+        items = _load_actions()
+        item = _normalize_action_rule_payload(_dump(req))
+        items.append(item)
+        _save_actions(items)
+    return {"ok": True, "item": item}
+
+
+@app.put("/api/actions/{action_id}")
+def actions_update(action_id: str, req: ActionRuleIn):
+    with _actions_lock:
+        items = _load_actions()
+        for i, item in enumerate(items):
+            if item.get("id") == action_id:
+                new_item = _normalize_action_rule_payload(_dump(req), existing_id=action_id, created_at=item.get("created_at"))
+                items[i] = new_item
+                _save_actions(items)
+                return {"ok": True, "item": new_item}
+    raise HTTPException(status_code=404, detail="Action not found")
+
+
+@app.delete("/api/actions/{action_id}")
+def actions_delete(action_id: str):
+    with _actions_lock:
+        items = _load_actions()
+        new_items = [x for x in items if x.get("id") != action_id]
+        if len(new_items) == len(items):
+            raise HTTPException(status_code=404, detail="Action not found")
+        _save_actions(new_items)
+    return {"ok": True}
+
+
+@app.get("/api/action-events")
+def action_events(device_id: Optional[str] = None, limit: int = 200):
+    did = device_id.strip() if device_id else None
+    return {"items": _list_action_events(device_id=did, limit=limit)}
+
+
 @app.get("/api/playback/snapshots")
 def playback_snapshots(device_id: Optional[str] = None):
     items = _list_snapshot_items(device_id=device_id.strip() if device_id else None)
@@ -1693,9 +1784,6 @@ async def playback_snapshot(device_id: str, req: SnapshotRequest):
         raise HTTPException(status_code=400, detail=f"Snapshot failed: {e}")
 
 
-# -------------------------
-# Devices API
-# -------------------------
 @app.get("/api/devices")
 def list_devices():
     devs = _load_devices()
@@ -1719,85 +1807,66 @@ def create_device(dev: DeviceIn):
     )
     _start_event_worker(new.id, req)
 
-    try:
-        _preload_stream_for_device(new)
-    except Exception:
-        pass
+    if new.preload_stream and new.profile_token:
+        try:
+            _preload_stream_for_device(new)
+        except Exception:
+            pass
 
     return {"ok": True, "device": _dump(new)}
 
 
 @app.put("/api/devices/{device_id}")
-def update_device(device_id: str, dev: DeviceIn):
-    devs = _load_devices()
-    idx = next((i for i, d in enumerate(devs) if d.id == device_id), None)
-    if idx is None:
-        raise HTTPException(status_code=404, detail="Device not found")
+def update_device(device_id: str, dev_in: DeviceIn):
+    device_id = device_id.strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Missing device_id")
+    dev = _update_device(device_id, dev_in)
 
-    updated = Device(id=device_id, **_dump(dev))
-    devs[idx] = updated
-    _save_devices(devs)
-    _invalidate_ptz_cache(device_id)
-    _cancel_ptz_watchdog(device_id)
-
-    req = EventsStartRequest(
-        device_id=device_id,
-        ip=updated.ip,
-        onvif_port=updated.onvif_port,
-        username=updated.username,
-        password=updated.password,
-    )
-    _start_event_worker(device_id, req)
-
-    if updated.preload_stream and updated.profile_token:
+    if dev.preload_stream and dev.profile_token:
         try:
-            _preload_stream_for_device(updated)
+            _preload_stream_for_device(dev)
         except Exception:
             pass
     else:
-        _delete_mediamtx_path(device_id)
+        try:
+            _mediamtx_delete_path(device_id)
+        except Exception:
+            pass
 
-    return {"ok": True, "device": _dump(updated)}
+    return {"ok": True, "device": _dump(dev)}
 
 
 @app.delete("/api/devices/{device_id}")
 def delete_device(device_id: str):
+    device_id = device_id.strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Missing device_id")
+
     devs = _load_devices()
     new_devs = [d for d in devs if d.id != device_id]
     if len(new_devs) == len(devs):
         raise HTTPException(status_code=404, detail="Device not found")
+
     _save_devices(new_devs)
-    _stop_event_worker(device_id)
-    _delete_mediamtx_path(device_id)
-    _cancel_ptz_watchdog(device_id)
     _invalidate_ptz_cache(device_id)
-    with _ptz_command_locks_lock:
-        _ptz_command_locks.pop(device_id, None)
-    with _event_last_lock:
-        _event_last.pop(device_id, None)
+    _stop_event_worker(device_id)
+
+    try:
+        _mediamtx_delete_path(device_id)
+    except Exception:
+        pass
+
     return {"ok": True}
 
 
-# -------------------------
-# Streaming API
-# -------------------------
 @app.post("/api/profiles")
 async def profiles(req: OnvifBase):
     def _work():
         cam = _cam(req)
         media = cam.create_media_service()
-        profs = media.GetProfiles()
-        out = [_profile_summary(p) for p in profs if getattr(p, "token", None)]
-        if not out:
-            raise RuntimeError("No profiles returned.")
-
-        out.sort(
-            key=lambda p: (
-                0 if p.get("browser_compatible") else 1,
-                (p.get("width") or 999999) * (p.get("height") or 999999),
-                str(p.get("name") or ""),
-            )
-        )
+        profiles = media.GetProfiles() or []
+        out = [_profile_summary(p) for p in profiles]
         for i, p in enumerate(out):
             p["recommended"] = i == 0 and bool(p.get("browser_compatible"))
         return out
@@ -1850,6 +1919,7 @@ async def start(req: StartRequest):
     except Exception:
         pass
 
+    # Important: if this device is preloaded already, do not recreate the path.
     if device and device.preload_stream and device.profile_token == req.profile_token:
         return {"ok": True, "device_id": device_id, "path": _path_for(device_id)}
 
@@ -1868,12 +1938,14 @@ async def start(req: StartRequest):
         )
 
     try:
-        rtsp = await asyncio.to_thread(_get_stream_uri, req, req.profile_token)
+        source_uri = await asyncio.to_thread(_get_stream_uri, req, req.profile_token)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"ONVIF stream uri failed: {e}")
 
+    source_rtsp = _rtsp_with_auth(source_uri, req.username, req.password)
+
     try:
-        await asyncio.to_thread(_ensure_mediamtx_path, device_id, rtsp, False)
+        await asyncio.to_thread(_ensure_mediamtx_path, device_id, source_rtsp, False)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"MediaMTX path setup failed: {e}")
 
@@ -1881,40 +1953,15 @@ async def start(req: StartRequest):
 
 
 @app.post("/api/stop/{device_id}")
-async def stop_one(device_id: str):
+async def stop(device_id: str):
     device_id = device_id.strip()
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
-
-    keep_hot = False
     try:
-        d = _get_device(device_id)
-        keep_hot = bool(d.preload_stream and d.profile_token)
-    except Exception:
-        keep_hot = False
-
-    if not keep_hot:
-        await asyncio.to_thread(_delete_mediamtx_path, device_id)
-
-    try:
-        await asyncio.to_thread(_ptz_stop, device_id)
-    except Exception:
-        pass
-
-    return {"ok": True, "kept_preloaded": keep_hot}
-
-
-@app.post("/api/stop")
-async def stop_all():
-    devs = _load_devices()
-    for d in devs:
-        if not (d.preload_stream and d.profile_token):
-            await asyncio.to_thread(_delete_mediamtx_path, d.id)
-        try:
-            await asyncio.to_thread(_ptz_stop, d.id)
-        except Exception:
-            pass
-    return {"ok": True}
+        await asyncio.to_thread(_mediamtx_delete_path, device_id)
+        return {"ok": True, "device_id": device_id}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Stop failed: {e}")
 
 
 @app.get("/api/device-status/{device_id}")
@@ -1922,7 +1969,6 @@ def device_status(device_id: str):
     device_id = device_id.strip()
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
-
     d = _get_device(device_id)
     snapshot = _mediamtx_paths_snapshot()
     return _device_stream_status_from_snapshot(d, snapshot)
@@ -1930,36 +1976,21 @@ def device_status(device_id: str):
 
 @app.get("/api/device-status")
 def all_device_status():
-    devs = _load_devices()
     snapshot = _mediamtx_paths_snapshot()
+    devs = _load_devices()
     items = [_device_stream_status_from_snapshot(d, snapshot) for d in devs]
     return {"items": items}
 
 
-# -------------------------
-# PTZ API
-# -------------------------
 @app.get("/api/ptz/capabilities/{device_id}")
 async def ptz_capabilities(device_id: str):
     device_id = device_id.strip()
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
     try:
-        ctx = await asyncio.to_thread(_ptz_context, device_id)
-        return {
-            "ok": True,
-            "ptz": bool(ctx.has_ptz),
-            "pan_tilt": bool(ctx.has_pan_tilt),
-            "zoom": bool(ctx.has_zoom),
-        }
+        return await asyncio.to_thread(_ptz_capabilities, device_id)
     except Exception as e:
-        return {
-            "ok": True,
-            "ptz": False,
-            "pan_tilt": False,
-            "zoom": False,
-            "detail": str(e),
-        }
+        raise HTTPException(status_code=400, detail=f"PTZ capabilities failed: {e}")
 
 
 @app.get("/api/ptz/status/{device_id}")
@@ -1979,7 +2010,9 @@ async def ptz_move(device_id: str, req: PTZMoveRequest):
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
     try:
-        return await asyncio.to_thread(_ptz_move, device_id, req.pan, req.tilt, req.zoom)
+        out = await asyncio.to_thread(_ptz_continuous_move, device_id, req.pan, req.tilt, req.zoom)
+        _schedule_ptz_watchdog_stop(device_id)
+        return out
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"PTZ move failed: {e}")
 
@@ -1995,13 +2028,22 @@ async def ptz_stop(device_id: str):
         raise HTTPException(status_code=400, detail=f"PTZ stop failed: {e}")
 
 
-# -------------------------
-# Startup / shutdown
-# -------------------------
 @app.on_event("startup")
 def _on_startup():
     try:
         devs = _load_devices()
+
+        snapshot = _mediamtx_paths_snapshot()
+        with _action_runtime_lock:
+            _last_device_states.clear()
+            for d in devs:
+                st = _device_stream_status_from_snapshot(d, snapshot)
+                _last_device_states[d.id] = bool(st.get("stream_up"))
+
+        global _action_monitor_thread
+        _action_monitor_stop.clear()
+        _action_monitor_thread = threading.Thread(target=_poll_device_state_changes, daemon=True, name="action-monitor")
+        _action_monitor_thread.start()
 
         for d in devs:
             req = EventsStartRequest(
@@ -2033,6 +2075,8 @@ def _on_shutdown():
             w.stop_flag.set()
         except Exception:
             pass
+
+    _action_monitor_stop.set()
 
     with _ptz_watchdog_lock:
         timers = list(_ptz_watchdogs.values())

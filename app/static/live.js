@@ -59,7 +59,7 @@ async function api(url, opts) {
   let data = null;
   try {
     data = text ? JSON.parse(text) : null;
-  } catch { }
+  } catch {}
 
   if (!res.ok) {
     const detail = data?.detail || text || res.statusText;
@@ -82,7 +82,7 @@ async function ptzPost(url, body = null) {
     try {
       const parsed = text ? JSON.parse(text) : null;
       if (parsed?.detail) detail = parsed.detail;
-    } catch { }
+    } catch {}
     throw new Error(`${res.status} ${res.statusText}: ${detail}`);
   }
 }
@@ -248,12 +248,12 @@ async function loadDevices() {
 function stopPc(pc, videoEl) {
   try {
     pc?.close?.();
-  } catch { }
+  } catch {}
 
   if (videoEl?.srcObject) {
     try {
       videoEl.srcObject.getTracks().forEach((t) => t.stop());
-    } catch { }
+    } catch {}
   }
 
   if (videoEl) videoEl.srcObject = null;
@@ -310,9 +310,22 @@ async function startWhep(deviceId, videoEl, onState) {
   return pc;
 }
 
+function normalizePtzCaps(raw) {
+  return {
+    ptz: !!(raw?.ptz ?? raw?.has_ptz),
+    pan_tilt: !!(raw?.pan_tilt ?? raw?.has_pan_tilt),
+    zoom: !!(raw?.zoom ?? raw?.has_zoom),
+    profile_token: raw?.profile_token || null,
+    pan_tilt_space: raw?.pan_tilt_space || null,
+    zoom_space: raw?.zoom_space || null,
+    raw,
+  };
+}
+
 async function getPtzCaps(deviceId) {
   if (ptzCapsCache.has(deviceId)) return ptzCapsCache.get(deviceId);
-  const caps = await api(`/api/ptz/capabilities/${encodeURIComponent(deviceId)}`, { method: "GET" });
+  const raw = await api(`/api/ptz/capabilities/${encodeURIComponent(deviceId)}`, { method: "GET" });
+  const caps = normalizePtzCaps(raw);
   ptzCapsCache.set(deviceId, caps);
   return caps;
 }
@@ -408,7 +421,7 @@ function makeTile(device) {
   stopBtn.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    stopDevice(device.id).catch(() => { });
+    stopDevice(device.id).catch(() => {});
   });
 
   return { tile, videoEl, overlayEl };
@@ -421,10 +434,11 @@ function installPtzControls(device, entry, caps) {
   const zoomBtns = Array.from(entry.tileEl.querySelectorAll(".tilePtzZoomBtn"));
 
   if (!caps?.ptz) {
-    panel.classList.add("hidden");
+    panel?.classList.add("hidden");
     return;
   }
 
+  if (!panel) return;
   panel.classList.remove("hidden");
 
   if (!caps.pan_tilt) {
@@ -443,7 +457,7 @@ function installPtzControls(device, entry, caps) {
   let activeJoystick = false;
   let keepAliveTimer = null;
   let keepAliveUntil = 0;
-  let activeMode = "idle"; // idle | joystick | zoom
+  let activeMode = "idle";
   let zoomPressCount = 0;
 
   function roundedDesired() {
@@ -498,7 +512,7 @@ function installPtzControls(device, entry, caps) {
         return;
       }
 
-      flushMove(true).catch(() => { });
+      flushMove(true).catch(() => {});
     }, 120);
   }
 
@@ -535,7 +549,7 @@ function installPtzControls(device, entry, caps) {
       if (needsFlush || !sameCmd(latest, lastSent)) {
         needsFlush = false;
         queueMicrotask(() => {
-          flushMove(false).catch(() => { });
+          flushMove(false).catch(() => {});
         });
       }
     }
@@ -547,11 +561,11 @@ function installPtzControls(device, entry, caps) {
       tilt: clamp(tilt, -1, 1),
       zoom: clamp(zoom, -1, 1),
     };
-    flushMove(force).catch(() => { });
+    flushMove(force).catch(() => {});
   }
 
   function resetKnob() {
-    knob.style.transform = "translate(-50%, -50%)";
+    if (knob) knob.style.transform = "translate(-50%, -50%)";
   }
 
   function stopNow() {
@@ -559,12 +573,12 @@ function installPtzControls(device, entry, caps) {
     desired = { pan: 0, tilt: 0, zoom: 0 };
     clearKeepAlive();
     resetKnob();
-    flushMove(true).catch(() => { });
+    flushMove(true).catch(() => {});
   }
 
   entry.stopPtz = stopNow;
 
-  if (caps.pan_tilt) {
+  if (caps.pan_tilt && joystick && knob) {
     joystick.addEventListener("pointerdown", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -573,7 +587,7 @@ function installPtzControls(device, entry, caps) {
 
       try {
         joystick.setPointerCapture(ev.pointerId);
-      } catch { }
+      } catch {}
 
       const rect = joystick.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
@@ -613,7 +627,7 @@ function installPtzControls(device, entry, caps) {
         if (activeMode === "joystick") activeMode = "idle";
         try {
           joystick.releasePointerCapture(upEv.pointerId);
-        } catch { }
+        } catch {}
         joystick.removeEventListener("pointermove", onMove);
         joystick.removeEventListener("pointerup", onUp);
         joystick.removeEventListener("pointercancel", onUp);
@@ -623,7 +637,7 @@ function installPtzControls(device, entry, caps) {
           desired.pan = 0;
           desired.tilt = 0;
           resetKnob();
-          flushMove(true).catch(() => { });
+          flushMove(true).catch(() => {});
         } else {
           stopNow();
         }
@@ -654,7 +668,7 @@ function installPtzControls(device, entry, caps) {
 
         if (activeJoystick) {
           desired.zoom = 0;
-          flushMove(true).catch(() => { });
+          flushMove(true).catch(() => {});
         } else {
           stopNow();
         }
@@ -746,8 +760,11 @@ async function startDevice(device, { restore = false } = {}) {
 
       try {
         const caps = await getPtzCaps(device.id);
+        console.log("PTZ caps", device.id, caps);
         installPtzControls(device, curAfterApi, caps);
-      } catch { }
+      } catch (e) {
+        console.error("PTZ init failed", device.id, e);
+      }
 
       setTileOverlay(curAfterApi, "Connecting WebRTC…", true);
 
@@ -768,7 +785,7 @@ async function startDevice(device, { restore = false } = {}) {
       if (!cur || cur.cancelled) {
         try {
           pc.close();
-        } catch { }
+        } catch {}
         return;
       }
 
@@ -802,18 +819,18 @@ async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
 
   try {
     entry.stopPtz?.();
-  } catch { }
+  } catch {}
 
   try {
     entry.cleanupPtzListeners?.();
-  } catch { }
+  } catch {}
 
   const { pc, tileEl, videoEl } = entry;
   stopPc(pc, videoEl);
 
   try {
     tileEl?.remove?.();
-  } catch { }
+  } catch {}
 
   streams.delete(deviceId);
   saveGridState();
@@ -822,7 +839,7 @@ async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
   renderList();
 
   if (!skipApiStop) {
-    fetch(`/api/stop/${encodeURIComponent(deviceId)}`, { method: "POST" }).catch(() => { });
+    fetch(`/api/stop/${encodeURIComponent(deviceId)}`, { method: "POST" }).catch(() => {});
   }
 
   updateOverallStatusForGrid();
@@ -855,8 +872,8 @@ camListEl.addEventListener("click", (ev) => {
   const d = devices.find((x) => x.id === id);
   if (!d) return;
 
-  if (isStreaming(d.id)) stopDevice(d.id).catch(() => { });
-  else startDevice(d).catch(() => { });
+  if (isStreaming(d.id)) stopDevice(d.id).catch(() => {});
+  else startDevice(d).catch(() => {});
 });
 
 reloadBtn.addEventListener("click", () => loadDevices());
