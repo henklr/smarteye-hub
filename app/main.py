@@ -105,6 +105,11 @@ _last_device_states: Dict[str, bool] = {}
 _action_monitor_stop = threading.Event()
 _action_monitor_thread: Optional[threading.Thread] = None
 
+_path_progress_lock = threading.RLock()
+_path_progress_state: Dict[str, Dict[str, Any]] = {}
+
+STREAM_STALE_SEC = float(os.getenv("STREAM_STALE_SEC", "20"))
+
 
 def _ptz_device_lock(device_id: str) -> threading.Lock:
     with _ptz_command_locks_lock:
@@ -1406,6 +1411,37 @@ def _path_row_to_status(row: Optional[dict]) -> dict:
         "readers": readers_count,
     }
 
+def _stream_progress_state(device_id: str, bytes_received: int, online: bool, ready: bool, source_ready: bool) -> dict:
+    now = time.time()
+
+    with _path_progress_lock:
+        st = _path_progress_state.get(device_id)
+        if st is None:
+            st = {
+                "last_bytes": int(bytes_received or 0),
+                "last_change_ts": now,
+            }
+            _path_progress_state[device_id] = st
+        else:
+            current_bytes = int(bytes_received or 0)
+            if current_bytes > int(st.get("last_bytes", 0)):
+                st["last_bytes"] = current_bytes
+                st["last_change_ts"] = now
+
+        stale_for = now - float(st.get("last_change_ts", now))
+
+    # If MediaMTX says it is online/ready but no bytes have moved for a while,
+    # treat it as stale/offline.
+    stalled = (
+        (online or ready or source_ready)
+        and stale_for >= STREAM_STALE_SEC
+    )
+
+    return {
+        "stale_for_sec": round(stale_for, 1),
+        "stalled": stalled,
+    }
+    
 
 def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
     path_name = _path_for(device.id)
@@ -1444,31 +1480,53 @@ def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
 
     source_ready = bool(g(row, "sourceReady", "source_ready", default=False))
     ready = bool(g(row, "ready", default=False))
+    online = bool(g(row, "online", default=False))
+    available = bool(g(row, "available", default=False))
     source_on_demand = g(row, "sourceOnDemand", "source_on_demand", default=None)
     source = g(row, "source", default=None)
     bytes_received = g(row, "bytesReceived", "bytes_received", "bytesreceived", default=0) or 0
     readers_raw = g(row, "readers", default=[])
     readers = len(readers_raw) if isinstance(readers_raw, list) else int(readers_raw or 0)
 
+    progress = _stream_progress_state(
+        device.id,
+        bytes_received=bytes_received,
+        online=online,
+        ready=ready,
+        source_ready=source_ready,
+    )
+
     out.update({
         "source_ready": source_ready,
         "ready": ready,
+        "online": online,
+        "available": available,
         "source_on_demand": source_on_demand,
         "source": source,
         "bytes_received": bytes_received,
         "readers": readers,
+        "stale_for_sec": progress["stale_for_sec"],
+        "stalled": progress["stalled"],
     })
 
-    stream_up = any([
+    # Live only if the source looks healthy and is still making progress.
+    healthy_flags = any([
+        online,
+        available,
         source_ready,
         ready,
-        bytes_received > 0,
         readers > 0,
-        bool(source),
     ])
 
+    stream_up = healthy_flags and not progress["stalled"]
+
     out["stream_up"] = stream_up
-    out["status"] = "live" if stream_up else ("idle" if bool(device.preload_stream) else "down")
+
+    if stream_up:
+        out["status"] = "live"
+    else:
+        out["status"] = "down" if device.preload_stream else "down"
+
     return out
 
 
@@ -1886,7 +1944,10 @@ def delete_device(device_id: str):
     _save_devices(new_devs)
     _invalidate_ptz_cache(device_id)
     _stop_event_worker(device_id)
-
+    
+    with _path_progress_lock:
+        _path_progress_state.pop(device_id, None)
+        
     try:
         _mediamtx_delete_path(device_id)
     except Exception:
