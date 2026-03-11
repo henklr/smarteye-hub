@@ -188,7 +188,6 @@ class DeviceIn(BaseModel):
     profile_token: Optional[str] = None
     profile_label: Optional[str] = None
     profile_encoding: Optional[str] = None
-    allow_topics: Optional[List[str]] = None
     preload_stream: bool = True
 
 
@@ -256,9 +255,7 @@ def _normalize_device_dict(d: dict) -> dict:
     out = dict(d)
     if "preload_stream" not in out:
         out["preload_stream"] = True
-    if "allow_topics" not in out or out["allow_topics"] is None:
-        out["allow_topics"] = []
-    out["allow_topics"] = [_normalize_allow_topic(x) for x in out["allow_topics"] if _normalize_allow_topic(x)]
+    out.pop("allow_topics", None)
     return out
 
 
@@ -307,29 +304,6 @@ def _update_device(device_id: str, dev_in: DeviceIn) -> Device:
             _start_event_worker(device_id, req)
             return devs[i]
     raise HTTPException(status_code=404, detail="Device not found")
-
-
-def _update_device_allowlist(device_id: str, allow_topics: List[str]) -> None:
-    devs = _load_devices()
-    idx = None
-    for i, d in enumerate(devs):
-        if d.id == device_id:
-            idx = i
-            break
-    if idx is None:
-        raise HTTPException(status_code=404, detail="Device not found")
-
-    d = devs[idx]
-    normalized: List[str] = []
-    seen = set()
-    for t in allow_topics:
-        t2 = _normalize_allow_topic(t)
-        if t2 and t2 not in seen:
-            seen.add(t2)
-            normalized.append(t2)
-
-    devs[idx] = Device(**{**_dump(d), "id": d.id, "allow_topics": normalized})
-    _save_devices(devs)
 
 
 def _load_snapshot_index() -> dict:
@@ -917,14 +891,6 @@ def _get_event_properties(req: OnvifBase) -> dict:
         "raw_topic_set": _serialize_zeep_obj(getattr(props, "TopicSet", None)),
         "raw": _serialize_zeep_obj(props),
     }
-
-
-def _get_allowlist_snapshot(device_id: str) -> List[str]:
-    try:
-        d = _get_device(device_id)
-        return list(d.allow_topics or [])
-    except Exception:
-        return []
 
 
 def _broadcast_event(device_id: str, payload: dict) -> None:
@@ -1786,35 +1752,6 @@ async def events_properties(device_id: str):
         return {"ok": True, "device_id": device_id, **data}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"GetEventProperties failed: {e}")
-
-
-@app.get("/api/events/allowlist/{device_id}")
-def events_allowlist_get(device_id: str):
-    device_id = device_id.strip()
-    if not device_id:
-        raise HTTPException(status_code=400, detail="Missing device_id")
-    d = _get_device(device_id)
-    return {"device_id": device_id, "allow_topics": list(d.allow_topics or [])}
-
-
-@app.put("/api/events/allowlist/{device_id}")
-def events_allowlist_set(device_id: str, req: AllowListRequest):
-    device_id = device_id.strip()
-    if not device_id:
-        raise HTTPException(status_code=400, detail="Missing device_id")
-
-    allow: List[str] = []
-    seen = set()
-    for t in req.allow_topics:
-        t2 = _normalize_allow_topic(t)
-        if not t2:
-            continue
-        if t2 not in seen:
-            seen.add(t2)
-            allow.append(t2)
-
-    _update_device_allowlist(device_id, allow)
-    return {"ok": True, "device_id": device_id, "allow_topics": allow}
 
 
 @app.get("/api/actions")
