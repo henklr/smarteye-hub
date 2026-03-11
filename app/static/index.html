@@ -4,17 +4,22 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Home</title>
+  <title>Redirecting...</title>
   <link rel="stylesheet" href="/static/styles.css" />
+
+  <!-- instant redirect -->
+  <meta http-equiv="refresh" content="0; url=/live">
+
+  <script>
+    window.location.replace("/live");
+  </script>
 </head>
 
 <body>
   <div class="wrap full">
     <div class="topbar">
-
       <div class="tabs">
-        <a class="tab active" href="/"><span class="tabDot"></span>Home</a>
-        <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
+        <a class="tab active" href="/live"><span class="tabDot"></span>Live</a>
         <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
         <a class="tab" href="/events"><span class="tabDot"></span>Events</a>
         <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
@@ -22,18 +27,17 @@
     </div>
 
     <div class="card">
-      <h2 style="margin:0 0 8px; font-size:16px; font-weight:900;">Welcome</h2>
+      <h2 style="margin:0 0 8px; font-size:16px; font-weight:900;">
+        Redirecting to Live
+      </h2>
+
       <div class="subtitle" style="margin-bottom:14px;">
-        Use the tabs above to manage devices and view live video.
+        Opening the live view...
       </div>
 
-      <div class="row2" style="margin-top:0;">
-        <a class="btn btn-primary" href="/live">Go to Live</a>
-        <a class="btn" href="/devices">Manage Devices</a>
-      </div>
-
-      <div class="meta" style="margin-top:14px;">
-        <span>Tip: Add a device and save a profile in <code>/devices</code> first.</span>
+      <div class="meta">
+        If you are not redirected automatically,
+        <a href="/live">click here</a>.
       </div>
     </div>
   </div>

@@ -838,10 +838,6 @@ async function stopDevice(deviceId, { skipApiStop } = { skipApiStop: false }) {
   recomputeGrid();
   renderList();
 
-  if (!skipApiStop) {
-    fetch(`/api/stop/${encodeURIComponent(deviceId)}`, { method: "POST" }).catch(() => {});
-  }
-
   updateOverallStatusForGrid();
 }
 

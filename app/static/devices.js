@@ -130,26 +130,35 @@ function streamStatusHtml(d) {
   const st = statusMap.get(d.id);
 
   if (!d.profile_token) {
-    return `<span class="statusChip"><span class="statusDot unknown"></span><span class="muted">N/A</span></span>`;
+    return `<span class="statusChip" title="No profile configured"><span class="statusDot unknown"></span><span class="muted">N/A</span></span>`;
   }
 
   if (!st) {
-    return `<span class="statusChip"><span class="statusDot unknown"></span><span class="muted">Checking…</span></span>`;
+    return `<span class="statusChip" title="Waiting for status"><span class="statusDot unknown"></span><span class="muted">Checking…</span></span>`;
   }
 
   switch (st.status) {
     case "live":
-      return `<span class="statusChip"><span class="statusDot up"></span><span class="okTag">LIVE</span></span>`;
+      return `<span class="statusChip" title="Stream is live"><span class="statusDot up"></span><span class="okTag">LIVE</span></span>`;
 
     case "idle":
-      return `<span class="statusChip"><span class="statusDot unknown"></span><span class="muted">IDLE</span></span>`;
+      return `<span class="statusChip" title="Configured, but not currently kept hot"><span class="statusDot unknown"></span><span class="muted">IDLE</span></span>`;
 
-    case "not_configured":
-      return `<span class="statusChip"><span class="statusDot unknown"></span><span class="muted">N/A</span></span>`;
+    case "unknown": {
+      const title = typeof st.detail === "string" ? st.detail : "Status unavailable";
+      return `<span class="statusChip" title="${escapeHtml(title)}"><span class="statusDot unknown"></span><span class="muted">UNKNOWN</span></span>`;
+    }
 
     case "down":
-    default:
-      return `<span class="statusChip"><span class="statusDot down"></span><span class="badTag">DOWN</span></span>`;
+    default: {
+      const title =
+        typeof st.detail === "string"
+          ? st.detail
+          : st.detail
+          ? JSON.stringify(st.detail)
+          : "No stream";
+      return `<span class="statusChip" title="${escapeHtml(title)}"><span class="statusDot down"></span><span class="badTag">DOWN</span></span>`;
+    }
   }
 }
 
@@ -160,7 +169,7 @@ function rowHtml(d) {
     : `<span class="badTag">NO</span>`;
 
   return `
-    <tr data-id="${escapeHtml(d.id)}" role="button" tabindex="0">
+    <tr data-id="${escapeHtml(d.id)}" role="button" tabindex="0" title="Click to edit">
       <td>${escapeHtml(d.name || "")}</td>
       <td>${escapeHtml(d.ip || "")}</td>
       <td>${readyTag}</td>
@@ -190,9 +199,9 @@ async function loadStatuses() {
     renderTable();
 
     const live = items.filter((x) => x.status === "live").length;
+    const idle = items.filter((x) => x.status === "idle").length;
     const down = items.filter((x) => x.status === "down").length;
-
-    setListStatus(`Loaded ${devices.length} device(s). ${live} live, ${down} down.`);
+    setListStatus(`Loaded ${devices.length} device(s). ${live} live, ${idle} idle, ${down} down.`);
   } catch (e) {
     setListStatus(`Status check failed: ${String(e.message || e)}`);
   }
@@ -216,11 +225,180 @@ async function load() {
     renderTable();
     setListStatus(`Loaded ${devices.length} device(s). Checking status…`);
     await loadStatuses();
+
+    if (editingId && devices.some((d) => d.id === editingId)) {
+      selectRow(editingId);
+    } else {
+      clearRowSelection();
+    }
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="4" class="muted">Failed to load: ${escapeHtml(e.message || e)}</td></tr>`;
     setListStatus("Load failed.");
   }
 }
+
+function readCredsOnly() {
+  const ip = ipEl.value.trim();
+  const onvif_port = parseInt((portEl.value || "80").trim(), 10);
+  const username = userEl.value.trim();
+  const password = passEl.value;
+
+  if (!ip) throw new Error("IP is required.");
+  if (!username) throw new Error("Username is required.");
+  if (!password) throw new Error("Password is required.");
+  if (!Number.isFinite(onvif_port) || onvif_port <= 0) throw new Error("Invalid ONVIF port.");
+
+  return { ip, onvif_port, username, password };
+}
+
+function readFormFull() {
+  const name = nameEl.value.trim();
+  if (!name) throw new Error("Name is required.");
+
+  const creds = readCredsOnly();
+
+  const profile_token = profilesSel.disabled ? null : (profilesSel.value || null);
+  const selected = lastProfiles.find((p) => p.token === profile_token);
+  const profile_label = profile_token
+    ? (selected ? profileLabel(selected) : (profilesSel.selectedOptions?.[0]?.textContent || profile_token))
+    : null;
+
+  return { name, ...creds, profile_token, profile_label };
+}
+
+async function fetchProfiles() {
+  setFormStatus("Fetching profiles…");
+  clearProfilesUI("Loading…");
+
+  const creds = readCredsOnly();
+
+  const data = await api("/api/profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(creds),
+  });
+
+  const profs = data.profiles || [];
+  if (!profs.length) throw new Error("No profiles returned.");
+
+  lastProfiles = profs;
+
+  profilesSel.innerHTML = "";
+  for (const p of profs) {
+    const opt = document.createElement("option");
+    opt.value = p.token;
+    opt.textContent = profileLabel(p);
+    profilesSel.appendChild(opt);
+  }
+  profilesSel.disabled = false;
+
+  if (editingId) {
+    const d = devices.find((x) => x.id === editingId);
+    if (d?.profile_token) profilesSel.value = d.profile_token;
+  }
+
+  const recommended = profs.find((p) => p.recommended);
+  if (recommended) {
+    profilesSel.value = recommended.token;
+    setFormStatus(`Profiles loaded (${profs.length}). Recommended H264 profile selected.`);
+  } else {
+    setFormStatus(`Profiles loaded (${profs.length}), but no browser-safe H264 profile was found.`);
+  }
+}
+
+fetchBtn.addEventListener("click", async () => {
+  try {
+    if (!editingId && !ipEl.value.trim()) {
+      throw new Error("Click a device row (or fill fields) before Fetch profiles.");
+    }
+    await fetchProfiles();
+  } catch (e) {
+    clearProfilesUI("Fetch failed");
+    setFormStatus(`Error: ${String(e.message || e)}`);
+  }
+});
+
+saveBtn.addEventListener("click", async () => {
+  try {
+    setFormStatus("Saving…");
+    const payload = readFormFull();
+
+    if (!payload.profile_token) {
+      throw new Error("Select a profile before saving (Fetch profiles → choose one).");
+    }
+
+    if (editingId) {
+      await api(`/api/devices/${encodeURIComponent(editingId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setFormStatus("Updated.");
+    } else {
+      await api("/api/devices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setFormStatus("Created.");
+    }
+
+    await load();
+    clearForm();
+  } catch (e) {
+    setFormStatus(`Error: ${String(e.message || e)}`);
+  }
+});
+
+newBtn.addEventListener("click", () => {
+  editingId = null;
+  formTitle.textContent = "Create device";
+  delBtn.disabled = true;
+  clearProfilesUI("Fetch profiles to select…");
+  clearRowSelection();
+  setFormStatus("Creating new device (fields copied). Select profile and Save.");
+});
+
+clearBtn.addEventListener("click", () => {
+  clearForm();
+  setFormStatus("Form cleared.");
+});
+
+delBtn.addEventListener("click", async () => {
+  if (!editingId) return;
+  try {
+    setFormStatus("Deleting…");
+    await api(`/api/devices/${encodeURIComponent(editingId)}`, { method: "DELETE" });
+    setFormStatus("Deleted.");
+    await load();
+    clearForm();
+  } catch (e) {
+    setFormStatus(`Error: ${String(e.message || e)}`);
+  }
+});
+
+refreshBtn.addEventListener("click", () => load());
+if (refreshTop) refreshTop.addEventListener("click", () => load());
+
+tbody.addEventListener("click", (ev) => {
+  const tr = ev.target?.closest?.("tr[data-id]");
+  if (!tr) return;
+  const id = tr.getAttribute("data-id");
+  const d = devices.find((x) => x.id === id);
+  if (!d) return;
+  fillForm(d);
+});
+
+tbody.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter" && ev.key !== " ") return;
+  const tr = ev.target?.closest?.("tr[data-id]");
+  if (!tr) return;
+  ev.preventDefault();
+  const id = tr.getAttribute("data-id");
+  const d = devices.find((x) => x.id === id);
+  if (!d) return;
+  fillForm(d);
+});
 
 function startPolling() {
   stopPolling();

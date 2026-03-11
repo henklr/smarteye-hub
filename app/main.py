@@ -1956,9 +1956,15 @@ async def start(req: StartRequest):
     except Exception:
         pass
 
-    # Important: if this device is preloaded already, do not recreate the path.
+    # If this device is marked as preloaded and uses the same profile,
+    # only skip setup if the MediaMTX path actually exists.
     if device and device.preload_stream and device.profile_token == req.profile_token:
-        return {"ok": True, "device_id": device_id, "path": _path_for(device_id)}
+        snapshot = await asyncio.to_thread(_mediamtx_paths_snapshot)
+        path_name = _path_for(device_id)
+        items = list(snapshot.get("items") or [])
+        exists = any((x.get("name") == path_name) for x in items)
+        if exists:
+            return {"ok": True, "device_id": device_id, "path": path_name}
 
     try:
         encoding = await asyncio.to_thread(_find_profile_encoding, req, req.profile_token)
@@ -1982,7 +1988,7 @@ async def start(req: StartRequest):
     source_rtsp = _rtsp_with_auth(source_uri, req.username, req.password)
 
     try:
-        await asyncio.to_thread(_ensure_mediamtx_path, device_id, source_rtsp, False)
+        await asyncio.to_thread(_ensure_mediamtx_path, device_id, source_rtsp, bool(device.preload_stream) if device else False)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"MediaMTX path setup failed: {e}")
 
@@ -1994,12 +2000,22 @@ async def stop(device_id: str):
     device_id = device_id.strip()
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
+
+    try:
+        d = _get_device(device_id)
+    except Exception:
+        d = None
+
+    # For preloaded devices, Live-stop should not remove the backend path.
+    if d and d.preload_stream:
+        return {"ok": True, "device_id": device_id, "kept_preloaded_path": True}
+
     try:
         await asyncio.to_thread(_mediamtx_delete_path, device_id)
         return {"ok": True, "device_id": device_id}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Stop failed: {e}")
-
+    
 
 @app.get("/api/device-status/{device_id}")
 def device_status(device_id: str):
