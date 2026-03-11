@@ -513,10 +513,8 @@ def _get_action_topic_allowlist(device_id: str) -> set[str]:
 
 
 def _get_effective_event_allowlist(device_id: str) -> set[str]:
-    topics = set(_get_allowlist_snapshot(device_id))
-    topics.update(_get_action_topic_allowlist(device_id))
+    topics = set(_get_action_topic_allowlist(device_id))
     return {t for t in topics if t}
-
 
 def _match_onvif_condition(condition: dict, event_payload: dict) -> bool:
     extra = event_payload.get("extra") or {}
@@ -733,14 +731,35 @@ def _collect_topic_paths(topic_set_obj) -> List[dict]:
 def _guess_topic_from_items(items: dict) -> str:
     data = items.get("data", {}) or {}
     src = items.get("source", {}) or {}
-    keys = {str(k).lower(): str(v) for k, v in {**src, **data}.items()}
 
-    if "videosourcetoken" in keys and ("ismotion" in keys or "state" in keys):
-        return "RuleEngine/CellMotionDetector/Motion"
+    merged = {**src, **data}
+    keys = {str(k).lower(): str(v) for k, v in merged.items()}
+
+    has_motion_flag = "ismotion" in keys
+    has_vs_token = (
+        "videosourcetoken" in keys
+        or "videosourceconfigurationtoken" in keys
+        or "video_source_configuration_token" in keys
+    )
+    has_va_token = (
+        "videoanalyticstoken" in keys
+        or "videoanalyticsconfigurationtoken" in keys
+        or "video_analytics_configuration_token" in keys
+    )
+    has_rule = "rule" in keys
+
+    # Common camera motion event payloads
+    if has_motion_flag and (has_vs_token or has_va_token or has_rule):
+        # Return both common ONVIF-style possibilities in priority order
+        # by preferring the more generic one that matches your configured rule.
+        return "VideoSource/MotionAlarm"
+
     if "inputtoken" in keys:
         return "Device/Trigger/DigitalInput"
+
     if "relaytoken" in keys:
         return "Device/Trigger/Relay"
+
     if "tamper" in "".join(keys.keys()).lower():
         return "VideoSource/ImageTooDark/Tamper"
 
@@ -758,6 +777,11 @@ def _normalize_topic_for_match(topic_text: Optional[str]) -> str:
     topic_text = (topic_text or "").strip().strip("/")
     if not topic_text:
         return ""
+
+    # Ignore zeep / object repr junk
+    if "Dialect" in topic_text and "ConcreteSet" in topic_text:
+        return ""
+
     parts = [p.strip() for p in topic_text.split("/") if p.strip()]
     cleaned = []
     for p in parts:
@@ -776,10 +800,21 @@ def _topic_obj_to_text(topic_obj) -> str:
     if isinstance(text, str) and text.strip():
         return text.strip()
 
-    try:
-        return str(topic_obj).strip()
-    except Exception:
-        return ""
+    if isinstance(text, list):
+        parts = []
+        for x in text:
+            try:
+                sx = str(x).strip()
+            except Exception:
+                sx = ""
+            if sx:
+                parts.append(sx)
+        if parts:
+            return "/".join(parts)
+
+    # Do not fall back to str(topic_obj) because that produces a zeep object repr,
+    # not an actual topic path.
+    return ""
 
 
 def _extract_simple_items(msg_elem) -> dict:
@@ -934,16 +969,18 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, stop_flag: threading.Eve
 
                     matched = False
                     matched_by = None
-                    if allow_set:
+
+                    # If no topics are referenced by Actions for this device,
+                    # do not pass any ONVIF events through.
+                    if not allow_set:
+                        matched = False
+                    else:
                         for candidate in match_candidates:
                             if _topic_matches_allowlist(candidate, allow_set):
                                 matched = True
                                 matched_by = candidate
                                 break
-                    else:
-                        matched = True
-                        matched_by = topic_path or guessed_topic or fallback_key
-
+        
                     if EVENT_DEBUG:
                         _emit_event(
                             device_id,

@@ -1,111 +1,102 @@
-<!-- events.html -->
 <!doctype html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Events</title>
   <link rel="stylesheet" href="/static/styles.css" />
+
   <style>
-    .toolbar {
-      display: flex;
-      gap: 10px;
-      align-items: end;
-      flex-wrap: wrap;
-    }
-
-    .grow {
-      flex: 1 1 220px;
-    }
-
-    .list {
-      margin-top: 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .eventCard {
+    .log{
+      margin-top:14px;
       border: 1px solid var(--stroke);
-      background: rgba(255, 255, 255, .03);
-      border-radius: 12px;
-      padding: 12px;
-    }
-
-    .row {
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-      align-items: flex-start;
-      flex-wrap: wrap;
-    }
-
-    .title {
-      font-weight: 900;
-    }
-
-    .mini {
-      font-size: 11px;
-      color: var(--muted);
-    }
-
-    .tagRow {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 8px;
-    }
-
-    .tag {
-      display: inline-flex;
-      align-items: center;
-      padding: 6px 10px;
-      border-radius: 999px;
-      border: 1px solid var(--stroke);
-      background: rgba(255, 255, 255, .04);
-      font-size: 11px;
-      font-weight: 800;
-    }
-
-    .mono {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 11px;
-      white-space: pre-wrap;
-      word-break: break-word;
-      border: 1px solid var(--stroke);
-      background: rgba(0, 0, 0, .18);
       border-radius: 10px;
-      padding: 10px;
-      margin-top: 10px;
+      overflow: hidden;
+      background: rgba(0,0,0,.22);
     }
-
-    .empty {
-      padding: 10px 2px;
+    .logHead{
+      padding:10px 12px;
+      border-bottom:1px solid var(--stroke);
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:12px;
+      background: rgba(255,255,255,.02);
+      flex-wrap:wrap;
+    }
+    .logControls{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      flex-wrap:wrap;
+      justify-content:flex-end;
+    }
+    .chipRow{
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+      align-items:center;
+    }
+    .filterChip{
+      appearance:none;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.04);
+      color: rgba(233,238,252,.82);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 900;
+      cursor:pointer;
+    }
+    .filterChip.active{
+      background: rgba(255,255,255,.12);
+      border-color: rgba(255,255,255,.22);
+      color: #fff;
+    }
+    .logSearch{
+      min-width: 220px;
+      max-width: 320px;
+    }
+    .logBody{
+      max-height: 420px;
+      overflow:auto;
+      padding:10px 12px;
+      font-size:12px;
       color: var(--muted);
-      font-size: 12px;
+      line-height:1.5;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .logLine{ margin-bottom:8px; }
+    .k{ color: rgba(233,238,252,.62); font-weight: 800; }
+    .v{ color: rgba(233,238,252,.86); }
+    .lvl{ font-weight: 900; }
+    .lvl.ok{ color: var(--ok); }
+    .lvl.warn{ color: var(--warn); }
+    .lvl.bad{ color: var(--danger); }
+    .lvl.debug{ color: rgba(160, 180, 255, .88); }
+    .lvl.event{ color: rgba(126, 214, 255, .95); }
+
+    .miniStat{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      padding:6px 10px;
+      border-radius:999px;
+      border:1px solid rgba(255,255,255,.10);
+      background:rgba(255,255,255,.04);
+      color:rgba(233,238,252,.78);
+      font-size:11px;
+      font-weight:900;
     }
 
-    .topbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 14px;
-      gap: 12px;
-    }
-
-    .topbarLeft {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      min-width: 0;
-    }
-
-    .topbarRight {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-left: auto;
+    .helperNote{
+      margin-top:10px;
+      padding:10px 12px;
+      border:1px solid rgba(255,255,255,.10);
+      border-radius:10px;
+      background:rgba(255,255,255,.03);
+      color:var(--muted);
+      font-size:12px;
     }
   </style>
 </head>
@@ -113,46 +104,77 @@
 <body>
   <div class="wrap full">
     <div class="topbar">
-      <div class="topbarLeft">
-        <div class="tabs">
-          <a class="tab" href="/"><span class="tabDot"></span>Home</a>
-          <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
-          <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
-          <a class="tab" href="/actions"><span class="tabDot"></span>Actions</a>
-          <a class="tab active" href="/events"><span class="tabDot"></span>Events</a>
-          <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
-        </div>
+      <div class="tabs">
+        <a class="tab" href="/"><span class="tabDot"></span>Home</a>
+        <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
+        <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
+        <a class="tab" href="/actions"><span class="tabDot"></span>Actions</a>
+        <a class="tab active" href="/events"><span class="tabDot"></span>Events</a>
+        <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
       </div>
 
-      <div class="topbarRight">
-        <button class="btn" id="btnRefresh" type="button">Refresh</button>
+      <div class="pill" id="statusPill" title="SSE connection state">
+        <span class="dot" id="dot"></span>
+        <span id="pillText">Idle</span>
       </div>
     </div>
 
-    <section class="card">
+    <div class="card">
       <div class="listHeader">
         <div>
-          <div class="listTitle">Action events</div>
-          <div class="listSub">Events generated by saved Actions rules.</div>
+          <div class="listTitle">ONVIF Events</div>
+          <div class="listSub">
+            Log every ONVIF event live. Topic selection is managed from Actions conditions.
+          </div>
         </div>
+        <div class="camBadge" id="deviceChip">No device</div>
       </div>
 
-      <div class="toolbar" style="margin-top:12px;">
-        <div class="grow">
-          <label for="deviceFilter">Device</label>
-          <select id="deviceFilter"></select>
+      <div class="grid" style="grid-template-columns: 1.2fr 1fr auto; gap:10px;">
+        <div data-full>
+          <label>Device</label>
+          <select id="deviceSelect"></select>
         </div>
-        <div class="grow">
-          <label for="searchInput">Search</label>
-          <input id="searchInput" placeholder="Rule name, device, message, topic..." />
+
+        <div data-full>
+          <label>Search log</label>
+          <input id="logSearch" class="logSearch" placeholder="Search log..." />
         </div>
+
+        <button class="btn" id="btnRefresh">Refresh</button>
       </div>
 
-      <div id="list" class="list"></div>
-    </section>
+      <div class="helperNote">
+        This page only shows live ONVIF event/debug output. To choose which ONVIF topics should be listened to, use the Actions page and create ONVIF event conditions there.
+      </div>
+
+      <div class="log">
+        <div class="logHead">
+          <div>
+            <div class="listTitle">Live log</div>
+            <div class="listSub">Worker messages + ONVIF events (SSE). “All cameras” aggregates all device streams.</div>
+          </div>
+
+          <div class="logControls">
+            <div class="chipRow">
+              <button class="filterChip active" data-level="all" id="chip-all">All</button>
+              <button class="filterChip active" data-level="event" id="chip-event">Event</button>
+              <button class="filterChip active" data-level="debug" id="chip-debug">Debug</button>
+              <button class="filterChip active" data-level="ok" id="chip-ok">OK</button>
+              <button class="filterChip active" data-level="warn" id="chip-warn">Warn</button>
+              <button class="filterChip active" data-level="bad" id="chip-bad">Bad</button>
+            </div>
+
+            <span class="miniStat">Shown <span id="logShownCount">0</span></span>
+            <span class="miniStat">Total <span id="logTotalCount">0</span></span>
+            <button class="btn btn-mini" id="btnClearLog">Clear log</button>
+          </div>
+        </div>
+        <div class="logBody" id="log"></div>
+      </div>
+    </div>
   </div>
 
   <script src="/static/events.js"></script>
 </body>
-
 </html>
