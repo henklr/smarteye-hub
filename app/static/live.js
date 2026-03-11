@@ -1002,9 +1002,9 @@ async function restoreGrid() {
   setStatus(`Restoring ${toRestore.length} camera(s)…`, "warn");
 
   try {
-    for (const d of toRestore) {
-      await startDevice(d, { restore: true });
-    }
+    await Promise.allSettled(
+      toRestore.map((d) => startDevice(d, { restore: true }))
+    );
   } finally {
     restoringGrid = false;
     applyTileOrder(desiredTileOrder);
@@ -1035,9 +1035,9 @@ startAllBtn.addEventListener("click", async () => {
 
   setStatus(`Starting ${toStart.length} camera(s)…`, "warn");
 
-  for (const d of toStart) {
-    await startDevice(d);
-  }
+  await Promise.allSettled(
+    toStart.map((d) => startDevice(d))
+  );
 
   saveGridState();
   updateOverallStatusForGrid(`Showing ${streams.size} camera(s).`);
@@ -1046,10 +1046,9 @@ startAllBtn.addEventListener("click", async () => {
 stopAllBtn.addEventListener("click", async () => {
   setStatus("Stopping all…", "warn");
 
-  const ids = Array.from(streams.keys());
-  for (const id of ids) {
-    await stopDevice(id);
-  }
+  await Promise.allSettled(
+    Array.from(streams.keys()).map((id) => stopDevice(id))
+  );
 
   saveGridState();
   setStatus("Stopped.", "warn");
