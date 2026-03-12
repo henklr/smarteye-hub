@@ -1,4 +1,3 @@
-<!-- actions.html -->
 <!doctype html>
 <html lang="en">
 
@@ -8,141 +7,17 @@
   <title>Actions</title>
   <link rel="stylesheet" href="/static/styles.css" />
   <style>
-    .grid2 {
+    .split {
       display: grid;
-      grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
+      grid-template-columns: 1.05fr .95fr;
       gap: 14px;
       align-items: start;
     }
 
-    @media (max-width: 1000px) {
-      .grid2 {
+    @media (max-width:1000px) {
+      .split {
         grid-template-columns: 1fr;
       }
-    }
-
-    .stack {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    .row {
-      display: flex;
-      gap: 10px;
-      align-items: end;
-      flex-wrap: wrap;
-    }
-
-    .grow {
-      flex: 1 1 220px;
-    }
-
-    .conditionCard,
-    .actionCard,
-    .ruleCard {
-      border: 1px solid var(--stroke);
-      background: rgba(255, 255, 255, .03);
-      border-radius: 12px;
-      padding: 12px;
-    }
-
-    .ruleCard {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .ruleMeta {
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-      align-items: flex-start;
-      flex-wrap: wrap;
-    }
-
-    .ruleTitle {
-      font-weight: 900;
-    }
-
-    .mini {
-      font-size: 11px;
-      color: var(--muted);
-    }
-
-    .list {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      max-height: 70vh;
-      overflow: auto;
-    }
-
-    .tagRow {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    .tag {
-      display: inline-flex;
-      align-items: center;
-      padding: 6px 10px;
-      border-radius: 999px;
-      border: 1px solid var(--stroke);
-      background: rgba(255, 255, 255, .04);
-      font-size: 11px;
-      font-weight: 800;
-    }
-
-    .empty {
-      padding: 10px 2px;
-      color: var(--muted);
-      font-size: 12px;
-    }
-
-    .topicPicker {
-      display: none;
-      margin-top: 10px;
-      padding-top: 10px;
-      border-top: 1px solid var(--stroke);
-    }
-
-    .topicPicker.open {
-      display: block;
-    }
-
-    .topicList {
-      max-height: 240px;
-      overflow: auto;
-      border: 1px solid var(--stroke);
-      border-radius: 10px;
-      background: rgba(0, 0, 0, .18);
-    }
-
-    .topicItem {
-      padding: 9px 10px;
-      border-bottom: 1px solid rgba(255, 255, 255, .06);
-      cursor: pointer;
-    }
-
-    .topicItem:last-child {
-      border-bottom: 0;
-    }
-
-    .topicItem:hover {
-      background: rgba(255, 255, 255, .04);
-    }
-
-    .topicItem.active {
-      background: rgba(124, 156, 255, .14);
-      border-left: 3px solid var(--accent);
-    }
-
-    .hr {
-      height: 1px;
-      background: var(--stroke);
-      margin: 4px 0;
     }
 
     .topbar {
@@ -166,6 +41,362 @@
       gap: 12px;
       margin-left: auto;
     }
+
+    .rulesTools {
+      display: flex;
+      gap: 10px;
+      align-items: end;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    .grow {
+      flex: 1 1 220px;
+      min-width: 0;
+    }
+
+    .rulesList {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 12px;
+      max-height: 70vh;
+      overflow: auto;
+    }
+
+    .ruleItem {
+      border: 1px solid var(--stroke);
+      border-radius: var(--r-sm);
+      background: rgba(0, 0, 0, .18);
+      padding: 12px;
+      transition: background .12s ease, border-color .12s ease, box-shadow .12s ease;
+      cursor: pointer;
+    }
+
+    .ruleItem:hover {
+      background: rgba(0, 0, 0, .24);
+      border-color: var(--stroke-2);
+    }
+
+    .ruleItem.active {
+      box-shadow: 0 0 0 3px rgba(245, 180, 0, .10);
+      border-color: rgba(245, 180, 0, .34);
+    }
+
+    .ruleTop {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .ruleName {
+      font-weight: 900;
+      font-size: 14px;
+      line-height: 1.25;
+    }
+
+    .ruleSummary {
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .ruleMeta {
+      margin-top: 10px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .miniTag {
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 8px;
+      border-radius: var(--r-xs);
+      border: 1px solid var(--stroke);
+      background: rgba(255, 255, 255, .03);
+      font-size: 11px;
+      font-weight: 800;
+      color: var(--text);
+    }
+
+    .statusChip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 800;
+      font-size: 12px;
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .statusDot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      display: inline-block;
+      background: var(--warn);
+      box-shadow: 0 0 0 3px rgba(245, 180, 0, .12);
+    }
+
+    .statusDot.up {
+      background: var(--ok);
+      box-shadow: 0 0 0 3px rgba(45, 212, 191, .12);
+    }
+
+    .statusDot.down {
+      background: var(--danger);
+      box-shadow: 0 0 0 3px rgba(255, 90, 100, .12);
+    }
+
+    .collapseCard {
+      border: 1px solid var(--stroke);
+      border-radius: var(--r-sm);
+      background: rgba(0, 0, 0, .18);
+      overflow: hidden;
+    }
+
+    .collapseBtn {
+      width: 100%;
+      border: 0;
+      border-bottom: 1px solid transparent;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      padding: 12px;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      font: inherit;
+    }
+
+    .collapseBtn:hover {
+      background: rgba(255, 255, 255, .03);
+    }
+
+    .collapseBtn.open {
+      border-bottom-color: var(--stroke);
+    }
+
+    .collapseHeadTitle {
+      font-weight: 900;
+      font-size: 14px;
+      line-height: 1.2;
+    }
+
+    .collapseHeadSub {
+      margin-top: 3px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    .collapseChevron {
+      font-size: 14px;
+      font-weight: 900;
+      color: var(--muted);
+      transition: transform .12s ease;
+    }
+
+    .collapseBtn.open .collapseChevron {
+      transform: rotate(90deg);
+    }
+
+    .collapseBody {
+      display: none;
+      padding: 12px;
+    }
+
+    .collapseBody.open {
+      display: block;
+    }
+
+    .itemList {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .itemCard {
+      border: 1px solid var(--stroke);
+      border-radius: var(--r-xs);
+      background: rgba(255, 255, 255, .03);
+      padding: 12px;
+    }
+
+    .itemCard.invalid {
+      border-color: rgba(255, 90, 100, .36);
+      box-shadow: 0 0 0 3px rgba(255, 90, 100, .08);
+    }
+
+    .itemHead {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+
+    .itemTitle {
+      font-weight: 900;
+      font-size: 13px;
+    }
+
+    .itemPreview {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+      padding: 10px 12px;
+      border-radius: var(--r-xs);
+      border: 1px dashed rgba(255, 255, 255, .10);
+      background: rgba(0, 0, 0, .12);
+    }
+
+    .itemPreview strong {
+      color: var(--text);
+    }
+
+    .errorText {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #ffb7be;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .topicPicker {
+      display: none;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--stroke);
+    }
+
+    .topicPicker.open {
+      display: block;
+    }
+
+    .topicTools {
+      display: flex;
+      gap: 10px;
+      align-items: end;
+      flex-wrap: wrap;
+    }
+
+    .topicSelected {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: var(--r-xs);
+      border: 1px solid rgba(245, 180, 0, .18);
+      background: rgba(245, 180, 0, .08);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .topicList {
+      margin-top: 10px;
+      max-height: 240px;
+      overflow: auto;
+      border: 1px solid var(--stroke);
+      border-radius: var(--r-xs);
+      background: rgba(0, 0, 0, .16);
+    }
+
+    .topicItem {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, .06);
+      cursor: pointer;
+      transition: background .12s ease;
+    }
+
+    .topicItem:last-child {
+      border-bottom: 0;
+    }
+
+    .topicItem:hover {
+      background: rgba(255, 255, 255, .04);
+    }
+
+    .topicItem.active {
+      background: rgba(245, 180, 0, .08);
+      outline: 1px solid rgba(245, 180, 0, .22);
+      outline-offset: -1px;
+    }
+
+    .topicName {
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--text);
+    }
+
+    .topicPath {
+      margin-top: 3px;
+      font-size: 11px;
+      color: var(--muted);
+      word-break: break-all;
+    }
+
+    .emptyState {
+      padding: 12px;
+      font-size: 12px;
+      color: var(--muted);
+      border: 1px dashed rgba(255, 255, 255, .12);
+      border-radius: var(--r-xs);
+      background: rgba(255, 255, 255, .02);
+      text-align: center;
+      line-height: 1.45;
+    }
+
+    .formSticky {
+      position: sticky;
+      bottom: 0;
+      padding-top: 12px;
+      margin-top: 12px;
+      background: linear-gradient(to bottom, rgba(7, 9, 13, 0), rgba(7, 9, 13, .96) 30%);
+    }
+
+    .formStickyInner {
+      border: 1px solid var(--stroke);
+      border-radius: var(--r-sm);
+      background: rgba(7, 9, 13, .92);
+      backdrop-filter: blur(10px);
+      padding: 12px;
+    }
+
+    .rowSplit {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .enableRow {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 40px;
+      padding: 0 2px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .enableRow input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      flex: 0 0 auto;
+    }
   </style>
 </head>
 
@@ -182,120 +413,189 @@
         </div>
       </div>
 
-      <div class="topbarRight">
-        <button class="btn" id="btnNew" type="button">New rule</button>
-      </div>
+      <div class="topbarRight"></div>
     </div>
 
-    <div class="grid2">
-      <section class="card stack">
-        <div>
-          <div class="listTitle">Rule editor</div>
-          <div class="listSub">Create conditions and actions for ONVIF events and device online state.</div>
-        </div>
-
-        <div>
-          <label for="ruleName">Rule name</label>
-          <input id="ruleName" placeholder="Example: Front door offline" />
-        </div>
-
-        <label style="display:flex;gap:8px;align-items:center;margin:0">
-          <input id="ruleEnabled" type="checkbox" checked style="width:auto" />
-          <span>Enabled</span>
-        </label>
-
-        <div class="hr"></div>
-
-        <div class="stack">
-          <div class="row" style="justify-content:space-between;align-items:center">
-            <div>
-              <div style="font-weight:900">Conditions</div>
-              <div class="mini">Supported: ONVIF event, device offline, device back online.</div>
-            </div>
-            <button class="btn" id="btnAddCondition" type="button">Add condition</button>
-          </div>
-          <div id="conditionsList" class="stack"></div>
-        </div>
-
-        <div class="hr"></div>
-
-        <div class="stack">
-          <div class="row" style="justify-content:space-between;align-items:center">
-            <div>
-              <div style="font-weight:900">Actions</div>
-              <div class="mini">Create log event or take snapshot.</div>
-            </div>
-            <button class="btn" id="btnAddAction" type="button">Add action</button>
-          </div>
-          <div id="actionsList" class="stack"></div>
-        </div>
-
-        <div class="row">
-          <button class="btn btn-primary" id="btnSave" type="button">Save rule</button>
-          <button class="btn btn-danger" id="btnDelete" type="button">Delete selected</button>
-          <div id="formStatus" class="mini"></div>
-        </div>
-      </section>
-
-      <section class="card stack">
+    <div class="split">
+      <div class="card">
         <div class="listHeader">
           <div>
             <div class="listTitle">Saved rules</div>
-            <div class="listSub">Rules are evaluated when matching ONVIF events arrive or when device stream status changes.</div>
+            <div class="listSub">Click a rule to edit it, or create a new one.</div>
+          </div>
+          <button class="btn btn-primary" id="btnNew" type="button">New rule</button>
+        </div>
+
+        <div class="rulesTools">
+          <div class="grow">
+            <label for="rulesSearch">Search</label>
+            <input id="rulesSearch" placeholder="Search by name, trigger, action or device" />
+          </div>
+
+          <div style="width:180px; max-width:100%">
+            <label for="rulesFilterStatus">Status</label>
+            <select id="rulesFilterStatus">
+              <option value="all">All rules</option>
+              <option value="enabled">Enabled only</option>
+              <option value="disabled">Disabled only</option>
+            </select>
           </div>
         </div>
-        <div id="rulesList" class="list"></div>
-      </section>
+
+        <div id="rulesList" class="rulesList"></div>
+
+        <div class="statusLine">
+          <strong>Status:</strong> <span id="listStatus" class="muted">Ready.</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="font-weight:900; margin-bottom:8px; font-size:16px;" id="formTitle">New rule</div>
+
+        <div class="grid" style="grid-template-columns: 1fr .46fr; margin-top:0;">
+          <div data-full>
+            <label for="ruleName">Rule name</label>
+            <input id="ruleName" placeholder="Front door motion snapshot" />
+          </div>
+
+          <div data-full>
+            <label for="ruleEnabled">Status</label>
+            <label class="enableRow" style="margin:0;">
+              <input id="ruleEnabled" type="checkbox" checked />
+              <span id="ruleEnabledText">Enabled</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="collapseCard" style="margin-top:12px;">
+          <button class="collapseBtn open" id="triggersToggle" type="button">
+            <div>
+              <div class="collapseHeadTitle">Triggers</div>
+              <div class="collapseHeadSub">A rule runs when any trigger matches.</div>
+            </div>
+            <span class="collapseChevron">›</span>
+          </button>
+          <div class="collapseBody open" id="triggersBody">
+            <div class="row2" style="margin-top:0;">
+              <button class="btn" id="btnAddCondition" type="button">Add trigger</button>
+            </div>
+            <div id="conditionsList" class="itemList" style="margin-top:10px;"></div>
+          </div>
+        </div>
+
+        <div class="collapseCard" style="margin-top:12px;">
+          <button class="collapseBtn open" id="actionsToggle" type="button">
+            <div>
+              <div class="collapseHeadTitle">Actions</div>
+              <div class="collapseHeadSub">Choose what happens when a trigger matches.</div>
+            </div>
+            <span class="collapseChevron">›</span>
+          </button>
+          <div class="collapseBody open" id="actionsBody">
+            <div class="row2" style="margin-top:0;">
+              <button class="btn" id="btnAddAction" type="button">Add action</button>
+            </div>
+            <div id="actionsList" class="itemList" style="margin-top:10px;"></div>
+          </div>
+        </div>
+
+        <div class="formSticky">
+          <div class="formStickyInner">
+            <div class="rowSplit">
+              <div class="muted" id="editorModeText">Create a new rule.</div>
+
+              <div class="row2" style="margin-top:0;">
+                <button class="btn" id="btnDuplicate" type="button">Duplicate</button>
+                <button class="btn btn-danger" id="btnDelete" type="button">Delete</button>
+                <button class="btn btn-primary" id="btnSave" type="button">Save</button>
+              </div>
+            </div>
+            <div class="statusLine">
+              <strong>Status:</strong> <span id="formStatus" class="muted">Ready.</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
   <template id="conditionTemplate">
-    <div class="conditionCard stack">
-      <div class="row">
-        <div class="grow">
-          <label>Condition</label>
+    <div class="itemCard conditionCard">
+      <div class="itemHead">
+        <div class="itemTitle"></div>
+        <button class="btn btn-danger btnRemoveCondition" type="button">Remove</button>
+      </div>
+
+      <div class="grid" style="grid-template-columns: 1fr 1fr; margin-top:0;">
+        <div data-full>
+          <label>Trigger name</label>
+          <input class="condName" placeholder="Optional label, e.g. Front door motion" />
+        </div>
+        <div data-full>
+          <label>Trigger type</label>
           <select class="condType">
             <option value="onvif_event">ONVIF event</option>
             <option value="device_offline">Device offline</option>
             <option value="device_back_online">Device back online</option>
           </select>
         </div>
-        <div class="grow">
+
+        <div data-full>
           <label>Device</label>
           <select class="condDevice"></select>
         </div>
-        <button class="btn btn-danger btnRemoveCondition" type="button">Remove</button>
       </div>
+
       <div class="topicPicker">
-        <div class="row" style="align-items:center">
+        <div class="topicTools">
           <div class="grow">
-            <label>ONVIF topic filter</label>
-            <input class="topicSearch" placeholder="Filter topics" />
+            <label>Filter topics</label>
+            <input class="topicSearch" placeholder="Filter by name or path" />
           </div>
-          <button class="btn btnLoadTopics" type="button">Load topics</button>
+          <div style="width:150px; max-width:100%">
+            <label>&nbsp;</label>
+            <button class="btn btnLoadTopics" type="button" style="width:100%">Refresh topics</button>
+          </div>
         </div>
-        <div class="mini selectedTopicText">No topic selected.</div>
+
+        <div class="topicSelected selectedTopicText">Select an ONVIF topic to trigger this rule.</div>
+        <div class="muted topicCountText" style="margin-top:8px;">No topics loaded yet.</div>
         <div class="topicList"></div>
       </div>
+
+      <div class="itemPreview previewText"></div>
+      <div class="errorText validationText hidden"></div>
     </div>
   </template>
 
   <template id="actionTemplate">
-    <div class="actionCard stack">
-      <div class="row">
-        <div class="grow">
-          <label>Action</label>
+    <div class="itemCard actionCard">
+      <div class="itemHead">
+        <div class="itemTitle"></div>
+        <button class="btn btn-danger btnRemoveAction" type="button">Remove</button>
+      </div>
+
+      <div class="grid" style="grid-template-columns: 1fr 1fr; margin-top:0;">
+        <div data-full>
+          <label>Action name</label>
+          <input class="actionName" placeholder="Optional label, e.g. Snapshot garage cam" />
+        </div>
+        <div data-full>
+          <label>Action type</label>
           <select class="actionType">
             <option value="create_log_event">Create log event</option>
             <option value="take_snapshot">Take snapshot</option>
           </select>
         </div>
-        <div class="grow snapshotDeviceWrap" style="display:none">
+
+        <div data-full class="snapshotDeviceWrap hidden">
           <label>Camera</label>
           <select class="snapshotDevice"></select>
         </div>
-        <button class="btn btn-danger btnRemoveAction" type="button">Remove</button>
       </div>
+
+      <div class="itemPreview previewText"></div>
+      <div class="errorText validationText hidden"></div>
     </div>
   </template>
 

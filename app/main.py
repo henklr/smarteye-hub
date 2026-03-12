@@ -225,15 +225,17 @@ class SnapshotRequest(BaseModel):
 
 
 class ActionConditionModel(BaseModel):
+    name: Optional[str] = None
     type: str = Field(..., min_length=1)
     device_id: str = Field(..., min_length=1)
     topic: Optional[str] = None
 
 
 class ActionTargetModel(BaseModel):
+    name: Optional[str] = None
     type: str = Field(..., min_length=1)
     camera_device_id: Optional[str] = None
-
+    
 
 class ActionRuleIn(BaseModel):
     name: str = Field(..., min_length=1)
@@ -247,7 +249,7 @@ class ActionRule(ActionRuleIn):
     created_at: str
     updated_at: str
 
-
+    
 def _normalize_allow_topic(s: Optional[str]) -> str:
     s = (s or "").strip().strip("/")
     if not s:
@@ -413,32 +415,53 @@ def _list_action_events(device_id: Optional[str] = None, limit: int = 200) -> Li
 
 
 def _normalize_action_condition(c: dict) -> dict:
+    cname = (c.get("name") or "").strip()
     ctype = (c.get("type") or "").strip()
     did = (c.get("device_id") or "").strip()
     topic = _normalize_allow_topic(c.get("topic")) if ctype == "onvif_event" else None
+
     if ctype not in {"onvif_event", "device_offline", "device_back_online"}:
         raise HTTPException(status_code=400, detail=f"Unsupported condition type: {ctype}")
     if not did:
         raise HTTPException(status_code=400, detail="Condition device_id is required")
+
     _get_device(did)
-    out = {"type": ctype, "device_id": did}
+
+    out = {
+        "name": cname or None,
+        "type": ctype,
+        "device_id": did,
+    }
+
     if ctype == "onvif_event":
         if not topic:
             raise HTTPException(status_code=400, detail="ONVIF event condition requires topic")
         out["topic"] = topic
+
     return out
 
 
 def _normalize_action_target(a: dict) -> dict:
+    aname = (a.get("name") or "").strip()
     atype = (a.get("type") or "").strip()
+
     if atype == "create_log_event":
-        return {"type": atype}
+        return {
+            "name": aname or None,
+            "type": atype,
+        }
+
     if atype == "take_snapshot":
         cam = (a.get("camera_device_id") or "").strip()
         if not cam:
             raise HTTPException(status_code=400, detail="Snapshot action requires camera_device_id")
         _get_device(cam)
-        return {"type": atype, "camera_device_id": cam}
+        return {
+            "name": aname or None,
+            "type": atype,
+            "camera_device_id": cam,
+        }
+
     raise HTTPException(status_code=400, detail=f"Unsupported action type: {atype}")
 
 
