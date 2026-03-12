@@ -1,5 +1,3 @@
-// static/live.js
-
 const dot = document.getElementById("dot");
 const pillText = document.getElementById("pillText");
 const statusPill = document.getElementById("statusPill");
@@ -160,9 +158,7 @@ function applySavedTileOrder() {
 }
 
 function recomputeGrid() {
-  const n = streams.size;
-  const cols = Math.max(1, Math.ceil(Math.sqrt(n || 1)));
-  videoGrid.style.setProperty("--cols", String(cols));
+  // CSS auto-fit handles layout now.
 }
 
 function profileReady(d) {
@@ -352,20 +348,36 @@ async function startWhep(deviceId, videoEl, onState) {
   await pc.setLocalDescription(offer);
   await waitIceGatheringComplete(pc, 2000);
 
-  const res = await fetch(getWhepUrl(deviceId), {
-    method: "POST",
-    headers: { "Content-Type": "application/sdp" },
-    body: pc.localDescription.sdp,
-  });
+  let lastError = "Unknown WHEP error";
 
-  if (!res.ok) {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const res = await fetch(getWhepUrl(deviceId), {
+      method: "POST",
+      headers: { "Content-Type": "application/sdp" },
+      body: pc.localDescription.sdp,
+    });
+
+    if (res.ok) {
+      const answerSdp = await res.text();
+      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      return pc;
+    }
+
     const t = await res.text().catch(() => "");
-    throw new Error(`WHEP failed (${res.status}): ${t || res.statusText}`);
+    lastError = `WHEP failed (${res.status}): ${t || res.statusText}`;
+
+    if (res.status !== 404) {
+      break;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
   }
 
-  const answerSdp = await res.text();
-  await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
-  return pc;
+  try {
+    pc.close();
+  } catch {}
+
+  throw new Error(lastError);
 }
 
 function normalizePtzCaps(raw) {
@@ -460,7 +472,7 @@ function canToggleTileFullscreen(target) {
   if (!target) return false;
 
   return !target.closest(
-    ".tilePtzPanel, .tilePtzJoystick, .tilePtzZoomBtn"
+    ".tilePtzPanel, .tilePtzJoystick, .tilePtzZoomBtn, .tileCloseBtn"
   );
 }
 
@@ -512,6 +524,8 @@ function makeTile(device) {
     <div class="tilePlayer">
       <video autoplay playsinline muted></video>
 
+      <button class="tileCloseBtn" type="button" aria-label="Close stream" title="Close stream">×</button>
+
       <div class="tileHud">
         <div class="tileName">${escapeHtml(device.name || device.ip || device.id)}</div>
       </div>
@@ -536,8 +550,15 @@ function makeTile(device) {
 
   const videoEl = tile.querySelector("video");
   const overlayEl = tile.querySelector(".tileOverlay");
+  const closeBtn = tile.querySelector(".tileCloseBtn");
 
-  return { tile, videoEl, overlayEl };
+  videoEl.addEventListener("loadedmetadata", () => {
+    const w = videoEl.videoWidth || 16;
+    const h = videoEl.videoHeight || 9;
+    tile.style.aspectRatio = `${w} / ${h}`;
+  });
+
+  return { tile, videoEl, overlayEl, closeBtn };
 }
 
 function canStartTileDrag(ev) {
@@ -545,7 +566,7 @@ function canStartTileDrag(ev) {
   if (!target) return false;
 
   return !target.closest(
-    ".tilePtzPanel, .tilePtzJoystick, .tilePtzZoomBtn, .tileOverlay, video"
+    ".tilePtzPanel, .tilePtzJoystick, .tilePtzZoomBtn, .tileOverlay, video, .tileCloseBtn"
   );
 }
 
@@ -1020,15 +1041,30 @@ function installPtzControls(device, entry, caps) {
 }
 
 async function startDevice(device, { restore = false } = {}) {
+  try {
+    const data = await api("/api/devices", { method: "GET" });
+    devices = data.devices || devices;
+    const fresh = devices.find((d) => d.id === device.id);
+    if (fresh) device = fresh;
+  } catch {}
+
+  ptzCapsCache.delete(device.id);
+
   const existing = getEntry(device.id);
   if (existing?.startingPromise) return existing.startingPromise;
   if (existing) return Promise.resolve();
   if (!profileReady(device)) return Promise.resolve();
 
-  const { tile, videoEl, overlayEl } = makeTile(device);
+  const { tile, videoEl, overlayEl, closeBtn } = makeTile(device);
   videoGrid.appendChild(tile);
   installTileDnD(tile);
   installTileFullscreen(tile);
+
+  closeBtn?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    stopDevice(device.id).catch(() => {});
+  });
 
   const entry = {
     pc: null,
@@ -1086,6 +1122,14 @@ async function stopDevice(deviceId) {
   stopPc(pc, videoEl);
 
   try {
+    await api(`/api/stop/${encodeURIComponent(deviceId)}`, {
+      method: "POST",
+    });
+  } catch (e) {
+    console.warn("Failed to stop backend stream", deviceId, e);
+  }
+
+  try {
     tileEl?.remove?.();
   } catch {}
 
@@ -1130,15 +1174,18 @@ async function restoreGrid() {
   updateOverallStatusForGrid(`Restored ${toRestore.length} camera(s).`);
 }
 
-camListEl.addEventListener("click", (ev) => {
+camListEl.addEventListener("click", async (ev) => {
   const btn = ev.target.closest?.("button[data-id]");
   if (!btn) return;
   const id = btn.getAttribute("data-id");
   const d = devices.find((x) => x.id === id);
   if (!d) return;
 
-  if (isStreaming(d.id)) stopDevice(d.id).catch(() => {});
-  else startDevice(d).catch(() => {});
+  if (isStreaming(d.id)) {
+    await stopDevice(d.id);
+  } else {
+    await startDevice(d);
+  }
 });
 
 reloadBtn.addEventListener("click", () => loadDevices());
@@ -1185,4 +1232,5 @@ setStatus("Loading…", "warn");
 (async function init() {
   await loadDevices();
   await restoreGrid();
+  window.addEventListener("focus", loadDevices);
 })();

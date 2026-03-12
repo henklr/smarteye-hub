@@ -108,7 +108,7 @@ _action_monitor_thread: Optional[threading.Thread] = None
 _path_progress_lock = threading.RLock()
 _path_progress_state: Dict[str, Dict[str, Any]] = {}
 
-STREAM_STALE_SEC = float(os.getenv("STREAM_STALE_SEC", "20"))
+STREAM_STALE_SEC = float(os.getenv("STREAM_STALE_SEC", "8"))
 
 _path_monitor_lock = threading.RLock()
 _path_monitor_state: Dict[str, Dict[str, Any]] = {}
@@ -1477,17 +1477,28 @@ def _ensure_mediamtx_path(device_id: str, source_rtsp: str, preload: bool = Fals
         "sourceOnDemandCloseAfter": "10s",
     }
 
-    try:
-        return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
-    except Exception as add_err:
-        msg = str(add_err).lower()
+    snapshot = _mediamtx_paths_snapshot()
+    items = list(snapshot.get("items") or [])
+    existing = next((x for x in items if x.get("name") == name), None)
 
-        # If the path already exists, leave it alone.
-        # Do not delete/recreate it, because that briefly breaks WHEP viewers.
-        if "already exists" in msg or "path already exists" in msg:
+    if existing:
+        current_source = existing.get("source")
+        current_on_demand = existing.get("sourceOnDemand")
+        desired_on_demand = not preload
+
+        if current_source == source_rtsp and current_on_demand == desired_on_demand:
             return {"ok": True, "exists": True, "name": name}
 
-        raise
+        try:
+            return _mediamtx_api_request("PATCH", f"/v3/config/paths/edit/{name}", payload)
+        except Exception:
+            try:
+                _mediamtx_delete_path(device_id)
+            except Exception:
+                pass
+            return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
+
+    return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
     
 
 def _mediamtx_delete_path(device_id: str) -> dict:
@@ -1506,6 +1517,23 @@ def _mediamtx_paths_snapshot() -> dict:
         return _mediamtx_api_request("GET", "/v3/paths/list")
     except Exception:
         return {}
+
+
+def _refresh_device_stream(device_id: str) -> dict:
+    d = _get_device(device_id)
+
+    if not d.profile_token:
+        try:
+            _mediamtx_delete_path(device_id)
+        except Exception:
+            pass
+        return {"ok": True, "device_id": device_id, "removed": True, "reason": "no_profile"}
+
+    req = _device_req(d)
+    source_uri = _get_stream_uri(req, d.profile_token)
+    source_rtsp = _rtsp_with_auth(source_uri, d.username, d.password)
+
+    return _ensure_mediamtx_path(device_id, source_rtsp, preload=bool(d.preload_stream))
 
 
 def _path_row_to_status(row: Optional[dict]) -> dict:
@@ -1605,11 +1633,6 @@ def _update_path_monitor_state(device_id: str, row: Optional[dict]) -> dict:
     bytes_received = _path_bytes_from_snapshot_row(row)
     readers = _path_readers_from_snapshot_row(row)
 
-    online = bool((row or {}).get("online", False))
-    available = bool((row or {}).get("available", False))
-    ready = bool((row or {}).get("ready", False))
-    source_ready = bool((row or {}).get("sourceReady", False) or (row or {}).get("source_ready", False))
-
     with _path_monitor_lock:
         st = _path_monitor_state.get(device_id)
         if st is None:
@@ -1617,7 +1640,7 @@ def _update_path_monitor_state(device_id: str, row: Optional[dict]) -> dict:
                 "last_bytes": int(bytes_received),
                 "last_progress_ts": now,
                 "no_progress_count": 0,
-                "is_online": bool(bytes_received > 0 or readers > 0 or online or available or ready or source_ready),
+                "is_online": bool(row is not None and int(bytes_received) > 0),
             }
             _path_monitor_state[device_id] = st
             return {
@@ -1638,16 +1661,18 @@ def _update_path_monitor_state(device_id: str, row: Optional[dict]) -> dict:
             st["last_progress_ts"] = now
             st["no_progress_count"] = 0
         else:
-            # If there are active readers but no new bytes, count that as no progress.
             st["no_progress_count"] = int(st.get("no_progress_count", 0)) + 1
 
         previous_online = bool(st.get("is_online", False))
+        seconds_since_progress = now - float(st.get("last_progress_ts", now))
 
-        current_online = (
-            progressed
-            or int(readers) > 0
-            or int(st["no_progress_count"]) < PATH_NO_PROGRESS_LIMIT
-        ) and bool(row is not None)
+        current_online = bool(
+            row is not None and (
+                progressed
+                or int(readers) > 0
+                or seconds_since_progress < STREAM_STALE_SEC
+            )
+        )
 
         st["is_online"] = current_online
 
@@ -1656,11 +1681,11 @@ def _update_path_monitor_state(device_id: str, row: Optional[dict]) -> dict:
             "previous_online": previous_online,
             "current_online": current_online,
             "no_progress_count": int(st["no_progress_count"]),
-            "seconds_since_progress": round(now - float(st.get("last_progress_ts", now)), 1),
+            "seconds_since_progress": round(seconds_since_progress, 1),
             "bytes_received": int(bytes_received),
             "readers": int(readers),
         }
-        
+                                
         
 def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
     row = _path_row_for_device(snapshot, device.id)
@@ -1711,8 +1736,33 @@ def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
 
     monitor = _update_path_monitor_state(device.id, row)
     stream_up = bool(monitor["current_online"])
-    stalled = not stream_up
+    seconds_since_progress = monitor["seconds_since_progress"]
 
+    healthy_backend = bool(
+        row is not None and (
+            source_ready
+            or (
+                bool(device.preload_stream)
+                and bool(source)
+                and not bool(source_on_demand)
+                and ready
+            )
+        )
+    )
+
+    recent_grace = (
+        seconds_since_progress is not None and
+        seconds_since_progress < 3.0
+    )
+
+    stalled = not stream_up and not healthy_backend
+
+    status = "down"
+    if readers > 0:
+        status = "live"
+    elif healthy_backend or recent_grace:
+        status = "idle"
+        
     out.update({
         "source_ready": source_ready,
         "ready": ready,
@@ -1726,9 +1776,9 @@ def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
         "no_progress_count": monitor["no_progress_count"],
         "stalled": stalled,
         "stream_up": stream_up,
-        "status": "live" if stream_up else "down",
+        "status": status,
     })
-
+        
     return out
 
 
@@ -2079,6 +2129,19 @@ async def playback_snapshot(device_id: str, req: SnapshotRequest):
         raise HTTPException(status_code=400, detail=f"Snapshot failed: {e}")
 
 
+@app.post("/api/devices/{device_id}/refresh-stream")
+async def refresh_device_stream(device_id: str):
+    device_id = device_id.strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Missing device_id")
+
+    try:
+        out = await asyncio.to_thread(_refresh_device_stream, device_id)
+        return {"ok": True, "device_id": device_id, "result": out}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Refresh stream failed: {e}")
+    
+    
 @app.get("/api/devices")
 def list_devices():
     devs = _load_devices()
@@ -2116,21 +2179,9 @@ def update_device(device_id: str, dev_in: DeviceIn):
     device_id = device_id.strip()
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
+
     dev = _update_device(device_id, dev_in)
-
-    if dev.preload_stream and dev.profile_token:
-        try:
-            _preload_stream_for_device(dev)
-        except Exception:
-            pass
-    else:
-        try:
-            _mediamtx_delete_path(device_id)
-        except Exception:
-            pass
-
     return {"ok": True, "device": _dump(dev)}
-
 
 @app.delete("/api/devices/{device_id}")
 def delete_device(device_id: str):
@@ -2216,16 +2267,6 @@ async def start(req: StartRequest):
         device = _get_device(device_id)
     except Exception:
         pass
-
-    # If this device is marked as preloaded and uses the same profile,
-    # only skip setup if the MediaMTX path actually exists.
-    if device and device.preload_stream and device.profile_token == req.profile_token:
-        snapshot = await asyncio.to_thread(_mediamtx_paths_snapshot)
-        path_name = _path_for(device_id)
-        items = list(snapshot.get("items") or [])
-        exists = any((x.get("name") == path_name) for x in items)
-        if exists:
-            return {"ok": True, "device_id": device_id, "path": path_name}
 
     try:
         encoding = await asyncio.to_thread(_find_profile_encoding, req, req.profile_token)

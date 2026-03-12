@@ -333,6 +333,13 @@ saveBtn.addEventListener("click", async () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+
+      setFormStatus("Refreshing stream…");
+
+      await api(`/api/devices/${encodeURIComponent(editingId)}/refresh-stream`, {
+        method: "POST",
+      });
+
       setFormStatus("Updated.");
     } else {
       await api("/api/devices", {
