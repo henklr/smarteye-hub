@@ -62,7 +62,7 @@ async function api(url, opts) {
   let data = null;
   try {
     data = text ? JSON.parse(text) : null;
-  } catch {}
+  } catch { }
 
   if (!res.ok) {
     const detail = data?.detail || text || res.statusText;
@@ -85,7 +85,7 @@ async function ptzPost(url, body = null) {
     try {
       const parsed = text ? JSON.parse(text) : null;
       if (parsed?.detail) detail = parsed.detail;
-    } catch {}
+    } catch { }
     throw new Error(`${res.status} ${res.statusText}: ${detail}`);
   }
 }
@@ -157,8 +157,80 @@ function applySavedTileOrder() {
   applyTileOrder(order);
 }
 
+function getTileAspectRatio(tile) {
+  const raw = tile.style.getPropertyValue("--tile-ar") || "16 / 9";
+  const parts = raw.split("/").map((x) => Number(x.trim()));
+  const w = parts[0] || 16;
+  const h = parts[1] || 9;
+  return w / h;
+}
+
+function chunkTilesEvenly(tiles, rows) {
+  const out = [];
+  let index = 0;
+
+  for (let r = 0; r < rows; r += 1) {
+    const remainingTiles = tiles.length - index;
+    const remainingRows = rows - r;
+    const count = Math.ceil(remainingTiles / remainingRows);
+    out.push(tiles.slice(index, index + count));
+    index += count;
+  }
+
+  return out;
+}
+
+function layoutTilesJustified() {
+  const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"));
+  if (!tiles.length) return;
+
+  const styles = getComputedStyle(videoGrid);
+  const gap = parseFloat(styles.gap || "8") || 8;
+  const containerWidth = videoGrid.clientWidth;
+
+  if (!containerWidth) return;
+
+  const ratios = tiles.map(getTileAspectRatio);
+
+  // Estimate how many columns feels reasonable from available width
+  const targetTileWidth = 340;
+  const estimatedCols = Math.max(1, Math.round((containerWidth + gap) / (targetTileWidth + gap)));
+  const rowCount = Math.max(1, Math.ceil(tiles.length / estimatedCols));
+
+  const rows = chunkTilesEvenly(tiles, rowCount);
+
+  for (const row of rows) {
+    const rowRatios = row.map(getTileAspectRatio);
+    const ratioSum = rowRatios.reduce((a, b) => a + b, 0);
+    const gapsWidth = gap * (row.length - 1);
+
+    let rowHeight = (containerWidth - gapsWidth) / ratioSum;
+
+    // clamp so rows don't get absurdly tall or tiny
+    rowHeight = Math.max(140, Math.min(420, rowHeight));
+
+    let usedWidth = 0;
+
+    row.forEach((tile, i) => {
+      const isLast = i === row.length - 1;
+      const ar = rowRatios[i];
+
+      let width = Math.round(rowHeight * ar);
+
+      if (isLast) {
+        width = Math.max(1, containerWidth - usedWidth - gapsWidth);
+      }
+
+      tile.style.height = `${Math.round(rowHeight)}px`;
+      tile.style.width = `${Math.round(width)}px`;
+
+      usedWidth += Math.round(width);
+    });
+  }
+}
+
 function recomputeGrid() {
-  // CSS auto-fit handles layout now.
+  layoutTilesJustified();
 }
 
 function profileReady(d) {
@@ -302,12 +374,12 @@ async function loadDevices() {
 function stopPc(pc, videoEl) {
   try {
     pc?.close?.();
-  } catch {}
+  } catch { }
 
   if (videoEl?.srcObject) {
     try {
       videoEl.srcObject.getTracks().forEach((t) => t.stop());
-    } catch {}
+    } catch { }
   }
 
   if (videoEl) videoEl.srcObject = null;
@@ -375,7 +447,7 @@ async function startWhep(deviceId, videoEl, onState) {
 
   try {
     pc.close();
-  } catch {}
+  } catch { }
 
   throw new Error(lastError);
 }
@@ -457,15 +529,15 @@ async function toggleTileFullscreen(tile) {
 
   const fullscreenEl = document.fullscreenElement;
   if (fullscreenEl === tile) {
-    await document.exitFullscreen?.().catch(() => {});
+    await document.exitFullscreen?.().catch(() => { });
     return;
   }
 
   if (fullscreenEl && fullscreenEl !== tile) {
-    await document.exitFullscreen?.().catch(() => {});
+    await document.exitFullscreen?.().catch(() => { });
   }
 
-  await tile.requestFullscreen?.().catch(() => {});
+  await tile.requestFullscreen?.().catch(() => { });
 }
 
 function canToggleTileFullscreen(target) {
@@ -486,7 +558,7 @@ function installTileFullscreen(tile) {
   tile.addEventListener("dblclick", (ev) => {
     if (!canToggleTileFullscreen(ev.target)) return;
     ev.preventDefault();
-    toggleTileFullscreen(tile).catch(() => {});
+    toggleTileFullscreen(tile).catch(() => { });
   });
 
   tile.addEventListener("pointerup", (ev) => {
@@ -504,7 +576,7 @@ function installTileFullscreen(tile) {
       lastTapX = 0;
       lastTapY = 0;
       ev.preventDefault();
-      toggleTileFullscreen(tile).catch(() => {});
+      toggleTileFullscreen(tile).catch(() => { });
       return;
     }
 
@@ -555,7 +627,8 @@ function makeTile(device) {
   videoEl.addEventListener("loadedmetadata", () => {
     const w = videoEl.videoWidth || 16;
     const h = videoEl.videoHeight || 9;
-    tile.style.aspectRatio = `${w} / ${h}`;
+    tile.style.setProperty("--tile-ar", `${w} / ${h}`);
+    recomputeGrid();
   });
 
   return { tile, videoEl, overlayEl, closeBtn };
@@ -570,6 +643,127 @@ function canStartTileDrag(ev) {
   );
 }
 
+function clearDropMarkers() {
+  videoGrid.querySelectorAll(".tileDropMarker").forEach((el) => {
+    el.classList.remove("tileDropMarker");
+  });
+}
+
+function getDropTarget(clientX, clientY, dragging) {
+  const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"))
+    .filter((el) => el !== dragging);
+
+  if (!tiles.length) return null;
+
+  let best = null;
+  let bestScore = Infinity;
+
+  for (const tile of tiles) {
+    const rect = tile.getBoundingClientRect();
+
+    const withinX = clientX >= rect.left && clientX <= rect.right;
+
+    // distance to tile box
+    const clampedX = Math.max(rect.left, Math.min(clientX, rect.right));
+    const clampedY = Math.max(rect.top, Math.min(clientY, rect.bottom));
+    const dx = clientX - clampedX;
+    const dy = clientY - clampedY;
+    const boxDist = (dx * dx) + (dy * dy);
+
+    // favor tiles under the cursor horizontally
+    const score = withinX ? boxDist - 100000 : boxDist;
+
+    if (score < bestScore) {
+      bestScore = score;
+      best = { tile, rect };
+    }
+  }
+
+  if (!best) return null;
+
+  const { tile, rect } = best;
+
+  const distToTop = Math.abs(clientY - rect.top);
+  const distToBottom = Math.abs(clientY - rect.bottom);
+
+  return {
+    tile,
+    before: distToTop <= distToBottom,
+  };
+}
+
+function captureTilePositions(excludeEl = null) {
+  const map = new Map();
+  Array.from(videoGrid.querySelectorAll(".tile[data-id]")).forEach((el) => {
+    if (el === excludeEl) return;
+    map.set(el, el.getBoundingClientRect());
+  });
+  return map;
+}
+
+function animateTileReflow(prevRects, excludeEl = null) {
+  const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"));
+  for (const el of tiles) {
+    if (el === excludeEl) continue;
+
+    const prev = prevRects.get(el);
+    if (!prev) continue;
+
+    const next = el.getBoundingClientRect();
+    const dx = prev.left - next.left;
+    const dy = prev.top - next.top;
+
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+
+    el.style.transition = "none";
+    el.style.transform = `translate(${dx}px, ${dy}px)`;
+
+    requestAnimationFrame(() => {
+      el.style.transition = "transform .18s cubic-bezier(.2,.8,.2,1)";
+      el.style.transform = "";
+      const cleanup = () => {
+        el.style.transition = "";
+        el.removeEventListener("transitionend", cleanup);
+      };
+      el.addEventListener("transitionend", cleanup);
+    });
+  }
+}
+
+
+videoGrid.addEventListener("dragover", (ev) => {
+  ev.preventDefault();
+
+  const dragging = videoGrid.querySelector(".tile.is-dragging");
+  if (!dragging) return;
+
+  const target = getDropTarget(ev.clientX, ev.clientY, dragging);
+  if (!target) return;
+
+  const beforeRects = captureTilePositions(dragging);
+  clearDropMarkers();
+
+  if (target.before) {
+    target.tile.classList.add("tileDropMarker");
+
+    if (dragging !== target.tile.previousElementSibling) {
+      videoGrid.insertBefore(dragging, target.tile);
+      animateTileReflow(beforeRects, dragging);
+      saveGridState();
+    }
+  } else {
+    const next = target.tile.nextElementSibling;
+    if (next) next.classList.add("tileDropMarker");
+
+    if (dragging !== target.tile.nextElementSibling) {
+      videoGrid.insertBefore(dragging, target.tile.nextSibling);
+      animateTileReflow(beforeRects, dragging);
+      saveGridState();
+    }
+  }
+});
+
+
 function installTileDnD(tile) {
   tile.addEventListener("dragstart", (ev) => {
     if (!canStartTileDrag(ev)) {
@@ -577,6 +771,7 @@ function installTileDnD(tile) {
       return;
     }
 
+    clearDropMarkers();
     tile.classList.add("is-dragging");
 
     if (ev.dataTransfer) {
@@ -588,28 +783,16 @@ function installTileDnD(tile) {
   tile.addEventListener("dragend", () => {
     tile.classList.remove("is-dragging");
     tile.classList.remove("drag-armed");
+    clearDropMarkers();
     saveGridState();
-  });
-
-  tile.addEventListener("dragover", (ev) => {
-    ev.preventDefault();
-
-    const dragging = videoGrid.querySelector(".tile.is-dragging");
-    if (!dragging || dragging === tile) return;
-
-    const rect = tile.getBoundingClientRect();
-    const before = ev.clientY < rect.top + rect.height / 2;
-
-    if (before) {
-      videoGrid.insertBefore(dragging, tile);
-    } else {
-      videoGrid.insertBefore(dragging, tile.nextSibling);
-    }
+    recomputeGrid();
   });
 
   tile.addEventListener("drop", (ev) => {
     ev.preventDefault();
+    clearDropMarkers();
     saveGridState();
+    recomputeGrid();
   });
 
   tile.addEventListener("pointerdown", (ev) => {
@@ -646,7 +829,7 @@ function scheduleRetry(device, entry) {
     entry.retryScheduled = false;
 
     if (entry.cancelled) return;
-    connectEntry(device, entry).catch(() => {});
+    connectEntry(device, entry).catch(() => { });
   }, RETRY_DELAY_MS);
 
   renderList();
@@ -733,7 +916,7 @@ async function connectEntry(device, entry) {
     if (!cur || cur.cancelled) {
       try {
         pc.close();
-      } catch {}
+      } catch { }
       return;
     }
 
@@ -835,7 +1018,7 @@ function installPtzControls(device, entry, caps) {
         return;
       }
 
-      flushMove(true).catch(() => {});
+      flushMove(true).catch(() => { });
     }, 120);
   }
 
@@ -872,7 +1055,7 @@ function installPtzControls(device, entry, caps) {
       if (needsFlush || !sameCmd(latest, lastSent)) {
         needsFlush = false;
         queueMicrotask(() => {
-          flushMove(false).catch(() => {});
+          flushMove(false).catch(() => { });
         });
       }
     }
@@ -884,7 +1067,7 @@ function installPtzControls(device, entry, caps) {
       tilt: clamp(tilt, -1, 1),
       zoom: clamp(zoom, -1, 1),
     };
-    flushMove(force).catch(() => {});
+    flushMove(force).catch(() => { });
   }
 
   function resetKnob() {
@@ -896,7 +1079,7 @@ function installPtzControls(device, entry, caps) {
     desired = { pan: 0, tilt: 0, zoom: 0 };
     clearKeepAlive();
     resetKnob();
-    flushMove(true).catch(() => {});
+    flushMove(true).catch(() => { });
   }
 
   entry.stopPtz = stopNow;
@@ -910,7 +1093,7 @@ function installPtzControls(device, entry, caps) {
 
       try {
         joystick.setPointerCapture(ev.pointerId);
-      } catch {}
+      } catch { }
 
       const rect = joystick.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
@@ -950,7 +1133,7 @@ function installPtzControls(device, entry, caps) {
         if (activeMode === "joystick") activeMode = "idle";
         try {
           joystick.releasePointerCapture(upEv.pointerId);
-        } catch {}
+        } catch { }
         joystick.removeEventListener("pointermove", onMove);
         joystick.removeEventListener("pointerup", onUp);
         joystick.removeEventListener("pointercancel", onUp);
@@ -960,7 +1143,7 @@ function installPtzControls(device, entry, caps) {
           desired.pan = 0;
           desired.tilt = 0;
           resetKnob();
-          flushMove(true).catch(() => {});
+          flushMove(true).catch(() => { });
         } else {
           stopNow();
         }
@@ -995,7 +1178,7 @@ function installPtzControls(device, entry, caps) {
 
         if (activeJoystick) {
           desired.zoom = 0;
-          flushMove(true).catch(() => {});
+          flushMove(true).catch(() => { });
         } else {
           stopNow();
         }
@@ -1046,7 +1229,7 @@ async function startDevice(device, { restore = false } = {}) {
     devices = data.devices || devices;
     const fresh = devices.find((d) => d.id === device.id);
     if (fresh) device = fresh;
-  } catch {}
+  } catch { }
 
   ptzCapsCache.delete(device.id);
 
@@ -1063,7 +1246,7 @@ async function startDevice(device, { restore = false } = {}) {
   closeBtn?.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    stopDevice(device.id).catch(() => {});
+    stopDevice(device.id).catch(() => { });
   });
 
   const entry = {
@@ -1112,11 +1295,11 @@ async function stopDevice(deviceId) {
 
   try {
     entry.stopPtz?.();
-  } catch {}
+  } catch { }
 
   try {
     entry.cleanupPtzListeners?.();
-  } catch {}
+  } catch { }
 
   const { pc, tileEl, videoEl } = entry;
   stopPc(pc, videoEl);
@@ -1131,7 +1314,7 @@ async function stopDevice(deviceId) {
 
   try {
     tileEl?.remove?.();
-  } catch {}
+  } catch { }
 
   streams.delete(deviceId);
 
@@ -1169,6 +1352,7 @@ async function restoreGrid() {
     applyTileOrder(desiredTileOrder);
     desiredTileOrder = [];
     saveGridState();
+    recomputeGrid();
   }
 
   updateOverallStatusForGrid(`Restored ${toRestore.length} camera(s).`);
@@ -1221,6 +1405,8 @@ function setSidebarHidden(hidden) {
   showSidebarBtn.style.display = hidden ? "inline-flex" : "none";
   localStorage.setItem(LS_KEY, hidden ? "1" : "0");
 }
+
+window.addEventListener("resize", recomputeGrid);
 
 toggleSidebarBtn.addEventListener("click", () => setSidebarHidden(true));
 showSidebarBtn.addEventListener("click", () => setSidebarHidden(false));
