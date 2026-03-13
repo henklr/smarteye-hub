@@ -776,7 +776,6 @@ function installListDnD() {
 
     lastListDropId = signature;
 
-    // Live preview: update device/tile order immediately while dragging
     const orderedIds = Array.from(camListEl.querySelectorAll(".camItem[data-id]"))
       .map((el) => el.getAttribute("data-id"))
       .filter(Boolean);
@@ -814,7 +813,6 @@ function installListDnD() {
 
   camListEl.addEventListener("dragend", () => {
     requestAnimationFrame(() => {
-      // If drag ended without a valid drop, restore original order
       if (originalListOrder.length) {
         applyDeviceOrder(originalListOrder);
         renderList();
@@ -1287,6 +1285,7 @@ async function startDevice(device, { restore = false } = {}) {
   recomputeGrid();
   renderList();
   updateOverallStatusForGrid();
+  updateSidebarCollapseAvailability();
 
   if (!restoringGrid) {
     saveGridState();
@@ -1332,6 +1331,7 @@ async function stopDevice(deviceId) {
   recomputeGrid();
   renderList();
   updateOverallStatusForGrid();
+  updateSidebarCollapseAvailability();
 
   if (!restoringGrid) {
     saveGridState();
@@ -1367,6 +1367,7 @@ async function restoreGrid() {
   }
 
   updateOverallStatusForGrid(`Restored ${toRestore.length} camera(s).`);
+  updateSidebarCollapseAvailability();
 }
 
 camListEl.addEventListener("click", async (ev) => {
@@ -1411,39 +1412,77 @@ stopAllBtn.addEventListener("click", async () => {
 
   saveGridState();
   setStatus("Stopped.", "warn");
+  updateSidebarCollapseAvailability();
 });
+
+function updateSidebarCollapseAvailability() {
+  const hasStreams = streams.size > 0;
+
+  if (!hasStreams && layoutEl.classList.contains("sidebarHidden")) {
+    layoutEl.classList.remove("sidebarHidden");
+    localStorage.setItem(LS_KEY, "0");
+  }
+
+  if (sidebarCollapseBtn) {
+    sidebarCollapseBtn.disabled = !hasStreams;
+    sidebarCollapseBtn.style.opacity = hasStreams ? "" : "0.45";
+    sidebarCollapseBtn.style.cursor = hasStreams ? "pointer" : "not-allowed";
+    sidebarCollapseBtn.title = hasStreams ? sidebarCollapseBtn.title : "No active streams";
+    sidebarCollapseBtn.setAttribute(
+      "aria-label",
+      hasStreams ? sidebarCollapseBtn.getAttribute("aria-label") || "Hide cameras" : "No active streams"
+    );
+  }
+
+  const hidden = layoutEl.classList.contains("sidebarHidden");
+  if (sidebarCollapseRailIcon) {
+    const isMobile = window.matchMedia("(max-width: 980px)").matches;
+    sidebarCollapseRailIcon.textContent = isMobile
+      ? (hidden ? "▾" : "▴")
+      : (hidden ? "❯" : "❮");
+  }
+}
+
 
 const layoutEl = document.getElementById("liveLayout");
 const sidebarCollapseBtn = document.getElementById("sidebarCollapseBtn");
 const sidebarCollapseRailIcon = sidebarCollapseBtn?.querySelector(".sidebarCollapseRailIcon");
 
 function setSidebarHidden(hidden) {
+  const isMobile = window.matchMedia("(max-width: 980px)").matches;
+
   layoutEl.classList.toggle("sidebarHidden", !!hidden);
 
   if (sidebarCollapseRailIcon) {
-    sidebarCollapseRailIcon.textContent = hidden ? "❯" : "❮";
+    sidebarCollapseRailIcon.textContent = isMobile
+      ? (hidden ? "▾" : "▴")
+      : (hidden ? "❯" : "❮");
   }
 
   if (sidebarCollapseBtn) {
-    sidebarCollapseBtn.title = hidden ? "Show cameras" : "Hide cameras";
-    sidebarCollapseBtn.setAttribute(
-      "aria-label",
-      hidden ? "Show cameras" : "Hide cameras"
-    );
+    const label = hidden ? "Show cameras" : "Hide cameras";
+    sidebarCollapseBtn.title = label;
+    sidebarCollapseBtn.setAttribute("aria-label", label);
   }
 
   localStorage.setItem(LS_KEY, hidden ? "1" : "0");
   requestAnimationFrame(recomputeGrid);
 }
 
-window.addEventListener("resize", recomputeGrid);
-
 sidebarCollapseBtn?.addEventListener("click", () => {
+  if (streams.size === 0) return;
   const hidden = layoutEl.classList.contains("sidebarHidden");
   setSidebarHidden(!hidden);
 });
 
+window.addEventListener("resize", () => {
+  const hidden = layoutEl.classList.contains("sidebarHidden");
+  setSidebarHidden(hidden);
+  recomputeGrid();
+});
+
 setSidebarHidden(localStorage.getItem(LS_KEY) === "1");
+updateSidebarCollapseAvailability();
 
 recomputeGrid();
 setStatus("Loading…", "warn");
