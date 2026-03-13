@@ -23,6 +23,8 @@ let lastStatusMessage = "Idle.";
 let restoringGrid = false;
 let desiredTileOrder = [];
 
+let originalListOrder = [];
+
 let draggedListId = null;
 let lastListDropId = null;
 let suppressListClickUntil = 0;
@@ -737,6 +739,8 @@ function installListDnD() {
 
     draggedListId = item.getAttribute("data-id");
     lastListDropId = draggedListId;
+    originalListOrder = devices.map((d) => d.id);
+
     item.classList.add("is-list-dragging");
 
     if (ev.dataTransfer) {
@@ -771,6 +775,16 @@ function installListDnD() {
     }
 
     lastListDropId = signature;
+
+    // Live preview: update device/tile order immediately while dragging
+    const orderedIds = Array.from(camListEl.querySelectorAll(".camItem[data-id]"))
+      .map((el) => el.getAttribute("data-id"))
+      .filter(Boolean);
+
+    if (orderedIds.length) {
+      applyDeviceOrder(orderedIds);
+      syncTileOrderToDeviceOrder(false);
+    }
   });
 
   camListEl.addEventListener("drop", (ev) => {
@@ -793,12 +807,21 @@ function installListDnD() {
       saveGridState();
     }
 
+    originalListOrder = [];
     suppressListClickUntil = Date.now() + 250;
     clearListDraggingState();
   });
 
   camListEl.addEventListener("dragend", () => {
     requestAnimationFrame(() => {
+      // If drag ended without a valid drop, restore original order
+      if (originalListOrder.length) {
+        applyDeviceOrder(originalListOrder);
+        renderList();
+        syncTileOrderToDeviceOrder(false);
+      }
+
+      originalListOrder = [];
       suppressListClickUntil = Date.now() + 250;
       clearListDraggingState();
     });
