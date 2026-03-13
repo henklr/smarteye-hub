@@ -560,14 +560,21 @@ code {
 .tile.is-drag-source-hidden {
   opacity: 0 !important;
   pointer-events: none !important;
+  width: 0 !important;
+  min-width: 0 !important;
+  max-width: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  max-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  overflow: hidden !important;
+  flex-basis: 0 !important;
 }
 
-.tile.is-drag-source-hidden video,
-.tile.is-drag-source-hidden .tileHud,
-.tile.is-drag-source-hidden .tileOverlay,
-.tile.is-drag-source-hidden .tilePtzPanel,
-.tile.is-drag-source-hidden .tileCloseBtn {
-  visibility: hidden !important;
+.tile.is-drag-source-hidden > * {
+  display: none !important;
 }
 
 .tile.is-live {
@@ -613,15 +620,16 @@ code {
 .tileDropMarker::before {
   content: "";
   position: absolute;
-  left: 0;
-  right: 0;
-  top: -4px;
-  height: 4px;
-  background: rgba(245, 180, 0, .95);
+  top: 8px;
+  bottom: 8px;
+  left: -4px;
+  width: 4px;
+  background: rgba(245,180,0,.95);
   box-shadow:
-    0 0 0 2px rgba(245, 180, 0, .10),
-    0 8px 16px rgba(0, 0, 0, .22);
+    0 0 0 2px rgba(245,180,0,.10),
+    0 8px 16px rgba(0,0,0,.22);
   pointer-events: none;
+  border-radius: 999px;
 }
 
 .tilePlayer {

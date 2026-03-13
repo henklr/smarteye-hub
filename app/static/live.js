@@ -27,6 +27,7 @@ let lastStatusMessage = "Idle.";
 let restoringGrid = false;
 let desiredTileOrder = [];
 let reorderMode = false;
+let lastDropIntent = null;
 
 const REORDER_LAYOUT = {
   aspectRatio: 16 / 9,
@@ -272,12 +273,15 @@ function getUniformGridMetrics(tileCount) {
 }
 
 function layoutTilesUniformGrid() {
-  const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"));
-  if (!tiles.length) return;
+  const allTiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"));
+  const visibleTiles = allTiles.filter((el) => !el.classList.contains("is-drag-source-hidden"));
 
-  const { width, height } = getUniformGridMetrics(tiles.length);
+  if (!allTiles.length) return;
 
-  for (const tile of tiles) {
+  const { width, height } = getUniformGridMetrics(Math.max(visibleTiles.length, 1));
+
+  for (const tile of allTiles) {
+    if (tile.classList.contains("is-drag-source-hidden")) continue;
     tile.style.width = `${width}px`;
     tile.style.height = `${height}px`;
   }
@@ -728,7 +732,7 @@ function clearDropMarkers() {
 
 function getDropTarget(clientX, clientY, dragging) {
   const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"))
-    .filter((el) => el !== dragging);
+    .filter((el) => el !== dragging && !el.classList.contains("is-drag-source-hidden"));
 
   if (!tiles.length) return null;
 
@@ -737,16 +741,14 @@ function getDropTarget(clientX, clientY, dragging) {
 
   for (const tile of tiles) {
     const rect = tile.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
 
-    const withinX = clientX >= rect.left && clientX <= rect.right;
+    const dx = clientX - cx;
+    const dy = clientY - cy;
 
-    const clampedX = Math.max(rect.left, Math.min(clientX, rect.right));
-    const clampedY = Math.max(rect.top, Math.min(clientY, rect.bottom));
-    const dx = clientX - clampedX;
-    const dy = clientY - clampedY;
-    const boxDist = (dx * dx) + (dy * dy);
-
-    const score = withinX ? boxDist - 100000 : boxDist;
+    // favor tiles whose center is closest to the cursor
+    const score = (dx * dx) + (dy * dy);
 
     if (score < bestScore) {
       bestScore = score;
@@ -757,13 +759,11 @@ function getDropTarget(clientX, clientY, dragging) {
   if (!best) return null;
 
   const { tile, rect } = best;
-
-  const distToTop = Math.abs(clientY - rect.top);
-  const distToBottom = Math.abs(clientY - rect.bottom);
+  const midX = rect.left + rect.width / 2;
 
   return {
     tile,
-    before: distToTop <= distToBottom,
+    before: clientX < midX,
   };
 }
 
@@ -880,48 +880,119 @@ videoGrid.addEventListener("dragover", (ev) => {
   const dragging = videoGrid.querySelector(".tile.is-dragging");
   if (!dragging) return;
 
-  const target = getDropTarget(ev.clientX, ev.clientY, dragging);
+  const target = getStableDropTarget(ev.clientX, ev.clientY, dragging);
   if (!target) return;
 
-  const beforeRects = captureTilePositions(dragging);
   clearDropMarkers();
 
   if (target.before) {
     target.tile.classList.add("tileDropMarker");
-
-    if (dragging !== target.tile.previousElementSibling) {
-      videoGrid.insertBefore(dragging, target.tile);
-      animateTileReflow(beforeRects, dragging);
-      saveGridState();
-    }
   } else {
-    const next = target.tile.nextElementSibling;
-    if (next) next.classList.add("tileDropMarker");
-
-    if (dragging !== target.tile.nextElementSibling) {
-      videoGrid.insertBefore(dragging, target.tile.nextSibling);
-      animateTileReflow(beforeRects, dragging);
-      saveGridState();
-    }
+    const markerEl = target.tile.nextElementSibling || target.tile;
+    markerEl.classList.add("tileDropMarker");
   }
+
+  if (sameDropIntent(lastDropIntent, target)) {
+    return;
+  }
+
+  const beforeRects = captureTilePositions(dragging);
+
+  if (target.before) {
+    if (dragging.nextElementSibling === target.tile) {
+      lastDropIntent = target;
+      return;
+    }
+
+    videoGrid.insertBefore(dragging, target.tile);
+  } else {
+    if (dragging === target.tile.nextElementSibling) {
+      lastDropIntent = target;
+      return;
+    }
+
+    videoGrid.insertBefore(dragging, target.tile.nextSibling);
+  }
+
+  lastDropIntent = target;
+  animateTileReflow(beforeRects, dragging);
+  saveGridState();
 });
 
 videoGrid.addEventListener("drop", (ev) => {
   ev.preventDefault();
 
   const dragging = videoGrid.querySelector(".tile.is-dragging");
-  if (dragging) {
-    showDraggedTile(dragging);
-  }
 
+  clearDropIntent();
   clearDropMarkers();
-  saveGridState();
-  endReorderMode();
+
+  requestAnimationFrame(() => {
+    if (dragging) showDraggedTile(dragging);
+    saveGridState();
+    settleAfterDrop();
+  });
 });
 
 videoGrid.addEventListener("dragleave", () => {
   // keep reorder mode active until dragend/drop
 });
+
+
+function sameDropIntent(a, b) {
+  return !!a && !!b && a.tile === b.tile && a.before === b.before;
+}
+
+function clearDropIntent() {
+  lastDropIntent = null;
+}
+
+function getStableDropTarget(clientX, clientY, dragging) {
+  const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"))
+    .filter((el) => el !== dragging && !el.classList.contains("is-drag-source-hidden"));
+
+  if (!tiles.length) return null;
+
+  let best = null;
+  let bestScore = Infinity;
+
+  for (const tile of tiles) {
+    const rect = tile.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    const dx = clientX - cx;
+    const dy = clientY - cy;
+    const score = (dx * dx) + (dy * dy);
+
+    if (score < bestScore) {
+      bestScore = score;
+      best = { tile, rect };
+    }
+  }
+
+  if (!best) return null;
+
+  const { tile, rect } = best;
+  const midX = rect.left + rect.width / 2;
+  const deadZone = Math.max(18, rect.width * 0.14);
+
+  let before;
+
+  if (lastDropIntent && lastDropIntent.tile === tile) {
+    if (clientX <= midX - deadZone) {
+      before = true;
+    } else if (clientX >= midX + deadZone) {
+      before = false;
+    } else {
+      before = lastDropIntent.before;
+    }
+  } else {
+    before = clientX < midX;
+  }
+
+  return { tile, before };
+}
 
 function installTileDnD(tile) {
   tile.addEventListener("dragstart", (ev) => {
@@ -930,6 +1001,7 @@ function installTileDnD(tile) {
       return;
     }
 
+    clearDropIntent();
     beginReorderMode();
     clearDropMarkers();
     tile.classList.add("is-dragging");
@@ -956,6 +1028,7 @@ function installTileDnD(tile) {
 
       requestAnimationFrame(() => {
         hideDraggedTile(tile);
+        layoutTilesUniformGrid();
       });
 
       requestAnimationFrame(() => {
@@ -969,20 +1042,28 @@ function installTileDnD(tile) {
   });
 
   tile.addEventListener("dragend", () => {
-    showDraggedTile(tile);
+    clearDropIntent();
     tile.classList.remove("is-dragging");
     tile.classList.remove("drag-armed");
     clearDropMarkers();
-    saveGridState();
-    endReorderMode();
+
+    requestAnimationFrame(() => {
+      showDraggedTile(tile);
+      saveGridState();
+      settleAfterDrop();
+    });
   });
 
   tile.addEventListener("drop", (ev) => {
     ev.preventDefault();
-    showDraggedTile(tile);
+    clearDropIntent();
     clearDropMarkers();
-    saveGridState();
-    endReorderMode();
+
+    requestAnimationFrame(() => {
+      showDraggedTile(tile);
+      saveGridState();
+      settleAfterDrop();
+    });
   });
 
   tile.addEventListener("pointerdown", (ev) => {
@@ -1517,18 +1598,40 @@ async function stopDevice(deviceId) {
   }
 }
 
-function getCurrentReorderTileSize() {
+function settleAfterDrop() {
   const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"));
+
+  for (const tile of tiles) {
+    tile.style.transition = "none";
+    tile.style.transform = "";
+  }
+
+  endReorderMode();
+
+  void videoGrid.offsetWidth;
+
+  for (const tile of tiles) {
+    tile.style.transition = "";
+  }
+}
+
+function getCurrentReorderTileSize() {
+  const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"))
+    .filter((el) => !el.classList.contains("is-drag-source-hidden"));
   const count = Math.max(tiles.length, 1);
   return getUniformGridMetrics(count);
 }
 
 function hideDraggedTile(tile) {
+  if (!tile) return;
   tile.classList.add("is-drag-source-hidden");
+  tile.setAttribute("aria-hidden", "true");
 }
 
 function showDraggedTile(tile) {
+  if (!tile) return;
   tile.classList.remove("is-drag-source-hidden");
+  tile.removeAttribute("aria-hidden");
 }
 
 async function restoreGrid() {
