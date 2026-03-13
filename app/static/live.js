@@ -16,6 +16,7 @@ const showSidebarBtn = document.getElementById("showSidebar");
 
 const LS_KEY = "live.sidebarHidden";
 const LS_GRID_KEY = "live.gridState";
+const LS_DEVICE_ORDER_KEY = "live.deviceOrder";
 
 const RETRY_DELAY_MS = 4000;
 
@@ -26,14 +27,10 @@ let lastStatusMessage = "Idle.";
 
 let restoringGrid = false;
 let desiredTileOrder = [];
-let reorderMode = false;
-let lastDropIntent = null;
 
-const REORDER_LAYOUT = {
-  aspectRatio: 16 / 9,
-  minTileWidth: 180,
-  maxTileWidth: 360,
-};
+let draggedListId = null;
+let lastListDropId = null;
+let suppressListClickUntil = 0;
 
 const STREAM_STATE = {
   STARTING: "starting",
@@ -70,7 +67,7 @@ async function api(url, opts) {
   let data = null;
   try {
     data = text ? JSON.parse(text) : null;
-  } catch { }
+  } catch {}
 
   if (!res.ok) {
     const detail = data?.detail || text || res.statusText;
@@ -93,7 +90,7 @@ async function ptzPost(url, body = null) {
     try {
       const parsed = text ? JSON.parse(text) : null;
       if (parsed?.detail) detail = parsed.detail;
-    } catch { }
+    } catch {}
     throw new Error(`${res.status} ${res.statusText}: ${detail}`);
   }
 }
@@ -144,6 +141,47 @@ function saveGridState() {
   );
 }
 
+function loadDeviceOrder() {
+  try {
+    const raw = localStorage.getItem(LS_DEVICE_ORDER_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveDeviceOrder() {
+  localStorage.setItem(
+    LS_DEVICE_ORDER_KEY,
+    JSON.stringify(devices.map((d) => d.id))
+  );
+}
+
+function applyDeviceOrder(savedIds) {
+  if (!Array.isArray(savedIds) || !savedIds.length) return;
+
+  const byId = new Map(devices.map((d) => [d.id, d]));
+  const ordered = [];
+
+  for (const id of savedIds) {
+    const d = byId.get(id);
+    if (d) {
+      ordered.push(d);
+      byId.delete(id);
+    }
+  }
+
+  for (const d of devices) {
+    if (byId.has(d.id)) {
+      ordered.push(d);
+      byId.delete(d.id);
+    }
+  }
+
+  devices = ordered;
+}
+
 function applyTileOrder(orderIds) {
   if (!Array.isArray(orderIds) || !orderIds.length) return;
 
@@ -158,6 +196,12 @@ function applyTileOrder(orderIds) {
     const tile = tilesById.get(id);
     if (tile) videoGrid.appendChild(tile);
   }
+}
+
+function syncTileOrderToDeviceOrder(save = true) {
+  applyTileOrder(devices.map((d) => d.id));
+  recomputeGrid();
+  if (save) saveGridState();
 }
 
 function applySavedTileOrder() {
@@ -210,7 +254,6 @@ function layoutTilesJustified() {
     const gapsWidth = gap * (row.length - 1);
 
     let rowHeight = (containerWidth - gapsWidth) / ratioSum;
-
     rowHeight = Math.max(140, Math.min(420, rowHeight));
 
     let usedWidth = 0;
@@ -232,85 +275,7 @@ function layoutTilesJustified() {
   }
 }
 
-function getUniformGridMetrics(tileCount) {
-  const styles = getComputedStyle(videoGrid);
-  const gap = parseFloat(styles.gap || "8") || 8;
-  const containerWidth = videoGrid.clientWidth;
-
-  if (!containerWidth || tileCount <= 0) {
-    return { cols: 1, width: 320, height: 180 };
-  }
-
-  let best = null;
-
-  for (let cols = 1; cols <= tileCount; cols += 1) {
-    const rawWidth = Math.floor((containerWidth - gap * (cols - 1)) / cols);
-    if (rawWidth <= 0) continue;
-
-    const clampedWidth = clamp(
-      rawWidth,
-      REORDER_LAYOUT.minTileWidth,
-      REORDER_LAYOUT.maxTileWidth
-    );
-    const height = Math.round(clampedWidth / REORDER_LAYOUT.aspectRatio);
-    const rows = Math.ceil(tileCount / cols);
-
-    const widthPenalty = Math.abs(clampedWidth - 260);
-    const rowPenalty = rows * 24;
-    const score = widthPenalty + rowPenalty;
-
-    if (!best || score < best.score) {
-      best = {
-        score,
-        cols,
-        width: clampedWidth,
-        height,
-      };
-    }
-  }
-
-  return best || { cols: 1, width: 320, height: 180 };
-}
-
-function layoutTilesUniformGrid() {
-  const allTiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"));
-  const visibleTiles = allTiles.filter((el) => !el.classList.contains("is-drag-source-hidden"));
-
-  if (!allTiles.length) return;
-
-  const { width, height } = getUniformGridMetrics(Math.max(visibleTiles.length, 1));
-
-  for (const tile of allTiles) {
-    if (tile.classList.contains("is-drag-source-hidden")) continue;
-    tile.style.width = `${width}px`;
-    tile.style.height = `${height}px`;
-  }
-}
-
-function beginReorderMode() {
-  if (reorderMode) return;
-  reorderMode = true;
-  videoGrid.classList.add("is-reordering");
-  layoutTilesUniformGrid();
-
-  // Force layout before drag image is created
-  void videoGrid.offsetWidth;
-  void videoGrid.offsetHeight;
-}
-
-function endReorderMode() {
-  if (!reorderMode) return;
-  reorderMode = false;
-  videoGrid.classList.remove("is-reordering");
-  recomputeGrid();
-}
-
 function recomputeGrid() {
-  if (reorderMode) {
-    layoutTilesUniformGrid();
-    return;
-  }
-
   layoutTilesJustified();
 }
 
@@ -428,13 +393,22 @@ function renderList() {
     ].join(" ");
 
     return `
-      <button class="${cls}" data-id="${d.id}" ${ready ? "" : "disabled"}>
+      <div class="${cls}" data-id="${d.id}" draggable="true">
         <div class="camItemTop">
-          <div class="camName">${escapeHtml(d.name || d.ip || d.id)}</div>
+          <div class="camItemTitleRow">
+            <button
+              class="camDragHandle"
+              type="button"
+              draggable="false"
+              aria-label="Reorder camera"
+              title="Drag to reorder"
+            >⋮⋮</button>
+            <div class="camName">${escapeHtml(d.name || d.ip || d.id)}</div>
+          </div>
           <div class="camBadge">${escapeHtml(visual.badge)}</div>
         </div>
         <div class="camSub">${escapeHtml(subtitle)}</div>
-      </button>
+      </div>
     `;
   }).join("");
 }
@@ -444,6 +418,7 @@ async function loadDevices() {
   try {
     const data = await api("/api/devices", { method: "GET" });
     devices = data.devices || [];
+    applyDeviceOrder(loadDeviceOrder());
     renderList();
     setStatus("Ready.", "ok");
   } catch (e) {
@@ -455,12 +430,12 @@ async function loadDevices() {
 function stopPc(pc, videoEl) {
   try {
     pc?.close?.();
-  } catch { }
+  } catch {}
 
   if (videoEl?.srcObject) {
     try {
       videoEl.srcObject.getTracks().forEach((t) => t.stop());
-    } catch { }
+    } catch {}
   }
 
   if (videoEl) videoEl.srcObject = null;
@@ -528,7 +503,7 @@ async function startWhep(deviceId, videoEl, onState) {
 
   try {
     pc.close();
-  } catch { }
+  } catch {}
 
   throw new Error(lastError);
 }
@@ -610,15 +585,15 @@ async function toggleTileFullscreen(tile) {
 
   const fullscreenEl = document.fullscreenElement;
   if (fullscreenEl === tile) {
-    await document.exitFullscreen?.().catch(() => { });
+    await document.exitFullscreen?.().catch(() => {});
     return;
   }
 
   if (fullscreenEl && fullscreenEl !== tile) {
-    await document.exitFullscreen?.().catch(() => { });
+    await document.exitFullscreen?.().catch(() => {});
   }
 
-  await tile.requestFullscreen?.().catch(() => { });
+  await tile.requestFullscreen?.().catch(() => {});
 }
 
 function canToggleTileFullscreen(target) {
@@ -639,7 +614,7 @@ function installTileFullscreen(tile) {
   tile.addEventListener("dblclick", (ev) => {
     if (!canToggleTileFullscreen(ev.target)) return;
     ev.preventDefault();
-    toggleTileFullscreen(tile).catch(() => { });
+    toggleTileFullscreen(tile).catch(() => {});
   });
 
   tile.addEventListener("pointerup", (ev) => {
@@ -657,7 +632,7 @@ function installTileFullscreen(tile) {
       lastTapX = 0;
       lastTapY = 0;
       ev.preventDefault();
-      toggleTileFullscreen(tile).catch(() => { });
+      toggleTileFullscreen(tile).catch(() => {});
       return;
     }
 
@@ -671,7 +646,6 @@ function makeTile(device) {
   const tile = document.createElement("div");
   tile.className = "tile";
   tile.setAttribute("data-id", device.id);
-  tile.draggable = true;
 
   tile.innerHTML = `
     <div class="tilePlayer">
@@ -709,383 +683,135 @@ function makeTile(device) {
     const w = videoEl.videoWidth || 16;
     const h = videoEl.videoHeight || 9;
     tile.style.setProperty("--tile-ar", `${w} / ${h}`);
-    if (!reorderMode) recomputeGrid();
+    recomputeGrid();
   });
 
   return { tile, videoEl, overlayEl, closeBtn };
 }
 
-function canStartTileDrag(ev) {
-  const target = ev.target;
-  if (!target) return false;
-
-  return !target.closest(
-    ".tilePtzPanel, .tilePtzJoystick, .tilePtzZoomBtn, .tileOverlay, video, .tileCloseBtn"
-  );
+function getListItemFromEventTarget(target) {
+  return target?.closest?.(".camItem[data-id]") || null;
 }
 
-function clearDropMarkers() {
-  videoGrid.querySelectorAll(".tileDropMarker").forEach((el) => {
-    el.classList.remove("tileDropMarker");
+function clearListDropMarkers() {
+  camListEl.querySelectorAll(".camItem.drop-before, .camItem.drop-after").forEach((el) => {
+    el.classList.remove("drop-before", "drop-after");
   });
 }
 
-function getDropTarget(clientX, clientY, dragging) {
-  const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"))
-    .filter((el) => el !== dragging && !el.classList.contains("is-drag-source-hidden"));
+function clearListDraggingState() {
+  camListEl.querySelectorAll(".camItem.is-list-dragging").forEach((el) => {
+    el.classList.remove("is-list-dragging");
+  });
+  clearListDropMarkers();
+  draggedListId = null;
+  lastListDropId = null;
+}
 
-  if (!tiles.length) return null;
+function getListDropTarget(clientY, draggingEl) {
+  const items = Array.from(camListEl.querySelectorAll(".camItem[data-id]"))
+    .filter((el) => el !== draggingEl);
+
+  if (!items.length) return null;
 
   let best = null;
   let bestScore = Infinity;
 
-  for (const tile of tiles) {
-    const rect = tile.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
+  for (const item of items) {
+    const rect = item.getBoundingClientRect();
     const cy = rect.top + rect.height / 2;
-
-    const dx = clientX - cx;
     const dy = clientY - cy;
-
-    // favor tiles whose center is closest to the cursor
-    const score = (dx * dx) + (dy * dy);
+    const score = Math.abs(dy);
 
     if (score < bestScore) {
       bestScore = score;
-      best = { tile, rect };
+      best = { item, rect };
     }
   }
 
   if (!best) return null;
 
-  const { tile, rect } = best;
-  const midX = rect.left + rect.width / 2;
+  const { item, rect } = best;
+  const midY = rect.top + rect.height / 2;
 
   return {
-    tile,
-    before: clientX < midX,
+    item,
+    before: clientY < midY,
   };
 }
 
-function captureTilePositions(excludeEl = null) {
-  const map = new Map();
-  Array.from(videoGrid.querySelectorAll(".tile[data-id]")).forEach((el) => {
-    if (el === excludeEl) return;
-    map.set(el, el.getBoundingClientRect());
-  });
-  return map;
-}
+function installListDnD() {
+  camListEl.addEventListener("dragstart", (ev) => {
+    const item = getListItemFromEventTarget(ev.target);
+    if (!item) return;
 
-function animateTileReflow(prevRects, excludeEl = null) {
-  const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"));
-  for (const el of tiles) {
-    if (el === excludeEl) continue;
-
-    const prev = prevRects.get(el);
-    if (!prev) continue;
-
-    const next = el.getBoundingClientRect();
-    const dx = prev.left - next.left;
-    const dy = prev.top - next.top;
-
-    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
-
-    el.style.transition = "none";
-    el.style.transform = `translate(${dx}px, ${dy}px)`;
-
-    requestAnimationFrame(() => {
-      el.style.transition = "transform .18s cubic-bezier(.2,.8,.2,1)";
-      el.style.transform = "";
-      const cleanup = () => {
-        el.style.transition = "";
-        el.removeEventListener("transitionend", cleanup);
-      };
-      el.addEventListener("transitionend", cleanup);
-    });
-  }
-}
-
-function makeDragGhostFromTile(tile, width, height) {
-  const ghost = document.createElement("div");
-  ghost.className = "tile drag-ghost";
-
-  ghost.style.position = "fixed";
-  ghost.style.top = "-10000px";
-  ghost.style.left = "-10000px";
-  ghost.style.margin = "0";
-  ghost.style.width = `${Math.round(width)}px`;
-  ghost.style.height = `${Math.round(height)}px`;
-  ghost.style.pointerEvents = "none";
-  ghost.style.transform = "none";
-  ghost.style.transition = "none";
-  ghost.style.overflow = "hidden";
-  ghost.style.background = "#000";
-  ghost.style.borderRadius = "0";
-  ghost.style.opacity = "1";
-
-  const player = document.createElement("div");
-  player.className = "tilePlayer";
-  player.style.position = "relative";
-  player.style.width = "100%";
-  player.style.height = "100%";
-  player.style.background = "#000";
-  ghost.appendChild(player);
-
-  const srcVideo = tile.querySelector("video");
-  if (srcVideo) {
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, srcVideo.videoWidth || 1280);
-    canvas.height = Math.max(1, srcVideo.videoHeight || 720);
-
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      try {
-        ctx.drawImage(srcVideo, 0, 0, canvas.width, canvas.height);
-      } catch {
-        ctx.fillStyle = "#000";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-      }
-    }
-
-    canvas.style.display = "block";
-    canvas.style.width = "100%";
-    canvas.style.height = "100%";
-    canvas.style.objectFit = "contain";
-    canvas.style.background = "#000";
-    player.appendChild(canvas);
-  }
-
-  const hud = tile.querySelector(".tileHud");
-  if (hud) {
-    const hudClone = hud.cloneNode(true);
-    hudClone.style.pointerEvents = "none";
-    player.appendChild(hudClone);
-  }
-
-  const overlay = tile.querySelector(".tileOverlay");
-  if (overlay && overlay.style.display !== "none" && overlay.textContent.trim()) {
-    const overlayClone = overlay.cloneNode(true);
-    overlayClone.style.display = "flex";
-    overlayClone.style.pointerEvents = "none";
-    player.appendChild(overlayClone);
-  }
-
-  document.body.appendChild(ghost);
-  return ghost;
-}
-
-videoGrid.addEventListener("dragover", (ev) => {
-  ev.preventDefault();
-
-  const dragging = videoGrid.querySelector(".tile.is-dragging");
-  if (!dragging) return;
-
-  const target = getStableDropTarget(ev.clientX, ev.clientY, dragging);
-  if (!target) return;
-
-  clearDropMarkers();
-
-  if (target.before) {
-    target.tile.classList.add("tileDropMarker");
-  } else {
-    const markerEl = target.tile.nextElementSibling || target.tile;
-    markerEl.classList.add("tileDropMarker");
-  }
-
-  if (sameDropIntent(lastDropIntent, target)) {
-    return;
-  }
-
-  const beforeRects = captureTilePositions(dragging);
-
-  if (target.before) {
-    if (dragging.nextElementSibling === target.tile) {
-      lastDropIntent = target;
-      return;
-    }
-
-    videoGrid.insertBefore(dragging, target.tile);
-  } else {
-    if (dragging === target.tile.nextElementSibling) {
-      lastDropIntent = target;
-      return;
-    }
-
-    videoGrid.insertBefore(dragging, target.tile.nextSibling);
-  }
-
-  lastDropIntent = target;
-  animateTileReflow(beforeRects, dragging);
-  saveGridState();
-});
-
-videoGrid.addEventListener("drop", (ev) => {
-  ev.preventDefault();
-
-  const dragging = videoGrid.querySelector(".tile.is-dragging");
-
-  clearDropIntent();
-  clearDropMarkers();
-
-  requestAnimationFrame(() => {
-    if (dragging) showDraggedTile(dragging);
-    saveGridState();
-    settleAfterDrop();
-  });
-});
-
-videoGrid.addEventListener("dragleave", () => {
-  // keep reorder mode active until dragend/drop
-});
-
-
-function sameDropIntent(a, b) {
-  return !!a && !!b && a.tile === b.tile && a.before === b.before;
-}
-
-function clearDropIntent() {
-  lastDropIntent = null;
-}
-
-function getStableDropTarget(clientX, clientY, dragging) {
-  const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"))
-    .filter((el) => el !== dragging && !el.classList.contains("is-drag-source-hidden"));
-
-  if (!tiles.length) return null;
-
-  let best = null;
-  let bestScore = Infinity;
-
-  for (const tile of tiles) {
-    const rect = tile.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-
-    const dx = clientX - cx;
-    const dy = clientY - cy;
-    const score = (dx * dx) + (dy * dy);
-
-    if (score < bestScore) {
-      bestScore = score;
-      best = { tile, rect };
-    }
-  }
-
-  if (!best) return null;
-
-  const { tile, rect } = best;
-  const midX = rect.left + rect.width / 2;
-  const deadZone = Math.max(18, rect.width * 0.14);
-
-  let before;
-
-  if (lastDropIntent && lastDropIntent.tile === tile) {
-    if (clientX <= midX - deadZone) {
-      before = true;
-    } else if (clientX >= midX + deadZone) {
-      before = false;
-    } else {
-      before = lastDropIntent.before;
-    }
-  } else {
-    before = clientX < midX;
-  }
-
-  return { tile, before };
-}
-
-function installTileDnD(tile) {
-  tile.addEventListener("dragstart", (ev) => {
-    if (!canStartTileDrag(ev)) {
-      ev.preventDefault();
-      return;
-    }
-
-    clearDropIntent();
-    beginReorderMode();
-    clearDropMarkers();
-    tile.classList.add("is-dragging");
+    draggedListId = item.getAttribute("data-id");
+    lastListDropId = draggedListId;
+    item.classList.add("is-list-dragging");
 
     if (ev.dataTransfer) {
       ev.dataTransfer.effectAllowed = "move";
-      ev.dataTransfer.setData("text/plain", tile.getAttribute("data-id") || "");
-
-      const { width, height } = getCurrentReorderTileSize();
-      const ghost = makeDragGhostFromTile(tile, width, height);
-
-      const rect = tile.getBoundingClientRect();
-      const scaleX = width / Math.max(rect.width, 1);
-      const scaleY = height / Math.max(rect.height, 1);
-
-      const offsetX = Math.round(
-        Math.max(0, Math.min(ev.clientX - rect.left, rect.width)) * scaleX
-      );
-      const offsetY = Math.round(
-        Math.max(0, Math.min(ev.clientY - rect.top, rect.height)) * scaleY
-      );
-
-      ev.dataTransfer.setDragImage(ghost, offsetX, offsetY);
-
-      requestAnimationFrame(() => {
-        hideDraggedTile(tile);
-        layoutTilesUniformGrid();
-      });
-
-      requestAnimationFrame(() => {
-        ghost.remove();
-      });
-    } else {
-      requestAnimationFrame(() => {
-        hideDraggedTile(tile);
-      });
+      ev.dataTransfer.setData("text/plain", draggedListId || "");
     }
   });
 
-  tile.addEventListener("dragend", () => {
-    clearDropIntent();
-    tile.classList.remove("is-dragging");
-    tile.classList.remove("drag-armed");
-    clearDropMarkers();
-
-    requestAnimationFrame(() => {
-      showDraggedTile(tile);
-      saveGridState();
-      settleAfterDrop();
-    });
-  });
-
-  tile.addEventListener("drop", (ev) => {
+  camListEl.addEventListener("dragover", (ev) => {
     ev.preventDefault();
-    clearDropIntent();
-    clearDropMarkers();
 
-    requestAnimationFrame(() => {
-      showDraggedTile(tile);
-      saveGridState();
-      settleAfterDrop();
-    });
-  });
+    const draggingEl = camListEl.querySelector(".camItem.is-list-dragging");
+    if (!draggingEl) return;
 
-  tile.addEventListener("pointerdown", (ev) => {
-    if (canStartTileDrag(ev)) {
-      tile.classList.add("drag-armed");
+    const target = getListDropTarget(ev.clientY, draggingEl);
+    if (!target) return;
+
+    clearListDropMarkers();
+    target.item.classList.add(target.before ? "drop-before" : "drop-after");
+
+    const dragId = draggingEl.getAttribute("data-id");
+    const targetId = target.item.getAttribute("data-id");
+    if (!dragId || !targetId || dragId === targetId) return;
+
+    const signature = `${targetId}:${target.before ? "b" : "a"}`;
+    if (signature === lastListDropId) return;
+
+    if (target.before) {
+      camListEl.insertBefore(draggingEl, target.item);
     } else {
-      tile.classList.remove("drag-armed");
+      camListEl.insertBefore(draggingEl, target.item.nextSibling);
     }
+
+    lastListDropId = signature;
   });
 
-  tile.addEventListener("pointerup", () => {
-    tile.classList.remove("drag-armed");
-  });
+  camListEl.addEventListener("drop", (ev) => {
+    ev.preventDefault();
 
-  tile.addEventListener("pointercancel", () => {
-    tile.classList.remove("drag-armed");
-  });
-
-  tile.addEventListener("mouseleave", () => {
-    if (!tile.classList.contains("is-dragging")) {
-      tile.classList.remove("drag-armed");
+    const draggingEl = camListEl.querySelector(".camItem.is-list-dragging");
+    if (!draggingEl || !draggedListId) {
+      clearListDraggingState();
+      return;
     }
+
+    const orderedIds = Array.from(camListEl.querySelectorAll(".camItem[data-id]"))
+      .map((el) => el.getAttribute("data-id"))
+      .filter(Boolean);
+
+    if (orderedIds.length) {
+      applyDeviceOrder(orderedIds);
+      saveDeviceOrder();
+      syncTileOrderToDeviceOrder(false);
+      saveGridState();
+    }
+
+    suppressListClickUntil = Date.now() + 250;
+    clearListDraggingState();
+  });
+
+  camListEl.addEventListener("dragend", () => {
+    requestAnimationFrame(() => {
+      suppressListClickUntil = Date.now() + 250;
+      clearListDraggingState();
+    });
   });
 }
 
@@ -1100,7 +826,7 @@ function scheduleRetry(device, entry) {
     entry.retryScheduled = false;
 
     if (entry.cancelled) return;
-    connectEntry(device, entry).catch(() => { });
+    connectEntry(device, entry).catch(() => {});
   }, RETRY_DELAY_MS);
 
   renderList();
@@ -1187,7 +913,7 @@ async function connectEntry(device, entry) {
     if (!cur || cur.cancelled) {
       try {
         pc.close();
-      } catch { }
+      } catch {}
       return;
     }
 
@@ -1289,7 +1015,7 @@ function installPtzControls(device, entry, caps) {
         return;
       }
 
-      flushMove(true).catch(() => { });
+      flushMove(true).catch(() => {});
     }, 120);
   }
 
@@ -1326,7 +1052,7 @@ function installPtzControls(device, entry, caps) {
       if (needsFlush || !sameCmd(latest, lastSent)) {
         needsFlush = false;
         queueMicrotask(() => {
-          flushMove(false).catch(() => { });
+          flushMove(false).catch(() => {});
         });
       }
     }
@@ -1338,7 +1064,7 @@ function installPtzControls(device, entry, caps) {
       tilt: clamp(tilt, -1, 1),
       zoom: clamp(zoom, -1, 1),
     };
-    flushMove(force).catch(() => { });
+    flushMove(force).catch(() => {});
   }
 
   function resetKnob() {
@@ -1350,7 +1076,7 @@ function installPtzControls(device, entry, caps) {
     desired = { pan: 0, tilt: 0, zoom: 0 };
     clearKeepAlive();
     resetKnob();
-    flushMove(true).catch(() => { });
+    flushMove(true).catch(() => {});
   }
 
   entry.stopPtz = stopNow;
@@ -1364,7 +1090,7 @@ function installPtzControls(device, entry, caps) {
 
       try {
         joystick.setPointerCapture(ev.pointerId);
-      } catch { }
+      } catch {}
 
       const rect = joystick.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
@@ -1404,7 +1130,7 @@ function installPtzControls(device, entry, caps) {
         if (activeMode === "joystick") activeMode = "idle";
         try {
           joystick.releasePointerCapture(upEv.pointerId);
-        } catch { }
+        } catch {}
         joystick.removeEventListener("pointermove", onMove);
         joystick.removeEventListener("pointerup", onUp);
         joystick.removeEventListener("pointercancel", onUp);
@@ -1414,7 +1140,7 @@ function installPtzControls(device, entry, caps) {
           desired.pan = 0;
           desired.tilt = 0;
           resetKnob();
-          flushMove(true).catch(() => { });
+          flushMove(true).catch(() => {});
         } else {
           stopNow();
         }
@@ -1449,7 +1175,7 @@ function installPtzControls(device, entry, caps) {
 
         if (activeJoystick) {
           desired.zoom = 0;
-          flushMove(true).catch(() => { });
+          flushMove(true).catch(() => {});
         } else {
           stopNow();
         }
@@ -1498,9 +1224,10 @@ async function startDevice(device, { restore = false } = {}) {
   try {
     const data = await api("/api/devices", { method: "GET" });
     devices = data.devices || devices;
+    applyDeviceOrder(loadDeviceOrder());
     const fresh = devices.find((d) => d.id === device.id);
     if (fresh) device = fresh;
-  } catch { }
+  } catch {}
 
   ptzCapsCache.delete(device.id);
 
@@ -1511,13 +1238,13 @@ async function startDevice(device, { restore = false } = {}) {
 
   const { tile, videoEl, overlayEl, closeBtn } = makeTile(device);
   videoGrid.appendChild(tile);
-  installTileDnD(tile);
+  syncTileOrderToDeviceOrder();
   installTileFullscreen(tile);
 
   closeBtn?.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    stopDevice(device.id).catch(() => { });
+    stopDevice(device.id).catch(() => {});
   });
 
   const entry = {
@@ -1566,11 +1293,11 @@ async function stopDevice(deviceId) {
 
   try {
     entry.stopPtz?.();
-  } catch { }
+  } catch {}
 
   try {
     entry.cleanupPtzListeners?.();
-  } catch { }
+  } catch {}
 
   const { pc, tileEl, videoEl } = entry;
   stopPc(pc, videoEl);
@@ -1585,7 +1312,7 @@ async function stopDevice(deviceId) {
 
   try {
     tileEl?.remove?.();
-  } catch { }
+  } catch {}
 
   streams.delete(deviceId);
 
@@ -1598,44 +1325,8 @@ async function stopDevice(deviceId) {
   }
 }
 
-function settleAfterDrop() {
-  const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"));
-
-  for (const tile of tiles) {
-    tile.style.transition = "none";
-    tile.style.transform = "";
-  }
-
-  endReorderMode();
-
-  void videoGrid.offsetWidth;
-
-  for (const tile of tiles) {
-    tile.style.transition = "";
-  }
-}
-
-function getCurrentReorderTileSize() {
-  const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"))
-    .filter((el) => !el.classList.contains("is-drag-source-hidden"));
-  const count = Math.max(tiles.length, 1);
-  return getUniformGridMetrics(count);
-}
-
-function hideDraggedTile(tile) {
-  if (!tile) return;
-  tile.classList.add("is-drag-source-hidden");
-  tile.setAttribute("aria-hidden", "true");
-}
-
-function showDraggedTile(tile) {
-  if (!tile) return;
-  tile.classList.remove("is-drag-source-hidden");
-  tile.removeAttribute("aria-hidden");
-}
-
 async function restoreGrid() {
-  const { openIds, order } = loadGridState();
+  const { openIds } = loadGridState();
   if (!openIds.length) return;
 
   const byId = new Map(devices.map((d) => [d.id, d]));
@@ -1646,7 +1337,7 @@ async function restoreGrid() {
   if (!toRestore.length) return;
 
   restoringGrid = true;
-  desiredTileOrder = order.length ? order.slice() : openIds.slice();
+  desiredTileOrder = devices.map((d) => d.id);
 
   setStatus(`Restoring ${toRestore.length} camera(s)…`, "warn");
 
@@ -1656,7 +1347,7 @@ async function restoreGrid() {
     );
   } finally {
     restoringGrid = false;
-    applyTileOrder(desiredTileOrder);
+    syncTileOrderToDeviceOrder();
     desiredTileOrder = [];
     saveGridState();
     recomputeGrid();
@@ -1666,9 +1357,12 @@ async function restoreGrid() {
 }
 
 camListEl.addEventListener("click", async (ev) => {
-  const btn = ev.target.closest?.("button[data-id]");
-  if (!btn) return;
-  const id = btn.getAttribute("data-id");
+  if (Date.now() < suppressListClickUntil) return;
+
+  const item = getListItemFromEventTarget(ev.target);
+  if (!item) return;
+
+  const id = item.getAttribute("data-id");
   const d = devices.find((x) => x.id === id);
   if (!d) return;
 
@@ -1692,6 +1386,7 @@ startAllBtn.addEventListener("click", async () => {
     toStart.map((d) => startDevice(d))
   );
 
+  syncTileOrderToDeviceOrder();
   saveGridState();
   updateOverallStatusForGrid(`Showing ${streams.size} camera(s).`);
 });
@@ -1721,6 +1416,7 @@ setSidebarHidden(localStorage.getItem(LS_KEY) === "1");
 
 recomputeGrid();
 setStatus("Loading…", "warn");
+installListDnD();
 
 (async function init() {
   await loadDevices();
