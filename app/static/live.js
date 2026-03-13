@@ -26,6 +26,13 @@ let lastStatusMessage = "Idle.";
 
 let restoringGrid = false;
 let desiredTileOrder = [];
+let reorderMode = false;
+
+const REORDER_LAYOUT = {
+  aspectRatio: 16 / 9,
+  minTileWidth: 180,
+  maxTileWidth: 360,
+};
 
 const STREAM_STATE = {
   STARTING: "starting",
@@ -190,9 +197,6 @@ function layoutTilesJustified() {
 
   if (!containerWidth) return;
 
-  const ratios = tiles.map(getTileAspectRatio);
-
-  // Estimate how many columns feels reasonable from available width
   const targetTileWidth = 340;
   const estimatedCols = Math.max(1, Math.round((containerWidth + gap) / (targetTileWidth + gap)));
   const rowCount = Math.max(1, Math.ceil(tiles.length / estimatedCols));
@@ -206,7 +210,6 @@ function layoutTilesJustified() {
 
     let rowHeight = (containerWidth - gapsWidth) / ratioSum;
 
-    // clamp so rows don't get absurdly tall or tiny
     rowHeight = Math.max(140, Math.min(420, rowHeight));
 
     let usedWidth = 0;
@@ -223,13 +226,87 @@ function layoutTilesJustified() {
 
       tile.style.height = `${Math.round(rowHeight)}px`;
       tile.style.width = `${Math.round(width)}px`;
-
       usedWidth += Math.round(width);
     });
   }
 }
 
+function getUniformGridMetrics(tileCount) {
+  const styles = getComputedStyle(videoGrid);
+  const gap = parseFloat(styles.gap || "8") || 8;
+  const containerWidth = videoGrid.clientWidth;
+
+  if (!containerWidth || tileCount <= 0) {
+    return { cols: 1, width: 320, height: 180 };
+  }
+
+  let best = null;
+
+  for (let cols = 1; cols <= tileCount; cols += 1) {
+    const rawWidth = Math.floor((containerWidth - gap * (cols - 1)) / cols);
+    if (rawWidth <= 0) continue;
+
+    const clampedWidth = clamp(
+      rawWidth,
+      REORDER_LAYOUT.minTileWidth,
+      REORDER_LAYOUT.maxTileWidth
+    );
+    const height = Math.round(clampedWidth / REORDER_LAYOUT.aspectRatio);
+    const rows = Math.ceil(tileCount / cols);
+
+    const widthPenalty = Math.abs(clampedWidth - 260);
+    const rowPenalty = rows * 24;
+    const score = widthPenalty + rowPenalty;
+
+    if (!best || score < best.score) {
+      best = {
+        score,
+        cols,
+        width: clampedWidth,
+        height,
+      };
+    }
+  }
+
+  return best || { cols: 1, width: 320, height: 180 };
+}
+
+function layoutTilesUniformGrid() {
+  const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"));
+  if (!tiles.length) return;
+
+  const { width, height } = getUniformGridMetrics(tiles.length);
+
+  for (const tile of tiles) {
+    tile.style.width = `${width}px`;
+    tile.style.height = `${height}px`;
+  }
+}
+
+function beginReorderMode() {
+  if (reorderMode) return;
+  reorderMode = true;
+  videoGrid.classList.add("is-reordering");
+  layoutTilesUniformGrid();
+
+  // Force layout before drag image is created
+  void videoGrid.offsetWidth;
+  void videoGrid.offsetHeight;
+}
+
+function endReorderMode() {
+  if (!reorderMode) return;
+  reorderMode = false;
+  videoGrid.classList.remove("is-reordering");
+  recomputeGrid();
+}
+
 function recomputeGrid() {
+  if (reorderMode) {
+    layoutTilesUniformGrid();
+    return;
+  }
+
   layoutTilesJustified();
 }
 
@@ -628,7 +705,7 @@ function makeTile(device) {
     const w = videoEl.videoWidth || 16;
     const h = videoEl.videoHeight || 9;
     tile.style.setProperty("--tile-ar", `${w} / ${h}`);
-    recomputeGrid();
+    if (!reorderMode) recomputeGrid();
   });
 
   return { tile, videoEl, overlayEl, closeBtn };
@@ -663,14 +740,12 @@ function getDropTarget(clientX, clientY, dragging) {
 
     const withinX = clientX >= rect.left && clientX <= rect.right;
 
-    // distance to tile box
     const clampedX = Math.max(rect.left, Math.min(clientX, rect.right));
     const clampedY = Math.max(rect.top, Math.min(clientY, rect.bottom));
     const dx = clientX - clampedX;
     const dy = clientY - clampedY;
     const boxDist = (dx * dx) + (dy * dy);
 
-    // favor tiles under the cursor horizontally
     const score = withinX ? boxDist - 100000 : boxDist;
 
     if (score < bestScore) {
@@ -730,6 +805,74 @@ function animateTileReflow(prevRects, excludeEl = null) {
   }
 }
 
+function makeDragGhostFromTile(tile, width, height) {
+  const ghost = document.createElement("div");
+  ghost.className = "tile drag-ghost";
+
+  ghost.style.position = "fixed";
+  ghost.style.top = "-10000px";
+  ghost.style.left = "-10000px";
+  ghost.style.margin = "0";
+  ghost.style.width = `${Math.round(width)}px`;
+  ghost.style.height = `${Math.round(height)}px`;
+  ghost.style.pointerEvents = "none";
+  ghost.style.transform = "none";
+  ghost.style.transition = "none";
+  ghost.style.overflow = "hidden";
+  ghost.style.background = "#000";
+  ghost.style.borderRadius = "0";
+  ghost.style.opacity = "1";
+
+  const player = document.createElement("div");
+  player.className = "tilePlayer";
+  player.style.position = "relative";
+  player.style.width = "100%";
+  player.style.height = "100%";
+  player.style.background = "#000";
+  ghost.appendChild(player);
+
+  const srcVideo = tile.querySelector("video");
+  if (srcVideo) {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, srcVideo.videoWidth || 1280);
+    canvas.height = Math.max(1, srcVideo.videoHeight || 720);
+
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      try {
+        ctx.drawImage(srcVideo, 0, 0, canvas.width, canvas.height);
+      } catch {
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+
+    canvas.style.display = "block";
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    canvas.style.objectFit = "contain";
+    canvas.style.background = "#000";
+    player.appendChild(canvas);
+  }
+
+  const hud = tile.querySelector(".tileHud");
+  if (hud) {
+    const hudClone = hud.cloneNode(true);
+    hudClone.style.pointerEvents = "none";
+    player.appendChild(hudClone);
+  }
+
+  const overlay = tile.querySelector(".tileOverlay");
+  if (overlay && overlay.style.display !== "none" && overlay.textContent.trim()) {
+    const overlayClone = overlay.cloneNode(true);
+    overlayClone.style.display = "flex";
+    overlayClone.style.pointerEvents = "none";
+    player.appendChild(overlayClone);
+  }
+
+  document.body.appendChild(ghost);
+  return ghost;
+}
 
 videoGrid.addEventListener("dragover", (ev) => {
   ev.preventDefault();
@@ -763,6 +906,22 @@ videoGrid.addEventListener("dragover", (ev) => {
   }
 });
 
+videoGrid.addEventListener("drop", (ev) => {
+  ev.preventDefault();
+
+  const dragging = videoGrid.querySelector(".tile.is-dragging");
+  if (dragging) {
+    showDraggedTile(dragging);
+  }
+
+  clearDropMarkers();
+  saveGridState();
+  endReorderMode();
+});
+
+videoGrid.addEventListener("dragleave", () => {
+  // keep reorder mode active until dragend/drop
+});
 
 function installTileDnD(tile) {
   tile.addEventListener("dragstart", (ev) => {
@@ -771,28 +930,59 @@ function installTileDnD(tile) {
       return;
     }
 
+    beginReorderMode();
     clearDropMarkers();
     tile.classList.add("is-dragging");
 
     if (ev.dataTransfer) {
       ev.dataTransfer.effectAllowed = "move";
       ev.dataTransfer.setData("text/plain", tile.getAttribute("data-id") || "");
+
+      const { width, height } = getCurrentReorderTileSize();
+      const ghost = makeDragGhostFromTile(tile, width, height);
+
+      const rect = tile.getBoundingClientRect();
+      const scaleX = width / Math.max(rect.width, 1);
+      const scaleY = height / Math.max(rect.height, 1);
+
+      const offsetX = Math.round(
+        Math.max(0, Math.min(ev.clientX - rect.left, rect.width)) * scaleX
+      );
+      const offsetY = Math.round(
+        Math.max(0, Math.min(ev.clientY - rect.top, rect.height)) * scaleY
+      );
+
+      ev.dataTransfer.setDragImage(ghost, offsetX, offsetY);
+
+      requestAnimationFrame(() => {
+        hideDraggedTile(tile);
+      });
+
+      requestAnimationFrame(() => {
+        ghost.remove();
+      });
+    } else {
+      requestAnimationFrame(() => {
+        hideDraggedTile(tile);
+      });
     }
   });
 
   tile.addEventListener("dragend", () => {
+    showDraggedTile(tile);
     tile.classList.remove("is-dragging");
     tile.classList.remove("drag-armed");
     clearDropMarkers();
     saveGridState();
-    recomputeGrid();
+    endReorderMode();
   });
 
   tile.addEventListener("drop", (ev) => {
     ev.preventDefault();
+    showDraggedTile(tile);
     clearDropMarkers();
     saveGridState();
-    recomputeGrid();
+    endReorderMode();
   });
 
   tile.addEventListener("pointerdown", (ev) => {
@@ -1325,6 +1515,20 @@ async function stopDevice(deviceId) {
   if (!restoringGrid) {
     saveGridState();
   }
+}
+
+function getCurrentReorderTileSize() {
+  const tiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"));
+  const count = Math.max(tiles.length, 1);
+  return getUniformGridMetrics(count);
+}
+
+function hideDraggedTile(tile) {
+  tile.classList.add("is-drag-source-hidden");
+}
+
+function showDraggedTile(tile) {
+  tile.classList.remove("is-drag-source-hidden");
 }
 
 async function restoreGrid() {
