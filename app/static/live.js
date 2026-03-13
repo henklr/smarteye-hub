@@ -3,16 +3,11 @@ const pillText = document.getElementById("pillText");
 const statusPill = document.getElementById("statusPill");
 
 const camListEl = document.getElementById("camList");
-const reloadBtn = document.getElementById("reload");
 
 const startAllBtn = document.getElementById("startAll");
 const stopAllBtn = document.getElementById("stopAll");
 
 const videoGrid = document.getElementById("videoGrid");
-
-const layoutEl = document.getElementById("liveLayout");
-const toggleSidebarBtn = document.getElementById("toggleSidebar");
-const showSidebarBtn = document.getElementById("showSidebar");
 
 const LS_KEY = "live.sidebarHidden";
 const LS_GRID_KEY = "live.gridState";
@@ -202,11 +197,6 @@ function syncTileOrderToDeviceOrder(save = true) {
   applyTileOrder(devices.map((d) => d.id));
   recomputeGrid();
   if (save) saveGridState();
-}
-
-function applySavedTileOrder() {
-  const { order } = loadGridState();
-  applyTileOrder(order);
 }
 
 function getTileAspectRatio(tile) {
@@ -1373,8 +1363,6 @@ camListEl.addEventListener("click", async (ev) => {
   }
 });
 
-reloadBtn.addEventListener("click", () => loadDevices());
-
 startAllBtn.addEventListener("click", async () => {
   const ready = devices.filter(profileReady);
   const toStart = ready.filter((d) => !isStreaming(d.id));
@@ -1402,16 +1390,36 @@ stopAllBtn.addEventListener("click", async () => {
   setStatus("Stopped.", "warn");
 });
 
+const layoutEl = document.getElementById("liveLayout");
+const sidebarCollapseBtn = document.getElementById("sidebarCollapseBtn");
+const sidebarCollapseRailIcon = sidebarCollapseBtn?.querySelector(".sidebarCollapseRailIcon");
+
 function setSidebarHidden(hidden) {
   layoutEl.classList.toggle("sidebarHidden", !!hidden);
-  showSidebarBtn.style.display = hidden ? "inline-flex" : "none";
+
+  if (sidebarCollapseRailIcon) {
+    sidebarCollapseRailIcon.textContent = hidden ? "❯" : "❮";
+  }
+
+  if (sidebarCollapseBtn) {
+    sidebarCollapseBtn.title = hidden ? "Show cameras" : "Hide cameras";
+    sidebarCollapseBtn.setAttribute(
+      "aria-label",
+      hidden ? "Show cameras" : "Hide cameras"
+    );
+  }
+
   localStorage.setItem(LS_KEY, hidden ? "1" : "0");
+  requestAnimationFrame(recomputeGrid);
 }
 
 window.addEventListener("resize", recomputeGrid);
 
-toggleSidebarBtn.addEventListener("click", () => setSidebarHidden(true));
-showSidebarBtn.addEventListener("click", () => setSidebarHidden(false));
+sidebarCollapseBtn?.addEventListener("click", () => {
+  const hidden = layoutEl.classList.contains("sidebarHidden");
+  setSidebarHidden(!hidden);
+});
+
 setSidebarHidden(localStorage.getItem(LS_KEY) === "1");
 
 recomputeGrid();

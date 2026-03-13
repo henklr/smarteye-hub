@@ -1,16 +1,17 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Live</title>
   <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/live.css" />
 </head>
 
 <body>
   <div class="wrap full">
     <div class="topbar">
-
       <div class="tabs">
         <a class="tab active" href="/live"><span class="tabDot"></span>Live</a>
         <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
@@ -23,36 +24,36 @@
         <span class="dot" id="dot"></span>
         <span id="pillText">Idle</span>
       </div>
-
     </div>
 
     <div class="liveLayout" id="liveLayout">
-      <div class="card liveSidebar" id="sidebar">
-        <div class="listHeader">
-          <div>
-            <div class="listTitle">Cameras</div>
-          </div>
-          <div style="display:flex; gap:10px; align-items:center;">
-            <button class="btn" id="reload">Reload</button>
-            <button class="btn" id="toggleSidebar" title="Hide sidebar">Hide</button>
+      <div class="liveSidebarShell" id="sidebarShell">
+        <div class="card liveSidebar" id="sidebar">
+          <div class="liveSidebarInner">
+            <div class="listHeader">
+              <div>
+                <div class="listTitle">Cameras</div>
+              </div>
+            </div>
+
+            <div class="row2" style="margin-top:0;">
+              <button class="btn btn-primary" id="startAll">Start All</button>
+              <button class="btn btn-danger" id="stopAll">Stop All</button>
+            </div>
+
+            <div id="camList" class="camList" style="margin-top:10px;">
+              <div class="muted" style="padding:10px 2px;">Loading…</div>
+            </div>
           </div>
         </div>
 
-        <div class="row2" style="margin-top:0;">
-          <button class="btn btn-primary" id="startAll">Start All</button>
-          <button class="btn btn-danger" id="stopAll">Stop All</button>
-        </div>
-
-        <div id="camList" class="camList" style="margin-top:10px;">
-          <div class="muted" style="padding:10px 2px;">Loading…</div>
-        </div>
+        <button class="sidebarCollapseRail" id="sidebarCollapseBtn" type="button" title="Hide cameras"
+          aria-label="Hide cameras">
+          <span class="sidebarCollapseRailIcon">❮</span>
+        </button>
       </div>
 
       <div class="card liveMain">
-        <div class="row2 liveMainTop" style="margin-top:0;">
-          <button class="btn" id="showSidebar" style="display:none;">Show cameras</button>
-        </div>
-
         <div class="videoGrid" id="videoGrid"></div>
       </div>
     </div>
@@ -60,4 +61,5 @@
 
   <script src="/static/live.js"></script>
 </body>
+
 </html>
