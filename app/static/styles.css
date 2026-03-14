@@ -447,6 +447,18 @@ code {
 }
 
 @media (max-width: 980px) {
+  .videoRow {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .tile {
+    width: 100% !important;
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 980px) {
   .liveLayout {
     grid-template-columns: 1fr;
     grid-template-areas:
@@ -959,14 +971,23 @@ code {
 
 #videoGrid {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: stretch;
   align-content: flex-start;
-  align-items: flex-start;
   gap: 8px;
   width: 100%;
   min-height: 0;
   background: transparent;
 }
+
+.videoRow {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+
 
 #videoGrid:empty {
   display: flex;
