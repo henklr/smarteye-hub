@@ -1049,3 +1049,31 @@ body.tileMaximizedMode #videoGrid {
   height: 100%;
   object-fit: contain;
 }
+@media (max-width: 560px) {
+  .topbar {
+    min-width: 0;
+  }
+
+  .tabs {
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-x;
+    scrollbar-width: none;
+  }
+
+  .tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tab {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+}

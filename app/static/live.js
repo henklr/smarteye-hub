@@ -1624,3 +1624,4 @@ installListDnD();
   await restoreGrid();
   window.addEventListener("focus", loadDevices);
 })();
+
