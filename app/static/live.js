@@ -477,7 +477,9 @@ function waitIceGatheringComplete(pc, timeoutMs = 2000) {
   });
 }
 
-async function startWhep(deviceId, videoEl, onState) {
+async function startWhep(deviceId, videoEl, onState, opts = {}) {
+  const { max404Retries = 5, retryDelayMs = 700 } = opts;
+
   const pc = new RTCPeerConnection();
 
   pc.ontrack = (e) => {
@@ -493,7 +495,7 @@ async function startWhep(deviceId, videoEl, onState) {
 
   let lastError = "Unknown WHEP error";
 
-  for (let attempt = 0; attempt < 6; attempt += 1) {
+  for (let attempt = 0; attempt <= max404Retries; attempt += 1) {
     const res = await fetch(getWhepUrl(deviceId), {
       method: "POST",
       headers: { "Content-Type": "application/sdp" },
@@ -509,18 +511,39 @@ async function startWhep(deviceId, videoEl, onState) {
     const t = await res.text().catch(() => "");
     lastError = `WHEP failed (${res.status}): ${t || res.statusText}`;
 
-    if (res.status !== 404) {
+    if (res.status !== 404 || attempt === max404Retries) {
       break;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
   }
 
   try {
     pc.close();
-  } catch { }
+  } catch {}
 
   throw new Error(lastError);
+}
+
+function isWhep404Error(error) {
+  return /\bWHEP failed \(404\)/.test(String(error?.message || error || ""));
+}
+
+function warmPtzControls(device) {
+  const entry = getEntry(device.id);
+  if (!entry || entry.cancelled || entry.ptzInstalled) return;
+
+  getPtzCaps(device.id)
+    .then((caps) => {
+      const cur = getEntry(device.id);
+      if (!cur || cur.cancelled || cur.ptzInstalled) return;
+
+      installPtzControls(device, cur, caps);
+      cur.ptzInstalled = true;
+    })
+    .catch((e) => {
+      console.error("PTZ init failed", device.id, e);
+    });
 }
 
 function normalizePtzCaps(raw) {
@@ -869,6 +892,8 @@ function scheduleRetry(device, entry) {
 function handleEntryFailure(device, entry, error) {
   if (!entry || entry.cancelled) return;
 
+  entry.retryCount = (entry.retryCount || 0) + 1;
+
   stopPc(entry.pc, entry.videoEl);
   entry.pc = null;
   entry.connecting = false;
@@ -891,63 +916,101 @@ async function connectEntry(device, entry) {
   clearRetryTimer(entry);
   entry.retryScheduled = false;
   entry.connecting = true;
-  entry.retryCount += 1;
 
   stopPc(entry.pc, entry.videoEl);
   entry.pc = null;
 
   setEntryState(device.id, STREAM_STATE.STARTING);
 
-  try {
-    await api("/api/start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ip: device.ip,
-        onvif_port: device.onvif_port ?? 80,
-        username: device.username,
-        password: device.password,
-        profile_token: device.profile_token,
-        device_id: device.id,
-      }),
-    });
+  const onPcState = (st) => {
+    const cur = getEntry(device.id);
+    if (!cur || cur.cancelled) return;
 
-    const curAfterApi = getEntry(device.id);
-    if (!curAfterApi || curAfterApi.cancelled) return;
-
-    try {
-      const caps = await getPtzCaps(device.id);
-      if (!curAfterApi.ptzInstalled) {
-        installPtzControls(device, curAfterApi, caps);
-        curAfterApi.ptzInstalled = true;
-      }
-    } catch (e) {
-      console.error("PTZ init failed", device.id, e);
+    if (st === "connected") {
+      cur.retryCount = 0;
+      clearRetryTimer(cur);
+      cur.retryScheduled = false;
+      setEntryState(device.id, STREAM_STATE.LIVE);
+      updateOverallStatusForGrid();
+      if (!restoringGrid) saveGridState();
+    } else if (st === "failed" || st === "disconnected" || st === "closed") {
+      handleEntryFailure(device, cur, new Error(`WebRTC ${st}`));
     }
+  };
 
-    setTileOverlay(curAfterApi, "Connecting WebRTC…", true);
+  try {
+    warmPtzControls(device);
 
-    const pc = await startWhep(device.id, entry.videoEl, (st) => {
+    let pc = null;
+
+    if (device.preload_stream) {
+      setTileOverlay(entry, "Connecting WebRTC…", true);
+
+      try {
+        pc = await startWhep(device.id, entry.videoEl, onPcState, {
+          max404Retries: 0,
+        });
+      } catch (e) {
+        if (!isWhep404Error(e)) throw e;
+
+        const cur = getEntry(device.id);
+        if (!cur || cur.cancelled) return;
+
+        setTileOverlay(cur, "Waking stream…", true);
+
+        await api("/api/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ip: device.ip,
+            onvif_port: device.onvif_port ?? 80,
+            username: device.username,
+            password: device.password,
+            profile_token: device.profile_token,
+            device_id: device.id,
+          }),
+        });
+
+        const cur2 = getEntry(device.id);
+        if (!cur2 || cur2.cancelled) return;
+
+        setTileOverlay(cur2, "Connecting WebRTC…", true);
+
+        pc = await startWhep(device.id, cur2.videoEl, onPcState, {
+          max404Retries: 2,
+          retryDelayMs: 250,
+        });
+      }
+    } else {
+      await api("/api/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ip: device.ip,
+          onvif_port: device.onvif_port ?? 80,
+          username: device.username,
+          password: device.password,
+          profile_token: device.profile_token,
+          device_id: device.id,
+        }),
+      });
+
       const cur = getEntry(device.id);
       if (!cur || cur.cancelled) return;
 
-      if (st === "connected") {
-        cur.retryCount = 0;
-        clearRetryTimer(cur);
-        cur.retryScheduled = false;
-        setEntryState(device.id, STREAM_STATE.LIVE);
-        updateOverallStatusForGrid();
-        if (!restoringGrid) saveGridState();
-      } else if (st === "failed" || st === "disconnected" || st === "closed") {
-        handleEntryFailure(device, cur, new Error(`WebRTC ${st}`));
-      }
-    });
+      setTileOverlay(cur, "Connecting WebRTC…", true);
+
+      pc = await startWhep(device.id, cur.videoEl, onPcState, {
+        max404Retries: 5,
+        retryDelayMs: 400,
+      });
+    }
 
     const cur = getEntry(device.id);
     if (!cur || cur.cancelled) {
       try {
         pc.close();
-      } catch { }
+      } catch {}
       return;
     }
 
@@ -1255,15 +1318,15 @@ function installPtzControls(device, entry, caps) {
 }
 
 async function startDevice(device, { restore = false } = {}) {
-  try {
-    const data = await api("/api/devices", { method: "GET" });
-    devices = data.devices || devices;
-    applyDeviceOrder(loadDeviceOrder());
-    const fresh = devices.find((d) => d.id === device.id);
-    if (fresh) device = fresh;
-  } catch { }
-
-  ptzCapsCache.delete(device.id);
+  if (restore) {
+    try {
+      const data = await api("/api/devices", { method: "GET" });
+      devices = data.devices || devices;
+      applyDeviceOrder(loadDeviceOrder());
+      const fresh = devices.find((d) => d.id === device.id);
+      if (fresh) device = fresh;
+    } catch {}
+  }
 
   const existing = getEntry(device.id);
   if (existing?.startingPromise) return existing.startingPromise;
@@ -1272,13 +1335,12 @@ async function startDevice(device, { restore = false } = {}) {
 
   const { tile, videoEl, overlayEl, closeBtn } = makeTile(device);
   videoGrid.appendChild(tile);
-  recomputeGrid();
   installTileFullscreen(tile);
 
   closeBtn?.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    stopDevice(device.id).catch(() => { });
+    stopDevice(device.id).catch(() => {});
   });
 
   const entry = {
@@ -1302,13 +1364,14 @@ async function startDevice(device, { restore = false } = {}) {
 
   streams.set(device.id, entry);
 
-  if (desiredTileOrder.length) {
-    applyTileOrder(desiredTileOrder);
-  } else {
-    syncTileOrderToDeviceOrder(false);
-  }
+  const targetOrder = desiredTileOrder.length
+    ? desiredTileOrder
+    : devices.map((d) => d.id);
+
+  applyTileOrder(targetOrder);
 
   applyTileStateClasses(entry);
+  recomputeGrid();
   renderList();
   updateOverallStatusForGrid();
   updateSidebarCollapseAvailability();

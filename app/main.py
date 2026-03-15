@@ -315,6 +315,13 @@ def _update_device(device_id: str, dev_in: DeviceIn) -> Device:
                 password=dev_in.password,
             )
             _start_event_worker(device_id, req)
+
+            if devs[i].profile_token:
+                try:
+                    _refresh_device_stream(device_id)
+                except Exception:
+                    pass
+
             return devs[i]
     raise HTTPException(status_code=404, detail="Device not found")
 
@@ -2268,6 +2275,22 @@ async def start(req: StartRequest):
     except Exception:
         pass
 
+    if device and device.preload_stream and device.profile_token == req.profile_token:
+        try:
+            snapshot = await asyncio.to_thread(_mediamtx_paths_snapshot)
+            st = _device_stream_status_from_snapshot(device, snapshot)
+
+            if st.get("status") in {"idle", "live"}:
+                return {
+                    "ok": True,
+                    "device_id": device_id,
+                    "path": _path_for(device_id),
+                    "preloaded": True,
+                    "skipped_onvif": True,
+                }
+        except Exception:
+            pass
+
     try:
         encoding = await asyncio.to_thread(_find_profile_encoding, req, req.profile_token)
     except Exception as e:
@@ -2290,7 +2313,12 @@ async def start(req: StartRequest):
     source_rtsp = _rtsp_with_auth(source_uri, req.username, req.password)
 
     try:
-        await asyncio.to_thread(_ensure_mediamtx_path, device_id, source_rtsp, bool(device.preload_stream) if device else False)
+        await asyncio.to_thread(
+            _ensure_mediamtx_path,
+            device_id,
+            source_rtsp,
+            bool(device.preload_stream) if device else False,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"MediaMTX path setup failed: {e}")
 
