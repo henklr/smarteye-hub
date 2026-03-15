@@ -1302,10 +1302,13 @@ async function startDevice(device, { restore = false } = {}) {
 
   streams.set(device.id, entry);
 
-  if (desiredTileOrder.length) applyTileOrder(desiredTileOrder);
+  if (desiredTileOrder.length) {
+    applyTileOrder(desiredTileOrder);
+  } else {
+    syncTileOrderToDeviceOrder(false);
+  }
 
   applyTileStateClasses(entry);
-  recomputeGrid();
   renderList();
   updateOverallStatusForGrid();
   updateSidebarCollapseAvailability();
