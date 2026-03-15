@@ -998,15 +998,12 @@ code {
 }
 
 #videoGrid:empty::before {
-  content: "No streams yet — click a camera or Start All";
-  padding: 14px 16px;
-  border: 1px solid var(--stroke);
-  border-radius: var(--r-sm);
-  background: rgba(0, 0, 0, 0.24);
-  color: var(--muted);
-  font-size: 14px;
+  content: "Select a camera from the list";
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 15px;
   font-weight: 800;
-  backdrop-filter: blur(8px);
+  letter-spacing: 0.2px;
+  text-align: center;
 }
 
 .tileBar,
