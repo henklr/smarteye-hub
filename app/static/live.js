@@ -520,7 +520,7 @@ async function startWhep(deviceId, videoEl, onState, opts = {}) {
 
   try {
     pc.close();
-  } catch {}
+  } catch { }
 
   throw new Error(lastError);
 }
@@ -618,20 +618,40 @@ function updateOverallStatusForGrid(defaultOkMessage = null) {
   setStatus("Stopped.", "warn");
 }
 
-async function toggleTileFullscreen(tile) {
+let maximizedTile = null;
+
+function toggleTileMaximized(tile) {
   if (!tile) return;
 
-  const fullscreenEl = document.fullscreenElement;
-  if (fullscreenEl === tile) {
-    await document.exitFullscreen?.().catch(() => { });
+  const isSameTile = maximizedTile === tile;
+  const allTiles = Array.from(videoGrid.querySelectorAll(".tile[data-id]"));
+
+  if (isSameTile) {
+    tile.classList.remove("tileMaximized");
+    document.body.classList.remove("tileMaximizedMode");
+
+    allTiles.forEach((t) => {
+      t.classList.remove("tileHiddenForMax");
+    });
+
+    maximizedTile = null;
+    recomputeGrid();
     return;
   }
 
-  if (fullscreenEl && fullscreenEl !== tile) {
-    await document.exitFullscreen?.().catch(() => { });
+  if (maximizedTile) {
+    maximizedTile.classList.remove("tileMaximized");
   }
 
-  await tile.requestFullscreen?.().catch(() => { });
+  document.body.classList.add("tileMaximizedMode");
+
+  allTiles.forEach((t) => {
+    if (t === tile) t.classList.remove("tileHiddenForMax");
+    else t.classList.add("tileHiddenForMax");
+  });
+
+  tile.classList.add("tileMaximized");
+  maximizedTile = tile;
 }
 
 function canToggleTileFullscreen(target) {
@@ -652,7 +672,8 @@ function installTileFullscreen(tile) {
   tile.addEventListener("dblclick", (ev) => {
     if (!canToggleTileFullscreen(ev.target)) return;
     ev.preventDefault();
-    toggleTileFullscreen(tile).catch(() => { });
+    ev.stopPropagation();
+    toggleTileMaximized(tile);
   });
 
   tile.addEventListener("pointerup", (ev) => {
@@ -670,7 +691,8 @@ function installTileFullscreen(tile) {
       lastTapX = 0;
       lastTapY = 0;
       ev.preventDefault();
-      toggleTileFullscreen(tile).catch(() => { });
+      ev.stopPropagation();
+      toggleTileMaximized(tile);
       return;
     }
 
@@ -679,6 +701,12 @@ function installTileFullscreen(tile) {
     lastTapY = ev.clientY;
   });
 }
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && maximizedTile) {
+    toggleTileMaximized(maximizedTile);
+  }
+});
 
 function makeTile(device) {
   const tile = document.createElement("div");
@@ -1010,7 +1038,7 @@ async function connectEntry(device, entry) {
     if (!cur || cur.cancelled) {
       try {
         pc.close();
-      } catch {}
+      } catch { }
       return;
     }
 
@@ -1325,7 +1353,7 @@ async function startDevice(device, { restore = false } = {}) {
       applyDeviceOrder(loadDeviceOrder());
       const fresh = devices.find((d) => d.id === device.id);
       if (fresh) device = fresh;
-    } catch {}
+    } catch { }
   }
 
   const existing = getEntry(device.id);
@@ -1340,7 +1368,7 @@ async function startDevice(device, { restore = false } = {}) {
   closeBtn?.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    stopDevice(device.id).catch(() => {});
+    stopDevice(device.id).catch(() => { });
   });
 
   const entry = {
@@ -1384,9 +1412,18 @@ async function startDevice(device, { restore = false } = {}) {
   return entry.startingPromise;
 }
 
-async function stopDevice(deviceId) {
+async function stopDevice(deviceId, { force = false } = {}) {
   const entry = getEntry(deviceId);
   if (!entry) return;
+
+  const { tileEl } = entry;
+
+  // If this tile is maximized, first "stop" just returns to tile view.
+  // Use force:true for actual stopping.
+  if (!force && maximizedTile === tileEl) {
+    toggleTileMaximized(tileEl);
+    return;
+  }
 
   entry.cancelled = true;
   clearRetryTimer(entry);
@@ -1400,7 +1437,13 @@ async function stopDevice(deviceId) {
     entry.cleanupPtzListeners?.();
   } catch { }
 
-  const { pc, tileEl, videoEl } = entry;
+  const { pc, videoEl } = entry;
+
+  if (maximizedTile === tileEl) {
+    maximizedTile = null;
+    document.body.classList.remove("tileMaximizedMode");
+  }
+
   stopPc(pc, videoEl);
 
   try {
@@ -1496,7 +1539,7 @@ stopAllBtn.addEventListener("click", async () => {
   setStatus("Stopping all…", "warn");
 
   await Promise.allSettled(
-    Array.from(streams.keys()).map((id) => stopDevice(id))
+    Array.from(streams.keys()).map((id) => stopDevice(id, { force: true }))
   );
 
   saveGridState();
