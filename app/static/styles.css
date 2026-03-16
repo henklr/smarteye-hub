@@ -142,7 +142,7 @@ h1 {
 .tabDot {
   width: 6px;
   height: 6px;
-  border-radius: 1px;
+  border-radius: 999px;
   background: rgba(255, 255, 255, 0.18);
 }
 
@@ -308,7 +308,7 @@ input[type="checkbox"] {
     grid-template-columns: 1fr 1fr;
   }
 
-  .grid > *[data-full] {
+  .grid>*[data-full] {
     grid-column: 1 / -1;
   }
 }
@@ -1049,6 +1049,7 @@ body.tileMaximizedMode #videoGrid {
   height: 100%;
   object-fit: contain;
 }
+
 @media (max-width: 560px) {
   .topbar {
     min-width: 0;
