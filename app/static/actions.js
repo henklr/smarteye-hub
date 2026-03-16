@@ -248,6 +248,39 @@ function syncConditionTopicUi(card) {
   if (picker) picker.classList.toggle("open", typeSel.value === "onvif_event");
 }
 
+function setItemCollapsed(card, open) {
+  const btn = card.querySelector(".itemCollapseBtn");
+  const body = card.querySelector(".itemCollapseBody");
+  if (!btn || !body) return;
+
+  btn.classList.toggle("open", open);
+  btn.setAttribute("aria-expanded", String(open));
+  body.classList.toggle("open", open);
+}
+
+function bindItemCollapse(card) {
+  const btn = card.querySelector(".itemCollapseBtn");
+  if (!btn) return;
+
+  const toggle = () => {
+    const isOpen = btn.classList.contains("open");
+    setItemCollapsed(card, !isOpen);
+  };
+
+  btn.addEventListener("click", (ev) => {
+    if (ev.target.closest(".btnRemoveCondition, .btnRemoveAction")) return;
+    toggle();
+  });
+
+  btn.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    ev.preventDefault();
+    toggle();
+  });
+
+  setItemCollapsed(card, true);
+}
+
 async function loadTopics(deviceId, force = false) {
   if (!deviceId) return [];
   if (!force && topicCache.has(deviceId)) return topicCache.get(deviceId);
@@ -364,7 +397,10 @@ function addConditionRow(data = {}) {
   typeSelect.value = data.type || "onvif_event";
   node.dataset.topic = data.topic || "";
 
-  node.querySelector(".btnRemoveCondition").addEventListener("click", () => {
+  bindItemCollapse(node);
+
+  node.querySelector(".btnRemoveCondition").addEventListener("click", (ev) => {
+    ev.stopPropagation();
     node.remove();
     refreshBuilderIndices();
     markDirty();
@@ -414,7 +450,10 @@ function addActionRow(data = {}) {
 
   if (actionName) actionName.value = data.name || "";
 
-  node.querySelector(".btnRemoveAction").addEventListener("click", () => {
+  bindItemCollapse(node);
+
+  node.querySelector(".btnRemoveAction").addEventListener("click", (ev) => {
+    ev.stopPropagation();
     node.remove();
     refreshBuilderIndices();
     markDirty();
@@ -710,17 +749,6 @@ async function deleteSelected() {
   setStatus("Rule deleted.");
 }
 
-function toggleCollapse(btnId, bodyId) {
-  const btn = el(btnId);
-  const body = el(bodyId);
-  if (!btn || !body) return;
-
-  btn.addEventListener("click", () => {
-    const open = btn.classList.toggle("open");
-    body.classList.toggle("open", open);
-  });
-}
-
 async function init() {
   try {
     await loadDevices();
@@ -781,8 +809,5 @@ el("ruleEnabled").addEventListener("change", () => {
 
 el("rulesSearch").addEventListener("input", renderRules);
 el("rulesFilterStatus").addEventListener("change", renderRules);
-
-toggleCollapse("triggersToggle", "triggersBody");
-toggleCollapse("actionsToggle", "actionsBody");
 
 init();

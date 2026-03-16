@@ -1,6 +1,5 @@
 <!doctype html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -72,13 +71,12 @@
         </div>
 
         <div class="collapseCard mt-12">
-          <button class="collapseBtn open" id="triggersToggle" type="button">
+          <div class="sectionHead">
             <div>
               <div class="collapseHeadTitle">Triggers</div>
               <div class="collapseHeadSub">A rule runs when any trigger matches.</div>
             </div>
-            <span class="collapseChevron">›</span>
-          </button>
+          </div>
           <div class="collapseBody open" id="triggersBody">
             <div class="row2 mt-0">
               <button class="btn" id="btnAddCondition" type="button">Add trigger</button>
@@ -88,13 +86,12 @@
         </div>
 
         <div class="collapseCard mt-12">
-          <button class="collapseBtn open" id="actionsToggle" type="button">
+          <div class="sectionHead">
             <div>
               <div class="collapseHeadTitle">Actions</div>
               <div class="collapseHeadSub">Choose what happens when a trigger matches.</div>
             </div>
-            <span class="collapseChevron">›</span>
-          </button>
+          </div>
           <div class="collapseBody open" id="actionsBody">
             <div class="row2 mt-0">
               <button class="btn" id="btnAddAction" type="button">Add action</button>
@@ -125,86 +122,103 @@
 
   <template id="conditionTemplate">
     <div class="itemCard conditionCard">
-      <div class="itemHead">
-        <div class="itemTitle"></div>
-        <button class="btn btn-danger btnRemoveCondition" type="button">Remove</button>
-      </div>
-
-      <div class="grid itemGrid">
-        <div data-full>
-          <label>Trigger name</label>
-          <input class="condName" placeholder="Optional label, e.g. Front door motion" />
-        </div>
-        <div data-full>
-          <label>Trigger type</label>
-          <select class="condType">
-            <option value="onvif_event">ONVIF event</option>
-            <option value="device_offline">Device offline</option>
-            <option value="device_back_online">Device back online</option>
-          </select>
+      <div class="itemCollapseBtn open" role="button" tabindex="0" aria-expanded="true">
+        <div>
+          <div class="itemTitle"></div>
+          <div class="collapseHeadSub">Trigger details</div>
         </div>
 
-        <div data-full>
-          <label>Device</label>
-          <select class="condDevice"></select>
+        <div class="itemHeadActions">
+          <button class="btn btn-danger btnRemoveCondition" type="button">Remove</button>
+          <span class="itemChevron">›</span>
         </div>
       </div>
 
-      <div class="topicPicker">
-        <div class="topicTools">
-          <div class="grow">
-            <label>Filter topics</label>
-            <input class="topicSearch" placeholder="Filter by name or path" />
+      <div class="itemCollapseBody open">
+        <div class="grid itemGrid">
+          <div data-full>
+            <label>Trigger name</label>
+            <input class="condName" placeholder="Optional label, e.g. Front door motion" />
           </div>
-          <div class="topicRefreshWrap">
-            <label>&nbsp;</label>
-            <button class="btn btnLoadTopics w-full" type="button">Refresh topics</button>
+          <div data-full>
+            <label>Trigger type</label>
+            <select class="condType">
+              <option value="onvif_event">ONVIF event</option>
+              <option value="device_offline">Device offline</option>
+              <option value="device_back_online">Device back online</option>
+            </select>
+          </div>
+
+          <div data-full>
+            <label>Device</label>
+            <select class="condDevice"></select>
           </div>
         </div>
 
-        <div class="topicSelected selectedTopicText">Select an ONVIF topic to trigger this rule.</div>
-        <div class="muted topicCountText mt-8">No topics loaded yet.</div>
-        <div class="topicList"></div>
-      </div>
+        <div class="topicPicker">
+          <div class="topicTools">
+            <div class="grow">
+              <label>Filter topics</label>
+              <input class="topicSearch" placeholder="Filter by name or path" />
+            </div>
+            <div class="topicRefreshWrap">
+              <label>&nbsp;</label>
+              <button class="btn btnLoadTopics w-full" type="button">Refresh topics</button>
+            </div>
+          </div>
 
-      <div class="itemPreview previewText"></div>
-      <div class="errorText validationText hidden"></div>
+          <div class="topicSelected selectedTopicText">Select an ONVIF topic to trigger this rule.</div>
+          <div class="muted topicCountText mt-8">No topics loaded yet.</div>
+          <div class="topicList"></div>
+        </div>
+
+        <div class="itemPreview previewText"></div>
+        <div class="errorText validationText hidden"></div>
+      </div>
     </div>
   </template>
 
   <template id="actionTemplate">
     <div class="itemCard actionCard">
-      <div class="itemHead">
-        <div class="itemTitle"></div>
-        <button class="btn btn-danger btnRemoveAction" type="button">Remove</button>
-      </div>
-
-      <div class="grid itemGrid">
-        <div data-full>
-          <label>Action name</label>
-          <input class="actionName" placeholder="Optional label, e.g. Snapshot garage cam" />
-        </div>
-        <div data-full>
-          <label>Action type</label>
-          <select class="actionType">
-            <option value="create_log_event">Create log event</option>
-            <option value="take_snapshot">Take snapshot</option>
-          </select>
+      <div class="itemCollapseBtn open" role="button" tabindex="0" aria-expanded="true">
+        <div>
+          <div class="itemTitle"></div>
+          <div class="collapseHeadSub">Action details</div>
         </div>
 
-        <div data-full class="snapshotDeviceWrap hidden">
-          <label>Camera</label>
-          <select class="snapshotDevice"></select>
+        <div class="itemHeadActions">
+          <button class="btn btn-danger btnRemoveAction" type="button">Remove</button>
+          <span class="itemChevron">›</span>
         </div>
       </div>
 
-      <div class="itemPreview previewText"></div>
-      <div class="errorText validationText hidden"></div>
+      <div class="itemCollapseBody open">
+        <div class="grid itemGrid">
+          <div data-full>
+            <label>Action name</label>
+            <input class="actionName" placeholder="Optional label, e.g. Snapshot garage cam" />
+          </div>
+          <div data-full>
+            <label>Action type</label>
+            <select class="actionType">
+              <option value="create_log_event">Create log event</option>
+              <option value="take_snapshot">Take snapshot</option>
+            </select>
+          </div>
+
+          <div data-full class="snapshotDeviceWrap hidden">
+            <label>Camera</label>
+            <select class="snapshotDevice"></select>
+          </div>
+        </div>
+
+        <div class="itemPreview previewText"></div>
+        <div class="errorText validationText hidden"></div>
+      </div>
     </div>
   </template>
 
   <script src="/static/nav-tabs.js"></script>
   <script src="/static/actions.js"></script>
 </body>
-
 </html>
