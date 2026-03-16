@@ -76,78 +76,47 @@
       font-weight: 800;
     }
 
-    /* Put tabs left, status/actions right (same pattern as Live) */
-    .topbar {
-      display: flex;
+    .statusChip {
+      display: inline-flex;
       align-items: center;
-      justify-content: space-between;
-      margin-bottom: 14px;
-      gap: 12px;
+      gap: 8px;
+      font-weight: 800;
     }
 
-    .topbarLeft {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      min-width: 0;
+    .statusDot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      display: inline-block;
+      background: var(--warn);
+      box-shadow: 0 0 0 3px rgba(246, 196, 83, .12);
     }
 
-    .topbarRight {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-left: auto;
+    .statusDot.up {
+      background: var(--ok);
+      box-shadow: 0 0 0 3px rgba(45, 212, 191, .12);
     }
-      .statusChip{
-    display:inline-flex;
-    align-items:center;
-    gap:8px;
-    font-weight:800;
-  }
 
-  .statusDot{
-    width:10px;
-    height:10px;
-    border-radius:999px;
-    display:inline-block;
-    background: var(--warn);
-    box-shadow: 0 0 0 3px rgba(246,196,83,.12);
-  }
+    .statusDot.down {
+      background: var(--danger);
+      box-shadow: 0 0 0 3px rgba(255, 90, 100, .12);
+    }
 
-  .statusDot.up{
-    background: var(--ok);
-    box-shadow: 0 0 0 3px rgba(45,212,191,.12);
-  }
-
-  .statusDot.down{
-    background: var(--danger);
-    box-shadow: 0 0 0 3px rgba(255,90,100,.12);
-  }
-
-  .statusDot.unknown{
-    background: var(--warn);
-  }
+    .statusDot.unknown {
+      background: var(--warn);
+    }
   </style>
 </head>
 
 <body>
   <div class="wrap full">
     <div class="topbar">
-      <div class="topbarLeft">
-        <div class="tabs">
-          <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
-          <a class="tab active" href="/devices"><span class="tabDot"></span>Devices</a>
-          <a class="tab" href="/actions"><span class="tabDot"></span>Actions</a>
-          <a class="tab" href="/events"><span class="tabDot"></span>Events</a>
-          <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
-        </div>
-      </div>
-
-      <div class="topbarRight">
-        <!-- Refresh moved OUT of header area in JS/UX request,
-             but leaving here as a fallback is fine; we will hide it via JS.
-             If you want it gone entirely, delete this button. -->
-        <button class="btn" id="refreshTop" style="display:none;">Reload</button>
+      <div class="tabs">
+        <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
+        <a class="tab active" href="/devices"><span class="tabDot"></span>Devices</a>
+        <a class="tab" href="/actions"><span class="tabDot"></span>Actions</a>
+        <a class="tab" href="/events"><span class="tabDot"></span>Events</a>
+        <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
       </div>
     </div>
 

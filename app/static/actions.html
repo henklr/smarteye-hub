@@ -20,28 +20,6 @@
       }
     }
 
-    .topbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 14px;
-      gap: 12px;
-    }
-
-    .topbarLeft {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      min-width: 0;
-    }
-
-    .topbarRight {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-left: auto;
-    }
-
     .rulesTools {
       display: flex;
       gap: 10px;
@@ -403,17 +381,13 @@
 <body>
   <div class="wrap full">
     <div class="topbar">
-      <div class="topbarLeft">
-        <div class="tabs">
-          <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
-          <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
-          <a class="tab active" href="/actions"><span class="tabDot"></span>Actions</a>
-          <a class="tab" href="/events"><span class="tabDot"></span>Events</a>
-          <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
-        </div>
+      <div class="tabs">
+        <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
+        <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
+        <a class="tab active" href="/actions"><span class="tabDot"></span>Actions</a>
+        <a class="tab" href="/events"><span class="tabDot"></span>Events</a>
+        <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
       </div>
-
-      <div class="topbarRight"></div>
     </div>
 
     <div class="split">
