@@ -6,379 +6,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Actions</title>
   <link rel="stylesheet" href="/static/styles.css" />
-  <style>
-    .split {
-      display: grid;
-      grid-template-columns: 1.05fr .95fr;
-      gap: 14px;
-      align-items: start;
-    }
-
-    @media (max-width:1000px) {
-      .split {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    .rulesTools {
-      display: flex;
-      gap: 10px;
-      align-items: end;
-      flex-wrap: wrap;
-      margin-top: 12px;
-    }
-
-    .grow {
-      flex: 1 1 220px;
-      min-width: 0;
-    }
-
-    .rulesList {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      margin-top: 12px;
-      max-height: 70vh;
-      overflow: auto;
-    }
-
-    .ruleItem {
-      border: 1px solid var(--stroke);
-      border-radius: var(--r-sm);
-      background: rgba(0, 0, 0, .18);
-      padding: 12px;
-      transition: background .12s ease, border-color .12s ease, box-shadow .12s ease;
-      cursor: pointer;
-    }
-
-    .ruleItem:hover {
-      background: rgba(0, 0, 0, .24);
-      border-color: var(--stroke-2);
-    }
-
-    .ruleItem.active {
-      box-shadow: 0 0 0 3px rgba(245, 180, 0, .10);
-      border-color: rgba(245, 180, 0, .34);
-    }
-
-    .ruleTop {
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-      align-items: flex-start;
-      flex-wrap: wrap;
-    }
-
-    .ruleName {
-      font-weight: 900;
-      font-size: 14px;
-      line-height: 1.25;
-    }
-
-    .ruleSummary {
-      margin-top: 6px;
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.45;
-    }
-
-    .ruleMeta {
-      margin-top: 10px;
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-
-    .miniTag {
-      display: inline-flex;
-      align-items: center;
-      padding: 5px 8px;
-      border-radius: var(--r-xs);
-      border: 1px solid var(--stroke);
-      background: rgba(255, 255, 255, .03);
-      font-size: 11px;
-      font-weight: 800;
-      color: var(--text);
-    }
-
-    .statusChip {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      font-weight: 800;
-      font-size: 12px;
-      color: var(--text);
-      cursor: pointer;
-    }
-
-    .statusDot {
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      display: inline-block;
-      background: var(--warn);
-      box-shadow: 0 0 0 3px rgba(245, 180, 0, .12);
-    }
-
-    .statusDot.up {
-      background: var(--ok);
-      box-shadow: 0 0 0 3px rgba(45, 212, 191, .12);
-    }
-
-    .statusDot.down {
-      background: var(--danger);
-      box-shadow: 0 0 0 3px rgba(255, 90, 100, .12);
-    }
-
-    .collapseCard {
-      border: 1px solid var(--stroke);
-      border-radius: var(--r-sm);
-      background: rgba(0, 0, 0, .18);
-      overflow: hidden;
-    }
-
-    .collapseBtn {
-      width: 100%;
-      border: 0;
-      border-bottom: 1px solid transparent;
-      background: transparent;
-      color: var(--text);
-      text-align: left;
-      padding: 12px;
-      cursor: pointer;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      font: inherit;
-    }
-
-    .collapseBtn:hover {
-      background: rgba(255, 255, 255, .03);
-    }
-
-    .collapseBtn.open {
-      border-bottom-color: var(--stroke);
-    }
-
-    .collapseHeadTitle {
-      font-weight: 900;
-      font-size: 14px;
-      line-height: 1.2;
-    }
-
-    .collapseHeadSub {
-      margin-top: 3px;
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.4;
-    }
-
-    .collapseChevron {
-      font-size: 14px;
-      font-weight: 900;
-      color: var(--muted);
-      transition: transform .12s ease;
-    }
-
-    .collapseBtn.open .collapseChevron {
-      transform: rotate(90deg);
-    }
-
-    .collapseBody {
-      display: none;
-      padding: 12px;
-    }
-
-    .collapseBody.open {
-      display: block;
-    }
-
-    .itemList {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .itemCard {
-      border: 1px solid var(--stroke);
-      border-radius: var(--r-xs);
-      background: rgba(255, 255, 255, .03);
-      padding: 12px;
-    }
-
-    .itemCard.invalid {
-      border-color: rgba(255, 90, 100, .36);
-      box-shadow: 0 0 0 3px rgba(255, 90, 100, .08);
-    }
-
-    .itemHead {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 10px;
-      flex-wrap: wrap;
-    }
-
-    .itemTitle {
-      font-weight: 900;
-      font-size: 13px;
-    }
-
-    .itemPreview {
-      margin-top: 10px;
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.45;
-      padding: 10px 12px;
-      border-radius: var(--r-xs);
-      border: 1px dashed rgba(255, 255, 255, .10);
-      background: rgba(0, 0, 0, .12);
-    }
-
-    .itemPreview strong {
-      color: var(--text);
-    }
-
-    .errorText {
-      margin-top: 8px;
-      font-size: 12px;
-      color: #ffb7be;
-    }
-
-    .hidden {
-      display: none !important;
-    }
-
-    .topicPicker {
-      display: none;
-      margin-top: 10px;
-      padding-top: 10px;
-      border-top: 1px solid var(--stroke);
-    }
-
-    .topicPicker.open {
-      display: block;
-    }
-
-    .topicTools {
-      display: flex;
-      gap: 10px;
-      align-items: end;
-      flex-wrap: wrap;
-    }
-
-    .topicSelected {
-      margin-top: 10px;
-      padding: 10px 12px;
-      border-radius: var(--r-xs);
-      border: 1px solid rgba(245, 180, 0, .18);
-      background: rgba(245, 180, 0, .08);
-      font-size: 12px;
-      line-height: 1.45;
-    }
-
-    .topicList {
-      margin-top: 10px;
-      max-height: 240px;
-      overflow: auto;
-      border: 1px solid var(--stroke);
-      border-radius: var(--r-xs);
-      background: rgba(0, 0, 0, .16);
-    }
-
-    .topicItem {
-      padding: 10px 12px;
-      border-bottom: 1px solid rgba(255, 255, 255, .06);
-      cursor: pointer;
-      transition: background .12s ease;
-    }
-
-    .topicItem:last-child {
-      border-bottom: 0;
-    }
-
-    .topicItem:hover {
-      background: rgba(255, 255, 255, .04);
-    }
-
-    .topicItem.active {
-      background: rgba(245, 180, 0, .08);
-      outline: 1px solid rgba(245, 180, 0, .22);
-      outline-offset: -1px;
-    }
-
-    .topicName {
-      font-size: 12px;
-      font-weight: 800;
-      color: var(--text);
-    }
-
-    .topicPath {
-      margin-top: 3px;
-      font-size: 11px;
-      color: var(--muted);
-      word-break: break-all;
-    }
-
-    .emptyState {
-      padding: 12px;
-      font-size: 12px;
-      color: var(--muted);
-      border: 1px dashed rgba(255, 255, 255, .12);
-      border-radius: var(--r-xs);
-      background: rgba(255, 255, 255, .02);
-      text-align: center;
-      line-height: 1.45;
-    }
-
-    .formSticky {
-      position: sticky;
-      bottom: 0;
-      padding-top: 12px;
-      margin-top: 12px;
-      background: linear-gradient(to bottom, rgba(7, 9, 13, 0), rgba(7, 9, 13, .96) 30%);
-    }
-
-    .formStickyInner {
-      border: 1px solid var(--stroke);
-      border-radius: var(--r-sm);
-      background: rgba(7, 9, 13, .92);
-      backdrop-filter: blur(10px);
-      padding: 12px;
-    }
-
-    .rowSplit {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-
-    .enableRow {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      min-height: 40px;
-      padding: 0 2px;
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--text);
-    }
-
-    .enableRow input[type="checkbox"] {
-      width: 16px;
-      height: 16px;
-      margin: 0;
-      flex: 0 0 auto;
-    }
-  </style>
 </head>
 
-<body>
+<body class="actionsPage">
   <div class="wrap full">
     <div class="topbar">
       <div class="tabs">
@@ -406,7 +36,7 @@
             <input id="rulesSearch" placeholder="Search by name, trigger, action or device" />
           </div>
 
-          <div style="width:180px; max-width:100%">
+          <div class="ruleFilterWrap">
             <label for="rulesFilterStatus">Status</label>
             <select id="rulesFilterStatus">
               <option value="all">All rules</option>
@@ -424,9 +54,9 @@
       </div>
 
       <div class="card">
-        <div style="font-weight:900; margin-bottom:8px; font-size:16px;" id="formTitle">New rule</div>
+        <div class="formTitle" id="formTitle">New rule</div>
 
-        <div class="grid" style="grid-template-columns: 1fr .46fr; margin-top:0;">
+        <div class="grid ruleHeaderGrid">
           <div data-full>
             <label for="ruleName">Rule name</label>
             <input id="ruleName" placeholder="Front door motion snapshot" />
@@ -434,14 +64,14 @@
 
           <div data-full>
             <label for="ruleEnabled">Status</label>
-            <label class="enableRow" style="margin:0;">
+            <label class="enableRow m-0">
               <input id="ruleEnabled" type="checkbox" checked />
               <span id="ruleEnabledText">Enabled</span>
             </label>
           </div>
         </div>
 
-        <div class="collapseCard" style="margin-top:12px;">
+        <div class="collapseCard mt-12">
           <button class="collapseBtn open" id="triggersToggle" type="button">
             <div>
               <div class="collapseHeadTitle">Triggers</div>
@@ -450,14 +80,14 @@
             <span class="collapseChevron">›</span>
           </button>
           <div class="collapseBody open" id="triggersBody">
-            <div class="row2" style="margin-top:0;">
+            <div class="row2 mt-0">
               <button class="btn" id="btnAddCondition" type="button">Add trigger</button>
             </div>
-            <div id="conditionsList" class="itemList" style="margin-top:10px;"></div>
+            <div id="conditionsList" class="itemList mt-10"></div>
           </div>
         </div>
 
-        <div class="collapseCard" style="margin-top:12px;">
+        <div class="collapseCard mt-12">
           <button class="collapseBtn open" id="actionsToggle" type="button">
             <div>
               <div class="collapseHeadTitle">Actions</div>
@@ -466,10 +96,10 @@
             <span class="collapseChevron">›</span>
           </button>
           <div class="collapseBody open" id="actionsBody">
-            <div class="row2" style="margin-top:0;">
+            <div class="row2 mt-0">
               <button class="btn" id="btnAddAction" type="button">Add action</button>
             </div>
-            <div id="actionsList" class="itemList" style="margin-top:10px;"></div>
+            <div id="actionsList" class="itemList mt-10"></div>
           </div>
         </div>
 
@@ -478,7 +108,7 @@
             <div class="rowSplit">
               <div class="muted" id="editorModeText">Create a new rule.</div>
 
-              <div class="row2" style="margin-top:0;">
+              <div class="row2 mt-0">
                 <button class="btn" id="btnDuplicate" type="button">Duplicate</button>
                 <button class="btn btn-danger" id="btnDelete" type="button">Delete</button>
                 <button class="btn btn-primary" id="btnSave" type="button">Save</button>
@@ -500,7 +130,7 @@
         <button class="btn btn-danger btnRemoveCondition" type="button">Remove</button>
       </div>
 
-      <div class="grid" style="grid-template-columns: 1fr 1fr; margin-top:0;">
+      <div class="grid itemGrid">
         <div data-full>
           <label>Trigger name</label>
           <input class="condName" placeholder="Optional label, e.g. Front door motion" />
@@ -526,14 +156,14 @@
             <label>Filter topics</label>
             <input class="topicSearch" placeholder="Filter by name or path" />
           </div>
-          <div style="width:150px; max-width:100%">
+          <div class="topicRefreshWrap">
             <label>&nbsp;</label>
-            <button class="btn btnLoadTopics" type="button" style="width:100%">Refresh topics</button>
+            <button class="btn btnLoadTopics w-full" type="button">Refresh topics</button>
           </div>
         </div>
 
         <div class="topicSelected selectedTopicText">Select an ONVIF topic to trigger this rule.</div>
-        <div class="muted topicCountText" style="margin-top:8px;">No topics loaded yet.</div>
+        <div class="muted topicCountText mt-8">No topics loaded yet.</div>
         <div class="topicList"></div>
       </div>
 
@@ -549,7 +179,7 @@
         <button class="btn btn-danger btnRemoveAction" type="button">Remove</button>
       </div>
 
-      <div class="grid" style="grid-template-columns: 1fr 1fr; margin-top:0;">
+      <div class="grid itemGrid">
         <div data-full>
           <label>Action name</label>
           <input class="actionName" placeholder="Optional label, e.g. Snapshot garage cam" />
@@ -573,6 +203,7 @@
     </div>
   </template>
 
+  <script src="/static/nav-tabs.js"></script>
   <script src="/static/actions.js"></script>
 </body>
 
