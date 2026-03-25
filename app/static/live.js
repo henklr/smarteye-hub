@@ -66,7 +66,7 @@ async function api(url, opts) {
   let data = null;
   try {
     data = text ? JSON.parse(text) : null;
-  } catch {}
+  } catch { }
 
   if (!res.ok) {
     const detail = data?.detail || text || res.statusText;
@@ -89,7 +89,7 @@ async function ptzPost(url, body = null) {
     try {
       const parsed = text ? JSON.parse(text) : null;
       if (parsed?.detail) detail = parsed.detail;
-    } catch {}
+    } catch { }
     throw new Error(`${res.status} ${res.statusText}: ${detail}`);
   }
 }
@@ -331,6 +331,31 @@ function recomputeGrid() {
   layoutTilesJustified();
 }
 
+function syncTileAspectFromVideo(tile, videoEl) {
+  const w = videoEl.videoWidth;
+  const h = videoEl.videoHeight;
+  if (!w || !h) return false;
+
+  const ar = `${w} / ${h}`;
+  const prev = tile.style.getPropertyValue("--tile-ar");
+
+  if (prev === ar) return true;
+
+  tile.style.setProperty("--tile-ar", ar);
+
+  const isMobile = window.matchMedia("(max-width: 980px)").matches;
+  if (isMobile) {
+    tile.style.width = "100%";
+    tile.style.height = "auto";
+    tile.style.aspectRatio = ar;
+  } else {
+    tile.style.aspectRatio = "";
+    recomputeGrid();
+  }
+
+  return true;
+}
+
 function profileReady(d) {
   return !!d.profile_token;
 }
@@ -488,12 +513,12 @@ async function loadDevices() {
 function stopPc(pc, videoEl) {
   try {
     pc?.close?.();
-  } catch {}
+  } catch { }
 
   if (videoEl?.srcObject) {
     try {
       videoEl.srcObject.getTracks().forEach((t) => t.stop());
-    } catch {}
+    } catch { }
   }
 
   if (videoEl) videoEl.srcObject = null;
@@ -563,7 +588,7 @@ async function startWhep(deviceId, videoEl, onState, opts = {}) {
 
   try {
     pc.close();
-  } catch {}
+  } catch { }
 
   throw new Error(lastError);
 }
@@ -794,23 +819,62 @@ function makeTile(device) {
   const overlayEl = tile.querySelector(".tileOverlay");
   const closeBtn = tile.querySelector(".tileCloseBtn");
 
-  videoEl.addEventListener("loadedmetadata", () => {
-    const w = videoEl.videoWidth || 16;
-    const h = videoEl.videoHeight || 9;
-    tile.style.setProperty("--tile-ar", `${w} / ${h}`);
+  let aspectPollTimer = null;
+  let aspectPollCount = 0;
 
-    const isMobile = window.matchMedia("(max-width: 980px)").matches;
-    if (isMobile) {
-      tile.style.aspectRatio = `${w} / ${h}`;
-      tile.style.width = "100%";
-      tile.style.height = "auto";
-      return;
-    }
+  function refreshAspect() {
+    syncTileAspectFromVideo(tile, videoEl);
+  }
 
-    recomputeGrid();
-  });
+  function stopAspectPoll() {
+    if (!aspectPollTimer) return;
+    clearInterval(aspectPollTimer);
+    aspectPollTimer = null;
+  }
 
-  return { tile, videoEl, overlayEl, closeBtn };
+  function startAspectPoll() {
+    stopAspectPoll();
+    aspectPollCount = 0;
+
+    aspectPollTimer = setInterval(() => {
+      refreshAspect();
+      aspectPollCount += 1;
+
+      if (aspectPollCount >= 16) {
+        stopAspectPoll();
+      }
+    }, 250);
+  }
+
+  const aspectEvents = ["loadedmetadata", "loadeddata", "canplay", "playing", "resize"];
+
+  for (const evt of aspectEvents) {
+    videoEl.addEventListener(evt, refreshAspect);
+  }
+
+  videoEl.addEventListener("playing", startAspectPoll);
+  videoEl.addEventListener("emptied", stopAspectPoll);
+  videoEl.addEventListener("abort", stopAspectPoll);
+  videoEl.addEventListener("ended", stopAspectPoll);
+
+  return {
+    tile,
+    videoEl,
+    overlayEl,
+    closeBtn,
+    cleanupVideoAspect() {
+      stopAspectPoll();
+
+      for (const evt of aspectEvents) {
+        videoEl.removeEventListener(evt, refreshAspect);
+      }
+
+      videoEl.removeEventListener("playing", startAspectPoll);
+      videoEl.removeEventListener("emptied", stopAspectPoll);
+      videoEl.removeEventListener("abort", stopAspectPoll);
+      videoEl.removeEventListener("ended", stopAspectPoll);
+    },
+  };
 }
 
 function getListItemFromEventTarget(target) {
@@ -969,7 +1033,7 @@ function scheduleRetry(device, entry) {
     entry.retryScheduled = false;
 
     if (entry.cancelled) return;
-    connectEntry(device, entry).catch(() => {});
+    connectEntry(device, entry).catch(() => { });
   }, RETRY_DELAY_MS);
 
   renderList();
@@ -1121,7 +1185,7 @@ async function connectEntry(device, entry) {
     if (!cur || cur.cancelled) {
       try {
         pc.close();
-      } catch {}
+      } catch { }
       return;
     }
 
@@ -1223,7 +1287,7 @@ function installPtzControls(device, entry, caps) {
         return;
       }
 
-      flushMove(true).catch(() => {});
+      flushMove(true).catch(() => { });
     }, 120);
   }
 
@@ -1260,7 +1324,7 @@ function installPtzControls(device, entry, caps) {
       if (needsFlush || !sameCmd(latest, lastSent)) {
         needsFlush = false;
         queueMicrotask(() => {
-          flushMove(false).catch(() => {});
+          flushMove(false).catch(() => { });
         });
       }
     }
@@ -1272,7 +1336,7 @@ function installPtzControls(device, entry, caps) {
       tilt: clamp(tilt, -1, 1),
       zoom: clamp(zoom, -1, 1),
     };
-    flushMove(force).catch(() => {});
+    flushMove(force).catch(() => { });
   }
 
   function resetKnob() {
@@ -1284,7 +1348,7 @@ function installPtzControls(device, entry, caps) {
     desired = { pan: 0, tilt: 0, zoom: 0 };
     clearKeepAlive();
     resetKnob();
-    flushMove(true).catch(() => {});
+    flushMove(true).catch(() => { });
   }
 
   entry.stopPtz = stopNow;
@@ -1298,7 +1362,7 @@ function installPtzControls(device, entry, caps) {
 
       try {
         joystick.setPointerCapture(ev.pointerId);
-      } catch {}
+      } catch { }
 
       const rect = joystick.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
@@ -1338,7 +1402,7 @@ function installPtzControls(device, entry, caps) {
         if (activeMode === "joystick") activeMode = "idle";
         try {
           joystick.releasePointerCapture(upEv.pointerId);
-        } catch {}
+        } catch { }
         joystick.removeEventListener("pointermove", onMove);
         joystick.removeEventListener("pointerup", onUp);
         joystick.removeEventListener("pointercancel", onUp);
@@ -1348,7 +1412,7 @@ function installPtzControls(device, entry, caps) {
           desired.pan = 0;
           desired.tilt = 0;
           resetKnob();
-          flushMove(true).catch(() => {});
+          flushMove(true).catch(() => { });
         } else {
           stopNow();
         }
@@ -1383,7 +1447,7 @@ function installPtzControls(device, entry, caps) {
 
         if (activeJoystick) {
           desired.zoom = 0;
-          flushMove(true).catch(() => {});
+          flushMove(true).catch(() => { });
         } else {
           stopNow();
         }
@@ -1439,7 +1503,7 @@ async function startDevice(device, { restore = false } = {}) {
       applyDeviceOrder(loadDeviceOrder());
       const fresh = devices.find((d) => d.id === device.id);
       if (fresh) device = fresh;
-    } catch {}
+    } catch { }
   }
 
   const existing = getEntry(device.id);
@@ -1447,14 +1511,14 @@ async function startDevice(device, { restore = false } = {}) {
   if (existing) return Promise.resolve();
   if (!profileReady(device)) return Promise.resolve();
 
-  const { tile, videoEl, overlayEl, closeBtn } = makeTile(device);
+  const { tile, videoEl, overlayEl, closeBtn, cleanupVideoAspect } = makeTile(device);
   videoGrid.appendChild(tile);
   installTileFullscreen(tile);
 
   closeBtn?.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    stopDevice(device.id).catch(() => {});
+    stopDevice(device.id).catch(() => { });
   });
 
   const entry = {
@@ -1462,6 +1526,7 @@ async function startDevice(device, { restore = false } = {}) {
     tileEl: tile,
     videoEl,
     overlayEl,
+    cleanupVideoAspect,
     startingPromise: null,
     cancelled: false,
     stopPtz: null,
@@ -1517,11 +1582,15 @@ async function stopDevice(deviceId, { force = false } = {}) {
 
   try {
     entry.stopPtz?.();
-  } catch {}
+  } catch { }
 
   try {
     entry.cleanupPtzListeners?.();
-  } catch {}
+  } catch { }
+
+  try {
+    entry.cleanupVideoAspect?.();
+  } catch { }
 
   const { pc, videoEl } = entry;
 
@@ -1542,7 +1611,7 @@ async function stopDevice(deviceId, { force = false } = {}) {
 
   try {
     tileEl?.remove?.();
-  } catch {}
+  } catch { }
 
   streams.delete(deviceId);
 
