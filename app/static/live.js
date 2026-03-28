@@ -1,7 +1,3 @@
-const dot = document.getElementById("dot");
-const pillText = document.getElementById("pillText");
-const statusPill = document.getElementById("statusPill");
-
 const camListEl = document.getElementById("camList");
 
 const startAllBtn = document.getElementById("startAll");
@@ -18,7 +14,6 @@ const RETRY_DELAY_MS = 4000;
 let devices = [];
 const streams = new Map();
 const ptzCapsCache = new Map();
-let lastStatusMessage = "Idle.";
 
 let restoringGrid = false;
 let desiredTileOrder = [];
@@ -37,23 +32,6 @@ const STREAM_STATE = {
   ERROR: "error",
 };
 
-function setPill(state, text) {
-  pillText.textContent = text;
-  dot.className = "dot";
-  if (state === "ok") dot.classList.add("ok");
-  else if (state === "bad") dot.classList.add("bad");
-}
-
-function setStatus(msg, state = "warn") {
-  lastStatusMessage = String(msg ?? "");
-  setPill(state, lastStatusMessage.slice(0, 40));
-}
-
-statusPill?.addEventListener("click", () => {
-  if (!lastStatusMessage) return;
-  alert(lastStatusMessage);
-});
-
 function getWhepUrl(deviceId) {
   const proto = window.location.protocol;
   const host = window.location.hostname;
@@ -66,7 +44,7 @@ async function api(url, opts) {
   let data = null;
   try {
     data = text ? JSON.parse(text) : null;
-  } catch { }
+  } catch {}
 
   if (!res.ok) {
     const detail = data?.detail || text || res.statusText;
@@ -89,7 +67,7 @@ async function ptzPost(url, body = null) {
     try {
       const parsed = text ? JSON.parse(text) : null;
       if (parsed?.detail) detail = parsed.detail;
-    } catch { }
+    } catch {}
     throw new Error(`${res.status} ${res.statusText}: ${detail}`);
   }
 }
@@ -497,28 +475,26 @@ function renderList() {
 }
 
 async function loadDevices() {
-  setStatus("Loading devices…", "warn");
   try {
     const data = await api("/api/devices", { method: "GET" });
     devices = data.devices || [];
     applyDeviceOrder(loadDeviceOrder());
     renderList();
-    setStatus("Ready.", "ok");
   } catch (e) {
     camListEl.innerHTML = `<div class="muted" style="padding:10px 2px;">Failed to load devices: ${escapeHtml(e.message || e)}</div>`;
-    setStatus(`Device load error: ${e?.message || e}`, "bad");
+    console.error("Failed to load devices", e);
   }
 }
 
 function stopPc(pc, videoEl) {
   try {
     pc?.close?.();
-  } catch { }
+  } catch {}
 
   if (videoEl?.srcObject) {
     try {
       videoEl.srcObject.getTracks().forEach((t) => t.stop());
-    } catch { }
+    } catch {}
   }
 
   if (videoEl) videoEl.srcObject = null;
@@ -588,13 +564,13 @@ async function startWhep(deviceId, videoEl, onState, opts = {}) {
 
   try {
     pc.close();
-  } catch { }
+  } catch {}
 
   throw new Error(lastError);
 }
 
 function isWhep404Error(error) {
-  return /WHEP failed \(404\)/.test(String(error?.message || error || ""));
+  return /WHEP failed \(404\)/.test(String(error?.message || error || ""));
 }
 
 function warmPtzControls(device) {
@@ -650,40 +626,6 @@ function setTileOverlay(entry, text, visible = true) {
   if (!entry?.overlayEl) return;
   entry.overlayEl.textContent = text || "";
   entry.overlayEl.style.display = visible ? "flex" : "none";
-}
-
-function summarizeGridState() {
-  const values = Array.from(streams.values());
-  const liveCount = values.filter((x) => x.state === STREAM_STATE.LIVE).length;
-  const errorCount = values.filter((x) => x.state === STREAM_STATE.ERROR).length;
-  const startingCount = values.filter((x) => x.state === STREAM_STATE.STARTING).length;
-  return { liveCount, errorCount, startingCount, total: values.length };
-}
-
-function updateOverallStatusForGrid(defaultOkMessage = null) {
-  const { liveCount, errorCount, startingCount, total } = summarizeGridState();
-
-  if (startingCount > 0) {
-    setStatus(`Starting ${startingCount} camera(s)…`, "warn");
-    return;
-  }
-
-  if (errorCount > 0 && liveCount === 0 && total > 0) {
-    setStatus(`Showing ${total} tile(s), all failed.`, "bad");
-    return;
-  }
-
-  if (errorCount > 0) {
-    setStatus(`Showing ${total} tile(s): ${liveCount} live, ${errorCount} error.`, "bad");
-    return;
-  }
-
-  if (total > 0) {
-    setStatus(defaultOkMessage || `Showing ${total} camera(s).`, "ok");
-    return;
-  }
-
-  setStatus("Stopped.", "warn");
 }
 
 function isMobileViewport() {
@@ -1033,7 +975,7 @@ function scheduleRetry(device, entry) {
     entry.retryScheduled = false;
 
     if (entry.cancelled) return;
-    connectEntry(device, entry).catch(() => { });
+    connectEntry(device, entry).catch(() => {});
   }, RETRY_DELAY_MS);
 
   renderList();
@@ -1057,7 +999,6 @@ function handleEntryFailure(device, entry, error) {
   }
 
   scheduleRetry(device, entry);
-  updateOverallStatusForGrid();
 }
 
 async function connectEntry(device, entry) {
@@ -1084,7 +1025,6 @@ async function connectEntry(device, entry) {
       clearRetryTimer(cur);
       cur.retryScheduled = false;
       setEntryState(device.id, STREAM_STATE.LIVE);
-      updateOverallStatusForGrid();
       if (!restoringGrid) saveGridState();
       return;
     }
@@ -1185,7 +1125,7 @@ async function connectEntry(device, entry) {
     if (!cur || cur.cancelled) {
       try {
         pc.close();
-      } catch { }
+      } catch {}
       return;
     }
 
@@ -1287,7 +1227,7 @@ function installPtzControls(device, entry, caps) {
         return;
       }
 
-      flushMove(true).catch(() => { });
+      flushMove(true).catch(() => {});
     }, 120);
   }
 
@@ -1317,14 +1257,14 @@ function installPtzControls(device, entry, caps) {
       }
       lastSent = next;
     } catch (e) {
-      setStatus(`PTZ error: ${e?.message || e}`, "bad");
+      console.error("PTZ error", e);
     } finally {
       sending = false;
       const latest = roundedDesired();
       if (needsFlush || !sameCmd(latest, lastSent)) {
         needsFlush = false;
         queueMicrotask(() => {
-          flushMove(false).catch(() => { });
+          flushMove(false).catch(() => {});
         });
       }
     }
@@ -1336,7 +1276,7 @@ function installPtzControls(device, entry, caps) {
       tilt: clamp(tilt, -1, 1),
       zoom: clamp(zoom, -1, 1),
     };
-    flushMove(force).catch(() => { });
+    flushMove(force).catch(() => {});
   }
 
   function resetKnob() {
@@ -1348,7 +1288,7 @@ function installPtzControls(device, entry, caps) {
     desired = { pan: 0, tilt: 0, zoom: 0 };
     clearKeepAlive();
     resetKnob();
-    flushMove(true).catch(() => { });
+    flushMove(true).catch(() => {});
   }
 
   entry.stopPtz = stopNow;
@@ -1362,7 +1302,7 @@ function installPtzControls(device, entry, caps) {
 
       try {
         joystick.setPointerCapture(ev.pointerId);
-      } catch { }
+      } catch {}
 
       const rect = joystick.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
@@ -1402,7 +1342,7 @@ function installPtzControls(device, entry, caps) {
         if (activeMode === "joystick") activeMode = "idle";
         try {
           joystick.releasePointerCapture(upEv.pointerId);
-        } catch { }
+        } catch {}
         joystick.removeEventListener("pointermove", onMove);
         joystick.removeEventListener("pointerup", onUp);
         joystick.removeEventListener("pointercancel", onUp);
@@ -1412,7 +1352,7 @@ function installPtzControls(device, entry, caps) {
           desired.pan = 0;
           desired.tilt = 0;
           resetKnob();
-          flushMove(true).catch(() => { });
+          flushMove(true).catch(() => {});
         } else {
           stopNow();
         }
@@ -1447,7 +1387,7 @@ function installPtzControls(device, entry, caps) {
 
         if (activeJoystick) {
           desired.zoom = 0;
-          flushMove(true).catch(() => { });
+          flushMove(true).catch(() => {});
         } else {
           stopNow();
         }
@@ -1503,7 +1443,7 @@ async function startDevice(device, { restore = false } = {}) {
       applyDeviceOrder(loadDeviceOrder());
       const fresh = devices.find((d) => d.id === device.id);
       if (fresh) device = fresh;
-    } catch { }
+    } catch {}
   }
 
   const existing = getEntry(device.id);
@@ -1518,7 +1458,7 @@ async function startDevice(device, { restore = false } = {}) {
   closeBtn?.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    stopDevice(device.id).catch(() => { });
+    stopDevice(device.id).catch(() => {});
   });
 
   const entry = {
@@ -1553,7 +1493,6 @@ async function startDevice(device, { restore = false } = {}) {
   applyTileStateClasses(entry);
   recomputeGrid();
   renderList();
-  updateOverallStatusForGrid();
   updateSidebarCollapseAvailability();
 
   if (!restoringGrid) {
@@ -1582,15 +1521,15 @@ async function stopDevice(deviceId, { force = false } = {}) {
 
   try {
     entry.stopPtz?.();
-  } catch { }
+  } catch {}
 
   try {
     entry.cleanupPtzListeners?.();
-  } catch { }
+  } catch {}
 
   try {
     entry.cleanupVideoAspect?.();
-  } catch { }
+  } catch {}
 
   const { pc, videoEl } = entry;
 
@@ -1611,13 +1550,12 @@ async function stopDevice(deviceId, { force = false } = {}) {
 
   try {
     tileEl?.remove?.();
-  } catch { }
+  } catch {}
 
   streams.delete(deviceId);
 
   recomputeGrid();
   renderList();
-  updateOverallStatusForGrid();
   updateSidebarCollapseAvailability();
 
   if (!restoringGrid) {
@@ -1639,8 +1577,6 @@ async function restoreGrid() {
   restoringGrid = true;
   desiredTileOrder = devices.map((d) => d.id);
 
-  setStatus(`Restoring ${toRestore.length} camera(s)…`, "warn");
-
   try {
     await Promise.allSettled(
       toRestore.map((d) => startDevice(d, { restore: true }))
@@ -1653,7 +1589,6 @@ async function restoreGrid() {
     recomputeGrid();
   }
 
-  updateOverallStatusForGrid(`Restored ${toRestore.length} camera(s).`);
   updateSidebarCollapseAvailability();
 }
 
@@ -1679,26 +1614,20 @@ startAllBtn.addEventListener("click", async () => {
   const toStart = ready.filter((d) => !isStreaming(d.id));
   if (!toStart.length) return;
 
-  setStatus(`Starting ${toStart.length} camera(s)…`, "warn");
-
   await Promise.allSettled(
     toStart.map((d) => startDevice(d))
   );
 
   syncTileOrderToDeviceOrder();
   saveGridState();
-  updateOverallStatusForGrid(`Showing ${streams.size} camera(s).`);
 });
 
 stopAllBtn.addEventListener("click", async () => {
-  setStatus("Stopping all…", "warn");
-
   await Promise.allSettled(
     Array.from(streams.keys()).map((id) => stopDevice(id, { force: true }))
   );
 
   saveGridState();
-  setStatus("Stopped.", "warn");
   updateSidebarCollapseAvailability();
 });
 
@@ -1771,7 +1700,6 @@ setSidebarHidden(localStorage.getItem(LS_KEY) === "1");
 updateSidebarCollapseAvailability();
 
 recomputeGrid();
-setStatus("Loading…", "warn");
 installListDnD();
 
 (async function init() {
