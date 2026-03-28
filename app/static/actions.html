@@ -15,7 +15,6 @@
         <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
         <a class="tab active" href="/actions"><span class="tabDot"></span>Actions</a>
         <a class="tab" href="/events"><span class="tabDot"></span>Events</a>
-        <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
       </div>
     </div>
 
@@ -58,7 +57,7 @@
         <div class="grid ruleHeaderGrid">
           <div data-full>
             <label for="ruleName">Rule name</label>
-            <input id="ruleName" placeholder="Front door motion snapshot" />
+            <input id="ruleName" placeholder="Front door motion log event" />
           </div>
 
           <div data-full>
@@ -196,19 +195,13 @@
         <div class="grid itemGrid">
           <div data-full>
             <label>Action name</label>
-            <input class="actionName" placeholder="Optional label, e.g. Snapshot garage cam" />
+            <input class="actionName" placeholder="Optional label, e.g. Create front door log event" />
           </div>
           <div data-full>
             <label>Action type</label>
             <select class="actionType">
               <option value="create_log_event">Create log event</option>
-              <option value="take_snapshot">Take snapshot</option>
             </select>
-          </div>
-
-          <div data-full class="snapshotDeviceWrap hidden">
-            <label>Camera</label>
-            <select class="snapshotDevice"></select>
           </div>
         </div>
 

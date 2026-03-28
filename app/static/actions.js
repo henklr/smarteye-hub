@@ -120,9 +120,7 @@ function summarizeCondition(c) {
 
 function summarizeAction(a) {
   if (a?.name) return a.name;
-
   if (a.type === "create_log_event") return "Create log event";
-  if (a.type === "take_snapshot") return `Take snapshot on ${deviceLabel(a.camera_device_id)}`;
   return a.type || "Unknown action";
 }
 
@@ -145,18 +143,11 @@ function getConditionErrors(card) {
   return errors;
 }
 
-function getActionErrors(card) {
-  const type = card.querySelector(".actionType").value;
-  const cameraDeviceId = card.querySelector(".snapshotDevice").value;
-  const errors = [];
-
-  if (type === "take_snapshot" && !cameraDeviceId) {
-    errors.push("Select a camera for snapshots.");
-  }
-  return errors;
+function getActionErrors() {
+  return [];
 }
 
-function updateConditionCardUi(card, index) {
+function updateConditionCardUi(card) {
   const title = card.querySelector(".itemTitle");
   const name = card.querySelector(".condName")?.value.trim() || "";
   const type = card.querySelector(".condType").value;
@@ -188,11 +179,10 @@ function updateConditionCardUi(card, index) {
   }
 }
 
-function updateActionCardUi(card, index) {
+function updateActionCardUi(card) {
   const title = card.querySelector(".itemTitle");
   const name = card.querySelector(".actionName")?.value.trim() || "";
   const type = card.querySelector(".actionType").value;
-  const cameraDeviceId = card.querySelector(".snapshotDevice").value;
   const preview = card.querySelector(".previewText");
   const validation = card.querySelector(".validationText");
   const errors = getActionErrors(card);
@@ -200,7 +190,6 @@ function updateActionCardUi(card, index) {
   const summary = summarizeAction({
     name,
     type,
-    camera_device_id: cameraDeviceId,
   });
 
   if (title) {
@@ -219,8 +208,8 @@ function updateActionCardUi(card, index) {
 }
 
 function refreshBuilderIndices() {
-  [...el("conditionsList").children].forEach((card, index) => updateConditionCardUi(card, index));
-  [...el("actionsList").children].forEach((card, index) => updateActionCardUi(card, index));
+  [...el("conditionsList").children].forEach((card) => updateConditionCardUi(card));
+  [...el("actionsList").children].forEach((card) => updateActionCardUi(card));
 }
 
 function bindDirtyTracking(node) {
@@ -234,12 +223,6 @@ function bindDirtyTracking(node) {
       refreshBuilderIndices();
     });
   });
-}
-
-function syncActionUi(card) {
-  const wrap = card.querySelector(".snapshotDeviceWrap");
-  const isSnapshot = card.querySelector(".actionType").value === "take_snapshot";
-  if (wrap) wrap.classList.toggle("hidden", !isSnapshot);
 }
 
 function syncConditionTopicUi(card) {
@@ -305,7 +288,7 @@ async function renderTopicsInto(card, opts = {}) {
     list.innerHTML = "";
     selectedText.textContent = "No topic is needed for this trigger.";
     countText.textContent = "";
-    updateConditionCardUi(card, [...el("conditionsList").children].indexOf(card));
+    updateConditionCardUi(card);
     return;
   }
 
@@ -333,7 +316,7 @@ async function renderTopicsInto(card, opts = {}) {
 
     if (!filtered.length) {
       list.innerHTML = `<div class="emptyState">No topics found.</div>`;
-      updateConditionCardUi(card, [...el("conditionsList").children].indexOf(card));
+      updateConditionCardUi(card);
       return;
     }
 
@@ -361,7 +344,7 @@ async function renderTopicsInto(card, opts = {}) {
     list.innerHTML = `<div class="emptyState">Failed to load topics: ${escapeHtml(e.message || String(e))}</div>`;
   }
 
-  updateConditionCardUi(card, [...el("conditionsList").children].indexOf(card));
+  updateConditionCardUi(card);
 }
 
 function createConditionPayloadFromCard(card) {
@@ -381,7 +364,6 @@ function createActionPayloadFromCard(card) {
 
   const out = { type };
   if (name) out.name = name;
-  if (type === "take_snapshot") out.camera_device_id = card.querySelector(".snapshotDevice").value;
   return out;
 }
 
@@ -444,11 +426,10 @@ function addConditionRow(data = {}) {
 function addActionRow(data = {}) {
   const node = el("actionTemplate").content.firstElementChild.cloneNode(true);
   const actionName = node.querySelector(".actionName");
-
-  node.querySelector(".snapshotDevice").innerHTML = deviceOptionsHtml(data.camera_device_id || devices[0]?.id || "");
-  node.querySelector(".actionType").value = data.type || "create_log_event";
+  const actionType = node.querySelector(".actionType");
 
   if (actionName) actionName.value = data.name || "";
+  if (actionType) actionType.value = data.type || "create_log_event";
 
   bindItemCollapse(node);
 
@@ -460,17 +441,11 @@ function addActionRow(data = {}) {
     if (!el("actionsList").children.length) addActionRow();
   });
 
-  node.querySelector(".actionType").addEventListener("change", () => {
-    syncActionUi(node);
-    refreshBuilderIndices();
-  });
-
-  node.querySelector(".snapshotDevice").addEventListener("change", () => {
+  actionType?.addEventListener("change", () => {
     refreshBuilderIndices();
   });
 
   bindDirtyTracking(node);
-  syncActionUi(node);
   el("actionsList").appendChild(node);
   refreshBuilderIndices();
 }
@@ -493,12 +468,6 @@ function validatePayload(payload) {
   for (const c of payload.conditions) {
     if (!c.device_id) errors.push("Each trigger must have a device.");
     if (c.type === "onvif_event" && !c.topic) errors.push("Each ONVIF event trigger must have a topic.");
-  }
-
-  for (const a of payload.actions) {
-    if (a.type === "take_snapshot" && !a.camera_device_id) {
-      errors.push("Each snapshot action must have a camera.");
-    }
   }
 
   return errors;
@@ -600,7 +569,7 @@ function renderRules() {
   if (!rules.length) {
     box.innerHTML = `
       <div class="emptyState">
-        No rules yet. Create your first automation for device state changes, ONVIF events, log events or snapshots.
+        No rules yet. Create your first automation for device state changes, ONVIF events, or log events.
       </div>
     `;
     setListStatus("No rules saved yet.");
@@ -624,7 +593,6 @@ function renderRules() {
     }).join("");
 
     const actionTags = (r.actions || []).slice(0, 3).map((a) => {
-      if (a.type === "take_snapshot") return `<span class="miniTag">Snapshot</span>`;
       if (a.type === "create_log_event") return `<span class="miniTag">Log event</span>`;
       return `<span class="miniTag">${escapeHtml(a.type || "Action")}</span>`;
     }).join("");

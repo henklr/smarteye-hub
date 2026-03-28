@@ -1201,20 +1201,6 @@ code {
   display: none;
 }
 
-/* Playback page */
-.playbackPage .playbackSplit {
-  display: grid;
-  grid-template-columns: 360px 1fr;
-  gap: 14px;
-  align-items: start;
-}
-
-@media (max-width: 980px) {
-  .playbackPage .playbackSplit {
-    grid-template-columns: 1fr;
-  }
-}
-
 .liveLayout {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

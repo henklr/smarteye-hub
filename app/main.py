@@ -1,4 +1,3 @@
-# main.py
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,8 +11,6 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import base64
-import ssl
-from mimetypes import guess_extension
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlsplit, urlunsplit
 
@@ -33,9 +30,10 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/data", StaticFiles(directory=DATA_DIR), name="data")
 
 DEVICES_JSON = DATA_DIR / "devices.json"
+ACTIONS_JSON = DATA_DIR / "actions.json"
+ACTION_EVENTS_JSON = DATA_DIR / "action_events.json"
 
 MEDIAMTX_API_URL = os.getenv("MEDIAMTX_API_URL", "http://mediamtx:9997").rstrip("/")
 MEDIAMTX_API_USER = os.getenv("MEDIAMTX_API_USER", "apiuser")
@@ -45,11 +43,8 @@ PTZ_WATCHDOG_SEC = float(os.getenv("PTZ_WATCHDOG_SEC", "0.25"))
 
 EVENT_DEBUG = str(os.getenv("EVENT_DEBUG", "1")).strip().lower() in {"1", "true", "yes", "on"}
 
-SNAPSHOTS_DIR = DATA_DIR / "snapshots"
-SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-SNAPSHOTS_INDEX_JSON = DATA_DIR / "snapshots.json"
-ACTIONS_JSON = DATA_DIR / "actions.json"
-ACTION_EVENTS_JSON = DATA_DIR / "action_events.json"
+STREAM_STALE_SEC = float(os.getenv("STREAM_STALE_SEC", "8"))
+PATH_PROGRESS_POLL_SEC = float(os.getenv("PATH_PROGRESS_POLL_SEC", "1.0"))
 
 
 def _dump(model) -> dict:
@@ -97,24 +92,13 @@ _ptz_context_cache_lock = threading.RLock()
 _ptz_command_locks: Dict[str, threading.Lock] = {}
 _ptz_command_locks_lock = threading.RLock()
 
-_snapshots_lock = threading.RLock()
 _actions_lock = threading.RLock()
 _action_events_lock = threading.RLock()
-_action_runtime_lock = threading.RLock()
-_last_device_states: Dict[str, bool] = {}
 _action_monitor_stop = threading.Event()
 _action_monitor_thread: Optional[threading.Thread] = None
 
-_path_progress_lock = threading.RLock()
-_path_progress_state: Dict[str, Dict[str, Any]] = {}
-
-STREAM_STALE_SEC = float(os.getenv("STREAM_STALE_SEC", "8"))
-
 _path_monitor_lock = threading.RLock()
 _path_monitor_state: Dict[str, Dict[str, Any]] = {}
-
-PATH_PROGRESS_POLL_SEC = float(os.getenv("PATH_PROGRESS_POLL_SEC", "1.0"))
-PATH_NO_PROGRESS_LIMIT = int(os.getenv("PATH_NO_PROGRESS_LIMIT", "4"))
 
 
 def _ptz_device_lock(device_id: str) -> threading.Lock:
@@ -154,11 +138,6 @@ def events_page():
 @app.get("/actions", response_class=HTMLResponse)
 def actions_page():
     return (STATIC_DIR / "actions.html").read_text(encoding="utf-8")
-
-
-@app.get("/playback", response_class=HTMLResponse)
-def playback_page():
-    return (STATIC_DIR / "playback.html").read_text(encoding="utf-8")
 
 
 @app.get("/health")
@@ -210,18 +189,10 @@ class EventsStartRequest(OnvifBase):
     device_id: str
 
 
-class AllowListRequest(BaseModel):
-    allow_topics: List[str] = Field(default_factory=list)
-
-
 class PTZMoveRequest(BaseModel):
     pan: float = 0.0
     tilt: float = 0.0
     zoom: float = 0.0
-
-
-class SnapshotRequest(BaseModel):
-    event: str = Field(default="manual", min_length=1)
 
 
 class ActionConditionModel(BaseModel):
@@ -234,8 +205,7 @@ class ActionConditionModel(BaseModel):
 class ActionTargetModel(BaseModel):
     name: Optional[str] = None
     type: str = Field(..., min_length=1)
-    camera_device_id: Optional[str] = None
-    
+
 
 class ActionRuleIn(BaseModel):
     name: str = Field(..., min_length=1)
@@ -249,7 +219,7 @@ class ActionRule(ActionRuleIn):
     created_at: str
     updated_at: str
 
-    
+
 def _normalize_allow_topic(s: Optional[str]) -> str:
     s = (s or "").strip().strip("/")
     if not s:
@@ -326,48 +296,78 @@ def _update_device(device_id: str, dev_in: DeviceIn) -> Device:
     raise HTTPException(status_code=404, detail="Device not found")
 
 
-def _load_snapshot_index() -> dict:
-    if not SNAPSHOTS_INDEX_JSON.exists():
-        return {"items": []}
-    try:
-        raw = json.loads(SNAPSHOTS_INDEX_JSON.read_text(encoding="utf-8"))
-        if isinstance(raw, dict) and isinstance(raw.get("items"), list):
-            return raw
-    except Exception:
-        pass
-    return {"items": []}
-
-
-def _save_snapshot_index(data: dict) -> None:
-    tmp = SNAPSHOTS_INDEX_JSON.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp.replace(SNAPSHOTS_INDEX_JSON)
-
-
-def _append_snapshot_item(item: dict) -> None:
-    with _snapshots_lock:
-        data = _load_snapshot_index()
-        items = list(data.get("items", []))
-        items.insert(0, item)
-        data["items"] = items[:1000]
-        _save_snapshot_index(data)
-
-
-def _list_snapshot_items(device_id: Optional[str] = None) -> List[dict]:
-    with _snapshots_lock:
-        items = list(_load_snapshot_index().get("items", []))
-    if device_id:
-        items = [x for x in items if x.get("device_id") == device_id]
-    return items
-
-
-def _snapshot_rel_url(path: Path) -> str:
-    rel = path.relative_to(DATA_DIR).as_posix()
-    return f"/data/{rel}"
-
-
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _sanitize_loaded_action_rule(item: dict) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+
+    rule_id = str(item.get("id") or "").strip()
+    name = str(item.get("name") or "").strip()
+    if not rule_id or not name:
+        return None
+
+    conditions: List[dict] = []
+    for c in list(item.get("conditions") or []):
+        if not isinstance(c, dict):
+            continue
+
+        cname = str(c.get("name") or "").strip() or None
+        ctype = str(c.get("type") or "").strip()
+        did = str(c.get("device_id") or "").strip()
+
+        if ctype not in {"onvif_event", "device_offline", "device_back_online"}:
+            continue
+        if not did:
+            continue
+
+        out = {
+            "name": cname,
+            "type": ctype,
+            "device_id": did,
+        }
+
+        if ctype == "onvif_event":
+            topic = _normalize_allow_topic(c.get("topic"))
+            if not topic:
+                continue
+            out["topic"] = topic
+
+        conditions.append(out)
+
+    actions: List[dict] = []
+    for a in list(item.get("actions") or []):
+        if not isinstance(a, dict):
+            continue
+
+        aname = str(a.get("name") or "").strip() or None
+        atype = str(a.get("type") or "").strip()
+
+        if atype != "create_log_event":
+            continue
+
+        actions.append({
+            "name": aname,
+            "type": atype,
+        })
+
+    if not conditions or not actions:
+        return None
+
+    created_at = str(item.get("created_at") or _utc_now_iso())
+    updated_at = str(item.get("updated_at") or created_at)
+
+    return {
+        "id": rule_id,
+        "name": name,
+        "enabled": bool(item.get("enabled", True)),
+        "conditions": conditions,
+        "actions": actions,
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
 
 
 def _load_actions() -> List[dict]:
@@ -375,11 +375,17 @@ def _load_actions() -> List[dict]:
         return []
     try:
         raw = json.loads(ACTIONS_JSON.read_text(encoding="utf-8"))
-        if isinstance(raw, dict) and isinstance(raw.get("items"), list):
-            return list(raw.get("items", []))
+        items = raw.get("items", [])
+        if not isinstance(items, list):
+            return []
+        out = []
+        for item in items:
+            cleaned = _sanitize_loaded_action_rule(item)
+            if cleaned is not None:
+                out.append(cleaned)
+        return out
     except Exception:
-        pass
-    return []
+        return []
 
 
 def _save_actions(items: List[dict]) -> None:
@@ -458,24 +464,13 @@ def _normalize_action_target(a: dict) -> dict:
             "type": atype,
         }
 
-    if atype == "take_snapshot":
-        cam = (a.get("camera_device_id") or "").strip()
-        if not cam:
-            raise HTTPException(status_code=400, detail="Snapshot action requires camera_device_id")
-        _get_device(cam)
-        return {
-            "name": aname or None,
-            "type": atype,
-            "camera_device_id": cam,
-        }
-
     raise HTTPException(status_code=400, detail=f"Unsupported action type: {atype}")
 
 
 def _normalize_action_rule_payload(data: dict, existing_id: Optional[str] = None, created_at: Optional[str] = None) -> dict:
     name = (data.get("name") or "").strip()
     if not name:
-        raise HTTPException(status_code=400, detail="Action name is required")
+        raise HTTPException(status_code=400, detail="Rule name is required")
     conditions = [_normalize_action_condition(x or {}) for x in list(data.get("conditions") or [])]
     actions = [_normalize_action_target(x or {}) for x in list(data.get("actions") or [])]
     if not conditions:
@@ -499,10 +494,8 @@ def _canonical_topic_aliases(topic: Optional[str]) -> set[str]:
         return set()
 
     aliases = {t}
-
     low = t.lower()
 
-    # Motion
     if (
         "motion" in low
         or "ismotion" in low
@@ -516,7 +509,6 @@ def _canonical_topic_aliases(topic: Optional[str]) -> set[str]:
             "IsMotion/Rule/VideoAnalyticsConfigurationToken/VideoSourceConfigurationToken",
         })
 
-    # Objects inside / field detector
     if (
         "objectsinside" in low
         or "objectinside" in low
@@ -529,14 +521,12 @@ def _canonical_topic_aliases(topic: Optional[str]) -> set[str]:
             "VideoSource/ObjectInside",
             "IsInside/Rule/VideoAnalyticsConfigurationToken/VideoSourceConfigurationToken",
         })
-                
-    # Digital input
+
     if "digitalinput" in low or "inputtoken" in low:
         aliases.update({
             "Device/Trigger/DigitalInput",
         })
 
-    # Relay
     if "relay" in low or "relaytoken" in low:
         aliases.update({
             "Device/Trigger/Relay",
@@ -595,6 +585,7 @@ def _get_effective_event_allowlist(device_id: str) -> set[str]:
     topics = set(_get_action_topic_allowlist(device_id))
     return {t for t in topics if t}
 
+
 def _match_onvif_condition(condition: dict, event_payload: dict) -> bool:
     extra = event_payload.get("extra") or {}
     if (condition.get("device_id") or "") != (event_payload.get("device_id") or ""):
@@ -624,24 +615,6 @@ def _run_action_rule(rule: dict, trigger: dict) -> None:
             should_create_feed_event = True
             action_results.append({"type": atype, "ok": True})
 
-        elif atype == "take_snapshot":
-            cam = action.get("camera_device_id")
-            try:
-                snap = _take_snapshot(cam, f"action:{rule.get('name') or rule.get('id')}")
-                action_results.append({
-                    "type": atype,
-                    "ok": True,
-                    "camera_device_id": cam,
-                    "snapshot": snap,
-                })
-            except Exception as e:
-                action_results.append({
-                    "type": atype,
-                    "ok": False,
-                    "camera_device_id": cam,
-                    "error": str(e),
-                })
-
     if not should_create_feed_event:
         return
 
@@ -668,9 +641,8 @@ def _run_action_rule(rule: dict, trigger: dict) -> None:
         "results": action_results,
     }
     _append_action_event(item)
-        
 
-                
+
 def _evaluate_actions_for_trigger(trigger: dict) -> None:
     try:
         with _actions_lock:
@@ -707,7 +679,6 @@ def _poll_device_state_changes() -> None:
                 prev = monitor["previous_online"]
                 curr = monitor["current_online"]
 
-                # first observation only initializes state
                 if prev is None:
                     if EVENT_DEBUG:
                         _emit_event(
@@ -781,7 +752,7 @@ def _poll_device_state_changes() -> None:
                     })
                 except Exception:
                     pass
-                                
+
 
 def _cam(req: OnvifBase) -> ONVIFCamera:
     return ONVIFCamera(req.ip, req.onvif_port, req.username, req.password)
@@ -914,23 +885,18 @@ def _guess_topic_from_items(items: dict) -> str:
     )
     has_rule = "rule" in keys
 
-    # Motion
     if "ismotion" in keys and (has_vs_token or has_va_token or has_rule):
         return "RuleEngine/CellMotionDetector/Motion"
 
-    # Objects inside / field detector
     if "isinside" in keys and (has_vs_token or has_va_token or has_rule):
         return "RuleEngine/FieldDetector/ObjectsInside"
 
-    # Digital input
     if "inputtoken" in keys:
         return "Device/Trigger/DigitalInput"
 
-    # Relay
     if "relaytoken" in keys:
         return "Device/Trigger/Relay"
 
-    # Tamper
     if "tamper" in "".join(keys.keys()).lower():
         return "VideoSource/ImageTooDark/Tamper"
 
@@ -949,7 +915,6 @@ def _normalize_topic_for_match(topic_text: Optional[str]) -> str:
     if not topic_text:
         return ""
 
-    # Ignore zeep / object repr junk
     if "Dialect" in topic_text and "ConcreteSet" in topic_text:
         return ""
 
@@ -983,8 +948,6 @@ def _topic_obj_to_text(topic_obj) -> str:
         if parts:
             return "/".join(parts)
 
-    # Do not fall back to str(topic_obj) because that produces a zeep object repr,
-    # not an actual topic path.
     return ""
 
 
@@ -1049,7 +1012,13 @@ def _emit_event(device_id: str, level: str, msg: str, extra: Optional[dict] = No
     }
     _broadcast_event(device_id, payload)
     if level == "event" and msg == "ONVIF event":
-        _evaluate_actions_for_trigger({"kind": "onvif_event", "device_id": device_id, "message": msg, "extra": extra or {}, "ts": payload["ts"]})
+        _evaluate_actions_for_trigger({
+            "kind": "onvif_event",
+            "device_id": device_id,
+            "message": msg,
+            "extra": extra or {},
+            "ts": payload["ts"],
+        })
 
 
 ALLOW_REFRESH_S = 2.0
@@ -1133,8 +1102,6 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, stop_flag: threading.Eve
                     matched = False
                     matched_by = None
 
-                    # If no topics are referenced by Actions for this device,
-                    # do not pass any ONVIF events through.
                     if not allow_set:
                         matched = False
                     else:
@@ -1143,7 +1110,7 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, stop_flag: threading.Eve
                                 matched = True
                                 matched_by = candidate
                                 break
-        
+
                     if EVENT_DEBUG:
                         _emit_event(
                             device_id,
@@ -1345,39 +1312,6 @@ def _find_profile_encoding(req: OnvifBase, profile_token: str) -> Optional[str]:
     raise RuntimeError("Profile token not found")
 
 
-def _get_snapshot_uri(req: OnvifBase, profile_token: Optional[str]) -> str:
-    cam = _cam(req)
-    media = cam.create_media_service()
-    profiles = media.GetProfiles() or []
-    token = profile_token or (getattr(profiles[0], "token", None) if profiles else None)
-    if not token:
-        raise RuntimeError("No media profile available.")
-    resp = media.GetSnapshotUri({"ProfileToken": token})
-    uri = getattr(resp, "Uri", None)
-    if not uri:
-        raise RuntimeError("Camera did not provide snapshot URI.")
-    return str(uri)
-
-
-def _http_get_bytes_with_auth(url: str, username: str, password: str) -> tuple[bytes, Optional[str]]:
-    insecure_ctx = ssl.create_default_context()
-    insecure_ctx.check_hostname = False
-    insecure_ctx.verify_mode = ssl.CERT_NONE
-
-    password_mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-    password_mgr.add_password(None, url, username, password)
-
-    basic_handler = urllib.request.HTTPBasicAuthHandler(password_mgr)
-    digest_handler = urllib.request.HTTPDigestAuthHandler(password_mgr)
-    https_handler = urllib.request.HTTPSHandler(context=insecure_ctx)
-
-    opener = urllib.request.build_opener(digest_handler, basic_handler, https_handler)
-
-    req = urllib.request.Request(url, method="GET")
-    with opener.open(req, timeout=10) as resp:
-        return resp.read(), resp.headers.get("Content-Type")
-        
-
 def _get_stream_uri(req: OnvifBase, profile_token: str) -> str:
     cam = _cam(req)
     media = cam.create_media_service()
@@ -1404,47 +1338,6 @@ def _rtsp_with_auth(uri: str, username: str, password: str) -> str:
     pwd = urllib.parse.quote(password, safe="")
     netloc = f"{user}:{pwd}@{host}{port}"
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
-
-
-def _take_snapshot(device_id: str, event_name: str = "manual") -> dict:
-    device = _get_device(device_id)
-    req = _device_req(device)
-
-    snapshot_uri = _get_snapshot_uri(req, device.profile_token)
-    content, content_type = _http_get_bytes_with_auth(
-        snapshot_uri,
-        device.username,
-        device.password,
-    )
-
-    ext = ".jpg"
-    if content_type:
-        guessed = guess_extension(content_type.split(";")[0].strip().lower())
-        if guessed:
-            ext = ".jpg" if guessed == ".jpe" else guessed
-
-    ts = datetime.now(timezone.utc)
-    stamp = ts.strftime("%Y%m%dT%H%M%S.%fZ")
-    device_dir = SNAPSHOTS_DIR / device_id
-    device_dir.mkdir(parents=True, exist_ok=True)
-
-    filename = f"{stamp}-{uuid.uuid4().hex[:8]}{ext}"
-    path = device_dir / filename
-    path.write_bytes(content)
-
-    item = {
-        "id": uuid.uuid4().hex[:12],
-        "device_id": device_id,
-        "device_name": device.name,
-        "event": (event_name or "manual").strip() or "manual",
-        "ts": ts.isoformat().replace("+00:00", "Z"),
-        "filename": filename,
-        "content_type": content_type or "image/jpeg",
-        "url": _snapshot_rel_url(path),
-        "size_bytes": len(content),
-    }
-    _append_snapshot_item(item)
-    return item
 
 
 def _mediamtx_api_request(method: str, path: str, body: Optional[dict] = None) -> dict:
@@ -1506,7 +1399,7 @@ def _ensure_mediamtx_path(device_id: str, source_rtsp: str, preload: bool = Fals
             return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
 
     return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
-    
+
 
 def _mediamtx_delete_path(device_id: str) -> dict:
     name = _path_for(device_id)
@@ -1543,65 +1436,6 @@ def _refresh_device_stream(device_id: str) -> dict:
     return _ensure_mediamtx_path(device_id, source_rtsp, preload=bool(d.preload_stream))
 
 
-def _path_row_to_status(row: Optional[dict]) -> dict:
-    if not row:
-        return {
-            "source_ready": False,
-            "ready": False,
-            "source_on_demand": None,
-            "source": None,
-            "bytes_received": None,
-            "readers": 0,
-        }
-
-    source = row.get("source")
-    source_ready = bool(row.get("sourceReady"))
-    ready = bool(row.get("ready"))
-    source_on_demand = row.get("sourceOnDemand")
-    bytes_received = row.get("bytesReceived")
-    readers = row.get("readers") or []
-    readers_count = len(readers) if isinstance(readers, list) else 0
-
-    return {
-        "source_ready": source_ready,
-        "ready": ready,
-        "source_on_demand": source_on_demand,
-        "source": source,
-        "bytes_received": bytes_received,
-        "readers": readers_count,
-    }
-
-def _stream_progress_state(device_id: str, bytes_received: int, online: bool, ready: bool, source_ready: bool) -> dict:
-    now = time.time()
-
-    with _path_progress_lock:
-        st = _path_progress_state.get(device_id)
-        if st is None:
-            st = {
-                "last_bytes": int(bytes_received or 0),
-                "last_change_ts": now,
-            }
-            _path_progress_state[device_id] = st
-        else:
-            current_bytes = int(bytes_received or 0)
-            if current_bytes > int(st.get("last_bytes", 0)):
-                st["last_bytes"] = current_bytes
-                st["last_change_ts"] = now
-
-        stale_for = now - float(st.get("last_change_ts", now))
-
-    # If MediaMTX says it is online/ready but no bytes have moved for a while,
-    # treat it as stale/offline.
-    stalled = (
-        (online or ready or source_ready)
-        and stale_for >= STREAM_STALE_SEC
-    )
-
-    return {
-        "stale_for_sec": round(stale_for, 1),
-        "stalled": stalled,
-    }
-    
 def _path_bytes_from_snapshot_row(row: Optional[dict]) -> int:
     if not row:
         return 0
@@ -1692,8 +1526,8 @@ def _update_path_monitor_state(device_id: str, row: Optional[dict]) -> dict:
             "bytes_received": int(bytes_received),
             "readers": int(readers),
         }
-                                
-        
+
+
 def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
     row = _path_row_for_device(snapshot, device.id)
     path_name = _path_for(device.id)
@@ -1769,7 +1603,7 @@ def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
         status = "live"
     elif healthy_backend or recent_grace:
         status = "idle"
-        
+
     out.update({
         "source_ready": source_ready,
         "ready": ready,
@@ -1785,7 +1619,7 @@ def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
         "stream_up": stream_up,
         "status": status,
     })
-        
+
     return out
 
 
@@ -2094,7 +1928,11 @@ def actions_update(action_id: str, req: ActionRuleIn):
         items = _load_actions()
         for i, item in enumerate(items):
             if item.get("id") == action_id:
-                new_item = _normalize_action_rule_payload(_dump(req), existing_id=action_id, created_at=item.get("created_at"))
+                new_item = _normalize_action_rule_payload(
+                    _dump(req),
+                    existing_id=action_id,
+                    created_at=item.get("created_at"),
+                )
                 items[i] = new_item
                 _save_actions(items)
                 return {"ok": True, "item": new_item}
@@ -2118,24 +1956,6 @@ def action_events(device_id: Optional[str] = None, limit: int = 200):
     return {"items": _list_action_events(device_id=did, limit=limit)}
 
 
-@app.get("/api/playback/snapshots")
-def playback_snapshots(device_id: Optional[str] = None):
-    items = _list_snapshot_items(device_id=device_id.strip() if device_id else None)
-    return {"items": items}
-
-
-@app.post("/api/playback/snapshot/{device_id}")
-async def playback_snapshot(device_id: str, req: SnapshotRequest):
-    device_id = device_id.strip()
-    if not device_id:
-        raise HTTPException(status_code=400, detail="Missing device_id")
-    try:
-        item = await asyncio.to_thread(_take_snapshot, device_id, req.event)
-        return {"ok": True, "item": item}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Snapshot failed: {e}")
-
-
 @app.post("/api/devices/{device_id}/refresh-stream")
 async def refresh_device_stream(device_id: str):
     device_id = device_id.strip()
@@ -2147,8 +1967,8 @@ async def refresh_device_stream(device_id: str):
         return {"ok": True, "device_id": device_id, "result": out}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Refresh stream failed: {e}")
-    
-    
+
+
 @app.get("/api/devices")
 def list_devices():
     devs = _load_devices()
@@ -2190,6 +2010,7 @@ def update_device(device_id: str, dev_in: DeviceIn):
     dev = _update_device(device_id, dev_in)
     return {"ok": True, "device": _dump(dev)}
 
+
 @app.delete("/api/devices/{device_id}")
 def delete_device(device_id: str):
     device_id = device_id.strip()
@@ -2204,10 +2025,10 @@ def delete_device(device_id: str):
     _save_devices(new_devs)
     _invalidate_ptz_cache(device_id)
     _stop_event_worker(device_id)
-    
-    with _path_progress_lock:
-        _path_progress_state.pop(device_id, None)
-        
+
+    with _path_monitor_lock:
+        _path_monitor_state.pop(device_id, None)
+
     try:
         _mediamtx_delete_path(device_id)
     except Exception:
@@ -2336,7 +2157,6 @@ async def stop(device_id: str):
     except Exception:
         d = None
 
-    # For preloaded devices, Live-stop should not remove the backend path.
     if d and d.preload_stream:
         return {"ok": True, "device_id": device_id, "kept_preloaded_path": True}
 
@@ -2345,7 +2165,7 @@ async def stop(device_id: str):
         return {"ok": True, "device_id": device_id}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Stop failed: {e}")
-    
+
 
 @app.get("/api/device-status/{device_id}")
 def device_status(device_id: str):
@@ -2416,16 +2236,13 @@ def _on_startup():
     try:
         devs = _load_devices()
 
-        snapshot = _mediamtx_paths_snapshot()
-        with _action_runtime_lock:
-            _last_device_states.clear()
-            for d in devs:
-                st = _device_stream_status_from_snapshot(d, snapshot)
-                _last_device_states[d.id] = bool(st.get("stream_up"))
-
         global _action_monitor_thread
         _action_monitor_stop.clear()
-        _action_monitor_thread = threading.Thread(target=_poll_device_state_changes, daemon=True, name="action-monitor")
+        _action_monitor_thread = threading.Thread(
+            target=_poll_device_state_changes,
+            daemon=True,
+            name="action-monitor",
+        )
         _action_monitor_thread.start()
 
         for d in devs:
