@@ -1880,48 +1880,181 @@ body.tileMaximizedMode #videoGrid {
 }
 
 @media (max-width: 560px) {
-  .topbar {
-    position: sticky;
-    top: 0;
-    z-index: 1000;
+  .wrap {
+    padding-bottom: calc(126px + env(safe-area-inset-bottom, 0px));
+  }
 
-    min-width: 0;
-    display: block;
-    margin-bottom: 16px;
-    padding-top: max(6px, env(safe-area-inset-top, 0px));
+  .topbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1200;
+
+    display: flex;
+    justify-content: center;
+    margin: 0;
+    padding:
+      0
+      12px
+      calc(18px + env(safe-area-inset-bottom, 0px));
 
     background: transparent;
     border: 0;
     box-shadow: none;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+    pointer-events: none;
+  }
+
+  .topbar::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 140px;
+    pointer-events: none;
+    z-index: 0;
+
+    background: linear-gradient(
+      to top,
+      rgba(11, 14, 18, 0.82) 0%,
+      rgba(11, 14, 18, 0.48) 42%,
+      rgba(11, 14, 18, 0.16) 72%,
+      rgba(11, 14, 18, 0) 100%
+    );
   }
 
   .tabs {
-    display: flex;
+    position: relative;
+    z-index: 1;
+    pointer-events: auto;
+
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+
     width: 100%;
     max-width: 100%;
     min-width: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
-    flex-wrap: nowrap;
-    white-space: nowrap;
-    -webkit-overflow-scrolling: touch;
-    touch-action: pan-x;
-    scrollbar-width: none;
 
-    background: rgba(20, 25, 31, 0.88);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
-  }
+    padding: 10px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 24px;
 
-  .tabs::-webkit-scrollbar {
-    display: none;
+    background: rgba(20, 25, 31, 0.72);
+    box-shadow:
+      0 16px 34px rgba(0, 0, 0, 0.32),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+
+    overflow: visible;
   }
 
   .tab {
-    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+
+    min-width: 0;
+    min-height: 64px;
+    padding: 8px 4px 6px;
+
+    border: 1px solid transparent;
+    border-radius: 18px;
+    background: transparent;
+
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1.1;
+    text-align: center;
     white-space: nowrap;
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+
+    transition:
+      background 0.12s ease,
+      color 0.12s ease,
+      border-color 0.12s ease,
+      box-shadow 0.12s ease,
+      transform 0.12s ease;
+  }
+
+  .tab:active {
+    transform: scale(0.98);
+  }
+
+  .tabDot {
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    display: grid;
+    place-items: center;
+    background: transparent;
+    box-shadow: none;
+    flex: 0 0 auto;
+  }
+
+  .tabDot::before {
+    content: "";
+    width: 18px;
+    height: 18px;
+    display: block;
+    background: rgba(255, 255, 255, 0.56);
+    transition: background 0.12s ease, transform 0.12s ease;
+    -webkit-mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    -webkit-mask-size: contain;
+    mask-repeat: no-repeat;
+    mask-position: center;
+    mask-size: contain;
+  }
+
+  .tab[href="/live"] .tabDot::before {
+    -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 4a8 8 0 1 0 0 16a8 8 0 0 0 0-16Zm0 3.2a4.8 4.8 0 1 1 0 9.6a4.8 4.8 0 0 1 0-9.6Z'/></svg>");
+    mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 4a8 8 0 1 0 0 16a8 8 0 0 0 0-16Zm0 3.2a4.8 4.8 0 1 1 0 9.6a4.8 4.8 0 0 1 0-9.6Z'/></svg>");
+  }
+
+  .tab[href="/devices"] .tabDot::before {
+    -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M5 5h6v6H5V5Zm8 0h6v6h-6V5ZM5 13h6v6H5v-6Zm8 0h6v6h-6v-6Z'/></svg>");
+    mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M5 5h6v6H5V5Zm8 0h6v6h-6V5ZM5 13h6v6H5v-6Zm8 0h6v6h-6v-6Z'/></svg>");
+  }
+
+  .tab[href="/actions"] .tabDot::before {
+    -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 3l2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2L12 3Z'/></svg>");
+    mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 3l2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2L12 3Z'/></svg>");
+  }
+
+  .tab[href="/events"] .tabDot::before {
+    -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M7 3h2v2h6V3h2v2h2a2 2 0 0 1 2 2v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a2 2 0 0 1 2-2h2V3Zm12 8H5v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6Z'/></svg>");
+    mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M7 3h2v2h6V3h2v2h2a2 2 0 0 1 2 2v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a2 2 0 0 1 2-2h2V3Zm12 8H5v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6Z'/></svg>");
+  }
+
+  .tab:hover {
+    background: rgba(255, 255, 255, 0.03);
+    color: rgba(255, 255, 255, 0.82);
+  }
+
+  .tab.active {
+    background: rgba(255, 255, 255, 0.055);
+    border-color: rgba(255, 255, 255, 0.05);
+    color: #fff;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.03),
+      0 8px 18px rgba(0, 0, 0, 0.12);
+  }
+
+  .tab.active .tabDot {
+    background: rgba(198, 161, 75, 0.14);
+    box-shadow: 0 0 0 1px rgba(198, 161, 75, 0.18);
+  }
+
+  .tab.active .tabDot::before {
+    background: var(--accent);
   }
 }
