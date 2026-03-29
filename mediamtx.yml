@@ -14,6 +14,7 @@ webrtcLocalUDPAddress: :8189
 webrtcLocalTCPAddress: :8189
 webrtcAdditionalHosts:
   - 172.16.0.225
+  - hnkl.in
 
 authMethod: internal
 authInternalUsers:
