@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Actions</title>
+  <title>Rules</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 
@@ -13,7 +13,7 @@
       <div class="tabs">
         <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
         <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
-        <a class="tab active" href="/actions"><span class="tabDot"></span>Actions</a>
+        <a class="tab active" href="/actions"><span class="tabDot"></span>Rules</a>
       </div>
     </div>
 
@@ -22,7 +22,7 @@
         <div class="listHeader">
           <div>
             <div class="listTitle">Saved rules</div>
-            <div class="listSub">Click a rule to edit it, or create a new one.</div>
+            <div class="listSub">Triggered rules are always logged. Optional actions can also run.</div>
           </div>
           <button class="btn btn-primary" id="btnNew" type="button">New rule</button>
         </div>
@@ -56,7 +56,7 @@
         <div class="grid ruleHeaderGrid">
           <div data-full>
             <label for="ruleName">Rule name</label>
-            <input id="ruleName" placeholder="Front door motion log event" />
+            <input id="ruleName" placeholder="Front door motion" />
           </div>
 
           <div data-full>
@@ -72,7 +72,7 @@
           <div class="sectionHead">
             <div>
               <div class="collapseHeadTitle">Triggers</div>
-              <div class="collapseHeadSub">A rule runs when any trigger matches.</div>
+              <div class="collapseHeadSub">A rule is logged when any trigger matches.</div>
             </div>
           </div>
 
@@ -88,7 +88,7 @@
           <div class="sectionHead">
             <div>
               <div class="collapseHeadTitle">Actions</div>
-              <div class="collapseHeadSub">Choose what happens when a trigger matches.</div>
+              <div class="collapseHeadSub">Optional actions that run after the rule is triggered.</div>
             </div>
           </div>
 
@@ -108,6 +108,7 @@
               <div class="row2 mt-0">
                 <button class="btn" id="btnDuplicate" type="button">Duplicate</button>
                 <button class="btn btn-danger" id="btnDelete" type="button">Delete</button>
+                <button class="btn" id="btnTest" type="button">Test rule</button>
                 <button class="btn btn-primary" id="btnSave" type="button">Save</button>
               </div>
             </div>
@@ -170,7 +171,7 @@
             </div>
           </div>
 
-          <div class="topicSelected selectedTopicText">Select an ONVIF topic to trigger this rule.</div>
+          <div class="topicSelected selectedTopicText">Select an ONVIF topic for this trigger.</div>
           <div class="muted topicCountText mt-8">No topics loaded yet.</div>
           <div class="topicList"></div>
         </div>
@@ -199,14 +200,28 @@
         <div class="grid itemGrid">
           <div data-full>
             <label>Action name</label>
-            <input class="actionName" placeholder="Optional label, e.g. Create front door log event" />
+            <input class="actionName" placeholder="Optional label, e.g. Garage relay pulse" />
           </div>
 
           <div data-full>
             <label>Action type</label>
             <select class="actionType">
-              <option value="create_log_event">Create log event</option>
+              <option value="activate_output_relay">Activate output relay</option>
             </select>
+          </div>
+
+          <div data-full>
+            <label>Relay action</label>
+            <select class="relayMode">
+              <option value="on">Turn on</option>
+              <option value="off">Turn off</option>
+              <option value="pulse">Activate for time</option>
+            </select>
+          </div>
+
+          <div data-full class="relaySecondsWrap hidden">
+            <label>Activation time (seconds)</label>
+            <input class="relaySeconds" type="number" min="0.1" step="0.1" placeholder="2.0" />
           </div>
         </div>
 

@@ -32,8 +32,9 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DEVICES_JSON = DATA_DIR / "devices.json"
-ACTIONS_JSON = DATA_DIR / "actions.json"
-ACTION_EVENTS_JSON = DATA_DIR / "action_events.json"
+RULES_JSON = DATA_DIR / "actions.json"
+RULE_LOG_FILE = Path(os.getenv("RULE_LOG_FILE", str(DATA_DIR / "actions.log")))
+RULE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 MEDIAMTX_API_URL = os.getenv("MEDIAMTX_API_URL", "http://mediamtx:9997").rstrip("/")
 MEDIAMTX_API_USER = os.getenv("MEDIAMTX_API_USER", "apiuser")
@@ -92,10 +93,10 @@ _ptz_context_cache_lock = threading.RLock()
 _ptz_command_locks: Dict[str, threading.Lock] = {}
 _ptz_command_locks_lock = threading.RLock()
 
-_actions_lock = threading.RLock()
-_action_events_lock = threading.RLock()
-_action_monitor_stop = threading.Event()
-_action_monitor_thread: Optional[threading.Thread] = None
+_rules_lock = threading.RLock()
+_rule_log_lock = threading.RLock()
+_rule_monitor_stop = threading.Event()
+_rule_monitor_thread: Optional[threading.Thread] = None
 
 _path_monitor_lock = threading.RLock()
 _path_monitor_state: Dict[str, Dict[str, Any]] = {}
@@ -195,29 +196,37 @@ class PTZMoveRequest(BaseModel):
     zoom: float = 0.0
 
 
-class ActionConditionModel(BaseModel):
+class RuleConditionModel(BaseModel):
     name: Optional[str] = None
     type: str = Field(..., min_length=1)
     device_id: str = Field(..., min_length=1)
     topic: Optional[str] = None
 
 
-class ActionTargetModel(BaseModel):
+class RuleActionModel(BaseModel):
     name: Optional[str] = None
     type: str = Field(..., min_length=1)
+    mode: Optional[str] = None
+    activation_seconds: Optional[float] = None
 
 
-class ActionRuleIn(BaseModel):
+class RuleIn(BaseModel):
     name: str = Field(..., min_length=1)
     enabled: bool = True
-    conditions: List[ActionConditionModel] = Field(default_factory=list)
-    actions: List[ActionTargetModel] = Field(default_factory=list)
+    conditions: List[RuleConditionModel] = Field(default_factory=list)
+    actions: List[RuleActionModel] = Field(default_factory=list)
 
 
-class ActionRule(ActionRuleIn):
+class Rule(RuleIn):
     id: str
     created_at: str
     updated_at: str
+
+
+class RuleTestRequest(BaseModel):
+    name: Optional[str] = None
+    conditions: List[RuleConditionModel] = Field(default_factory=list)
+    actions: List[RuleActionModel] = Field(default_factory=list)
 
 
 def _normalize_allow_topic(s: Optional[str]) -> str:
@@ -300,7 +309,7 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _sanitize_loaded_action_rule(item: dict) -> Optional[dict]:
+def _sanitize_loaded_rule(item: dict) -> Optional[dict]:
     if not isinstance(item, dict):
         return None
 
@@ -337,6 +346,9 @@ def _sanitize_loaded_action_rule(item: dict) -> Optional[dict]:
 
         conditions.append(out)
 
+    if not conditions:
+        return None
+
     actions: List[dict] = []
     for a in list(item.get("actions") or []):
         if not isinstance(a, dict):
@@ -345,16 +357,29 @@ def _sanitize_loaded_action_rule(item: dict) -> Optional[dict]:
         aname = str(a.get("name") or "").strip() or None
         atype = str(a.get("type") or "").strip()
 
-        if atype != "create_log_event":
+        if atype != "activate_output_relay":
             continue
 
-        actions.append({
+        mode = str(a.get("mode") or "").strip().lower()
+        if mode not in {"on", "off", "pulse"}:
+            continue
+
+        out = {
             "name": aname,
             "type": atype,
-        })
+            "mode": mode,
+        }
 
-    if not conditions or not actions:
-        return None
+        if mode == "pulse":
+            try:
+              seconds = float(a.get("activation_seconds"))
+            except Exception:
+              continue
+            if seconds <= 0:
+              continue
+            out["activation_seconds"] = seconds
+
+        actions.append(out)
 
     created_at = str(item.get("created_at") or _utc_now_iso())
     updated_at = str(item.get("updated_at") or created_at)
@@ -370,17 +395,17 @@ def _sanitize_loaded_action_rule(item: dict) -> Optional[dict]:
     }
 
 
-def _load_actions() -> List[dict]:
-    if not ACTIONS_JSON.exists():
+def _load_rules() -> List[dict]:
+    if not RULES_JSON.exists():
         return []
     try:
-        raw = json.loads(ACTIONS_JSON.read_text(encoding="utf-8"))
+        raw = json.loads(RULES_JSON.read_text(encoding="utf-8"))
         items = raw.get("items", [])
         if not isinstance(items, list):
             return []
         out = []
         for item in items:
-            cleaned = _sanitize_loaded_action_rule(item)
+            cleaned = _sanitize_loaded_rule(item)
             if cleaned is not None:
                 out.append(cleaned)
         return out
@@ -388,46 +413,13 @@ def _load_actions() -> List[dict]:
         return []
 
 
-def _save_actions(items: List[dict]) -> None:
-    tmp = ACTIONS_JSON.with_suffix(".json.tmp")
+def _save_rules(items: List[dict]) -> None:
+    tmp = RULES_JSON.with_suffix(".json.tmp")
     tmp.write_text(json.dumps({"items": items}, indent=2), encoding="utf-8")
-    tmp.replace(ACTIONS_JSON)
+    tmp.replace(RULES_JSON)
 
 
-def _load_action_events() -> List[dict]:
-    if not ACTION_EVENTS_JSON.exists():
-        return []
-    try:
-        raw = json.loads(ACTION_EVENTS_JSON.read_text(encoding="utf-8"))
-        if isinstance(raw, dict) and isinstance(raw.get("items"), list):
-            return list(raw.get("items", []))
-    except Exception:
-        pass
-    return []
-
-
-def _save_action_events(items: List[dict]) -> None:
-    tmp = ACTION_EVENTS_JSON.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"items": items}, indent=2), encoding="utf-8")
-    tmp.replace(ACTION_EVENTS_JSON)
-
-
-def _append_action_event(item: dict) -> dict:
-    with _action_events_lock:
-        items = _load_action_events()
-        items.insert(0, item)
-        _save_action_events(items[:2000])
-    return item
-
-
-def _list_action_events(device_id: Optional[str] = None, limit: int = 200) -> List[dict]:
-    items = _load_action_events()
-    if device_id:
-        items = [x for x in items if x.get("device_id") == device_id or x.get("source_device_id") == device_id]
-    return items[:max(1, min(int(limit or 200), 1000))]
-
-
-def _normalize_action_condition(c: dict) -> dict:
+def _normalize_rule_condition(c: dict) -> dict:
     cname = (c.get("name") or "").strip()
     ctype = (c.get("type") or "").strip()
     did = (c.get("device_id") or "").strip()
@@ -454,29 +446,48 @@ def _normalize_action_condition(c: dict) -> dict:
     return out
 
 
-def _normalize_action_target(a: dict) -> dict:
+def _normalize_rule_action(a: dict) -> dict:
     aname = (a.get("name") or "").strip()
     atype = (a.get("type") or "").strip()
 
-    if atype == "create_log_event":
-        return {
+    if atype == "activate_output_relay":
+        mode = (a.get("mode") or "").strip().lower()
+        if mode not in {"on", "off", "pulse"}:
+            raise HTTPException(status_code=400, detail="Relay action mode must be on, off, or pulse")
+
+        out = {
             "name": aname or None,
             "type": atype,
+            "mode": mode,
         }
+
+        if mode == "pulse":
+            try:
+                seconds = float(a.get("activation_seconds"))
+            except Exception:
+                raise HTTPException(status_code=400, detail="Relay pulse action requires activation_seconds")
+
+            if seconds <= 0:
+                raise HTTPException(status_code=400, detail="Relay activation_seconds must be greater than 0")
+
+            out["activation_seconds"] = seconds
+
+        return out
 
     raise HTTPException(status_code=400, detail=f"Unsupported action type: {atype}")
 
 
-def _normalize_action_rule_payload(data: dict, existing_id: Optional[str] = None, created_at: Optional[str] = None) -> dict:
+def _normalize_rule_payload(data: dict, existing_id: Optional[str] = None, created_at: Optional[str] = None) -> dict:
     name = (data.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Rule name is required")
-    conditions = [_normalize_action_condition(x or {}) for x in list(data.get("conditions") or [])]
-    actions = [_normalize_action_target(x or {}) for x in list(data.get("actions") or [])]
+
+    conditions = [_normalize_rule_condition(x or {}) for x in list(data.get("conditions") or [])]
     if not conditions:
         raise HTTPException(status_code=400, detail="At least one condition is required")
-    if not actions:
-        raise HTTPException(status_code=400, detail="At least one action is required")
+
+    actions = [_normalize_rule_action(x or {}) for x in list(data.get("actions") or [])]
+
     return {
         "id": existing_id or uuid.uuid4().hex[:12],
         "name": name,
@@ -560,11 +571,11 @@ def _topic_matches_allowlist(candidate: str, allow_set: set[str]) -> bool:
     return False
 
 
-def _get_action_topic_allowlist(device_id: str) -> set[str]:
+def _get_rule_topic_allowlist(device_id: str) -> set[str]:
     allow = set()
     try:
-        with _actions_lock:
-            items = _load_actions()
+        with _rules_lock:
+            items = _load_rules()
         for rule in items:
             if not rule.get("enabled", True):
                 continue
@@ -582,7 +593,7 @@ def _get_action_topic_allowlist(device_id: str) -> set[str]:
 
 
 def _get_effective_event_allowlist(device_id: str) -> set[str]:
-    topics = set(_get_action_topic_allowlist(device_id))
+    topics = set(_get_rule_topic_allowlist(device_id))
     return {t for t in topics if t}
 
 
@@ -604,52 +615,124 @@ def _match_onvif_condition(condition: dict, event_payload: dict) -> bool:
     return False
 
 
-def _run_action_rule(rule: dict, trigger: dict) -> None:
-    action_results = []
-    should_create_feed_event = False
+def _extract_trigger_topic(trigger: dict) -> Optional[str]:
+    extra = trigger.get("extra") or {}
+    condition = trigger.get("condition") or {}
 
-    for action in rule.get("actions", []):
+    for key in ("matched_by", "topic_path", "guessed_topic", "fallback_key"):
+        value = _normalize_allow_topic(extra.get(key))
+        if value:
+            return value
+
+    return _normalize_allow_topic(condition.get("topic")) or None
+
+
+def _execute_rule_actions(rule: dict, trigger: dict) -> List[dict]:
+    results: List[dict] = []
+
+    for action in list(rule.get("actions") or []):
         atype = action.get("type")
 
-        if atype == "create_log_event":
-            should_create_feed_event = True
-            action_results.append({"type": atype, "ok": True})
+        if atype == "activate_output_relay":
+            item = {
+                "type": atype,
+                "ok": True,
+                "placeholder": True,
+                "mode": action.get("mode"),
+            }
+            if action.get("name"):
+                item["name"] = action.get("name")
+            if action.get("mode") == "pulse":
+                item["activation_seconds"] = action.get("activation_seconds")
+            item["message"] = "Placeholder relay action accepted but not connected to hardware yet."
+            results.append(item)
+            continue
 
-    if not should_create_feed_event:
-        return
+        results.append({
+            "type": atype or "unknown",
+            "ok": False,
+            "error": "Unsupported action type",
+        })
 
+    return results
+
+
+def _append_rule_log_line(rule: dict, trigger: dict, action_results: List[dict]) -> None:
+    device_id = str(trigger.get("device_id") or trigger.get("source_device_id") or "").strip() or None
+    source_device_id = str(trigger.get("source_device_id") or trigger.get("device_id") or "").strip() or None
     device_name = None
-    try:
-        device_name = _get_device(
-            trigger.get("device_id") or trigger.get("source_device_id")
-        ).name
-    except Exception:
-        pass
 
-    item = {
-        "id": uuid.uuid4().hex[:12],
+    if device_id:
+        try:
+            device_name = _get_device(device_id).name
+        except Exception:
+            device_name = None
+
+    condition = trigger.get("condition") or {}
+
+    entry = {
         "ts": _utc_now_iso(),
-        "kind": trigger.get("kind") or "action",
-        "message": trigger.get("message") or rule.get("name") or "Action event",
-        "action_rule_id": rule.get("id"),
-        "action_rule_name": rule.get("name"),
-        "device_id": trigger.get("device_id") or trigger.get("source_device_id"),
+        "rule_id": rule.get("id"),
+        "rule_name": rule.get("name"),
+        "device_id": device_id,
         "device_name": device_name,
-        "source_device_id": trigger.get("source_device_id") or trigger.get("device_id"),
-        "condition": trigger.get("condition"),
-        "trigger": trigger,
-        "results": action_results,
+        "source_device_id": source_device_id,
+        "trigger_kind": trigger.get("kind"),
+        "trigger_message": trigger.get("message"),
+        "trigger_ts": trigger.get("ts"),
+        "condition_type": condition.get("type"),
+        "condition_name": condition.get("name"),
+        "topic": _extract_trigger_topic(trigger),
+        "manual": bool(trigger.get("kind") == "manual_test"),
+        "configured_actions": list(rule.get("actions") or []),
+        "action_results": action_results,
     }
-    _append_action_event(item)
+
+    line = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
+
+    with _rule_log_lock:
+        RULE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with RULE_LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
 
 
-def _evaluate_actions_for_trigger(trigger: dict) -> None:
+def _log_rule_trigger(rule: dict, trigger: dict) -> dict:
     try:
-        with _actions_lock:
-            rules = _load_actions()
+        action_results = _execute_rule_actions(rule, trigger)
+        _append_rule_log_line(rule, trigger, action_results)
+        return {
+            "ok": True,
+            "log_file": str(RULE_LOG_FILE),
+            "action_results": action_results,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "log_file": str(RULE_LOG_FILE),
+            "error": str(e),
+        }
+
+
+def _manual_test_context(conditions: List[dict]) -> dict:
+    if not conditions:
+        return {}
+    first = dict(conditions[0])
+    device_id = first.get("device_id")
+    return {
+        "device_id": device_id,
+        "source_device_id": device_id,
+        "condition": first,
+    }
+
+
+def _evaluate_rules_for_trigger(trigger: dict) -> None:
+    try:
+        with _rules_lock:
+            rules = _load_rules()
         for rule in rules:
             if not rule.get("enabled", True):
                 continue
+
             matched = False
             for condition in rule.get("conditions", []):
                 ctype = condition.get("type")
@@ -659,15 +742,16 @@ def _evaluate_actions_for_trigger(trigger: dict) -> None:
                     matched = condition.get("device_id") == trigger.get("device_id")
                 elif ctype == "device_back_online" and trigger.get("kind") == "device_back_online":
                     matched = condition.get("device_id") == trigger.get("device_id")
+
                 if matched:
-                    _run_action_rule(rule, {"condition": condition, **trigger})
+                    _log_rule_trigger(rule, {"condition": condition, **trigger})
                     break
     except Exception:
         pass
 
 
 def _poll_device_state_changes() -> None:
-    while not _action_monitor_stop.wait(PATH_PROGRESS_POLL_SEC):
+    while not _rule_monitor_stop.wait(PATH_PROGRESS_POLL_SEC):
         try:
             devs = _load_devices()
             snapshot = _mediamtx_paths_snapshot()
@@ -713,7 +797,7 @@ def _poll_device_state_changes() -> None:
                             },
                         )
 
-                    _evaluate_actions_for_trigger({
+                    _evaluate_rules_for_trigger({
                         "kind": "device_offline",
                         "device_id": d.id,
                         "message": "Device offline",
@@ -733,7 +817,7 @@ def _poll_device_state_changes() -> None:
                             },
                         )
 
-                    _evaluate_actions_for_trigger({
+                    _evaluate_rules_for_trigger({
                         "kind": "device_back_online",
                         "device_id": d.id,
                         "message": "Device back online",
@@ -747,7 +831,7 @@ def _poll_device_state_changes() -> None:
                         "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                         "device_id": "system",
                         "level": "warn",
-                        "message": f"Action monitor poll failed: {e}",
+                        "message": f"Rule monitor poll failed: {e}",
                         "extra": {},
                     })
                 except Exception:
@@ -1012,7 +1096,7 @@ def _emit_event(device_id: str, level: str, msg: str, extra: Optional[dict] = No
     }
     _broadcast_event(device_id, payload)
     if level == "event" and msg == "ONVIF event":
-        _evaluate_actions_for_trigger({
+        _evaluate_rules_for_trigger({
             "kind": "onvif_event",
             "device_id": device_id,
             "message": msg,
@@ -1040,7 +1124,7 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, stop_flag: threading.Eve
 
         pullpoint = cam.create_pullpoint_service()
 
-        _emit_event(device_id, "ok", "Subscribed to ONVIF events (actions-aware filtering enabled).")
+        _emit_event(device_id, "ok", "Subscribed to ONVIF events (rule-aware filtering enabled).")
 
         while not stop_flag.is_set():
             now = time.time()
@@ -1138,7 +1222,7 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, stop_flag: threading.Eve
                             _emit_event(
                                 device_id,
                                 "warn",
-                                "Dropped event because it did not match action topics",
+                                "Dropped event because it did not match rule topics",
                                 {
                                     "topic_text": topic_text,
                                     "topic_path": topic_path,
@@ -1907,53 +1991,84 @@ async def events_properties(device_id: str):
 
 @app.get("/api/actions")
 def actions_list():
-    with _actions_lock:
-        items = _load_actions()
+    with _rules_lock:
+        items = _load_rules()
     return {"items": items}
 
 
 @app.post("/api/actions")
-def actions_create(req: ActionRuleIn):
-    with _actions_lock:
-        items = _load_actions()
-        item = _normalize_action_rule_payload(_dump(req))
+def actions_create(req: RuleIn):
+    with _rules_lock:
+        items = _load_rules()
+        item = _normalize_rule_payload(_dump(req))
         items.append(item)
-        _save_actions(items)
+        _save_rules(items)
     return {"ok": True, "item": item}
 
 
+@app.post("/api/actions/test")
+def actions_test(req: RuleTestRequest):
+    data = _dump(req)
+    conditions = [_normalize_rule_condition(x or {}) for x in list(data.get("conditions") or [])]
+    if not conditions:
+        raise HTTPException(status_code=400, detail="At least one condition is required")
+
+    actions = [_normalize_rule_action(x or {}) for x in list(data.get("actions") or [])]
+
+    rule = {
+        "id": f"manual-{uuid.uuid4().hex[:12]}",
+        "name": (data.get("name") or "").strip() or "Manual test",
+        "enabled": True,
+        "conditions": conditions,
+        "actions": actions,
+    }
+
+    trigger = {
+        "kind": "manual_test",
+        "message": "Manual test trigger",
+        "ts": _utc_now_iso(),
+        "extra": {"manual": True},
+        **_manual_test_context(conditions),
+    }
+
+    result = _log_rule_trigger(rule, trigger)
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result.get("error") or "Manual test failed")
+
+    return {
+        "ok": True,
+        "message": "Manual test logged.",
+        "log_file": str(RULE_LOG_FILE),
+        "action_results": result.get("action_results", []),
+    }
+
+
 @app.put("/api/actions/{action_id}")
-def actions_update(action_id: str, req: ActionRuleIn):
-    with _actions_lock:
-        items = _load_actions()
+def actions_update(action_id: str, req: RuleIn):
+    with _rules_lock:
+        items = _load_rules()
         for i, item in enumerate(items):
             if item.get("id") == action_id:
-                new_item = _normalize_action_rule_payload(
+                new_item = _normalize_rule_payload(
                     _dump(req),
                     existing_id=action_id,
                     created_at=item.get("created_at"),
                 )
                 items[i] = new_item
-                _save_actions(items)
+                _save_rules(items)
                 return {"ok": True, "item": new_item}
-    raise HTTPException(status_code=404, detail="Action not found")
+    raise HTTPException(status_code=404, detail="Rule not found")
 
 
 @app.delete("/api/actions/{action_id}")
 def actions_delete(action_id: str):
-    with _actions_lock:
-        items = _load_actions()
+    with _rules_lock:
+        items = _load_rules()
         new_items = [x for x in items if x.get("id") != action_id]
         if len(new_items) == len(items):
-            raise HTTPException(status_code=404, detail="Action not found")
-        _save_actions(new_items)
+            raise HTTPException(status_code=404, detail="Rule not found")
+        _save_rules(new_items)
     return {"ok": True}
-
-
-@app.get("/api/action-events")
-def action_events(device_id: Optional[str] = None, limit: int = 200):
-    did = device_id.strip() if device_id else None
-    return {"items": _list_action_events(device_id=did, limit=limit)}
 
 
 @app.post("/api/devices/{device_id}/refresh-stream")
@@ -2236,14 +2351,14 @@ def _on_startup():
     try:
         devs = _load_devices()
 
-        global _action_monitor_thread
-        _action_monitor_stop.clear()
-        _action_monitor_thread = threading.Thread(
+        global _rule_monitor_thread
+        _rule_monitor_stop.clear()
+        _rule_monitor_thread = threading.Thread(
             target=_poll_device_state_changes,
             daemon=True,
-            name="action-monitor",
+            name="rule-monitor",
         )
-        _action_monitor_thread.start()
+        _rule_monitor_thread.start()
 
         for d in devs:
             req = EventsStartRequest(
@@ -2276,7 +2391,7 @@ def _on_shutdown():
         except Exception:
             pass
 
-    _action_monitor_stop.set()
+    _rule_monitor_stop.set()
 
     with _ptz_watchdog_lock:
         timers = list(_ptz_watchdogs.values())

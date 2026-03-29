@@ -43,11 +43,16 @@ const TRIGGER_DEFS = {
 };
 
 const ACTION_DEFS = {
-  create_log_event: {
-    label: "Create log event",
+  activate_output_relay: {
+    label: "Activate output relay",
     summarize(data) {
       if (data.name) return data.name;
-      return "Create log event";
+      if (data.mode === "on") return "Activate output relay · turn on";
+      if (data.mode === "off") return "Activate output relay · turn off";
+      if (data.mode === "pulse") {
+        return `Activate output relay · pulse ${data.activation_seconds ?? "?"}s`;
+      }
+      return "Activate output relay";
     },
   },
 };
@@ -193,8 +198,8 @@ function summarizeAction(action) {
 
 function ruleSentence(rule) {
   const left = (rule.conditions || []).map(summarizeCondition).join(" or ") || "When something happens";
-  const right = (rule.actions || []).map(summarizeAction).join(" and ") || "do something";
-  return `${left}, then ${right}.`;
+  const right = (rule.actions || []).map(summarizeAction).join(" and ");
+  return right ? `${left}, log the trigger, then ${right}.` : `${left}, log the trigger.`;
 }
 
 function confirmDiscardIfDirty() {
@@ -248,8 +253,27 @@ function getConditionErrors(card) {
   return errors;
 }
 
-function getActionErrors(_card) {
-  return [];
+function getActionErrors(card) {
+  const type = card.querySelector(".actionType").value;
+  const errors = [];
+
+  if (type === "activate_output_relay") {
+    const mode = card.querySelector(".relayMode").value;
+    const rawSeconds = (card.querySelector(".relaySeconds").value || "").trim();
+
+    if (!mode) {
+      errors.push("Select a relay action.");
+    }
+
+    if (mode === "pulse") {
+      const seconds = Number(rawSeconds);
+      if (!rawSeconds || !Number.isFinite(seconds) || seconds <= 0) {
+        errors.push("Activation time must be greater than 0 seconds.");
+      }
+    }
+  }
+
+  return errors;
 }
 
 function createConditionPayloadFromCard(card) {
@@ -272,6 +296,19 @@ function createActionPayloadFromCard(card) {
   const out = { type };
 
   if (name) out.name = name;
+
+  if (type === "activate_output_relay") {
+    const mode = card.querySelector(".relayMode").value;
+    out.mode = mode;
+
+    if (mode === "pulse") {
+      const seconds = Number(card.querySelector(".relaySeconds").value || "");
+      if (Number.isFinite(seconds)) {
+        out.activation_seconds = seconds;
+      }
+    }
+  }
+
   return out;
 }
 
@@ -326,6 +363,13 @@ function syncConditionTopicUi(card) {
   picker.classList.toggle("open", getTriggerDef(type).needsTopic);
 }
 
+function syncActionModeUi(card) {
+  const mode = card.querySelector(".relayMode").value;
+  const wrap = card.querySelector(".relaySecondsWrap");
+  if (!wrap) return;
+  wrap.classList.toggle("hidden", mode !== "pulse");
+}
+
 async function loadTopics(deviceId, force = false) {
   if (!deviceId) return [];
   if (!force && state.topicCache.has(deviceId)) {
@@ -365,7 +409,7 @@ async function renderTopicsInto(card, opts = {}) {
 
   if (!deviceId) {
     list.innerHTML = `<div class="emptyState">Select a device first.</div>`;
-    selectedText.textContent = "Select an ONVIF topic to trigger this rule.";
+    selectedText.textContent = "Select an ONVIF topic for this trigger.";
     countText.textContent = "";
     updateConditionCardUi(card);
     return;
@@ -373,7 +417,7 @@ async function renderTopicsInto(card, opts = {}) {
 
   selectedText.innerHTML = selectedTopic
     ? `Selected topic: <strong>${escapeHtml(selectedTopic)}</strong>`
-    : `Select an ONVIF topic to trigger this rule.`;
+    : `Select an ONVIF topic for this trigger.`;
 
   list.innerHTML = `<div class="emptyState">Loading topics…</div>`;
 
@@ -444,9 +488,8 @@ function bindFieldDirty(card, selector, fn = null) {
   });
 }
 
-function ensureAtLeastOneRow() {
+function ensureAtLeastOneConditionRow() {
   if (!el("conditionsList").children.length) addConditionRow();
-  if (!el("actionsList").children.length) addActionRow();
 }
 
 function addConditionRow(data = {}) {
@@ -468,7 +511,7 @@ function addConditionRow(data = {}) {
   btnRemove.addEventListener("click", (ev) => {
     ev.stopPropagation();
     node.remove();
-    ensureAtLeastOneRow();
+    ensureAtLeastOneConditionRow();
     refreshBuilderCards();
     markDirty();
   });
@@ -514,24 +557,34 @@ function addActionRow(data = {}) {
   const node = el("actionTemplate").content.firstElementChild.cloneNode(true);
   const actionName = node.querySelector(".actionName");
   const actionType = node.querySelector(".actionType");
+  const relayMode = node.querySelector(".relayMode");
+  const relaySeconds = node.querySelector(".relaySeconds");
   const btnRemove = node.querySelector(".btnRemoveAction");
 
   actionName.value = data.name || "";
-  actionType.value = data.type || "create_log_event";
+  actionType.value = data.type || "activate_output_relay";
+  relayMode.value = data.mode || "on";
+  relaySeconds.value = data.activation_seconds ?? "";
 
   bindItemCollapse(node);
 
   btnRemove.addEventListener("click", (ev) => {
     ev.stopPropagation();
     node.remove();
-    ensureAtLeastOneRow();
     refreshBuilderCards();
     markDirty();
   });
 
   bindFieldDirty(node, ".actionName");
-  bindFieldDirty(node, ".actionType");
+  bindFieldDirty(node, ".actionType", async () => {
+    syncActionModeUi(node);
+  });
+  bindFieldDirty(node, ".relayMode", async () => {
+    syncActionModeUi(node);
+  });
+  bindFieldDirty(node, ".relaySeconds");
 
+  syncActionModeUi(node);
   el("actionsList").appendChild(node);
   updateActionCardUi(node);
 }
@@ -550,7 +603,6 @@ function validatePayload(payload) {
 
   if (!payload.name) errors.push("Rule name is required.");
   if (!payload.conditions.length) errors.push("Add at least one trigger.");
-  if (!payload.actions.length) errors.push("Add at least one action.");
 
   for (const condition of payload.conditions) {
     if (!condition.device_id) errors.push("Each trigger must have a device.");
@@ -560,6 +612,10 @@ function validatePayload(payload) {
       errors.push("Each ONVIF event trigger must have a topic.");
     }
   }
+
+  [...el("actionsList").children].forEach((card) => {
+    errors.push(...getActionErrors(card));
+  });
 
   return errors;
 }
@@ -585,11 +641,7 @@ function applyRuleToEditor(rule) {
     addConditionRow();
   }
 
-  if (actions.length) {
-    actions.forEach(addActionRow);
-  } else {
-    addActionRow();
-  }
+  actions.forEach(addActionRow);
 
   state.suspendDirty = false;
   clearDirty();
@@ -668,7 +720,7 @@ function renderRules() {
   if (!state.rules.length) {
     box.innerHTML = `
       <div class="emptyState">
-        No rules yet. Create your first automation for device state changes or ONVIF events.
+        No rules yet. Create your first rule for device state changes or ONVIF events.
       </div>
     `;
     setListStatus("No rules saved yet.");
@@ -692,7 +744,7 @@ function renderRules() {
     }).join("");
 
     const actionTags = (rule.actions || []).slice(0, 3).map((action) => {
-      if (action.type === "create_log_event") return `<span class="miniTag">Log event</span>`;
+      if (action.type === "activate_output_relay") return `<span class="miniTag">Relay</span>`;
       return `<span class="miniTag">${escapeHtml(action.type || "Action")}</span>`;
     }).join("");
 
@@ -817,6 +869,29 @@ async function saveRule() {
   setStatus("Rule saved.");
 }
 
+async function testRule() {
+  const payload = getEditorPayload();
+  const errors = validatePayload(payload);
+
+  refreshBuilderCards();
+
+  if (errors.length) {
+    setStatus(errors[0], true);
+    throw new Error(errors[0]);
+  }
+
+  const out = await api("/api/actions/test", {
+    method: "POST",
+    body: JSON.stringify({
+      name: payload.name,
+      conditions: payload.conditions,
+      actions: payload.actions,
+    }),
+  });
+
+  setStatus(out?.message || "Manual test logged.");
+}
+
 async function deleteSelected() {
   if (!state.selectedRuleId) return;
 
@@ -847,6 +922,14 @@ function bindGlobalEvents() {
   el("btnSave").addEventListener("click", async () => {
     try {
       await saveRule();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+
+  el("btnTest").addEventListener("click", async () => {
+    try {
+      await testRule();
     } catch (err) {
       setStatus(err.message || String(err), true);
     }
