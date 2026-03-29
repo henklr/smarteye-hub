@@ -27,16 +27,6 @@ function prettyJson(obj) {
   }
 }
 
-function setPill(state, text) {
-  const dot = el("dot");
-  const pillText = el("pillText");
-  pillText.textContent = text;
-
-  dot.classList.remove("ok", "bad");
-  if (state === "ok") dot.classList.add("ok");
-  if (state === "bad") dot.classList.add("bad");
-}
-
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -285,11 +275,6 @@ function stopSSE() {
   eventSources.clear();
 }
 
-function connectionSummaryText() {
-  if (!eventSources.size) return "Idle";
-  return eventSources.size === 1 ? "Connected" : `Connected (${eventSources.size})`;
-}
-
 function onSsePayload(payload, device) {
   const lvl = payload.level || "event";
   const msg = payload.message || "event";
@@ -309,7 +294,6 @@ function attachSSEForDevice(device) {
   eventSources.set(device.id, src);
 
   src.onopen = () => {
-    setPill("ok", connectionSummaryText());
     addDebugEntry("ok", "SSE connected", null, { deviceId: device.id, deviceName: device.name });
   };
 
@@ -323,7 +307,6 @@ function attachSSEForDevice(device) {
   };
 
   src.onerror = () => {
-    setPill("bad", "Disconnected");
     addDebugEntry("warn", "SSE disconnected / reconnecting", null, { deviceId: device.id, deviceName: device.name });
   };
 }
@@ -332,11 +315,8 @@ function startSSEForSelection() {
   stopSSE();
 
   if (!devices.length) {
-    setPill("warn", "Idle");
     return;
   }
-
-  setPill("warn", "Connecting…");
 
   if (currentDevice) {
     attachSSEForDevice(currentDevice);
@@ -381,7 +361,6 @@ async function loadDevices() {
     currentDevice = null;
     setDeviceChip();
     stopSSE();
-    setPill("warn", "Idle");
     feedEntries = [];
     renderFeed();
     return;
