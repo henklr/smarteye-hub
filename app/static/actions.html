@@ -14,7 +14,6 @@
         <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
         <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
         <a class="tab active" href="/actions"><span class="tabDot"></span>Actions</a>
-        <a class="tab" href="/events"><span class="tabDot"></span>Events</a>
       </div>
     </div>
 
@@ -76,6 +75,7 @@
               <div class="collapseHeadSub">A rule runs when any trigger matches.</div>
             </div>
           </div>
+
           <div class="collapseBody open" id="triggersBody">
             <div class="row2 mt-0">
               <button class="btn" id="btnAddCondition" type="button">Add trigger</button>
@@ -91,6 +91,7 @@
               <div class="collapseHeadSub">Choose what happens when a trigger matches.</div>
             </div>
           </div>
+
           <div class="collapseBody open" id="actionsBody">
             <div class="row2 mt-0">
               <button class="btn" id="btnAddAction" type="button">Add action</button>
@@ -110,6 +111,7 @@
                 <button class="btn btn-primary" id="btnSave" type="button">Save</button>
               </div>
             </div>
+
             <div class="statusLine">
               <strong>Status:</strong> <span id="formStatus" class="muted">Ready.</span>
             </div>
@@ -139,6 +141,7 @@
             <label>Trigger name</label>
             <input class="condName" placeholder="Optional label, e.g. Front door motion" />
           </div>
+
           <div data-full>
             <label>Trigger type</label>
             <select class="condType">
@@ -160,6 +163,7 @@
               <label>Filter topics</label>
               <input class="topicSearch" placeholder="Filter by name or path" />
             </div>
+
             <div class="topicRefreshWrap">
               <label>&nbsp;</label>
               <button class="btn btnLoadTopics w-full" type="button">Refresh topics</button>
@@ -197,6 +201,7 @@
             <label>Action name</label>
             <input class="actionName" placeholder="Optional label, e.g. Create front door log event" />
           </div>
+
           <div data-full>
             <label>Action type</label>
             <select class="actionType">

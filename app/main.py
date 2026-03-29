@@ -15,7 +15,7 @@ from typing import Optional, Dict, Any, List
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from onvif import ONVIFCamera
@@ -130,9 +130,9 @@ def devices_page():
     return (STATIC_DIR / "devices.html").read_text(encoding="utf-8")
 
 
-@app.get("/events", response_class=HTMLResponse)
+@app.get("/events")
 def events_page():
-    return (STATIC_DIR / "events.html").read_text(encoding="utf-8")
+    return RedirectResponse(url="/actions", status_code=307)
 
 
 @app.get("/actions", response_class=HTMLResponse)

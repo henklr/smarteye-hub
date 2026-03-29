@@ -1,11 +1,56 @@
 const el = (id) => document.getElementById(id);
 
-let devices = [];
-let rules = [];
-let selectedRuleId = null;
-let isDirty = false;
-let suspendDirty = false;
-const topicCache = new Map();
+const state = {
+  devices: [],
+  rules: [],
+  selectedRuleId: null,
+  isDirty: false,
+  suspendDirty: false,
+  topicCache: new Map(),
+};
+
+const TRIGGER_DEFS = {
+  onvif_event: {
+    label: "ONVIF event",
+    needsTopic: true,
+    summarize(data) {
+      const device = deviceLabel(data.device_id);
+      if (data.name) return data.name;
+      if (data.topic) return `When ${device} emits ${data.topic}`;
+      return `When ${device} emits a selected ONVIF topic`;
+    },
+  },
+
+  device_offline: {
+    label: "Device offline",
+    needsTopic: false,
+    summarize(data) {
+      const device = deviceLabel(data.device_id);
+      if (data.name) return data.name;
+      return `When ${device} goes offline`;
+    },
+  },
+
+  device_back_online: {
+    label: "Device back online",
+    needsTopic: false,
+    summarize(data) {
+      const device = deviceLabel(data.device_id);
+      if (data.name) return data.name;
+      return `When ${device} comes back online`;
+    },
+  },
+};
+
+const ACTION_DEFS = {
+  create_log_event: {
+    label: "Create log event",
+    summarize(data) {
+      if (data.name) return data.name;
+      return "Create log event";
+    },
+  },
+};
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -25,11 +70,13 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     throw new Error((data && data.detail) ? data.detail : (txt || res.statusText));
   }
+
   return data;
 }
 
-function escapeHtml(s) {
-  return (s ?? "").toString()
+function escapeHtml(value) {
+  return (value ?? "")
+    .toString()
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -51,184 +98,108 @@ function setListStatus(message, isBad = false) {
 }
 
 function markDirty() {
-  if (suspendDirty) return;
-  isDirty = true;
+  if (state.suspendDirty) return;
+  state.isDirty = true;
   syncEditorMode();
 }
 
 function clearDirty() {
-  isDirty = false;
+  state.isDirty = false;
   syncEditorMode();
 }
 
 function syncEditorMode() {
   const title = el("formTitle");
   const mode = el("editorModeText");
+  const del = el("btnDelete");
 
-  if (title) title.textContent = selectedRuleId ? "Edit rule" : "New rule";
+  if (title) {
+    title.textContent = state.selectedRuleId ? "Edit rule" : "New rule";
+  }
 
   if (mode) {
-    if (selectedRuleId) {
-      mode.textContent = isDirty ? "Editing existing rule · unsaved changes." : "Editing existing rule.";
+    if (state.selectedRuleId) {
+      mode.textContent = state.isDirty
+        ? "Editing existing rule · unsaved changes."
+        : "Editing existing rule.";
     } else {
-      mode.textContent = isDirty ? "New rule · unsaved changes." : "Create a new rule.";
+      mode.textContent = state.isDirty
+        ? "New rule · unsaved changes."
+        : "Create a new rule.";
     }
   }
 
-  const del = el("btnDelete");
-  if (del) del.disabled = !selectedRuleId;
+  if (del) {
+    del.disabled = !state.selectedRuleId;
+  }
 }
 
 function syncRuleEnabledLabel() {
-  const label = el("ruleEnabledText");
   const input = el("ruleEnabled");
-  if (!label || !input) return;
+  const label = el("ruleEnabledText");
+  if (!input || !label) return;
   label.textContent = input.checked ? "Enabled" : "Disabled";
 }
 
 function deviceById(id) {
-  return devices.find((d) => d.id === id) || null;
+  return state.devices.find((d) => d.id === id) || null;
 }
 
 function deviceLabel(id) {
-  const d = deviceById(id);
-  return d ? d.name : (id || "Unknown device");
+  const device = deviceById(id);
+  if (device) return device.name;
+  return id || "Unknown device";
 }
 
 function deviceOptionsHtml(selected = "") {
-  return devices.map((d) => `
-    <option value="${escapeHtml(d.id)}" ${d.id === selected ? "selected" : ""}>
-      ${escapeHtml(d.name)}
-    </option>
-  `).join("");
+  const options = [
+    `<option value="">Select device</option>`,
+    ...state.devices.map((d) => `
+      <option value="${escapeHtml(d.id)}" ${d.id === selected ? "selected" : ""}>
+        ${escapeHtml(d.name)}
+      </option>
+    `),
+  ];
+
+  return options.join("");
 }
 
-function summarizeCondition(c) {
-  if (c?.name) return c.name;
-
-  const device = deviceLabel(c.device_id);
-
-  if (c.type === "onvif_event") {
-    return c.topic
-      ? `When ${device} emits ${c.topic}`
-      : `When ${device} emits a selected ONVIF topic`;
-  }
-  if (c.type === "device_offline") return `When ${device} goes offline`;
-  if (c.type === "device_back_online") return `When ${device} comes back online`;
-  return c.type || "Unknown trigger";
+function getTriggerDef(type) {
+  return TRIGGER_DEFS[type] || {
+    label: type || "Unknown trigger",
+    needsTopic: false,
+    summarize(data) {
+      return data?.name || data?.type || "Unknown trigger";
+    },
+  };
 }
 
-function summarizeAction(a) {
-  if (a?.name) return a.name;
-  if (a.type === "create_log_event") return "Create log event";
-  return a.type || "Unknown action";
+function getActionDef(type) {
+  return ACTION_DEFS[type] || {
+    label: type || "Unknown action",
+    summarize(data) {
+      return data?.name || data?.type || "Unknown action";
+    },
+  };
+}
+
+function summarizeCondition(condition) {
+  return getTriggerDef(condition?.type).summarize(condition || {});
+}
+
+function summarizeAction(action) {
+  return getActionDef(action?.type).summarize(action || {});
 }
 
 function ruleSentence(rule) {
-  const conds = (rule.conditions || []).map(summarizeCondition);
-  const acts = (rule.actions || []).map(summarizeAction);
-  const left = conds.length ? conds.join(" or ") : "When something happens";
-  const right = acts.length ? acts.join(" and ") : "do something";
+  const left = (rule.conditions || []).map(summarizeCondition).join(" or ") || "When something happens";
+  const right = (rule.actions || []).map(summarizeAction).join(" and ") || "do something";
   return `${left}, then ${right}.`;
 }
 
-function getConditionErrors(card) {
-  const type = card.querySelector(".condType").value;
-  const deviceId = card.querySelector(".condDevice").value;
-  const topic = card.dataset.topic || "";
-  const errors = [];
-
-  if (!deviceId) errors.push("Select a device.");
-  if (type === "onvif_event" && !topic) errors.push("Select an ONVIF topic.");
-  return errors;
-}
-
-function getActionErrors() {
-  return [];
-}
-
-function updateConditionCardUi(card) {
-  const title = card.querySelector(".itemTitle");
-  const name = card.querySelector(".condName")?.value.trim() || "";
-  const type = card.querySelector(".condType").value;
-  const deviceId = card.querySelector(".condDevice").value;
-  const topic = card.dataset.topic || "";
-  const preview = card.querySelector(".previewText");
-  const validation = card.querySelector(".validationText");
-  const errors = getConditionErrors(card);
-
-  const summary = summarizeCondition({
-    name,
-    type,
-    device_id: deviceId,
-    topic,
-  });
-
-  if (title) {
-    title.textContent = summary;
-  }
-
-  if (preview) {
-    preview.innerHTML = `Trigger: <strong>${escapeHtml(summary)}</strong>`;
-  }
-
-  card.classList.toggle("invalid", errors.length > 0);
-  if (validation) {
-    validation.classList.toggle("hidden", errors.length === 0);
-    validation.textContent = errors.join(" ");
-  }
-}
-
-function updateActionCardUi(card) {
-  const title = card.querySelector(".itemTitle");
-  const name = card.querySelector(".actionName")?.value.trim() || "";
-  const type = card.querySelector(".actionType").value;
-  const preview = card.querySelector(".previewText");
-  const validation = card.querySelector(".validationText");
-  const errors = getActionErrors(card);
-
-  const summary = summarizeAction({
-    name,
-    type,
-  });
-
-  if (title) {
-    title.textContent = summary;
-  }
-
-  if (preview) {
-    preview.innerHTML = `Action: <strong>${escapeHtml(summary)}</strong>`;
-  }
-
-  card.classList.toggle("invalid", errors.length > 0);
-  if (validation) {
-    validation.classList.toggle("hidden", errors.length === 0);
-    validation.textContent = errors.join(" ");
-  }
-}
-
-function refreshBuilderIndices() {
-  [...el("conditionsList").children].forEach((card) => updateConditionCardUi(card));
-  [...el("actionsList").children].forEach((card) => updateActionCardUi(card));
-}
-
-function bindDirtyTracking(node) {
-  node.querySelectorAll("input, select").forEach((field) => {
-    field.addEventListener("input", () => {
-      markDirty();
-      refreshBuilderIndices();
-    });
-    field.addEventListener("change", () => {
-      markDirty();
-      refreshBuilderIndices();
-    });
-  });
-}
-
-function syncConditionTopicUi(card) {
-  const typeSel = card.querySelector(".condType");
-  const picker = card.querySelector(".topicPicker");
-  if (picker) picker.classList.toggle("open", typeSel.value === "onvif_event");
+function confirmDiscardIfDirty() {
+  if (!state.isDirty) return true;
+  return window.confirm("You have unsaved changes. Discard them?");
 }
 
 function setItemCollapsed(card, open) {
@@ -264,27 +235,124 @@ function bindItemCollapse(card) {
   setItemCollapsed(card, true);
 }
 
+function getConditionErrors(card) {
+  const type = card.querySelector(".condType").value;
+  const deviceId = card.querySelector(".condDevice").value;
+  const topic = card.dataset.topic || "";
+  const def = getTriggerDef(type);
+  const errors = [];
+
+  if (!deviceId) errors.push("Select a device.");
+  if (def.needsTopic && !topic) errors.push("Select an ONVIF topic.");
+
+  return errors;
+}
+
+function getActionErrors(_card) {
+  return [];
+}
+
+function createConditionPayloadFromCard(card) {
+  const type = card.querySelector(".condType").value;
+  const name = card.querySelector(".condName").value.trim();
+  const device_id = card.querySelector(".condDevice").value;
+  const out = { type, device_id };
+
+  if (name) out.name = name;
+  if (getTriggerDef(type).needsTopic) {
+    out.topic = card.dataset.topic || "";
+  }
+
+  return out;
+}
+
+function createActionPayloadFromCard(card) {
+  const type = card.querySelector(".actionType").value;
+  const name = card.querySelector(".actionName").value.trim();
+  const out = { type };
+
+  if (name) out.name = name;
+  return out;
+}
+
+function updateConditionCardUi(card) {
+  const payload = createConditionPayloadFromCard(card);
+  const title = card.querySelector(".itemTitle");
+  const preview = card.querySelector(".previewText");
+  const validation = card.querySelector(".validationText");
+  const errors = getConditionErrors(card);
+  const summary = summarizeCondition(payload);
+
+  if (title) title.textContent = summary;
+  if (preview) preview.innerHTML = `Trigger: <strong>${escapeHtml(summary)}</strong>`;
+
+  card.classList.toggle("invalid", errors.length > 0);
+
+  if (validation) {
+    validation.classList.toggle("hidden", errors.length === 0);
+    validation.textContent = errors.join(" ");
+  }
+}
+
+function updateActionCardUi(card) {
+  const payload = createActionPayloadFromCard(card);
+  const title = card.querySelector(".itemTitle");
+  const preview = card.querySelector(".previewText");
+  const validation = card.querySelector(".validationText");
+  const errors = getActionErrors(card);
+  const summary = summarizeAction(payload);
+
+  if (title) title.textContent = summary;
+  if (preview) preview.innerHTML = `Action: <strong>${escapeHtml(summary)}</strong>`;
+
+  card.classList.toggle("invalid", errors.length > 0);
+
+  if (validation) {
+    validation.classList.toggle("hidden", errors.length === 0);
+    validation.textContent = errors.join(" ");
+  }
+}
+
+function refreshBuilderCards() {
+  [...el("conditionsList").children].forEach(updateConditionCardUi);
+  [...el("actionsList").children].forEach(updateActionCardUi);
+}
+
+function syncConditionTopicUi(card) {
+  const type = card.querySelector(".condType").value;
+  const picker = card.querySelector(".topicPicker");
+  if (!picker) return;
+
+  picker.classList.toggle("open", getTriggerDef(type).needsTopic);
+}
+
 async function loadTopics(deviceId, force = false) {
   if (!deviceId) return [];
-  if (!force && topicCache.has(deviceId)) return topicCache.get(deviceId);
+  if (!force && state.topicCache.has(deviceId)) {
+    return state.topicCache.get(deviceId);
+  }
 
   const data = await api(`/api/events/properties/${encodeURIComponent(deviceId)}`);
-  const items = data.topics || [];
-  topicCache.set(deviceId, items);
-  return items;
+  const topics = Array.isArray(data?.topics) ? data.topics : [];
+  state.topicCache.set(deviceId, topics);
+  return topics;
 }
 
 async function renderTopicsInto(card, opts = {}) {
   const typeSel = card.querySelector(".condType");
   const deviceSel = card.querySelector(".condDevice");
-  const list = card.querySelector(".topicList");
   const search = card.querySelector(".topicSearch");
+  const list = card.querySelector(".topicList");
   const selectedText = card.querySelector(".selectedTopicText");
   const countText = card.querySelector(".topicCountText");
 
-  if (!typeSel || !deviceSel || !list || !search || !selectedText || !countText) return;
+  if (!typeSel || !deviceSel || !search || !list || !selectedText || !countText) {
+    return;
+  }
 
-  if (typeSel.value !== "onvif_event") {
+  const def = getTriggerDef(typeSel.value);
+
+  if (!def.needsTopic) {
     list.innerHTML = "";
     selectedText.textContent = "No topic is needed for this trigger.";
     countText.textContent = "";
@@ -292,7 +360,17 @@ async function renderTopicsInto(card, opts = {}) {
     return;
   }
 
+  const deviceId = deviceSel.value;
   const selectedTopic = card.dataset.topic || "";
+
+  if (!deviceId) {
+    list.innerHTML = `<div class="emptyState">Select a device first.</div>`;
+    selectedText.textContent = "Select an ONVIF topic to trigger this rule.";
+    countText.textContent = "";
+    updateConditionCardUi(card);
+    return;
+  }
+
   selectedText.innerHTML = selectedTopic
     ? `Selected topic: <strong>${escapeHtml(selectedTopic)}</strong>`
     : `Select an ONVIF topic to trigger this rule.`;
@@ -300,13 +378,13 @@ async function renderTopicsInto(card, opts = {}) {
   list.innerHTML = `<div class="emptyState">Loading topics…</div>`;
 
   try {
-    const topics = await loadTopics(deviceSel.value, !!opts.force);
+    const topics = await loadTopics(deviceId, !!opts.force);
     const q = (search.value || "").trim().toLowerCase();
 
     const filtered = q
-      ? topics.filter((t) =>
-          (t.path || "").toLowerCase().includes(q) ||
-          (t.name || "").toLowerCase().includes(q)
+      ? topics.filter((topic) =>
+          (topic.path || "").toLowerCase().includes(q) ||
+          (topic.name || "").toLowerCase().includes(q)
         )
       : topics;
 
@@ -320,10 +398,11 @@ async function renderTopicsInto(card, opts = {}) {
       return;
     }
 
-    list.innerHTML = filtered.map((t) => {
-      const path = t.path || "";
-      const name = t.name || t.path || "Unnamed topic";
+    list.innerHTML = filtered.map((topic) => {
+      const path = topic.path || "";
+      const name = topic.name || topic.path || "Unnamed topic";
       const active = path === selectedTopic;
+
       return `
         <div class="topicItem ${active ? "active" : ""}" data-topic="${escapeHtml(path)}">
           <div class="topicName">${escapeHtml(name)}</div>
@@ -333,121 +412,128 @@ async function renderTopicsInto(card, opts = {}) {
     }).join("");
 
     list.querySelectorAll(".topicItem").forEach((node) => {
-      node.addEventListener("click", () => {
+      node.addEventListener("click", async () => {
         card.dataset.topic = node.dataset.topic || "";
-        renderTopicsInto(card);
         markDirty();
+        await renderTopicsInto(card);
+        updateConditionCardUi(card);
       });
     });
-  } catch (e) {
+  } catch (err) {
     countText.textContent = "";
-    list.innerHTML = `<div class="emptyState">Failed to load topics: ${escapeHtml(e.message || String(e))}</div>`;
+    list.innerHTML = `<div class="emptyState">Failed to load topics: ${escapeHtml(err.message || String(err))}</div>`;
   }
 
   updateConditionCardUi(card);
 }
 
-function createConditionPayloadFromCard(card) {
-  const type = card.querySelector(".condType").value;
-  const device_id = card.querySelector(".condDevice").value;
-  const name = card.querySelector(".condName")?.value.trim() || "";
+function bindFieldDirty(card, selector, fn = null) {
+  const node = card.querySelector(selector);
+  if (!node) return;
 
-  const out = { type, device_id };
-  if (name) out.name = name;
-  if (type === "onvif_event") out.topic = card.dataset.topic || "";
-  return out;
+  node.addEventListener("input", async () => {
+    markDirty();
+    if (fn) await fn();
+    refreshBuilderCards();
+  });
+
+  node.addEventListener("change", async () => {
+    markDirty();
+    if (fn) await fn();
+    refreshBuilderCards();
+  });
 }
 
-function createActionPayloadFromCard(card) {
-  const type = card.querySelector(".actionType").value;
-  const name = card.querySelector(".actionName")?.value.trim() || "";
-
-  const out = { type };
-  if (name) out.name = name;
-  return out;
+function ensureAtLeastOneRow() {
+  if (!el("conditionsList").children.length) addConditionRow();
+  if (!el("actionsList").children.length) addActionRow();
 }
 
 function addConditionRow(data = {}) {
   const node = el("conditionTemplate").content.firstElementChild.cloneNode(true);
-  const deviceSelect = node.querySelector(".condDevice");
-  const typeSelect = node.querySelector(".condType");
   const condName = node.querySelector(".condName");
+  const condType = node.querySelector(".condType");
+  const condDevice = node.querySelector(".condDevice");
+  const btnRemove = node.querySelector(".btnRemoveCondition");
+  const btnLoadTopics = node.querySelector(".btnLoadTopics");
+  const topicSearch = node.querySelector(".topicSearch");
 
-  if (condName) condName.value = data.name || "";
-
-  deviceSelect.innerHTML = deviceOptionsHtml(data.device_id || devices[0]?.id || "");
-  typeSelect.value = data.type || "onvif_event";
+  condName.value = data.name || "";
+  condType.value = data.type || "onvif_event";
+  condDevice.innerHTML = deviceOptionsHtml(data.device_id || "");
   node.dataset.topic = data.topic || "";
 
   bindItemCollapse(node);
 
-  node.querySelector(".btnRemoveCondition").addEventListener("click", (ev) => {
+  btnRemove.addEventListener("click", (ev) => {
     ev.stopPropagation();
     node.remove();
-    refreshBuilderIndices();
+    ensureAtLeastOneRow();
+    refreshBuilderCards();
     markDirty();
-    if (!el("conditionsList").children.length) addConditionRow();
   });
 
-  typeSelect.addEventListener("change", async () => {
+  bindFieldDirty(node, ".condName");
+  bindFieldDirty(node, ".condType", async () => {
+    const def = getTriggerDef(condType.value);
+    if (!def.needsTopic) {
+      node.dataset.topic = "";
+    }
     syncConditionTopicUi(node);
-    if (typeSelect.value !== "onvif_event") node.dataset.topic = "";
     await renderTopicsInto(node);
-    refreshBuilderIndices();
   });
 
-  deviceSelect.addEventListener("change", async () => {
-    if (typeSelect.value === "onvif_event") {
+  bindFieldDirty(node, ".condDevice", async () => {
+    const def = getTriggerDef(condType.value);
+    if (def.needsTopic) {
       const hadTopic = !!node.dataset.topic;
       node.dataset.topic = "";
       await renderTopicsInto(node);
-      if (hadTopic) setStatus("Topic reset because the trigger device changed.");
-    } else {
-      refreshBuilderIndices();
+      if (hadTopic) {
+        setStatus("Topic reset because the trigger device changed.");
+      }
     }
   });
 
-  node.querySelector(".topicSearch").addEventListener("input", async () => {
+  topicSearch.addEventListener("input", async () => {
     await renderTopicsInto(node);
   });
 
-  node.querySelector(".btnLoadTopics").addEventListener("click", async () => {
+  btnLoadTopics.addEventListener("click", async () => {
     await renderTopicsInto(node, { force: true });
     setStatus("Device topics refreshed.");
   });
 
-  bindDirtyTracking(node);
   syncConditionTopicUi(node);
   el("conditionsList").appendChild(node);
   renderTopicsInto(node);
-  refreshBuilderIndices();
+  updateConditionCardUi(node);
 }
 
 function addActionRow(data = {}) {
   const node = el("actionTemplate").content.firstElementChild.cloneNode(true);
   const actionName = node.querySelector(".actionName");
   const actionType = node.querySelector(".actionType");
+  const btnRemove = node.querySelector(".btnRemoveAction");
 
-  if (actionName) actionName.value = data.name || "";
-  if (actionType) actionType.value = data.type || "create_log_event";
+  actionName.value = data.name || "";
+  actionType.value = data.type || "create_log_event";
 
   bindItemCollapse(node);
 
-  node.querySelector(".btnRemoveAction").addEventListener("click", (ev) => {
+  btnRemove.addEventListener("click", (ev) => {
     ev.stopPropagation();
     node.remove();
-    refreshBuilderIndices();
+    ensureAtLeastOneRow();
+    refreshBuilderCards();
     markDirty();
-    if (!el("actionsList").children.length) addActionRow();
   });
 
-  actionType?.addEventListener("change", () => {
-    refreshBuilderIndices();
-  });
+  bindFieldDirty(node, ".actionName");
+  bindFieldDirty(node, ".actionType");
 
-  bindDirtyTracking(node);
   el("actionsList").appendChild(node);
-  refreshBuilderIndices();
+  updateActionCardUi(node);
 }
 
 function getEditorPayload() {
@@ -455,6 +541,7 @@ function getEditorPayload() {
   const enabled = el("ruleEnabled").checked;
   const conditions = [...el("conditionsList").children].map(createConditionPayloadFromCard);
   const actions = [...el("actionsList").children].map(createActionPayloadFromCard);
+
   return { name, enabled, conditions, actions };
 }
 
@@ -465,42 +552,51 @@ function validatePayload(payload) {
   if (!payload.conditions.length) errors.push("Add at least one trigger.");
   if (!payload.actions.length) errors.push("Add at least one action.");
 
-  for (const c of payload.conditions) {
-    if (!c.device_id) errors.push("Each trigger must have a device.");
-    if (c.type === "onvif_event" && !c.topic) errors.push("Each ONVIF event trigger must have a topic.");
+  for (const condition of payload.conditions) {
+    if (!condition.device_id) errors.push("Each trigger must have a device.");
+
+    const def = getTriggerDef(condition.type);
+    if (def.needsTopic && !condition.topic) {
+      errors.push("Each ONVIF event trigger must have a topic.");
+    }
   }
 
   return errors;
 }
 
-function confirmDiscardIfDirty() {
-  if (!isDirty) return true;
-  return window.confirm("You have unsaved changes. Discard them?");
-}
-
 function applyRuleToEditor(rule) {
-  suspendDirty = true;
+  state.suspendDirty = true;
 
-  selectedRuleId = rule?.id || null;
+  state.selectedRuleId = rule?.id || null;
+
   el("ruleName").value = rule?.name || "";
-  el("ruleEnabled").checked = !!rule?.enabled;
+  el("ruleEnabled").checked = rule ? !!rule.enabled : true;
   syncRuleEnabledLabel();
 
   el("conditionsList").innerHTML = "";
   el("actionsList").innerHTML = "";
 
-  (rule?.conditions || []).forEach(addConditionRow);
-  (rule?.actions || []).forEach(addActionRow);
+  const conditions = Array.isArray(rule?.conditions) ? rule.conditions : [];
+  const actions = Array.isArray(rule?.actions) ? rule.actions : [];
 
-  if (!rule?.conditions?.length) addConditionRow();
-  if (!rule?.actions?.length) addActionRow();
+  if (conditions.length) {
+    conditions.forEach(addConditionRow);
+  } else {
+    addConditionRow();
+  }
 
-  suspendDirty = false;
+  if (actions.length) {
+    actions.forEach(addActionRow);
+  } else {
+    addActionRow();
+  }
+
+  state.suspendDirty = false;
   clearDirty();
+  refreshBuilderCards();
   renderRules();
-  refreshBuilderIndices();
 
-  if (rule && rule.id) {
+  if (rule?.id) {
     setStatus(`Editing "${rule.name}".`);
   } else {
     setStatus("Ready.");
@@ -518,7 +614,10 @@ function fillEditor(rule) {
 }
 
 function duplicateSelectedRule() {
-  const source = selectedRuleId ? rules.find((r) => r.id === selectedRuleId) : null;
+  const source = state.selectedRuleId
+    ? state.rules.find((rule) => rule.id === state.selectedRuleId)
+    : null;
+
   if (!source) {
     setStatus("Select a rule to duplicate.", true);
     return;
@@ -533,8 +632,8 @@ function duplicateSelectedRule() {
   copy.name = `${source.name} copy`;
 
   applyRuleToEditor(copy);
-  selectedRuleId = null;
-  isDirty = true;
+  state.selectedRuleId = null;
+  state.isDirty = true;
   syncEditorMode();
   renderRules();
   setStatus("Rule duplicated into a new draft.");
@@ -544,18 +643,18 @@ function filterRules() {
   const q = el("rulesSearch").value.trim().toLowerCase();
   const status = el("rulesFilterStatus").value;
 
-  return rules.filter((r) => {
-    if (status === "enabled" && !r.enabled) return false;
-    if (status === "disabled" && r.enabled) return false;
+  return state.rules.filter((rule) => {
+    if (status === "enabled" && !rule.enabled) return false;
+    if (status === "disabled" && rule.enabled) return false;
 
     if (!q) return true;
 
     const haystack = [
-      r.name,
-      r.id,
-      ...(r.conditions || []).map((c) => JSON.stringify(c)),
-      ...(r.actions || []).map((a) => JSON.stringify(a)),
-      ruleSentence(r),
+      rule.name || "",
+      rule.id || "",
+      ruleSentence(rule),
+      ...(rule.conditions || []).map((c) => JSON.stringify(c)),
+      ...(rule.actions || []).map((a) => JSON.stringify(a)),
     ].join(" ").toLowerCase();
 
     return haystack.includes(q);
@@ -564,50 +663,50 @@ function filterRules() {
 
 function renderRules() {
   const box = el("rulesList");
-  const items = filterRules();
+  const visibleRules = filterRules();
 
-  if (!rules.length) {
+  if (!state.rules.length) {
     box.innerHTML = `
       <div class="emptyState">
-        No rules yet. Create your first automation for device state changes, ONVIF events, or log events.
+        No rules yet. Create your first automation for device state changes or ONVIF events.
       </div>
     `;
     setListStatus("No rules saved yet.");
     return;
   }
 
-  if (!items.length) {
+  if (!visibleRules.length) {
     box.innerHTML = `<div class="emptyState">No matching rules.</div>`;
     setListStatus("No rules match the current filter.");
     return;
   }
 
-  box.innerHTML = items.map((r) => {
-    const active = r.id === selectedRuleId;
+  box.innerHTML = visibleRules.map((rule) => {
+    const active = rule.id === state.selectedRuleId;
 
-    const conditionTags = (r.conditions || []).slice(0, 3).map((c) => {
-      if (c.type === "onvif_event") return `<span class="miniTag">ONVIF</span>`;
-      if (c.type === "device_offline") return `<span class="miniTag">Offline</span>`;
-      if (c.type === "device_back_online") return `<span class="miniTag">Back online</span>`;
-      return `<span class="miniTag">${escapeHtml(c.type || "Trigger")}</span>`;
+    const conditionTags = (rule.conditions || []).slice(0, 3).map((condition) => {
+      if (condition.type === "onvif_event") return `<span class="miniTag">ONVIF</span>`;
+      if (condition.type === "device_offline") return `<span class="miniTag">Offline</span>`;
+      if (condition.type === "device_back_online") return `<span class="miniTag">Back online</span>`;
+      return `<span class="miniTag">${escapeHtml(condition.type || "Trigger")}</span>`;
     }).join("");
 
-    const actionTags = (r.actions || []).slice(0, 3).map((a) => {
-      if (a.type === "create_log_event") return `<span class="miniTag">Log event</span>`;
-      return `<span class="miniTag">${escapeHtml(a.type || "Action")}</span>`;
+    const actionTags = (rule.actions || []).slice(0, 3).map((action) => {
+      if (action.type === "create_log_event") return `<span class="miniTag">Log event</span>`;
+      return `<span class="miniTag">${escapeHtml(action.type || "Action")}</span>`;
     }).join("");
 
     return `
-      <div class="ruleItem ${active ? "active" : ""}" data-id="${escapeHtml(r.id)}">
+      <div class="ruleItem ${active ? "active" : ""}" data-id="${escapeHtml(rule.id)}">
         <div class="ruleTop">
           <div>
-            <div class="ruleName">${escapeHtml(r.name || r.id)}</div>
-            <div class="ruleSummary">${escapeHtml(ruleSentence(r))}</div>
+            <div class="ruleName">${escapeHtml(rule.name || rule.id)}</div>
+            <div class="ruleSummary">${escapeHtml(ruleSentence(rule))}</div>
           </div>
 
           <label class="statusChip jsRuleToggleWrap" style="margin:0; cursor:pointer;">
-            <input class="jsRuleToggle" type="checkbox" ${r.enabled ? "checked" : ""} style="width:auto; margin:0;" />
-            <span>${r.enabled ? "Enabled" : "Disabled"}</span>
+            <input class="jsRuleToggle" type="checkbox" ${rule.enabled ? "checked" : ""} style="width:auto; margin:0;" />
+            <span>${rule.enabled ? "Enabled" : "Disabled"}</span>
           </label>
         </div>
 
@@ -620,8 +719,8 @@ function renderRules() {
   }).join("");
 
   box.querySelectorAll(".ruleItem").forEach((card) => {
-    const id = card.dataset.id;
-    const rule = rules.find((r) => r.id === id);
+    const ruleId = card.dataset.id;
+    const rule = state.rules.find((item) => item.id === ruleId);
     if (!rule) return;
 
     const toggle = card.querySelector(".jsRuleToggle");
@@ -638,62 +737,66 @@ function renderRules() {
 
     toggle.addEventListener("change", async () => {
       try {
-        const payload = {
-          name: rule.name,
-          enabled: toggle.checked,
-          conditions: rule.conditions || [],
-          actions: rule.actions || [],
-        };
-
         await api(`/api/actions/${encodeURIComponent(rule.id)}`, {
           method: "PUT",
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            name: rule.name,
+            enabled: toggle.checked,
+            conditions: rule.conditions || [],
+            actions: rule.actions || [],
+          }),
         });
 
         await refreshRules();
 
-        if (selectedRuleId === rule.id) {
-          const updated = rules.find((x) => x.id === rule.id);
-          if (updated) applyRuleToEditor(updated);
+        const updated = state.rules.find((item) => item.id === rule.id);
+
+        if (
+          updated &&
+          state.selectedRuleId === updated.id &&
+          !state.isDirty
+        ) {
+          applyRuleToEditor(updated);
         }
 
-        setListStatus(`Rule ${payload.enabled ? "enabled" : "disabled"}.`);
-      } catch (e) {
+        setListStatus(`Rule ${toggle.checked ? "enabled" : "disabled"}.`);
+      } catch (err) {
         toggle.checked = !toggle.checked;
-        if (toggleLabel) toggleLabel.textContent = toggle.checked ? "Enabled" : "Disabled";
-        setListStatus(e.message || String(e), true);
+        if (toggleLabel) {
+          toggleLabel.textContent = toggle.checked ? "Enabled" : "Disabled";
+        }
+        setListStatus(err.message || String(err), true);
       }
     });
   });
 
-  setListStatus(`${items.length} rule${items.length === 1 ? "" : "s"} shown.`);
+  setListStatus(`${visibleRules.length} rule${visibleRules.length === 1 ? "" : "s"} shown.`);
 }
 
 async function refreshRules() {
   const data = await api("/api/actions");
-  rules = data.items || [];
+  state.rules = Array.isArray(data?.items) ? data.items : [];
   renderRules();
 }
 
 async function loadDevices() {
   const data = await api("/api/devices");
-  devices = data.devices || [];
-  if (!devices.length) throw new Error("No devices found. Add devices first.");
+  state.devices = Array.isArray(data?.devices) ? data.devices : [];
 }
 
 async function saveRule() {
   const payload = getEditorPayload();
   const errors = validatePayload(payload);
 
-  refreshBuilderIndices();
+  refreshBuilderCards();
 
   if (errors.length) {
     setStatus(errors[0], true);
     throw new Error(errors[0]);
   }
 
-  const out = selectedRuleId
-    ? await api(`/api/actions/${encodeURIComponent(selectedRuleId)}`, {
+  const out = state.selectedRuleId
+    ? await api(`/api/actions/${encodeURIComponent(state.selectedRuleId)}`, {
         method: "PUT",
         body: JSON.stringify(payload),
       })
@@ -703,79 +806,98 @@ async function saveRule() {
       });
 
   await refreshRules();
-  applyRuleToEditor(out.item);
+
+  const saved = out?.item || out;
+  const actualRule = saved?.id
+    ? state.rules.find((rule) => rule.id === saved.id) || saved
+    : saved;
+
+  applyRuleToEditor(actualRule);
   clearDirty();
   setStatus("Rule saved.");
 }
 
 async function deleteSelected() {
-  if (!selectedRuleId) return;
+  if (!state.selectedRuleId) return;
 
-  await api(`/api/actions/${encodeURIComponent(selectedRuleId)}`, { method: "DELETE" });
+  await api(`/api/actions/${encodeURIComponent(state.selectedRuleId)}`, {
+    method: "DELETE",
+  });
+
   await refreshRules();
   applyRuleToEditor(null);
   setStatus("Rule deleted.");
 }
 
+function bindGlobalEvents() {
+  el("btnAddCondition").addEventListener("click", () => {
+    addConditionRow();
+    markDirty();
+  });
+
+  el("btnAddAction").addEventListener("click", () => {
+    addActionRow();
+    markDirty();
+  });
+
+  el("btnNew").addEventListener("click", () => {
+    clearEditor(false);
+  });
+
+  el("btnSave").addEventListener("click", async () => {
+    try {
+      await saveRule();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+
+  el("btnDelete").addEventListener("click", async () => {
+    if (!state.selectedRuleId) return;
+    if (!window.confirm("Delete the selected rule?")) return;
+
+    try {
+      await deleteSelected();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+
+  el("btnDuplicate").addEventListener("click", duplicateSelectedRule);
+
+  el("ruleName").addEventListener("input", () => {
+    markDirty();
+  });
+
+  el("ruleEnabled").addEventListener("change", () => {
+    syncRuleEnabledLabel();
+    markDirty();
+  });
+
+  el("rulesSearch").addEventListener("input", renderRules);
+  el("rulesFilterStatus").addEventListener("change", renderRules);
+
+  window.addEventListener("beforeunload", (ev) => {
+    if (!state.isDirty) return;
+    ev.preventDefault();
+    ev.returnValue = "";
+  });
+}
+
 async function init() {
+  bindGlobalEvents();
+  syncRuleEnabledLabel();
+  syncEditorMode();
+
   try {
     await loadDevices();
     await refreshRules();
     applyRuleToEditor(null);
-    syncRuleEnabledLabel();
-    syncEditorMode();
-  } catch (e) {
-    setStatus(e.message || String(e), true);
-    setListStatus(e.message || String(e), true);
+  } catch (err) {
+    setStatus(err.message || String(err), true);
+    setListStatus(err.message || String(err), true);
+    applyRuleToEditor(null);
   }
 }
-
-window.addEventListener("beforeunload", (e) => {
-  if (!isDirty) return;
-  e.preventDefault();
-  e.returnValue = "";
-});
-
-el("btnAddCondition").addEventListener("click", () => {
-  addConditionRow();
-  markDirty();
-});
-
-el("btnAddAction").addEventListener("click", () => {
-  addActionRow();
-  markDirty();
-});
-
-el("btnNew").addEventListener("click", () => clearEditor(false));
-
-el("btnSave").addEventListener("click", async () => {
-  try {
-    await saveRule();
-  } catch (e) {
-    setStatus(e.message || String(e), true);
-  }
-});
-
-el("btnDelete").addEventListener("click", async () => {
-  if (!selectedRuleId) return;
-  if (!window.confirm("Delete the selected rule?")) return;
-
-  try {
-    await deleteSelected();
-  } catch (e) {
-    setStatus(e.message || String(e), true);
-  }
-});
-
-el("btnDuplicate").addEventListener("click", duplicateSelectedRule);
-
-el("ruleName").addEventListener("input", markDirty);
-el("ruleEnabled").addEventListener("change", () => {
-  syncRuleEnabledLabel();
-  markDirty();
-});
-
-el("rulesSearch").addEventListener("input", renderRules);
-el("rulesFilterStatus").addEventListener("change", renderRules);
 
 init();
