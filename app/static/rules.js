@@ -44,15 +44,15 @@ const TRIGGER_DEFS = {
 
 const ACTION_DEFS = {
   activate_output_relay: {
-    label: "Activate output relay",
+    label: "Activate local output relay",
     summarize(data) {
       if (data.name) return data.name;
-      if (data.mode === "on") return "Activate output relay · turn on";
-      if (data.mode === "off") return "Activate output relay · turn off";
+      if (data.mode === "on") return "Turn on local output relay";
+      if (data.mode === "off") return "Turn off local output relay";
       if (data.mode === "pulse") {
-        return `Activate output relay · pulse ${data.activation_seconds ?? "?"}s`;
+        return `Activate local output relay for ${data.activation_seconds ?? "?"}s`;
       }
-      return "Activate output relay";
+      return "Activate local output relay";
     },
   },
 };
@@ -740,18 +740,6 @@ function renderRules() {
   box.innerHTML = visibleRules.map((rule) => {
     const active = rule.id === state.selectedRuleId;
 
-    const conditionTags = (rule.conditions || []).slice(0, 3).map((condition) => {
-      if (condition.type === "onvif_event") return `<span class="miniTag">ONVIF</span>`;
-      if (condition.type === "device_offline") return `<span class="miniTag">Offline</span>`;
-      if (condition.type === "device_back_online") return `<span class="miniTag">Back online</span>`;
-      return `<span class="miniTag">${escapeHtml(condition.type || "Trigger")}</span>`;
-    }).join("");
-
-    const actionTags = (rule.actions || []).slice(0, 3).map((action) => {
-      if (action.type === "activate_output_relay") return `<span class="miniTag">Relay</span>`;
-      return `<span class="miniTag">${escapeHtml(action.type || "Action")}</span>`;
-    }).join("");
-
     return `
       <div class="ruleItem ${active ? "active" : ""}" data-id="${escapeHtml(rule.id)}">
         <div class="ruleTop">
@@ -764,11 +752,6 @@ function renderRules() {
             <input class="jsRuleToggle" type="checkbox" ${rule.enabled ? "checked" : ""} style="width:auto; margin:0;" />
             <span>${rule.enabled ? "Enabled" : "Disabled"}</span>
           </label>
-        </div>
-
-        <div class="ruleMeta">
-          ${conditionTags}
-          ${actionTags}
         </div>
       </div>
     `;
