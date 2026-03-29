@@ -14,7 +14,7 @@ import base64
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -47,6 +47,8 @@ EVENT_DEBUG = str(os.getenv("EVENT_DEBUG", "1")).strip().lower() in {"1", "true"
 
 STREAM_STALE_SEC = float(os.getenv("STREAM_STALE_SEC", "8"))
 PATH_PROGRESS_POLL_SEC = float(os.getenv("PATH_PROGRESS_POLL_SEC", "1.0"))
+
+_VALID_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 
 
 def _dump(model) -> dict:
@@ -205,8 +207,10 @@ class PTZMoveRequest(BaseModel):
 class RuleConditionModel(BaseModel):
     name: Optional[str] = None
     type: str = Field(..., min_length=1)
-    device_id: str = Field(..., min_length=1)
+    device_id: Optional[str] = None
     topic: Optional[str] = None
+    method: Optional[str] = None
+    path: Optional[str] = None
 
 
 class RuleActionModel(BaseModel):
@@ -215,7 +219,12 @@ class RuleActionModel(BaseModel):
     mode: Optional[str] = None
     activation_seconds: Optional[float] = None
     seconds: Optional[float] = None
-    
+    method: Optional[str] = None
+    url: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
+    body: Optional[str] = None
+    timeout_seconds: Optional[float] = None
+
 
 class RuleIn(BaseModel):
     name: str = Field(..., min_length=1)
@@ -248,6 +257,50 @@ def _normalize_allow_topic(s: Optional[str]) -> str:
         if p:
             cleaned.append(p)
     return "/".join(cleaned)
+
+
+def _normalize_http_method(value: Optional[str], allow_any: bool = False) -> str:
+    method = str(value or "").strip().upper()
+    if not method:
+        return "ANY" if allow_any else ""
+
+    if allow_any and method == "ANY":
+        return "ANY"
+
+    if method not in _VALID_HTTP_METHODS:
+        return ""
+
+    return method
+
+
+def _normalize_http_path(value: Optional[str]) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+
+    raw = raw.split("?", 1)[0].strip()
+
+    if not raw.startswith("/"):
+        raw = "/" + raw
+
+    parts = [p for p in raw.split("/") if p]
+    return "/" + "/".join(parts) if parts else "/"
+
+
+def _normalize_http_headers(value: Any) -> Dict[str, str]:
+    if value is None:
+        return {}
+
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=400, detail="HTTP headers must be an object")
+
+    out: Dict[str, str] = {}
+    for k, v in value.items():
+        key = str(k or "").strip()
+        if not key:
+            continue
+        out[key] = str(v if v is not None else "")
+    return out
 
 
 def _normalize_device_dict(d: dict) -> dict:
@@ -332,26 +385,40 @@ def _sanitize_loaded_rule(item: dict) -> Optional[dict]:
 
         cname = str(c.get("name") or "").strip() or None
         ctype = str(c.get("type") or "").strip()
-        did = str(c.get("device_id") or "").strip()
 
-        if ctype not in {"onvif_event", "device_offline", "device_back_online"}:
-            continue
-        if not did:
-            continue
-
-        out = {
-            "name": cname,
-            "type": ctype,
-            "device_id": did,
-        }
-
-        if ctype == "onvif_event":
-            topic = _normalize_allow_topic(c.get("topic"))
-            if not topic:
+        if ctype in {"onvif_event", "device_offline", "device_back_online"}:
+            did = str(c.get("device_id") or "").strip()
+            if not did:
                 continue
-            out["topic"] = topic
 
-        conditions.append(out)
+            out = {
+                "name": cname,
+                "type": ctype,
+                "device_id": did,
+            }
+
+            if ctype == "onvif_event":
+                topic = _normalize_allow_topic(c.get("topic"))
+                if not topic:
+                    continue
+                out["topic"] = topic
+
+            conditions.append(out)
+            continue
+
+        if ctype == "incoming_http_request":
+            method = _normalize_http_method(c.get("method"), allow_any=True) or "ANY"
+            path = _normalize_http_path(c.get("path"))
+            if not path:
+                continue
+
+            conditions.append({
+                "name": cname,
+                "type": ctype,
+                "method": method,
+                "path": path,
+            })
+            continue
 
     if not conditions:
         return None
@@ -402,7 +469,34 @@ def _sanitize_loaded_rule(item: dict) -> Optional[dict]:
                 "seconds": seconds,
             })
             continue
-        
+
+        if atype == "send_http_request":
+            method = _normalize_http_method(a.get("method"), allow_any=False)
+            url = str(a.get("url") or "").strip()
+            if not method or not url:
+                continue
+
+            try:
+                headers = _normalize_http_headers(a.get("headers"))
+            except Exception:
+                continue
+
+            out = {
+                "name": aname,
+                "type": atype,
+                "method": method,
+                "url": url,
+                "headers": headers,
+                "body": None if a.get("body") is None else str(a.get("body")),
+                "timeout_seconds": float(a.get("timeout_seconds") or 10.0),
+            }
+
+            if out["timeout_seconds"] <= 0:
+                out["timeout_seconds"] = 10.0
+
+            actions.append(out)
+            continue
+
     created_at = str(item.get("created_at") or _utc_now_iso())
     updated_at = str(item.get("updated_at") or created_at)
 
@@ -444,28 +538,44 @@ def _save_rules(items: List[dict]) -> None:
 def _normalize_rule_condition(c: dict) -> dict:
     cname = (c.get("name") or "").strip()
     ctype = (c.get("type") or "").strip()
-    did = (c.get("device_id") or "").strip()
-    topic = _normalize_allow_topic(c.get("topic")) if ctype == "onvif_event" else None
 
-    if ctype not in {"onvif_event", "device_offline", "device_back_online"}:
-        raise HTTPException(status_code=400, detail=f"Unsupported condition type: {ctype}")
-    if not did:
-        raise HTTPException(status_code=400, detail="Condition device_id is required")
+    if ctype in {"onvif_event", "device_offline", "device_back_online"}:
+        did = (c.get("device_id") or "").strip()
+        topic = _normalize_allow_topic(c.get("topic")) if ctype == "onvif_event" else None
 
-    _get_device(did)
+        if not did:
+            raise HTTPException(status_code=400, detail="Condition device_id is required")
 
-    out = {
-        "name": cname or None,
-        "type": ctype,
-        "device_id": did,
-    }
+        _get_device(did)
 
-    if ctype == "onvif_event":
-        if not topic:
-            raise HTTPException(status_code=400, detail="ONVIF event condition requires topic")
-        out["topic"] = topic
+        out = {
+            "name": cname or None,
+            "type": ctype,
+            "device_id": did,
+        }
 
-    return out
+        if ctype == "onvif_event":
+            if not topic:
+                raise HTTPException(status_code=400, detail="ONVIF event condition requires topic")
+            out["topic"] = topic
+
+        return out
+
+    if ctype == "incoming_http_request":
+        method = _normalize_http_method(c.get("method"), allow_any=True) or "ANY"
+        path = _normalize_http_path(c.get("path"))
+
+        if not path:
+            raise HTTPException(status_code=400, detail="HTTP request condition requires path")
+
+        return {
+            "name": cname or None,
+            "type": ctype,
+            "method": method,
+            "path": path,
+        }
+
+    raise HTTPException(status_code=400, detail=f"Unsupported condition type: {ctype}")
 
 
 def _normalize_rule_action(a: dict) -> dict:
@@ -509,6 +619,37 @@ def _normalize_rule_action(a: dict) -> dict:
             "name": aname or None,
             "type": atype,
             "seconds": seconds,
+        }
+
+    if atype == "send_http_request":
+        method = _normalize_http_method(a.get("method"), allow_any=False)
+        url = str(a.get("url") or "").strip()
+        headers = _normalize_http_headers(a.get("headers"))
+        body = a.get("body")
+        timeout_seconds = a.get("timeout_seconds")
+
+        if not method:
+            raise HTTPException(status_code=400, detail="HTTP request action requires method")
+
+        if not url:
+            raise HTTPException(status_code=400, detail="HTTP request action requires url")
+
+        try:
+            timeout = float(timeout_seconds if timeout_seconds is not None else 10.0)
+        except Exception:
+            raise HTTPException(status_code=400, detail="HTTP request timeout_seconds must be a number")
+
+        if timeout <= 0:
+            raise HTTPException(status_code=400, detail="HTTP request timeout_seconds must be greater than 0")
+
+        return {
+            "name": aname or None,
+            "type": atype,
+            "method": method,
+            "url": url,
+            "headers": headers,
+            "body": None if body is None else str(body),
+            "timeout_seconds": timeout,
         }
 
     raise HTTPException(status_code=400, detail=f"Unsupported action type: {atype}")
@@ -652,6 +793,22 @@ def _match_onvif_condition(condition: dict, event_payload: dict) -> bool:
     return False
 
 
+def _match_http_condition(condition: dict, trigger: dict) -> bool:
+    wanted_path = _normalize_http_path(condition.get("path"))
+    wanted_method = _normalize_http_method(condition.get("method"), allow_any=True) or "ANY"
+
+    got_path = _normalize_http_path(trigger.get("path"))
+    got_method = _normalize_http_method(trigger.get("method"), allow_any=False)
+
+    if not wanted_path or not got_path or wanted_path != got_path:
+        return False
+
+    if wanted_method == "ANY":
+        return True
+
+    return wanted_method == got_method
+
+
 def _extract_trigger_topic(trigger: dict) -> Optional[str]:
     extra = trigger.get("extra") or {}
     condition = trigger.get("condition") or {}
@@ -664,62 +821,13 @@ def _extract_trigger_topic(trigger: dict) -> Optional[str]:
     return _normalize_allow_topic(condition.get("topic")) or None
 
 
-def _execute_rule_actions(rule: dict, trigger: dict) -> List[dict]:
-    results: List[dict] = []
-
-    for action in list(rule.get("actions") or []):
-        atype = action.get("type")
-
-        if atype == "wait_for":
-            seconds = float(action.get("seconds") or 0)
-
-            if seconds <= 0:
-                results.append({
-                    "type": atype,
-                    "ok": False,
-                    "error": "Wait seconds must be greater than 0",
-                })
-                continue
-
-            time.sleep(seconds)
-
-            item = {
-                "type": atype,
-                "ok": True,
-                "seconds": seconds,
-                "message": f"Waited for {seconds} second(s).",
-            }
-            if action.get("name"):
-                item["name"] = action.get("name")
-
-            results.append(item)
-            continue
-
-        if atype == "activate_output_relay":
-            item = {
-                "type": atype,
-                "ok": True,
-                "placeholder": True,
-                "mode": action.get("mode"),
-            }
-            if action.get("name"):
-                item["name"] = action.get("name")
-            if action.get("mode") == "pulse":
-                item["activation_seconds"] = action.get("activation_seconds")
-            item["message"] = "Placeholder relay action accepted but not connected to hardware yet."
-            results.append(item)
-            continue
-
-        results.append({
-            "type": atype or "unknown",
-            "ok": False,
-            "error": "Unsupported action type",
-        })
-
-    return results
-
-
-def _append_rule_log_line(rule: dict, trigger: dict, action_results: List[dict]) -> None:
+def _append_action_log_line(
+    rule: dict,
+    trigger: dict,
+    action: dict,
+    result: dict,
+    action_index: int,
+) -> None:
     device_id = str(trigger.get("device_id") or trigger.get("source_device_id") or "").strip() or None
     source_device_id = str(trigger.get("source_device_id") or trigger.get("device_id") or "").strip() or None
     device_name = None
@@ -746,8 +854,11 @@ def _append_rule_log_line(rule: dict, trigger: dict, action_results: List[dict])
         "condition_name": condition.get("name"),
         "topic": _extract_trigger_topic(trigger),
         "manual": bool(trigger.get("kind") == "manual_test"),
-        "configured_actions": list(rule.get("actions") or []),
-        "action_results": action_results,
+        "http_method": trigger.get("method"),
+        "http_path": trigger.get("path"),
+        "action_index": action_index,
+        "action": action,
+        "result": result,
     }
 
     line = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
@@ -758,10 +869,149 @@ def _append_rule_log_line(rule: dict, trigger: dict, action_results: List[dict])
             f.write(line + "\n")
 
 
+def _execute_send_http_request_action(action: dict, trigger: dict) -> dict:
+    method = _normalize_http_method(action.get("method"), allow_any=False)
+    url = str(action.get("url") or "").strip()
+    headers = dict(action.get("headers") or {})
+    body = action.get("body")
+    timeout_seconds = float(action.get("timeout_seconds") or 10.0)
+
+    if not method:
+        return {
+            "type": "send_http_request",
+            "ok": False,
+            "error": "Missing HTTP method",
+        }
+
+    if not url:
+        return {
+            "type": "send_http_request",
+            "ok": False,
+            "error": "Missing URL",
+        }
+
+    data = None
+    if body is not None and method not in {"GET", "DELETE"}:
+        data = str(body).encode("utf-8")
+        if not any(str(k).lower() == "content-type" for k in headers.keys()):
+            headers["Content-Type"] = "text/plain; charset=utf-8"
+
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+            response_body = resp.read(2048).decode("utf-8", errors="replace")
+            return {
+                "type": "send_http_request",
+                "ok": True,
+                "method": method,
+                "url": url,
+                "status_code": int(getattr(resp, "status", 200)),
+                "response_body_preview": response_body,
+            }
+    except urllib.error.HTTPError as e:
+        try:
+            response_body = e.read(2048).decode("utf-8", errors="replace")
+        except Exception:
+            response_body = ""
+
+        return {
+            "type": "send_http_request",
+            "ok": False,
+            "method": method,
+            "url": url,
+            "status_code": int(e.code),
+            "response_body_preview": response_body,
+            "error": f"HTTP {e.code}",
+        }
+    except Exception as e:
+        return {
+            "type": "send_http_request",
+            "ok": False,
+            "method": method,
+            "url": url,
+            "error": str(e),
+        }
+
+
+def _execute_rule_actions(rule: dict, trigger: dict) -> List[dict]:
+    results: List[dict] = []
+
+    for idx, action in enumerate(list(rule.get("actions") or [])):
+        atype = action.get("type")
+
+        if atype == "wait_for":
+            seconds = float(action.get("seconds") or 0)
+
+            if seconds <= 0:
+                item = {
+                    "type": atype,
+                    "ok": False,
+                    "error": "Wait seconds must be greater than 0",
+                }
+                if action.get("name"):
+                    item["name"] = action.get("name")
+                results.append(item)
+                _append_action_log_line(rule, trigger, action, item, idx)
+                continue
+
+            time.sleep(seconds)
+
+            item = {
+                "type": atype,
+                "ok": True,
+                "seconds": seconds,
+                "message": f"Waited for {seconds} second(s).",
+            }
+            if action.get("name"):
+                item["name"] = action.get("name")
+
+            results.append(item)
+            _append_action_log_line(rule, trigger, action, item, idx)
+            continue
+
+        if atype == "activate_output_relay":
+            item = {
+                "type": atype,
+                "ok": True,
+                "placeholder": True,
+                "mode": action.get("mode"),
+                "message": "Placeholder relay action accepted but not connected to hardware yet.",
+            }
+            if action.get("name"):
+                item["name"] = action.get("name")
+            if action.get("mode") == "pulse":
+                item["activation_seconds"] = action.get("activation_seconds")
+
+            results.append(item)
+            _append_action_log_line(rule, trigger, action, item, idx)
+            continue
+
+        if atype == "send_http_request":
+            item = _execute_send_http_request_action(action, trigger)
+            if action.get("name"):
+                item["name"] = action.get("name")
+            results.append(item)
+            _append_action_log_line(rule, trigger, action, item, idx)
+            continue
+
+        item = {
+            "type": atype or "unknown",
+            "ok": False,
+            "error": "Unsupported action type",
+        }
+        if action.get("name"):
+            item["name"] = action.get("name")
+
+        results.append(item)
+        _append_action_log_line(rule, trigger, action, item, idx)
+
+    return results
+
+
 def _log_rule_trigger(rule: dict, trigger: dict) -> dict:
     try:
         action_results = _execute_rule_actions(rule, trigger)
-        _append_rule_log_line(rule, trigger, action_results)
         return {
             "ok": True,
             "log_file": str(RULE_LOG_FILE),
@@ -773,6 +1023,7 @@ def _log_rule_trigger(rule: dict, trigger: dict) -> dict:
             "log_file": str(RULE_LOG_FILE),
             "error": str(e),
         }
+
 
 def _run_rule_trigger(rule: dict, trigger: dict) -> None:
     try:
@@ -789,24 +1040,36 @@ def _dispatch_rule_trigger(rule: dict, trigger: dict) -> None:
         name=f"rule-trigger-{rule.get('id', 'unknown')}",
     )
     t.start()
-    
+
 
 def _manual_test_context(conditions: List[dict]) -> dict:
     if not conditions:
         return {}
+
     first = dict(conditions[0])
-    device_id = first.get("device_id")
-    return {
-        "device_id": device_id,
-        "source_device_id": device_id,
+    out = {
         "condition": first,
     }
 
+    device_id = first.get("device_id")
+    if device_id:
+        out["device_id"] = device_id
+        out["source_device_id"] = device_id
 
-def _evaluate_rules_for_trigger(trigger: dict) -> None:
+    if first.get("type") == "incoming_http_request":
+        out["method"] = first.get("method") or "ANY"
+        out["path"] = first.get("path")
+
+    return out
+
+
+def _evaluate_rules_for_trigger(trigger: dict) -> int:
+    matched_count = 0
+
     try:
         with _rules_lock:
             rules = _load_rules()
+
         for rule in rules:
             if not rule.get("enabled", True):
                 continue
@@ -820,12 +1083,17 @@ def _evaluate_rules_for_trigger(trigger: dict) -> None:
                     matched = condition.get("device_id") == trigger.get("device_id")
                 elif ctype == "device_back_online" and trigger.get("kind") == "device_back_online":
                     matched = condition.get("device_id") == trigger.get("device_id")
+                elif ctype == "incoming_http_request" and trigger.get("kind") == "incoming_http_request":
+                    matched = _match_http_condition(condition, trigger)
 
                 if matched:
                     _dispatch_rule_trigger(rule, {"condition": condition, **trigger})
+                    matched_count += 1
                     break
     except Exception:
         pass
+
+    return matched_count
 
 
 def _poll_device_state_changes() -> None:
@@ -2115,7 +2383,7 @@ def actions_test(req: RuleTestRequest):
 
     return {
         "ok": True,
-        "message": "Manual test logged.",
+        "message": "Manual test executed.",
         "log_file": str(RULE_LOG_FILE),
         "action_results": result.get("action_results", []),
     }
@@ -2147,6 +2415,38 @@ def actions_delete(action_id: str):
             raise HTTPException(status_code=404, detail="Rule not found")
         _save_rules(new_items)
     return {"ok": True}
+
+
+@app.api_route("/hook", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+@app.api_route("/hook/{hook_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+async def receive_rule_hook(request: Request, hook_path: str = ""):
+    path = _normalize_http_path("/" + (hook_path or ""))
+    method = _normalize_http_method(request.method, allow_any=False)
+
+    body_bytes = await request.body()
+    body_text = body_bytes.decode("utf-8", errors="replace")
+
+    trigger = {
+        "kind": "incoming_http_request",
+        "message": "Incoming HTTP request",
+        "ts": _utc_now_iso(),
+        "method": method,
+        "path": path,
+        "extra": {
+            "query": dict(request.query_params),
+            "headers": {k: v for k, v in request.headers.items()},
+            "body": body_text,
+        },
+    }
+
+    matched_rules = _evaluate_rules_for_trigger(trigger)
+
+    return {
+        "ok": True,
+        "method": method,
+        "path": path,
+        "matched_rules": matched_rules,
+    }
 
 
 @app.post("/api/devices/{device_id}/refresh-stream")

@@ -13,6 +13,7 @@ const TRIGGER_DEFS = {
   onvif_event: {
     label: "ONVIF event",
     needsTopic: true,
+    needsDevice: true,
     summarize(data) {
       const device = deviceLabel(data.device_id);
       if (data.name) return data.name;
@@ -24,6 +25,7 @@ const TRIGGER_DEFS = {
   device_offline: {
     label: "Device offline",
     needsTopic: false,
+    needsDevice: true,
     summarize(data) {
       const device = deviceLabel(data.device_id);
       if (data.name) return data.name;
@@ -34,10 +36,23 @@ const TRIGGER_DEFS = {
   device_back_online: {
     label: "Device back online",
     needsTopic: false,
+    needsDevice: true,
     summarize(data) {
       const device = deviceLabel(data.device_id);
       if (data.name) return data.name;
       return `When ${device} comes back online`;
+    },
+  },
+
+  incoming_http_request: {
+    label: "Incoming HTTP request",
+    needsTopic: false,
+    needsDevice: false,
+    summarize(data) {
+      if (data.name) return data.name;
+      const method = data.method || "ANY";
+      const path = normalizeWebhookPath(data.path || "/");
+      return `When HTTP ${method} ${path} is received`;
     },
   },
 };
@@ -61,6 +76,14 @@ const ACTION_DEFS = {
     summarize(data) {
       if (data.name) return data.name;
       return `Wait for ${data.seconds ?? "?"}s`;
+    },
+  },
+
+  send_http_request: {
+    label: "Send HTTP request",
+    summarize(data) {
+      if (data.name) return data.name;
+      return `Send ${data.method || "POST"} request to ${data.url || "?"}`;
     },
   },
 };
@@ -181,6 +204,7 @@ function getTriggerDef(type) {
   return TRIGGER_DEFS[type] || {
     label: type || "Unknown trigger",
     needsTopic: false,
+    needsDevice: false,
     summarize(data) {
       return data?.name || data?.type || "Unknown trigger";
     },
@@ -207,7 +231,7 @@ function summarizeAction(action) {
 function ruleSentence(rule) {
   const left = (rule.conditions || []).map(summarizeCondition).join(" or ") || "When something happens";
   const right = (rule.actions || []).map(summarizeAction).join(", then ");
-  return right ? `${left}, log the trigger, then ${right}.` : `${left}, log the trigger.`;
+  return right ? `${left}, then ${right}.` : `${left}.`;
 }
 
 function confirmDiscardIfDirty() {
@@ -235,7 +259,7 @@ function bindItemCollapse(card, initialOpen = false) {
   };
 
   btn.addEventListener("click", (ev) => {
-    if (ev.target.closest(".btnRemoveCondition, .btnRemoveAction")) return;
+    if (ev.target.closest(".itemHeadActions .btn")) return;
     toggle();
   });
 
@@ -248,15 +272,104 @@ function bindItemCollapse(card, initialOpen = false) {
   setItemOpen(card, initialOpen);
 }
 
+function parseHeadersJson(text) {
+  const raw = (text || "").trim();
+  if (!raw) return {};
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Headers must be a JSON object.");
+  }
+  return parsed;
+}
+
+function randomWebhookToken() {
+  if (window.crypto && typeof window.crypto.randomUUID === "function") {
+    return window.crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function generateWebhookPath() {
+  return `/webhook/${randomWebhookToken()}`;
+}
+
+function normalizeWebhookPath(value) {
+  let raw = (value || "").trim();
+  if (!raw) return "";
+  raw = raw.split("?", 1)[0].trim();
+  if (!raw.startsWith("/")) raw = `/${raw}`;
+  const parts = raw.split("/").filter(Boolean);
+  return parts.length ? `/${parts.join("/")}` : "/";
+}
+
+function buildWebhookUrl(path) {
+  const clean = normalizeWebhookPath(path);
+  if (!clean) return "";
+  if (clean === "/") return `${window.location.origin}/hook`;
+  return `${window.location.origin}/hook${clean}`;
+}
+
+async function copyTextToClipboard(text) {
+  if (!text) return false;
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    await navigator.clipboard.writeText(text);
+    return true;
+  }
+
+  const temp = document.createElement("textarea");
+  temp.value = text;
+  temp.setAttribute("readonly", "");
+  temp.style.position = "absolute";
+  temp.style.left = "-9999px";
+  document.body.appendChild(temp);
+  temp.select();
+
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } finally {
+    document.body.removeChild(temp);
+  }
+
+  return ok;
+}
+
+function ensureGeneratedWebhookPath(card) {
+  const type = card.querySelector(".condType")?.value;
+  const input = card.querySelector(".httpPath");
+  if (!input || type !== "incoming_http_request") return;
+
+  if (!(input.value || "").trim()) {
+    input.value = generateWebhookPath();
+  }
+}
+
+function updateConditionWebhookUi(card) {
+  const pathInput = card.querySelector(".httpPath");
+  const urlPreview = card.querySelector(".httpUrlPreview");
+  const copyBtn = card.querySelector(".btnCopyHttpUrl");
+  if (!pathInput || !urlPreview) return;
+
+  const url = buildWebhookUrl(pathInput.value);
+  urlPreview.value = url;
+  if (copyBtn) copyBtn.disabled = !url;
+}
+
 function getConditionErrors(card) {
   const type = card.querySelector(".condType").value;
+  const def = getTriggerDef(type);
   const deviceId = card.querySelector(".condDevice").value;
   const topic = card.dataset.topic || "";
-  const def = getTriggerDef(type);
   const errors = [];
 
-  if (!deviceId) errors.push("Select a device.");
+  if (def.needsDevice && !deviceId) errors.push("Select a device.");
   if (def.needsTopic && !topic) errors.push("Select an ONVIF topic.");
+
+  if (type === "incoming_http_request") {
+    const path = normalizeWebhookPath(card.querySelector(".httpPath").value || "");
+    if (!path) errors.push("Webhook path is required.");
+  }
 
   return errors;
 }
@@ -290,16 +403,47 @@ function getActionErrors(card) {
     }
   }
 
+  if (type === "send_http_request") {
+    const url = (card.querySelector(".httpActionUrl").value || "").trim();
+    const headersRaw = card.querySelector(".httpActionHeaders").value || "";
+    const timeoutRaw = (card.querySelector(".httpActionTimeout").value || "").trim();
+
+    if (!url) {
+      errors.push("HTTP request URL is required.");
+    }
+
+    if (timeoutRaw) {
+      const timeout = Number(timeoutRaw);
+      if (!Number.isFinite(timeout) || timeout <= 0) {
+        errors.push("HTTP request timeout must be greater than 0 seconds.");
+      }
+    }
+
+    try {
+      parseHeadersJson(headersRaw);
+    } catch (err) {
+      errors.push(err.message || String(err));
+    }
+  }
+
   return errors;
 }
 
 function createConditionPayloadFromCard(card) {
   const type = card.querySelector(".condType").value;
   const name = card.querySelector(".condName").value.trim();
-  const device_id = card.querySelector(".condDevice").value;
-  const out = { type, device_id };
+  const out = { type };
 
   if (name) out.name = name;
+
+  if (type === "incoming_http_request") {
+    out.method = card.querySelector(".httpMethod").value || "ANY";
+    out.path = normalizeWebhookPath(card.querySelector(".httpPath").value || "");
+    return out;
+  }
+
+  out.device_id = card.querySelector(".condDevice").value;
+
   if (getTriggerDef(type).needsTopic) {
     out.topic = card.dataset.topic || "";
   }
@@ -331,6 +475,23 @@ function createActionPayloadFromCard(card) {
     if (Number.isFinite(seconds)) {
       out.seconds = seconds;
     }
+  }
+
+  if (type === "send_http_request") {
+    out.method = card.querySelector(".httpActionMethod").value || "POST";
+    out.url = (card.querySelector(".httpActionUrl").value || "").trim();
+
+    try {
+      out.headers = parseHeadersJson(card.querySelector(".httpActionHeaders").value || "");
+    } catch {
+      out.headers = {};
+    }
+
+    const body = card.querySelector(".httpActionBody").value;
+    const timeoutRaw = (card.querySelector(".httpActionTimeout").value || "").trim();
+
+    if (body.trim()) out.body = body;
+    if (timeoutRaw) out.timeout_seconds = Number(timeoutRaw);
   }
 
   return out;
@@ -379,12 +540,25 @@ function refreshBuilderCards() {
   [...el("actionsList").children].forEach(updateActionCardUi);
 }
 
-function syncConditionTopicUi(card) {
+function syncConditionTypeUi(card) {
   const type = card.querySelector(".condType").value;
-  const picker = card.querySelector(".topicPicker");
-  if (!picker) return;
+  const def = getTriggerDef(type);
 
-  picker.classList.toggle("open", getTriggerDef(type).needsTopic);
+  const deviceWrap = card.querySelector(".condDeviceWrap");
+  const topicPicker = card.querySelector(".topicPicker");
+  const httpWraps = card.querySelectorAll(".httpTriggerWrap");
+
+  if (deviceWrap) deviceWrap.classList.toggle("hidden", !def.needsDevice);
+
+  if (topicPicker) {
+    topicPicker.classList.toggle("open", !!def.needsTopic);
+  }
+
+  httpWraps.forEach((node) => {
+    node.classList.toggle("hidden", type !== "incoming_http_request");
+  });
+
+  updateConditionWebhookUi(card);
 }
 
 function syncActionModeUi(card) {
@@ -399,12 +573,17 @@ function syncActionTypeUi(card) {
   const relayModeWrap = card.querySelector(".relayModeWrap");
   const relaySecondsWrap = card.querySelector(".relaySecondsWrap");
   const waitSecondsWrap = card.querySelector(".waitSecondsWrap");
+  const httpActionWraps = card.querySelectorAll(".httpActionWrap");
 
   const isRelay = type === "activate_output_relay";
   const isWait = type === "wait_for";
+  const isHttp = type === "send_http_request";
 
   if (relayModeWrap) relayModeWrap.classList.toggle("hidden", !isRelay);
   if (waitSecondsWrap) waitSecondsWrap.classList.toggle("hidden", !isWait);
+  httpActionWraps.forEach((node) => {
+    node.classList.toggle("hidden", !isHttp);
+  });
 
   if (isRelay) {
     syncActionModeUi(card);
@@ -488,9 +667,9 @@ async function renderTopicsInto(card, opts = {}) {
 
     const filtered = q
       ? topics.filter((topic) =>
-        (topic.path || "").toLowerCase().includes(q) ||
-        (topic.name || "").toLowerCase().includes(q)
-      )
+          (topic.path || "").toLowerCase().includes(q) ||
+          (topic.name || "").toLowerCase().includes(q)
+        )
       : topics;
 
     countText.textContent = filtered.length
@@ -563,11 +742,21 @@ function addConditionRow(data = {}, opts = {}) {
   const btnRemove = node.querySelector(".btnRemoveCondition");
   const btnLoadTopics = node.querySelector(".btnLoadTopics");
   const topicSearch = node.querySelector(".topicSearch");
+  const httpMethod = node.querySelector(".httpMethod");
+  const httpPath = node.querySelector(".httpPath");
+  const btnGenerateHttpPath = node.querySelector(".btnGenerateHttpPath");
+  const btnCopyHttpUrl = node.querySelector(".btnCopyHttpUrl");
 
   condName.value = data.name || "";
   condType.value = data.type || "onvif_event";
   condDevice.innerHTML = deviceOptionsHtml(data.device_id || "");
   node.dataset.topic = data.topic || "";
+  httpMethod.value = data.method || "ANY";
+  httpPath.value = normalizeWebhookPath(data.path || "");
+
+  if (condType.value === "incoming_http_request" && !httpPath.value) {
+    httpPath.value = generateWebhookPath();
+  }
 
   bindItemCollapse(node, open);
 
@@ -585,7 +774,10 @@ function addConditionRow(data = {}, opts = {}) {
     if (!def.needsTopic) {
       node.dataset.topic = "";
     }
-    syncConditionTopicUi(node);
+    if (condType.value === "incoming_http_request" && !(httpPath.value || "").trim()) {
+      httpPath.value = generateWebhookPath();
+    }
+    syncConditionTypeUi(node);
     await renderTopicsInto(node);
   });
 
@@ -601,6 +793,38 @@ function addConditionRow(data = {}, opts = {}) {
     }
   });
 
+  bindFieldDirty(node, ".httpMethod");
+  bindFieldDirty(node, ".httpPath", async () => {
+    httpPath.value = normalizeWebhookPath(httpPath.value || "");
+    updateConditionWebhookUi(node);
+  });
+
+  btnGenerateHttpPath.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    httpPath.value = generateWebhookPath();
+    updateConditionWebhookUi(node);
+    refreshBuilderCards();
+    markDirty();
+    setStatus("Generated a new webhook path.");
+  });
+
+  btnCopyHttpUrl.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    const url = buildWebhookUrl(httpPath.value || "");
+    if (!url) {
+      setStatus("Webhook URL is empty.", true);
+      return;
+    }
+
+    try {
+      const ok = await copyTextToClipboard(url);
+      if (!ok) throw new Error("Copy failed");
+      setStatus("Webhook URL copied.");
+    } catch {
+      setStatus("Failed to copy webhook URL.", true);
+    }
+  });
+
   topicSearch.addEventListener("input", async () => {
     await renderTopicsInto(node);
   });
@@ -610,7 +834,8 @@ function addConditionRow(data = {}, opts = {}) {
     setStatus("Device topics refreshed.");
   });
 
-  syncConditionTopicUi(node);
+  syncConditionTypeUi(node);
+  updateConditionWebhookUi(node);
   el("conditionsList").appendChild(node);
   renderTopicsInto(node);
   updateConditionCardUi(node);
@@ -625,6 +850,11 @@ function addActionRow(data = {}, opts = {}) {
   const relayMode = node.querySelector(".relayMode");
   const relaySeconds = node.querySelector(".relaySeconds");
   const waitSeconds = node.querySelector(".waitSeconds");
+  const httpActionMethod = node.querySelector(".httpActionMethod");
+  const httpActionUrl = node.querySelector(".httpActionUrl");
+  const httpActionHeaders = node.querySelector(".httpActionHeaders");
+  const httpActionBody = node.querySelector(".httpActionBody");
+  const httpActionTimeout = node.querySelector(".httpActionTimeout");
   const btnRemove = node.querySelector(".btnRemoveAction");
   const btnMoveUp = node.querySelector(".btnMoveUpAction");
   const btnMoveDown = node.querySelector(".btnMoveDownAction");
@@ -634,6 +864,11 @@ function addActionRow(data = {}, opts = {}) {
   relayMode.value = data.mode || "on";
   relaySeconds.value = data.activation_seconds ?? "";
   waitSeconds.value = data.seconds ?? "";
+  httpActionMethod.value = data.method || "POST";
+  httpActionUrl.value = data.url || "";
+  httpActionHeaders.value = data.headers ? JSON.stringify(data.headers, null, 2) : "";
+  httpActionBody.value = data.body || "";
+  httpActionTimeout.value = data.timeout_seconds ?? "";
 
   bindItemCollapse(node, open);
 
@@ -663,6 +898,11 @@ function addActionRow(data = {}, opts = {}) {
   });
   bindFieldDirty(node, ".relaySeconds");
   bindFieldDirty(node, ".waitSeconds");
+  bindFieldDirty(node, ".httpActionMethod");
+  bindFieldDirty(node, ".httpActionUrl");
+  bindFieldDirty(node, ".httpActionHeaders");
+  bindFieldDirty(node, ".httpActionBody");
+  bindFieldDirty(node, ".httpActionTimeout");
 
   syncActionTypeUi(node);
   el("actionsList").appendChild(node);
@@ -684,14 +924,9 @@ function validatePayload(payload) {
   if (!payload.name) errors.push("Rule name is required.");
   if (!payload.conditions.length) errors.push("Add at least one trigger.");
 
-  for (const condition of payload.conditions) {
-    if (!condition.device_id) errors.push("Each trigger must have a device.");
-
-    const def = getTriggerDef(condition.type);
-    if (def.needsTopic && !condition.topic) {
-      errors.push("Each ONVIF event trigger must have a topic.");
-    }
-  }
+  [...el("conditionsList").children].forEach((card) => {
+    errors.push(...getConditionErrors(card));
+  });
 
   [...el("actionsList").children].forEach((card) => {
     errors.push(...getActionErrors(card));
@@ -800,7 +1035,7 @@ function renderRules() {
   if (!state.rules.length) {
     box.innerHTML = `
       <div class="emptyState">
-        No rules yet. Create your first rule for device state changes or ONVIF events.
+        No rules yet. Create your first rule for device events, webhook triggers, waits, and HTTP actions.
       </div>
     `;
     setListStatus("No rules saved yet.");
@@ -912,13 +1147,13 @@ async function saveRule() {
 
   const out = state.selectedRuleId
     ? await api(`/api/actions/${encodeURIComponent(state.selectedRuleId)}`, {
-      method: "PUT",
-      body: JSON.stringify(payload),
-    })
+        method: "PUT",
+        body: JSON.stringify(payload),
+      })
     : await api("/api/actions", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
 
   await refreshRules();
 
@@ -952,7 +1187,7 @@ async function testRule() {
     }),
   });
 
-  setStatus(out?.message || "Manual test logged.");
+  setStatus(out?.message || "Manual test executed.");
 }
 
 async function deleteSelected() {

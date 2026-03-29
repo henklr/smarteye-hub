@@ -1,6 +1,5 @@
 <!doctype html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -23,7 +22,7 @@
         <div class="listHeader">
           <div>
             <div class="listTitle">Saved rules</div>
-            <div class="listSub">Triggered rules are always logged. Optional actions can also run.</div>
+            <div class="listSub">Triggered rules can run ordered actions, including waits and HTTP requests.</div>
           </div>
           <button class="btn btn-primary" id="btnNew" type="button">New rule</button>
         </div>
@@ -73,7 +72,7 @@
           <div class="sectionHead">
             <div>
               <div class="collapseHeadTitle">Triggers</div>
-              <div class="collapseHeadSub">A rule is logged when any trigger matches.</div>
+              <div class="collapseHeadSub">A rule is evaluated when any trigger matches.</div>
             </div>
           </div>
 
@@ -89,7 +88,7 @@
           <div class="sectionHead">
             <div>
               <div class="collapseHeadTitle">Actions</div>
-              <div class="collapseHeadSub">Optional actions that run after the rule is triggered.</div>
+              <div class="collapseHeadSub">Actions run in display order. You can insert waits between them.</div>
             </div>
           </div>
 
@@ -150,12 +149,42 @@
               <option value="onvif_event">ONVIF event</option>
               <option value="device_offline">Device offline</option>
               <option value="device_back_online">Device back online</option>
+              <option value="incoming_http_request">Incoming HTTP request</option>
             </select>
           </div>
 
-          <div data-full>
+          <div data-full class="condDeviceWrap">
             <label>Device</label>
             <select class="condDevice"></select>
+          </div>
+
+          <div data-full class="httpTriggerWrap hidden">
+            <label>HTTP method</label>
+            <select class="httpMethod">
+              <option value="ANY">Any</option>
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="PATCH">PATCH</option>
+              <option value="DELETE">DELETE</option>
+            </select>
+          </div>
+
+          <div data-full class="httpTriggerWrap hidden">
+            <label>Webhook path</label>
+            <div class="row2 mt-0">
+              <input class="httpPath grow" placeholder="/webhook/abc123" />
+              <button class="btn btnGenerateHttpPath" type="button">Generate</button>
+            </div>
+          </div>
+
+          <div data-full class="httpTriggerWrap hidden">
+            <label>Webhook URL</label>
+            <div class="row2 mt-0">
+              <input class="httpUrlPreview grow" readonly />
+              <button class="btn btnCopyHttpUrl" type="button">Copy</button>
+            </div>
+            <div class="muted mt-8">Send requests to this URL to trigger the rule.</div>
           </div>
         </div>
 
@@ -211,6 +240,7 @@
             <select class="actionType">
               <option value="activate_output_relay">Activate local output relay</option>
               <option value="wait_for">Wait for</option>
+              <option value="send_http_request">Send HTTP request</option>
             </select>
           </div>
 
@@ -232,6 +262,37 @@
             <label>Wait time (seconds)</label>
             <input class="waitSeconds" type="number" min="0.1" step="0.1" placeholder="2.0" />
           </div>
+
+          <div data-full class="httpActionWrap hidden">
+            <label>HTTP method</label>
+            <select class="httpActionMethod">
+              <option value="POST">POST</option>
+              <option value="GET">GET</option>
+              <option value="PUT">PUT</option>
+              <option value="PATCH">PATCH</option>
+              <option value="DELETE">DELETE</option>
+            </select>
+          </div>
+
+          <div data-full class="httpActionWrap hidden">
+            <label>URL</label>
+            <input class="httpActionUrl" placeholder="http://example.local/hook" />
+          </div>
+
+          <div data-full class="httpActionWrap hidden">
+            <label>Headers (JSON object)</label>
+            <textarea class="httpActionHeaders" rows="4" placeholder='{"Authorization":"Bearer token","Content-Type":"application/json"}'></textarea>
+          </div>
+
+          <div data-full class="httpActionWrap hidden">
+            <label>Body</label>
+            <textarea class="httpActionBody" rows="4" placeholder='{"event":"motion"}'></textarea>
+          </div>
+
+          <div data-full class="httpActionWrap hidden">
+            <label>Timeout (seconds)</label>
+            <input class="httpActionTimeout" type="number" min="0.1" step="0.1" placeholder="10" />
+          </div>
         </div>
 
         <div class="itemPreview previewText"></div>
@@ -242,5 +303,4 @@
 
   <script src="/static/rules.js"></script>
 </body>
-
 </html>
