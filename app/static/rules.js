@@ -55,6 +55,14 @@ const ACTION_DEFS = {
       return "Activate local output relay";
     },
   },
+
+  wait_for: {
+    label: "Wait for",
+    summarize(data) {
+      if (data.name) return data.name;
+      return `Wait for ${data.seconds ?? "?"}s`;
+    },
+  },
 };
 
 async function api(path, opts = {}) {
@@ -198,7 +206,7 @@ function summarizeAction(action) {
 
 function ruleSentence(rule) {
   const left = (rule.conditions || []).map(summarizeCondition).join(" or ") || "When something happens";
-  const right = (rule.actions || []).map(summarizeAction).join(" and ");
+  const right = (rule.actions || []).map(summarizeAction).join(", then ");
   return right ? `${left}, log the trigger, then ${right}.` : `${left}, log the trigger.`;
 }
 
@@ -273,6 +281,15 @@ function getActionErrors(card) {
     }
   }
 
+  if (type === "wait_for") {
+    const rawSeconds = (card.querySelector(".waitSeconds").value || "").trim();
+    const seconds = Number(rawSeconds);
+
+    if (!rawSeconds || !Number.isFinite(seconds) || seconds <= 0) {
+      errors.push("Wait time must be greater than 0 seconds.");
+    }
+  }
+
   return errors;
 }
 
@@ -306,6 +323,13 @@ function createActionPayloadFromCard(card) {
       if (Number.isFinite(seconds)) {
         out.activation_seconds = seconds;
       }
+    }
+  }
+
+  if (type === "wait_for") {
+    const seconds = Number(card.querySelector(".waitSeconds").value || "");
+    if (Number.isFinite(seconds)) {
+      out.seconds = seconds;
     }
   }
 
@@ -370,6 +394,43 @@ function syncActionModeUi(card) {
   wrap.classList.toggle("hidden", mode !== "pulse");
 }
 
+function syncActionTypeUi(card) {
+  const type = card.querySelector(".actionType").value;
+  const relayModeWrap = card.querySelector(".relayModeWrap");
+  const relaySecondsWrap = card.querySelector(".relaySecondsWrap");
+  const waitSecondsWrap = card.querySelector(".waitSecondsWrap");
+
+  const isRelay = type === "activate_output_relay";
+  const isWait = type === "wait_for";
+
+  if (relayModeWrap) relayModeWrap.classList.toggle("hidden", !isRelay);
+  if (waitSecondsWrap) waitSecondsWrap.classList.toggle("hidden", !isWait);
+
+  if (isRelay) {
+    syncActionModeUi(card);
+  } else if (relaySecondsWrap) {
+    relaySecondsWrap.classList.add("hidden");
+  }
+}
+
+function moveItem(card, direction) {
+  const parent = card.parentElement;
+  if (!parent) return;
+
+  if (direction < 0) {
+    const prev = card.previousElementSibling;
+    if (!prev) return;
+    parent.insertBefore(card, prev);
+  } else {
+    const next = card.nextElementSibling;
+    if (!next) return;
+    parent.insertBefore(next, card);
+  }
+
+  markDirty();
+  refreshBuilderCards();
+}
+
 async function loadTopics(deviceId, force = false) {
   if (!deviceId) return [];
   if (!force && state.topicCache.has(deviceId)) {
@@ -427,9 +488,9 @@ async function renderTopicsInto(card, opts = {}) {
 
     const filtered = q
       ? topics.filter((topic) =>
-          (topic.path || "").toLowerCase().includes(q) ||
-          (topic.name || "").toLowerCase().includes(q)
-        )
+        (topic.path || "").toLowerCase().includes(q) ||
+        (topic.name || "").toLowerCase().includes(q)
+      )
       : topics;
 
     countText.textContent = filtered.length
@@ -563,12 +624,16 @@ function addActionRow(data = {}, opts = {}) {
   const actionType = node.querySelector(".actionType");
   const relayMode = node.querySelector(".relayMode");
   const relaySeconds = node.querySelector(".relaySeconds");
+  const waitSeconds = node.querySelector(".waitSeconds");
   const btnRemove = node.querySelector(".btnRemoveAction");
+  const btnMoveUp = node.querySelector(".btnMoveUpAction");
+  const btnMoveDown = node.querySelector(".btnMoveDownAction");
 
   actionName.value = data.name || "";
   actionType.value = data.type || "activate_output_relay";
   relayMode.value = data.mode || "on";
   relaySeconds.value = data.activation_seconds ?? "";
+  waitSeconds.value = data.seconds ?? "";
 
   bindItemCollapse(node, open);
 
@@ -579,16 +644,27 @@ function addActionRow(data = {}, opts = {}) {
     markDirty();
   });
 
+  btnMoveUp.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    moveItem(node, -1);
+  });
+
+  btnMoveDown.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    moveItem(node, 1);
+  });
+
   bindFieldDirty(node, ".actionName");
   bindFieldDirty(node, ".actionType", async () => {
-    syncActionModeUi(node);
+    syncActionTypeUi(node);
   });
   bindFieldDirty(node, ".relayMode", async () => {
     syncActionModeUi(node);
   });
   bindFieldDirty(node, ".relaySeconds");
+  bindFieldDirty(node, ".waitSeconds");
 
-  syncActionModeUi(node);
+  syncActionTypeUi(node);
   el("actionsList").appendChild(node);
   updateActionCardUi(node);
 }
@@ -836,13 +912,13 @@ async function saveRule() {
 
   const out = state.selectedRuleId
     ? await api(`/api/actions/${encodeURIComponent(state.selectedRuleId)}`, {
-        method: "PUT",
-        body: JSON.stringify(payload),
-      })
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
     : await api("/api/actions", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
 
   await refreshRules();
 

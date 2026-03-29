@@ -214,7 +214,8 @@ class RuleActionModel(BaseModel):
     type: str = Field(..., min_length=1)
     mode: Optional[str] = None
     activation_seconds: Optional[float] = None
-
+    seconds: Optional[float] = None
+    
 
 class RuleIn(BaseModel):
     name: str = Field(..., min_length=1)
@@ -363,30 +364,45 @@ def _sanitize_loaded_rule(item: dict) -> Optional[dict]:
         aname = str(a.get("name") or "").strip() or None
         atype = str(a.get("type") or "").strip()
 
-        if atype != "activate_output_relay":
+        if atype == "activate_output_relay":
+            mode = str(a.get("mode") or "").strip().lower()
+            if mode not in {"on", "off", "pulse"}:
+                continue
+
+            out = {
+                "name": aname,
+                "type": atype,
+                "mode": mode,
+            }
+
+            if mode == "pulse":
+                try:
+                    seconds = float(a.get("activation_seconds"))
+                except Exception:
+                    continue
+                if seconds <= 0:
+                    continue
+                out["activation_seconds"] = seconds
+
+            actions.append(out)
             continue
 
-        mode = str(a.get("mode") or "").strip().lower()
-        if mode not in {"on", "off", "pulse"}:
-            continue
-
-        out = {
-            "name": aname,
-            "type": atype,
-            "mode": mode,
-        }
-
-        if mode == "pulse":
+        if atype == "wait_for":
             try:
-                seconds = float(a.get("activation_seconds"))
+                seconds = float(a.get("seconds"))
             except Exception:
                 continue
+
             if seconds <= 0:
                 continue
-            out["activation_seconds"] = seconds
 
-        actions.append(out)
-
+            actions.append({
+                "name": aname,
+                "type": atype,
+                "seconds": seconds,
+            })
+            continue
+        
     created_at = str(item.get("created_at") or _utc_now_iso())
     updated_at = str(item.get("updated_at") or created_at)
 
@@ -479,6 +495,21 @@ def _normalize_rule_action(a: dict) -> dict:
             out["activation_seconds"] = seconds
 
         return out
+
+    if atype == "wait_for":
+        try:
+            seconds = float(a.get("seconds"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Wait action requires seconds")
+
+        if seconds <= 0:
+            raise HTTPException(status_code=400, detail="Wait seconds must be greater than 0")
+
+        return {
+            "name": aname or None,
+            "type": atype,
+            "seconds": seconds,
+        }
 
     raise HTTPException(status_code=400, detail=f"Unsupported action type: {atype}")
 
@@ -639,6 +670,31 @@ def _execute_rule_actions(rule: dict, trigger: dict) -> List[dict]:
     for action in list(rule.get("actions") or []):
         atype = action.get("type")
 
+        if atype == "wait_for":
+            seconds = float(action.get("seconds") or 0)
+
+            if seconds <= 0:
+                results.append({
+                    "type": atype,
+                    "ok": False,
+                    "error": "Wait seconds must be greater than 0",
+                })
+                continue
+
+            time.sleep(seconds)
+
+            item = {
+                "type": atype,
+                "ok": True,
+                "seconds": seconds,
+                "message": f"Waited for {seconds} second(s).",
+            }
+            if action.get("name"):
+                item["name"] = action.get("name")
+
+            results.append(item)
+            continue
+
         if atype == "activate_output_relay":
             item = {
                 "type": atype,
@@ -718,6 +774,22 @@ def _log_rule_trigger(rule: dict, trigger: dict) -> dict:
             "error": str(e),
         }
 
+def _run_rule_trigger(rule: dict, trigger: dict) -> None:
+    try:
+        _log_rule_trigger(rule, trigger)
+    except Exception:
+        pass
+
+
+def _dispatch_rule_trigger(rule: dict, trigger: dict) -> None:
+    t = threading.Thread(
+        target=_run_rule_trigger,
+        args=(rule, trigger),
+        daemon=True,
+        name=f"rule-trigger-{rule.get('id', 'unknown')}",
+    )
+    t.start()
+    
 
 def _manual_test_context(conditions: List[dict]) -> dict:
     if not conditions:
@@ -750,7 +822,7 @@ def _evaluate_rules_for_trigger(trigger: dict) -> None:
                     matched = condition.get("device_id") == trigger.get("device_id")
 
                 if matched:
-                    _log_rule_trigger(rule, {"condition": condition, **trigger})
+                    _dispatch_rule_trigger(rule, {"condition": condition, **trigger})
                     break
     except Exception:
         pass

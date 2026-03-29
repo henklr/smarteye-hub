@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -191,6 +192,8 @@
         </div>
 
         <div class="itemHeadActions">
+          <button class="btn btnMoveUpAction" type="button" title="Move up">↑</button>
+          <button class="btn btnMoveDownAction" type="button" title="Move down">↓</button>
           <button class="btn btn-danger btnRemoveAction" type="button">Remove</button>
           <span class="itemChevron">›</span>
         </div>
@@ -207,10 +210,11 @@
             <label>Action type</label>
             <select class="actionType">
               <option value="activate_output_relay">Activate local output relay</option>
+              <option value="wait_for">Wait for</option>
             </select>
           </div>
 
-          <div data-full>
+          <div data-full class="relayModeWrap">
             <label>Relay action</label>
             <select class="relayMode">
               <option value="on">Turn on</option>
@@ -223,6 +227,11 @@
             <label>Activation time (seconds)</label>
             <input class="relaySeconds" type="number" min="0.1" step="0.1" placeholder="2.0" />
           </div>
+
+          <div data-full class="waitSecondsWrap hidden">
+            <label>Wait time (seconds)</label>
+            <input class="waitSeconds" type="number" min="0.1" step="0.1" placeholder="2.0" />
+          </div>
         </div>
 
         <div class="itemPreview previewText"></div>
@@ -233,4 +242,5 @@
 
   <script src="/static/rules.js"></script>
 </body>
+
 </html>
