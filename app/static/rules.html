@@ -13,7 +13,7 @@
       <div class="tabs">
         <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
         <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
-        <a class="tab active" href="/actions"><span class="tabDot"></span>Rules</a>
+        <a class="tab active" href="/rules"><span class="tabDot"></span>Rules</a>
       </div>
     </div>
 
@@ -124,7 +124,7 @@
 
   <template id="conditionTemplate">
     <div class="itemCard conditionCard">
-      <div class="itemCollapseBtn open" role="button" tabindex="0" aria-expanded="true">
+      <div class="itemCollapseBtn" role="button" tabindex="0" aria-expanded="false">
         <div>
           <div class="itemTitle"></div>
           <div class="collapseHeadSub">Trigger details</div>
@@ -136,7 +136,7 @@
         </div>
       </div>
 
-      <div class="itemCollapseBody open">
+      <div class="itemCollapseBody">
         <div class="grid itemGrid">
           <div data-full>
             <label>Trigger name</label>
@@ -184,7 +184,7 @@
 
   <template id="actionTemplate">
     <div class="itemCard actionCard">
-      <div class="itemCollapseBtn open" role="button" tabindex="0" aria-expanded="true">
+      <div class="itemCollapseBtn" role="button" tabindex="0" aria-expanded="false">
         <div>
           <div class="itemTitle"></div>
           <div class="collapseHeadSub">Action details</div>
@@ -196,7 +196,7 @@
         </div>
       </div>
 
-      <div class="itemCollapseBody open">
+      <div class="itemCollapseBody">
         <div class="grid itemGrid">
           <div data-full>
             <label>Action name</label>
@@ -231,6 +231,6 @@
     </div>
   </template>
 
-  <script src="/static/actions.js"></script>
+  <script src="/static/rules.js"></script>
 </body>
 </html>

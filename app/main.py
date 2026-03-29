@@ -32,8 +32,9 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DEVICES_JSON = DATA_DIR / "devices.json"
-RULES_JSON = DATA_DIR / "actions.json"
-RULE_LOG_FILE = Path(os.getenv("RULE_LOG_FILE", str(DATA_DIR / "actions.log")))
+
+RULES_JSON = DATA_DIR / "rules.json"
+RULE_LOG_FILE = Path(os.getenv("RULE_LOG_FILE", str(DATA_DIR / "rules.log")))
 RULE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 MEDIAMTX_API_URL = os.getenv("MEDIAMTX_API_URL", "http://mediamtx:9997").rstrip("/")
@@ -133,12 +134,17 @@ def devices_page():
 
 @app.get("/events")
 def events_page():
-    return RedirectResponse(url="/actions", status_code=307)
+    return RedirectResponse(url="/rules", status_code=307)
 
 
-@app.get("/actions", response_class=HTMLResponse)
-def actions_page():
-    return (STATIC_DIR / "actions.html").read_text(encoding="utf-8")
+@app.get("/actions")
+def actions_page_legacy():
+    return RedirectResponse(url="/rules", status_code=307)
+
+
+@app.get("/rules", response_class=HTMLResponse)
+def rules_page():
+    return (STATIC_DIR / "rules.html").read_text(encoding="utf-8")
 
 
 @app.get("/health")
@@ -372,11 +378,11 @@ def _sanitize_loaded_rule(item: dict) -> Optional[dict]:
 
         if mode == "pulse":
             try:
-              seconds = float(a.get("activation_seconds"))
+                seconds = float(a.get("activation_seconds"))
             except Exception:
-              continue
+                continue
             if seconds <= 0:
-              continue
+                continue
             out["activation_seconds"] = seconds
 
         actions.append(out)

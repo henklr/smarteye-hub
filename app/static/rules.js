@@ -207,7 +207,7 @@ function confirmDiscardIfDirty() {
   return window.confirm("You have unsaved changes. Discard them?");
 }
 
-function setItemCollapsed(card, open) {
+function setItemOpen(card, open) {
   const btn = card.querySelector(".itemCollapseBtn");
   const body = card.querySelector(".itemCollapseBody");
   if (!btn || !body) return;
@@ -217,13 +217,13 @@ function setItemCollapsed(card, open) {
   body.classList.toggle("open", open);
 }
 
-function bindItemCollapse(card) {
+function bindItemCollapse(card, initialOpen = false) {
   const btn = card.querySelector(".itemCollapseBtn");
   if (!btn) return;
 
   const toggle = () => {
     const isOpen = btn.classList.contains("open");
-    setItemCollapsed(card, !isOpen);
+    setItemOpen(card, !isOpen);
   };
 
   btn.addEventListener("click", (ev) => {
@@ -237,7 +237,7 @@ function bindItemCollapse(card) {
     toggle();
   });
 
-  setItemCollapsed(card, true);
+  setItemOpen(card, initialOpen);
 }
 
 function getConditionErrors(card) {
@@ -492,7 +492,9 @@ function ensureAtLeastOneConditionRow() {
   if (!el("conditionsList").children.length) addConditionRow();
 }
 
-function addConditionRow(data = {}) {
+function addConditionRow(data = {}, opts = {}) {
+  const { open = true } = opts;
+
   const node = el("conditionTemplate").content.firstElementChild.cloneNode(true);
   const condName = node.querySelector(".condName");
   const condType = node.querySelector(".condType");
@@ -506,7 +508,7 @@ function addConditionRow(data = {}) {
   condDevice.innerHTML = deviceOptionsHtml(data.device_id || "");
   node.dataset.topic = data.topic || "";
 
-  bindItemCollapse(node);
+  bindItemCollapse(node, open);
 
   btnRemove.addEventListener("click", (ev) => {
     ev.stopPropagation();
@@ -553,7 +555,9 @@ function addConditionRow(data = {}) {
   updateConditionCardUi(node);
 }
 
-function addActionRow(data = {}) {
+function addActionRow(data = {}, opts = {}) {
+  const { open = true } = opts;
+
   const node = el("actionTemplate").content.firstElementChild.cloneNode(true);
   const actionName = node.querySelector(".actionName");
   const actionType = node.querySelector(".actionType");
@@ -566,7 +570,7 @@ function addActionRow(data = {}) {
   relayMode.value = data.mode || "on";
   relaySeconds.value = data.activation_seconds ?? "";
 
-  bindItemCollapse(node);
+  bindItemCollapse(node, open);
 
   btnRemove.addEventListener("click", (ev) => {
     ev.stopPropagation();
@@ -636,12 +640,12 @@ function applyRuleToEditor(rule) {
   const actions = Array.isArray(rule?.actions) ? rule.actions : [];
 
   if (conditions.length) {
-    conditions.forEach(addConditionRow);
+    conditions.forEach((condition) => addConditionRow(condition, { open: false }));
   } else {
-    addConditionRow();
+    addConditionRow({}, { open: true });
   }
 
-  actions.forEach(addActionRow);
+  actions.forEach((action) => addActionRow(action, { open: false }));
 
   state.suspendDirty = false;
   clearDirty();
@@ -906,12 +910,12 @@ async function deleteSelected() {
 
 function bindGlobalEvents() {
   el("btnAddCondition").addEventListener("click", () => {
-    addConditionRow();
+    addConditionRow({}, { open: true });
     markDirty();
   });
 
   el("btnAddAction").addEventListener("click", () => {
-    addActionRow();
+    addActionRow({}, { open: true });
     markDirty();
   });
 
