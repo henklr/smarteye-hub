@@ -807,3 +807,94 @@ body.flowsPage {
     max-height: 56vh;
   }
 }
+
+/* Inspector layout fixes */
+.flowsPage .flowInspectorHeader .listTitle {
+  margin-bottom: 4px;
+}
+
+.flowsPage .inspectorSubtext,
+.flowsPage .inspectorHint,
+.flowsPage #inspectorSubtext {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.flowsPage .rowSplit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.flowsPage .rowSplit > .btn {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.flowsPage .inspectorCard .fieldGrid {
+  align-items: start;
+}
+
+.flowsPage .inspectorCard label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.flowsPage .inspectorCard input:not([type="checkbox"]),
+.flowsPage .inspectorCard select,
+.flowsPage .inspectorCard textarea {
+  width: 100%;
+}
+
+.flowsPage .enableRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  width: auto;
+  cursor: pointer;
+}
+
+.flowsPage .enableRow input[type="checkbox"] {
+  margin: 0;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  accent-color: #c6a14b;
+}
+
+.flowsPage .enableRow span {
+  display: inline;
+  line-height: 1.2;
+  color: var(--text);
+  font-weight: 800;
+}
+
+.flowsPage .variableRowHead {
+  align-items: center;
+}
+
+.flowsPage .variableRowHead .btn {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.flowsPage .inspectorBody .btn {
+  align-self: flex-start;
+}
+
+.flowsPage .inspectorCard .emptyState {
+  margin-top: 10px;
+}
+
+@media (max-width: 720px) {
+  .flowsPage .rowSplit {
+    align-items: stretch;
+  }
+
+  .flowsPage .rowSplit > .btn {
+    width: 100%;
+  }
+}
