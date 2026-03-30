@@ -1787,7 +1787,7 @@ body.tileMaximizedMode #videoGrid {
     mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M5 5h6v6H5V5Zm8 0h6v6h-6V5ZM5 13h6v6H5v-6Zm8 0h6v6h-6v-6Z'/></svg>");
   }
 
-  .tab[href="/rules"] .tabDot::before {
+  .tab[href="/flows"] .tabDot::before {
     -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 3l2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2L12 3Z'/></svg>");
     mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 3l2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2L12 3Z'/></svg>");
   }
@@ -1814,4 +1814,44 @@ body.tileMaximizedMode #videoGrid {
   .tab.active .tabDot::before {
     background: var(--accent);
   }
+}
+
+/* ===== node text overlap cleanup ===== */
+
+.flowsPage .flowNode {
+  min-height: 96px;
+  padding: 12px 18px 14px;
+}
+
+.flowsPage .flowNodeTop > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.flowsPage .flowNodeLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the badge already shows Trigger / Action / etc */
+.flowsPage .flowNodeType {
+  display: none;
+}
+
+/* give preview text cleaner spacing */
+.flowsPage .flowNodePreview {
+  margin-top: 10px;
+  line-height: 1.45;
+  padding-right: 8px;
+}
+
+/* move handles slightly lower so lines don't cut through the title area */
+.flowsPage .portStack {
+  top: 58%;
+}
+
+/* hide inline port labels like "out" since they collide with content */
+.flowsPage .flowPortLabel {
+  display: none;
 }

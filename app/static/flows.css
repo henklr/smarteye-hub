@@ -1,0 +1,781 @@
+:root {
+  --flow-trigger: #4f8cff;
+  --flow-condition: #e2b84e;
+  --flow-operator: #20c997;
+  --flow-action: #ff9a4d;
+
+  --flow-grid-major: rgba(255, 255, 255, 0.04);
+  --flow-grid-minor: rgba(255, 255, 255, 0.02);
+
+  --flow-node-bg: rgba(16, 21, 28, 0.96);
+  --flow-node-border: rgba(255, 255, 255, 0.1);
+  --flow-node-shadow: 0 18px 42px rgba(0, 0, 0, 0.32);
+}
+
+body.flowsPage {
+  overflow: hidden;
+}
+
+.flowsPage .wrap.full {
+  max-width: 100%;
+  padding-bottom: 22px;
+}
+
+/* Main 3-column layout */
+.flowsPage .flowsShell {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr) 360px;
+  gap: 14px;
+  align-items: stretch;
+  height: calc(100vh - 108px);
+  min-height: 0;
+}
+
+.flowsPage .flowsSidebar,
+.flowsPage .flowsMain,
+.flowsPage .flowsInspector {
+  min-height: 0;
+  height: 100%;
+}
+
+/* Left sidebar */
+.flowsPage .flowsSidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.flowsPage .flowsSidebarBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Saved flows section sizes to content, but list can scroll */
+.flowsPage .flowsSidebarBlock:first-child {
+  flex: 0 0 auto;
+}
+
+/* Palette takes remaining height */
+.flowsPage .flowsSidebarBlock:last-child {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.flowsPage .listHeader.compact {
+  margin-bottom: 0;
+}
+
+.flowsPage .listTitle.small {
+  font-size: 14px;
+}
+
+/* Saved flows list */
+.flowsPage .flowList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  max-height: clamp(220px, 34vh, 420px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+
+.flowsPage .flowListItem {
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 12px;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.flowsPage .flowListItem:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--stroke-2);
+}
+
+.flowsPage .flowListItem.active {
+  border-color: rgba(198, 161, 75, 0.35);
+  box-shadow: 0 0 0 3px rgba(198, 161, 75, 0.08);
+}
+
+.flowsPage .flowListItemTop {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.flowsPage .flowListItemName {
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.flowsPage .flowListItemMeta {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.flowsPage .chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.flowsPage .miniPill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.flowsPage .miniPill.enabled {
+  color: #072016;
+  background: rgba(61, 195, 161, 0.96);
+  border-color: rgba(61, 195, 161, 0.3);
+}
+
+.flowsPage .miniPill.disabled {
+  color: #ffd3d8;
+  background: rgba(223, 102, 114, 0.12);
+  border-color: rgba(223, 102, 114, 0.25);
+}
+
+/* Palette area */
+.flowsPage .paletteGroups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.flowsPage .paletteGroup {
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+.flowsPage .paletteGroupHead {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--stroke);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: capitalize;
+}
+
+.flowsPage .paletteGroupBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+
+.flowsPage .paletteItem {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-xs);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    transform 0.12s ease;
+}
+
+.flowsPage .paletteItem:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--stroke-2);
+}
+
+.flowsPage .paletteItem:active {
+  transform: scale(0.995);
+}
+
+.flowsPage .paletteItemTitle {
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--text);
+  line-height: 1.25;
+}
+
+.flowsPage .paletteItemSub {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+/* Main editor */
+.flowsPage .flowsMain {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.flowsPage .flowsToolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.flowsPage .flowHeading {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1.15;
+}
+
+.flowsPage .flowBoardWrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid var(--stroke);
+  border-radius: 18px;
+  overflow: hidden;
+  background:
+    linear-gradient(var(--flow-grid-major) 1px, transparent 1px),
+    linear-gradient(90deg, var(--flow-grid-major) 1px, transparent 1px),
+    linear-gradient(var(--flow-grid-minor) 1px, transparent 1px),
+    linear-gradient(90deg, var(--flow-grid-minor) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(16, 19, 23, 0.82), rgba(16, 19, 23, 0.96));
+  background-size:
+    72px 72px,
+    72px 72px,
+    18px 18px,
+    18px 18px,
+    cover;
+}
+
+.flowsPage .flowBoardScroller {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  cursor: grab;
+}
+
+.flowsPage .flowBoard {
+  position: relative;
+  width: 2800px;
+  height: 1800px;
+  min-width: 100%;
+  min-height: 100%;
+}
+
+.flowsPage .flowNodes {
+  position: absolute;
+  inset: 0;
+}
+
+.flowsPage .flowEdges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.flowsPage .flowEdgePath {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.28);
+  stroke-width: 3;
+  stroke-linecap: round;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: stroke 0.12s ease, filter 0.12s ease;
+}
+
+.flowsPage .flowEdgePath:hover {
+  stroke: rgba(198, 161, 75, 0.82);
+}
+
+.flowsPage .flowEdgePath.active {
+  stroke: rgba(198, 161, 75, 0.98);
+  filter: drop-shadow(0 0 8px rgba(198, 161, 75, 0.35));
+}
+
+.flowsPage .flowNode {
+  position: absolute;
+  width: 220px;
+  min-height: 76px;
+  padding: 12px 14px;
+  border: 1px solid var(--flow-node-border);
+  border-radius: 16px;
+  background: var(--flow-node-bg);
+  box-shadow: var(--flow-node-shadow);
+  color: var(--text);
+  cursor: grab;
+  user-select: none;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease;
+}
+
+.flowsPage .flowNode:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.flowsPage .flowNode.dragging {
+  cursor: grabbing;
+  opacity: 0.94;
+}
+
+.flowsPage .flowNode.selected {
+  border-color: rgba(198, 161, 75, 0.38);
+  box-shadow:
+    0 0 0 3px rgba(198, 161, 75, 0.12),
+    var(--flow-node-shadow);
+}
+
+.flowsPage .flowNode.trigger {
+  box-shadow:
+    inset 0 0 0 1px rgba(79, 140, 255, 0.18),
+    var(--flow-node-shadow);
+}
+
+.flowsPage .flowNode.condition {
+  box-shadow:
+    inset 0 0 0 1px rgba(226, 184, 78, 0.18),
+    var(--flow-node-shadow);
+}
+
+.flowsPage .flowNode.operator {
+  box-shadow:
+    inset 0 0 0 1px rgba(32, 201, 151, 0.18),
+    var(--flow-node-shadow);
+}
+
+.flowsPage .flowNode.action {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 154, 77, 0.18),
+    var(--flow-node-shadow);
+}
+
+.flowsPage .flowNodeTop {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.flowsPage .flowNodeLabel {
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.22;
+  color: var(--text);
+}
+
+.flowsPage .flowNodeType {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: capitalize;
+}
+
+.flowsPage .flowNodePreview {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.flowsPage .nodeBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.flowsPage .flowNode.trigger .nodeBadge {
+  background: rgba(79, 140, 255, 0.16);
+  color: var(--flow-trigger);
+}
+
+.flowsPage .flowNode.condition .nodeBadge {
+  background: rgba(226, 184, 78, 0.16);
+  color: var(--flow-condition);
+}
+
+.flowsPage .flowNode.operator .nodeBadge {
+  background: rgba(32, 201, 151, 0.16);
+  color: var(--flow-operator);
+}
+
+.flowsPage .flowNode.action .nodeBadge {
+  background: rgba(255, 154, 77, 0.16);
+  color: var(--flow-action);
+}
+
+.flowsPage .flowNodePorts {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.flowsPage .portStack {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.flowsPage .portStack.inputs {
+  left: -9px;
+}
+
+.flowsPage .portStack.outputs {
+  right: -9px;
+}
+
+.flowsPage .flowPort {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 2px solid rgba(16, 19, 23, 0.92);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+  cursor: crosshair;
+  pointer-events: auto;
+}
+
+.flowsPage .flowPort:hover {
+  transform: scale(1.08);
+}
+
+.flowsPage .flowPort.active {
+  box-shadow: 0 0 0 4px rgba(198, 161, 75, 0.18);
+}
+
+.flowsPage .flowNode.trigger .flowPort,
+.flowsPage .flowPort.trigger {
+  background: var(--flow-trigger);
+}
+
+.flowsPage .flowNode.condition .flowPort,
+.flowsPage .flowPort.condition {
+  background: var(--flow-condition);
+}
+
+.flowsPage .flowNode.operator .flowPort,
+.flowsPage .flowPort.operator {
+  background: var(--flow-operator);
+}
+
+.flowsPage .flowNode.action .flowPort,
+.flowsPage .flowPort.action {
+  background: var(--flow-action);
+}
+
+.flowsPage .flowPortLabel {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.flowsPage .portStack.inputs .flowPortLabel {
+  left: 24px;
+}
+
+.flowsPage .portStack.outputs .flowPortLabel {
+  right: 24px;
+}
+
+.flowsPage .emptyBoardHint {
+  position: sticky;
+  left: 24px;
+  top: 24px;
+  width: fit-content;
+  padding: 12px 16px;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  background: rgba(10, 14, 18, 0.84);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Right inspector */
+.flowsPage .flowsInspector {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.flowsPage .flowInspectorHeader {
+  margin-bottom: 0;
+}
+
+.flowsPage .inspectorBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+
+.flowsPage .inspectorCard {
+  border: 1px solid var(--stroke);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.flowsPage .inspectorTitle {
+  font-size: 13px;
+  font-weight: 900;
+  margin-bottom: 10px;
+}
+
+.flowsPage .fieldGrid,
+.flowsPage .inspectorRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.flowsPage .fieldGrid > .full,
+.flowsPage .inspectorRow.single,
+.flowsPage .inspectorRow .full {
+  grid-column: 1 / -1;
+}
+
+.flowsPage textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 10px 12px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-xs);
+  background: rgba(8, 12, 16, 0.72);
+  color: var(--text);
+  outline: none;
+  resize: vertical;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    background 0.12s ease;
+}
+
+.flowsPage textarea:hover {
+  background: rgba(10, 14, 19, 0.82);
+}
+
+.flowsPage textarea:focus {
+  border-color: rgba(198, 161, 75, 0.42);
+  box-shadow: 0 0 0 3px rgba(198, 161, 75, 0.12);
+}
+
+.flowsPage .variableList,
+.flowsPage .varList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.flowsPage .variableRow,
+.flowsPage .varCard {
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.flowsPage .variableRowHead,
+.flowsPage .varCardTop {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.flowsPage .variableLabel,
+.flowsPage .varCardName {
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.flowsPage .inlineMeta,
+.flowsPage .varCardType {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.flowsPage .testResult {
+  margin-top: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.22);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.flowsPage .emptyState {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: var(--r-xs);
+  background: rgba(255, 255, 255, 0.02);
+  text-align: center;
+  line-height: 1.45;
+}
+
+.flowsPage .hidden {
+  display: none !important;
+}
+
+/* Scrollbars */
+.flowsPage .flowList::-webkit-scrollbar,
+.flowsPage .paletteGroups::-webkit-scrollbar,
+.flowsPage .inspectorBody::-webkit-scrollbar,
+.flowsPage .testResult::-webkit-scrollbar,
+.flowsPage .flowBoardScroller::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.flowsPage .flowList::-webkit-scrollbar-thumb,
+.flowsPage .paletteGroups::-webkit-scrollbar-thumb,
+.flowsPage .inspectorBody::-webkit-scrollbar-thumb,
+.flowsPage .testResult::-webkit-scrollbar-thumb,
+.flowsPage .flowBoardScroller::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}
+
+.flowsPage .flowList::-webkit-scrollbar-track,
+.flowsPage .paletteGroups::-webkit-scrollbar-track,
+.flowsPage .inspectorBody::-webkit-scrollbar-track,
+.flowsPage .testResult::-webkit-scrollbar-track,
+.flowsPage .flowBoardScroller::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (max-width: 1440px) {
+  .flowsPage .flowsShell {
+    grid-template-columns: 300px minmax(0, 1fr) 340px;
+  }
+}
+
+@media (max-width: 1140px) {
+  body.flowsPage {
+    overflow: auto;
+  }
+
+  .flowsPage .flowsShell {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
+  }
+
+  .flowsPage .flowsSidebar,
+  .flowsPage .flowsMain,
+  .flowsPage .flowsInspector {
+    height: auto;
+    min-height: 0;
+  }
+
+  .flowsPage .flowList,
+  .flowsPage .paletteGroups,
+  .flowsPage .inspectorBody {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .flowsPage .flowBoardWrap {
+    min-height: 60vh;
+  }
+
+  .flowsPage .flowBoardScroller {
+    min-height: 60vh;
+    max-height: 60vh;
+  }
+}
+
+@media (max-width: 720px) {
+  .flowsPage .flowsToolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .flowsPage .fieldGrid,
+  .flowsPage .inspectorRow {
+    grid-template-columns: 1fr;
+  }
+
+  .flowsPage .flowNode {
+    width: 208px;
+  }
+
+  .flowsPage .flowBoardWrap {
+    min-height: 56vh;
+  }
+
+  .flowsPage .flowBoardScroller {
+    min-height: 56vh;
+    max-height: 56vh;
+  }
+}

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Flows</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/flows.css" />
+</head>
+<body class="flowsPage">
+  <div class="wrap full">
+    <div class="topbar">
+      <div class="tabs">
+        <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
+        <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
+        <a class="tab active" href="/flows"><span class="tabDot"></span>Flows</a>
+      </div>
+    </div>
+
+    <div class="flowsShell">
+      <aside class="card flowsSidebar">
+        <div class="flowsSidebarBlock">
+          <div class="listHeader compact">
+            <div>
+              <div class="listTitle">Saved flows</div>
+              <div class="listSub">Reusable trigger, condition, operator, and action blocks.</div>
+            </div>
+            <button class="btn btn-primary" id="btnNewFlow" type="button">New</button>
+          </div>
+
+          <label for="flowSearch">Search</label>
+          <input id="flowSearch" placeholder="Search flows" />
+
+          <div id="flowList" class="flowList mt-10"></div>
+        </div>
+
+        <div class="flowsSidebarBlock">
+          <div class="listTitle small">Palette</div>
+          <div class="listSub">Click a block to add it to the canvas.</div>
+          <div id="paletteGroups" class="paletteGroups mt-10"></div>
+        </div>
+      </aside>
+
+      <section class="card flowsMain">
+        <div class="flowsToolbar">
+          <div>
+            <div class="flowHeading" id="flowHeading">New flow</div>
+            <div class="muted" id="flowMetaText">Unsaved draft</div>
+          </div>
+
+          <div class="row2 mt-0">
+            <button class="btn" id="btnDuplicateFlow" type="button">Duplicate</button>
+            <button class="btn btn-danger" id="btnDeleteFlow" type="button">Delete</button>
+            <button class="btn" id="btnTestFlow" type="button">Test</button>
+            <button class="btn btn-primary" id="btnSaveFlow" type="button">Save</button>
+          </div>
+        </div>
+
+        <div class="flowBoardWrap">
+          <div class="flowBoardScroller" id="flowBoardScroller">
+            <div class="flowBoard" id="flowBoard">
+              <svg id="flowEdges" class="flowEdges"></svg>
+              <div id="flowNodes" class="flowNodes"></div>
+              <div id="emptyBoardHint" class="emptyBoardHint hidden">Add blocks from the left palette to start building.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="statusLine mt-12">
+          <strong>Status:</strong> <span id="boardStatus" class="muted">Ready.</span>
+        </div>
+      </section>
+
+      <aside class="card flowsInspector">
+        <div class="flowInspectorHeader">
+          <div class="listTitle">Inspector</div>
+          <div class="listSub" id="inspectorSubtext">Flow settings and reusable variables.</div>
+        </div>
+
+        <div id="inspectorBody" class="inspectorBody"></div>
+
+        <div class="statusLine mt-12">
+          <strong>Last test:</strong> <span id="testStatus" class="muted">No test run yet.</span>
+        </div>
+
+        <pre id="testResult" class="testResult hidden"></pre>
+      </aside>
+    </div>
+  </div>
+
+  <script src="/static/flows.js"></script>
+</body>
+</html>
