@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -7,6 +8,7 @@
   <link rel="stylesheet" href="/static/styles.css" />
   <link rel="stylesheet" href="/static/flows.css" />
 </head>
+
 <body class="flowsPage">
   <div class="wrap full">
     <div class="topbar">
@@ -37,6 +39,10 @@
         <div class="flowsSidebarBlock">
           <div class="listTitle small">Palette</div>
           <div class="listSub">Click a block to add it to the canvas.</div>
+
+          <label for="paletteSearch">Search palette</label>
+          <input id="paletteSearch" placeholder="Search blocks" />
+
           <div id="paletteGroups" class="paletteGroups mt-10"></div>
         </div>
       </aside>
@@ -60,7 +66,8 @@
             <div class="flowBoard" id="flowBoard">
               <svg id="flowEdges" class="flowEdges"></svg>
               <div id="flowNodes" class="flowNodes"></div>
-              <div id="emptyBoardHint" class="emptyBoardHint hidden">Add blocks from the left palette to start building.</div>
+              <div id="emptyBoardHint" class="emptyBoardHint hidden">Add blocks from the left palette to start building.
+              </div>
             </div>
           </div>
         </div>
@@ -89,4 +96,5 @@
 
   <script src="/static/flows.js"></script>
 </body>
+
 </html>

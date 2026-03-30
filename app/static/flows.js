@@ -305,8 +305,19 @@ function renderFlowList() {
 }
 
 function renderPalette() {
+  const q = (el("paletteSearch")?.value || "").trim().toLowerCase();
   const groups = new Map();
+
   for (const item of state.catalog?.nodes || []) {
+    const haystack = [
+      item.label,
+      item.type,
+      item.category,
+      item.description || "",
+    ].join(" ").toLowerCase();
+
+    if (q && !haystack.includes(q)) continue;
+
     const list = groups.get(item.category) || [];
     list.push(item);
     groups.set(item.category, list);
@@ -314,6 +325,11 @@ function renderPalette() {
 
   const box = el("paletteGroups");
   if (!box) return;
+
+  if (!groups.size) {
+    box.innerHTML = `<div class="emptyState">No palette blocks found.</div>`;
+    return;
+  }
 
   box.innerHTML = [...groups.entries()].map(([category, items]) => `
     <div class="paletteGroup">
@@ -1573,7 +1589,8 @@ function bindGlobalEvents() {
   });
 
   el("flowSearch")?.addEventListener("input", renderFlowList);
-
+  el("paletteSearch")?.addEventListener("input", renderPalette);
+  
   const board = el("flowBoard");
   board?.addEventListener("click", () => {
     if (state.connecting) {
