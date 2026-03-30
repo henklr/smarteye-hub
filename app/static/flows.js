@@ -403,14 +403,14 @@ function renderCanvas() {
         <div class="flowNodePorts">
           <div class="portStack inputs">
             ${ports.inputs.map((port) => `
-              <button class="flowPort ${state.connecting && state.connecting.nodeId === node.id && state.connecting.handle === port ? "active" : ""}" type="button" data-port-kind="input" data-port-handle="${escapeHtml(port)}" data-node-id="${escapeHtml(node.id)}">
+              <button class="flowPort ${state.connecting && state.connecting.nodeId === node.id && state.connecting.handle === port && state.connecting.kind === "input" ? "active" : ""}" type="button" data-port-kind="input" data-port-handle="${escapeHtml(port)}" data-node-id="${escapeHtml(node.id)}">
                 <span class="flowPortLabel">${escapeHtml(port)}</span>
               </button>
             `).join("")}
           </div>
           <div class="portStack outputs">
             ${ports.outputs.map((port) => `
-              <button class="flowPort ${state.connecting && state.connecting.nodeId === node.id && state.connecting.handle === port ? "active" : ""}" type="button" data-port-kind="output" data-port-handle="${escapeHtml(port)}" data-node-id="${escapeHtml(node.id)}">
+              <button class="flowPort ${state.connecting && state.connecting.nodeId === node.id && state.connecting.handle === port && state.connecting.kind === "output" ? "active" : ""}" type="button" data-port-kind="output" data-port-handle="${escapeHtml(port)}" data-node-id="${escapeHtml(node.id)}">
                 <span class="flowPortLabel">${escapeHtml(port)}</span>
               </button>
             `).join("")}
@@ -462,55 +462,89 @@ function renderCanvas() {
   nodesBox.querySelectorAll(".flowPort").forEach((portEl) => {
     portEl.addEventListener("click", (ev) => {
       ev.stopPropagation();
+
       const kind = portEl.dataset.portKind;
       const nodeId = portEl.dataset.nodeId;
-      const handle = portEl.dataset.portHandle || "out";
+      const handle = portEl.dataset.portHandle || (kind === "input" ? "in" : "out");
 
-      if (kind === "output") {
-        const board = el("flowBoard");
-        let cursor = null;
+      const board = el("flowBoard");
+      let cursor = null;
 
-        if (board) {
-          const rect = board.getBoundingClientRect();
-          cursor = {
-            x: ev.clientX - rect.left,
-            y: ev.clientY - rect.top,
-          };
-        }
+      if (board) {
+        const rect = board.getBoundingClientRect();
+        cursor = {
+          x: ev.clientX - rect.left,
+          y: ev.clientY - rect.top,
+        };
+      }
 
-        state.connecting = { nodeId, handle };
+      if (!state.connecting) {
+        state.connecting = { nodeId, handle, kind };
         state.connectionCursor = cursor;
         state.selectedNodeId = nodeId;
         state.selectedEdgeId = null;
         renderAll();
-        setStatus(`Connection started from ${handle}. Click an input port to finish.`);
+        setStatus(
+          kind === "input"
+            ? `Connection started from input "${handle}". Click an output port to finish.`
+            : `Connection started from output "${handle}". Click an input port to finish.`
+        );
         return;
       }
 
-      if (kind === "input" && state.connecting) {
-        const duplicate = currentFlow().edges.some((edge) =>
-          edge.source === state.connecting.nodeId &&
-          edge.source_handle === state.connecting.handle &&
-          edge.target === nodeId &&
-          edge.target_handle === handle
-        );
-
-        if (!duplicate) {
-          currentFlow().edges.push({
-            id: makeId("edge"),
-            source: state.connecting.nodeId,
-            source_handle: state.connecting.handle,
-            target: nodeId,
-            target_handle: handle,
-          });
-          markDirty();
-        }
-
+      if (
+        state.connecting.nodeId === nodeId &&
+        state.connecting.handle === handle &&
+        state.connecting.kind === kind
+      ) {
         state.connecting = null;
         state.connectionCursor = null;
         renderAll();
-        setStatus("Connection created.");
+        setStatus("Connection cancelled.");
+        return;
       }
+
+      if (state.connecting.kind === kind) {
+        state.connecting = { nodeId, handle, kind };
+        state.connectionCursor = cursor;
+        state.selectedNodeId = nodeId;
+        state.selectedEdgeId = null;
+        renderAll();
+        setStatus(
+          kind === "input"
+            ? `Connection restarted from input "${handle}". Click an output port to finish.`
+            : `Connection restarted from output "${handle}". Click an input port to finish.`
+        );
+        return;
+      }
+
+      const sourceNodeId = state.connecting.kind === "output" ? state.connecting.nodeId : nodeId;
+      const sourceHandle = state.connecting.kind === "output" ? state.connecting.handle : handle;
+      const targetNodeId = state.connecting.kind === "input" ? state.connecting.nodeId : nodeId;
+      const targetHandle = state.connecting.kind === "input" ? state.connecting.handle : handle;
+
+      const duplicate = currentFlow().edges.some((edge) =>
+        edge.source === sourceNodeId &&
+        edge.source_handle === sourceHandle &&
+        edge.target === targetNodeId &&
+        edge.target_handle === targetHandle
+      );
+
+      if (!duplicate) {
+        currentFlow().edges.push({
+          id: makeId("edge"),
+          source: sourceNodeId,
+          source_handle: sourceHandle,
+          target: targetNodeId,
+          target_handle: targetHandle,
+        });
+        markDirty();
+      }
+
+      state.connecting = null;
+      state.connectionCursor = null;
+      renderAll();
+      setStatus(duplicate ? "Connection already exists." : "Connection created.");
     });
   });
 
@@ -608,20 +642,28 @@ function drawEdges() {
   }
 
   if (state.connecting && state.connectionCursor) {
-    const sourcePort = board.querySelector(
-      `.flowPort[data-node-id="${CSS.escape(state.connecting.nodeId)}"][data-port-kind="output"][data-port-handle="${CSS.escape(state.connecting.handle || "out")}"]`
+    const portKind = state.connecting.kind || "output";
+    const portHandle = state.connecting.handle || (portKind === "input" ? "in" : "out");
+
+    const anchorPort = board.querySelector(
+      `.flowPort[data-node-id="${CSS.escape(state.connecting.nodeId)}"][data-port-kind="${CSS.escape(portKind)}"][data-port-handle="${CSS.escape(portHandle)}"]`
     );
 
-    if (sourcePort) {
-      const sourceRect = sourcePort.getBoundingClientRect();
+    if (anchorPort) {
+      const anchorRect = anchorPort.getBoundingClientRect();
 
-      const sx = sourceRect.left - boardRect.left + sourceRect.width / 2;
-      const sy = sourceRect.top - boardRect.top + sourceRect.height / 2;
-      const tx = state.connectionCursor.x;
-      const ty = state.connectionCursor.y;
+      const ax = anchorRect.left - boardRect.left + anchorRect.width / 2;
+      const ay = anchorRect.top - boardRect.top + anchorRect.height / 2;
+      const cx = state.connectionCursor.x;
+      const cy = state.connectionCursor.y;
 
       const ghost = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      ghost.setAttribute("d", makeBezierPath(sx, sy, tx, ty));
+      ghost.setAttribute(
+        "d",
+        portKind === "input"
+          ? makeBezierPath(cx, cy, ax, ay)
+          : makeBezierPath(ax, ay, cx, cy)
+      );
       ghost.setAttribute("class", "flowEdgePath flowEdgeGhost");
       svg.appendChild(ghost);
     }
