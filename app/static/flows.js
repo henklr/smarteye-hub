@@ -183,39 +183,13 @@ function nodePreview(node) {
 }
 
 function starterFlow() {
-  const triggerId = makeId("node");
-  const actionId = makeId("node");
   return {
     id: null,
     name: "New flow",
     enabled: true,
-    variables: [
-      { key: "armed", label: "Armed", type: "boolean", value: true },
-      { key: "last_message", label: "Last message", type: "string", value: "" },
-    ],
-    nodes: [
-      {
-        id: triggerId,
-        type: "trigger.manual",
-        category: "trigger",
-        label: "Manual trigger",
-        x: 140,
-        y: 180,
-        config: { name: "" },
-      },
-      {
-        id: actionId,
-        type: "action.log_message",
-        category: "action",
-        label: "Log message",
-        x: 460,
-        y: 180,
-        config: { name: "", message: "Flow {{flow.name}} ran." },
-      },
-    ],
-    edges: [
-      { id: makeId("edge"), source: triggerId, target: actionId, source_handle: "out", target_handle: "in" },
-    ],
+    variables: [],
+    nodes: [],
+    edges: [],
   };
 }
 
@@ -1327,8 +1301,8 @@ async function init() {
     state.catalog = catalog;
     state.devices = Array.isArray(catalog?.devices) ? catalog.devices : [];
     await refreshFlows();
-    state.draft = state.flows.length ? deepClone(state.flows[0]) : starterFlow();
-    state.selectedSavedFlowId = state.draft.id || null;
+    state.draft = starterFlow();
+    state.selectedSavedFlowId = null;
     clearDirty();
     renderPalette();
     renderAll();
