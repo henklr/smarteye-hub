@@ -26,16 +26,20 @@ async function api(path, opts = {}) {
     headers: { "Content-Type": "application/json" },
     ...opts,
   });
+
   const txt = await res.text();
   let data = null;
+
   try {
     data = txt ? JSON.parse(txt) : null;
   } catch {
     data = txt;
   }
+
   if (!res.ok) {
     throw new Error((data && data.detail) ? data.detail : (txt || res.statusText));
   }
+
   return data;
 }
 
@@ -54,14 +58,30 @@ function deepClone(value) {
 
 function setStatus(message, bad = false) {
   const node = el("boardStatus");
+  if (!node) return;
   node.textContent = message || "";
   node.style.color = bad ? "var(--danger)" : "var(--muted)";
 }
 
 function setTestStatus(message, bad = false) {
   const node = el("testStatus");
+  if (!node) return;
   node.textContent = message || "";
   node.style.color = bad ? "var(--danger)" : "var(--muted)";
+}
+
+function clearTestResult() {
+  const box = el("testResult");
+  if (!box) return;
+  box.textContent = "";
+  box.classList.add("hidden");
+}
+
+function showTestResult(value) {
+  const box = el("testResult");
+  if (!box) return;
+  box.classList.remove("hidden");
+  box.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
 function markDirty() {
@@ -89,7 +109,9 @@ function makeId(prefix) {
 function deviceOptionsHtml(selected = "") {
   const options = [`<option value="">Select device</option>`];
   for (const device of state.devices) {
-    options.push(`<option value="${escapeHtml(device.id)}" ${device.id === selected ? "selected" : ""}>${escapeHtml(device.name)}</option>`);
+    options.push(
+      `<option value="${escapeHtml(device.id)}" ${device.id === selected ? "selected" : ""}>${escapeHtml(device.name)}</option>`
+    );
   }
   return options.join("");
 }
@@ -98,7 +120,9 @@ function variableKeyOptionsHtml(selected = "") {
   const vars = currentFlow()?.variables || [];
   const options = [`<option value="">Select variable</option>`];
   for (const variable of vars) {
-    options.push(`<option value="${escapeHtml(variable.key)}" ${variable.key === selected ? "selected" : ""}>${escapeHtml(variable.key)}</option>`);
+    options.push(
+      `<option value="${escapeHtml(variable.key)}" ${variable.key === selected ? "selected" : ""}>${escapeHtml(variable.key)}</option>`
+    );
   }
   return options.join("");
 }
@@ -109,12 +133,17 @@ function sourceOptionsHtml(selected = "literal") {
     ["variable", "Variable"],
     ["trigger", "Trigger path"],
   ];
-  return options.map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`).join("");
+
+  return options
+    .map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`)
+    .join("");
 }
 
 function compareOperatorOptionsHtml(selected = "equals") {
   const options = state.catalog?.operators || [];
-  return options.map((item) => `<option value="${item.value}" ${item.value === selected ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("");
+  return options
+    .map((item) => `<option value="${item.value}" ${item.value === selected ? "selected" : ""}>${escapeHtml(item.label)}</option>`)
+    .join("");
 }
 
 function castOptionsHtml(selected = "auto") {
@@ -123,12 +152,16 @@ function castOptionsHtml(selected = "auto") {
     ["string", "String"],
     ["number", "Number"],
     ["boolean", "Boolean"],
-  ].map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`).join("");
+  ]
+    .map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`)
+    .join("");
 }
 
 function methodOptionsHtml(selected = "POST", allowAny = false) {
   const out = [];
-  if (allowAny) out.push(`<option value="ANY" ${selected === "ANY" ? "selected" : ""}>Any</option>`);
+  if (allowAny) {
+    out.push(`<option value="ANY" ${selected === "ANY" ? "selected" : ""}>Any</option>`);
+  }
   for (const method of (state.catalog?.http_methods || ["GET", "POST", "PUT", "PATCH", "DELETE"])) {
     out.push(`<option value="${method}" ${selected === method ? "selected" : ""}>${method}</option>`);
   }
@@ -162,7 +195,7 @@ function nodePreview(node) {
     case "trigger.incoming_http_request":
       return `${cfg.method || "ANY"} ${cfg.path || "/"}`;
     case "trigger.manual":
-      return "Used for editor test runs";
+      return "Run this node manually from the editor";
     case "condition.compare":
       return `${cfg.left_source || "literal"}:${cfg.left_value || ""} ${cfg.operator || "equals"} ${cfg.right_source || "literal"}:${cfg.right_value || ""}`;
     case "operator.delay":
@@ -196,11 +229,20 @@ function starterFlow() {
 function syncHeader() {
   const flow = currentFlow();
   const title = flow?.name || "New flow";
-  el("flowHeading").textContent = title;
-  el("flowMetaText").textContent = flow?.id
-    ? (state.dirty ? "Editing saved flow · unsaved changes" : "Editing saved flow")
-    : (state.dirty ? "Unsaved draft · changes pending" : "Unsaved draft");
-  el("btnDeleteFlow").disabled = !flow?.id;
+
+  if (el("flowHeading")) {
+    el("flowHeading").textContent = title;
+  }
+
+  if (el("flowMetaText")) {
+    el("flowMetaText").textContent = flow?.id
+      ? (state.dirty ? "Editing saved flow · unsaved changes" : "Editing saved flow")
+      : (state.dirty ? "Unsaved draft · changes pending" : "Unsaved draft");
+  }
+
+  if (el("btnDeleteFlow")) {
+    el("btnDeleteFlow").disabled = !flow?.id;
+  }
 }
 
 function confirmDiscard() {
@@ -209,16 +251,20 @@ function confirmDiscard() {
 }
 
 function renderFlowList() {
-  const q = (el("flowSearch").value || "").trim().toLowerCase();
+  const q = (el("flowSearch")?.value || "").trim().toLowerCase();
   const items = state.flows.filter((flow) => {
     if (!q) return true;
     return [flow.name, flowSummary(flow)].join(" ").toLowerCase().includes(q);
   });
+
   const box = el("flowList");
+  if (!box) return;
+
   if (!items.length) {
     box.innerHTML = `<div class="emptyState">No flows found.</div>`;
     return;
   }
+
   box.innerHTML = items.map((flow) => `
     <div class="flowListItem ${flow.id === state.selectedSavedFlowId ? "active" : ""}" data-id="${escapeHtml(flow.id)}">
       <div class="flowListItemTop">
@@ -241,14 +287,17 @@ function renderFlowList() {
       const flow = state.flows.find((item) => item.id === node.dataset.id);
       if (!flow) return;
       if (!confirmDiscard()) return;
+
       state.selectedSavedFlowId = flow.id;
       state.draft = deepClone(flow);
       state.selectedNodeId = null;
       state.selectedEdgeId = null;
       state.connecting = null;
+
       clearDirty();
+      clearTestResult();
       renderAll();
-      setStatus(`Loaded flow \"${flow.name}\".`);
+      setStatus(`Loaded flow "${flow.name}".`);
     });
   });
 }
@@ -260,7 +309,10 @@ function renderPalette() {
     list.push(item);
     groups.set(item.category, list);
   }
+
   const box = el("paletteGroups");
+  if (!box) return;
+
   box.innerHTML = [...groups.entries()].map(([category, items]) => `
     <div class="paletteGroup">
       <div class="paletteGroupHead">${escapeHtml(category)}</div>
@@ -284,9 +336,11 @@ function addNodeFromPalette(type) {
   const flow = currentFlow();
   const def = nodeDef(type);
   if (!flow || !def) return;
+
   const boardScroller = el("flowBoardScroller");
-  const x = boardScroller.scrollLeft + 220;
-  const y = boardScroller.scrollTop + 150;
+  const x = (boardScroller?.scrollLeft || 0) + 220;
+  const y = (boardScroller?.scrollTop || 0) + 150;
+
   const node = {
     id: makeId("node"),
     type: def.type,
@@ -296,9 +350,11 @@ function addNodeFromPalette(type) {
     y,
     config: deepClone(def.defaults || {}),
   };
+
   flow.nodes.push(node);
   state.selectedNodeId = node.id;
   state.selectedEdgeId = null;
+
   markDirty();
   renderAll();
 }
@@ -307,38 +363,52 @@ function renderCanvas() {
   const flow = currentFlow();
   const nodesBox = el("flowNodes");
   const hint = el("emptyBoardHint");
+
+  if (!nodesBox || !hint) return;
+
   if (!flow) {
     nodesBox.innerHTML = "";
     hint.classList.remove("hidden");
     drawEdges();
     return;
   }
+
   hint.classList.toggle("hidden", flow.nodes.length > 0);
+
   nodesBox.innerHTML = flow.nodes.map((node) => {
     const def = nodeDef(node.type);
     const ports = def?.ports || { inputs: [], outputs: [] };
     const meta = CATEGORY_META[node.category] || CATEGORY_META.action;
+
     return `
-      <div class="flowNode ${node.id === state.selectedNodeId ? "selected" : ""}" data-node-id="${escapeHtml(node.id)}" style="left:${Number(node.x) || 0}px; top:${Number(node.y) || 0}px;">
+      <div class="flowNode ${node.category} ${node.id === state.selectedNodeId ? "selected" : ""}" data-node-id="${escapeHtml(node.id)}" style="left:${Number(node.x) || 0}px; top:${Number(node.y) || 0}px;">
         <div class="flowNodeTop">
           <div>
             <div class="flowNodeLabel">${escapeHtml(node.label)}</div>
             <div class="flowNodeType">${escapeHtml(meta.label)}</div>
           </div>
-          <span class="nodeBadge" style="background:${meta.color}; color:#071015;">${escapeHtml(meta.label)}</span>
+          <span class="nodeBadge">${escapeHtml(meta.label)}</span>
         </div>
+
         <div class="flowNodePreview">${escapeHtml(nodePreview(node))}</div>
+
+        ${node.type === "trigger.manual" ? `
+          <div class="mt-10">
+            <button class="btn flowNodeRunBtn" type="button" data-run-node-id="${escapeHtml(node.id)}">Run</button>
+          </div>
+        ` : ""}
+
         <div class="flowNodePorts">
           <div class="portStack inputs">
             ${ports.inputs.map((port) => `
-              <button class="flowPort ${state.connecting && state.connecting.nodeId === node.id && state.connecting.handle === port ? "active" : ""}" type="button" data-port-kind="input" data-port-handle="${escapeHtml(port)}" data-node-id="${escapeHtml(node.id)}" style="background:${meta.color};">
+              <button class="flowPort ${state.connecting && state.connecting.nodeId === node.id && state.connecting.handle === port ? "active" : ""}" type="button" data-port-kind="input" data-port-handle="${escapeHtml(port)}" data-node-id="${escapeHtml(node.id)}">
                 <span class="flowPortLabel">${escapeHtml(port)}</span>
               </button>
             `).join("")}
           </div>
           <div class="portStack outputs">
             ${ports.outputs.map((port) => `
-              <button class="flowPort ${state.connecting && state.connecting.nodeId === node.id && state.connecting.handle === port ? "active" : ""}" type="button" data-port-kind="output" data-port-handle="${escapeHtml(port)}" data-node-id="${escapeHtml(node.id)}" style="background:${meta.color};">
+              <button class="flowPort ${state.connecting && state.connecting.nodeId === node.id && state.connecting.handle === port ? "active" : ""}" type="button" data-port-kind="output" data-port-handle="${escapeHtml(port)}" data-node-id="${escapeHtml(node.id)}">
                 <span class="flowPortLabel">${escapeHtml(port)}</span>
               </button>
             `).join("")}
@@ -350,9 +420,12 @@ function renderCanvas() {
 
   nodesBox.querySelectorAll(".flowNode").forEach((nodeEl) => {
     const nodeId = nodeEl.dataset.nodeId;
+
     nodeEl.addEventListener("click", (ev) => {
       ev.stopPropagation();
       if (ev.target.closest(".flowPort")) return;
+      if (ev.target.closest(".flowNodeRunBtn")) return;
+
       state.selectedNodeId = nodeId;
       state.selectedEdgeId = null;
       renderInspector();
@@ -363,8 +436,11 @@ function renderCanvas() {
     nodeEl.addEventListener("mousedown", (ev) => {
       if (ev.button !== 0) return;
       if (ev.target.closest(".flowPort")) return;
+      if (ev.target.closest(".flowNodeRunBtn")) return;
+
       const node = currentFlow().nodes.find((item) => item.id === nodeId);
       if (!node) return;
+
       state.selectedNodeId = nodeId;
       state.selectedEdgeId = null;
       state.drag = {
@@ -374,6 +450,7 @@ function renderCanvas() {
         originX: node.x,
         originY: node.y,
       };
+
       nodeEl.classList.add("dragging");
       renderInspector();
       ev.preventDefault();
@@ -403,6 +480,7 @@ function renderCanvas() {
           edge.target === nodeId &&
           edge.target_handle === handle
         );
+
         if (!duplicate) {
           currentFlow().edges.push({
             id: makeId("edge"),
@@ -413,10 +491,24 @@ function renderCanvas() {
           });
           markDirty();
         }
+
         state.connecting = null;
         renderAll();
         setStatus("Connection created.");
       }
+    });
+  });
+
+  nodesBox.querySelectorAll(".flowNodeRunBtn").forEach((button) => {
+    button.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      try {
+        await triggerManualNode(button.dataset.runNodeId);
+      } catch {}
+    });
+
+    button.addEventListener("mousedown", (ev) => {
+      ev.stopPropagation();
     });
   });
 
@@ -427,14 +519,22 @@ function drawEdges() {
   const svg = el("flowEdges");
   const board = el("flowBoard");
   const flow = currentFlow();
+
   if (!flow || !svg || !board) return;
+
   svg.innerHTML = "";
   const boardRect = board.getBoundingClientRect();
 
   for (const edge of flow.edges) {
-    const sourcePort = board.querySelector(`.flowPort[data-node-id="${CSS.escape(edge.source)}"][data-port-kind="output"][data-port-handle="${CSS.escape(edge.source_handle || "out")}"]`);
-    const targetPort = board.querySelector(`.flowPort[data-node-id="${CSS.escape(edge.target)}"][data-port-kind="input"][data-port-handle="${CSS.escape(edge.target_handle || "in")}"]`);
+    const sourcePort = board.querySelector(
+      `.flowPort[data-node-id="${CSS.escape(edge.source)}"][data-port-kind="output"][data-port-handle="${CSS.escape(edge.source_handle || "out")}"]`
+    );
+    const targetPort = board.querySelector(
+      `.flowPort[data-node-id="${CSS.escape(edge.target)}"][data-port-kind="input"][data-port-handle="${CSS.escape(edge.target_handle || "in")}"]`
+    );
+
     if (!sourcePort || !targetPort) continue;
+
     const sourceRect = sourcePort.getBoundingClientRect();
     const targetRect = targetPort.getBoundingClientRect();
     const sx = sourceRect.left - boardRect.left + sourceRect.width / 2;
@@ -443,10 +543,12 @@ function drawEdges() {
     const ty = targetRect.top - boardRect.top + targetRect.height / 2;
     const dx = Math.max(80, Math.abs(tx - sx) * 0.5);
     const d = `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`;
+
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
     path.setAttribute("d", d);
     path.setAttribute("class", `flowEdgePath ${edge.id === state.selectedEdgeId ? "active" : ""}`);
     path.dataset.edgeId = edge.id;
+
     path.addEventListener("click", (ev) => {
       ev.stopPropagation();
       state.selectedEdgeId = edge.id;
@@ -454,6 +556,7 @@ function drawEdges() {
       renderInspector();
       drawEdges();
     });
+
     svg.appendChild(path);
   }
 }
@@ -461,6 +564,9 @@ function drawEdges() {
 function renderInspector() {
   const box = el("inspectorBody");
   const flow = currentFlow();
+
+  if (!box) return;
+
   if (!flow) {
     box.innerHTML = `<div class="inspectorHint">No flow selected.</div>`;
     return;
@@ -473,7 +579,11 @@ function renderInspector() {
       renderInspector();
       return;
     }
-    el("inspectorSubtext").textContent = "Connection settings";
+
+    if (el("inspectorSubtext")) {
+      el("inspectorSubtext").textContent = "Connection settings";
+    }
+
     box.innerHTML = `
       <div class="inspectorCard dangerZone">
         <div class="inspectorTitle">Connection</div>
@@ -483,13 +593,15 @@ function renderInspector() {
         </div>
       </div>
     `;
-    el("btnDeleteEdge").addEventListener("click", () => {
+
+    el("btnDeleteEdge")?.addEventListener("click", () => {
       flow.edges = flow.edges.filter((item) => item.id !== edge.id);
       state.selectedEdgeId = null;
       markDirty();
       renderAll();
       setStatus("Connection deleted.");
     });
+
     return;
   }
 
@@ -500,13 +612,20 @@ function renderInspector() {
       renderInspector();
       return;
     }
-    el("inspectorSubtext").textContent = `${node.label} settings`;
+
+    if (el("inspectorSubtext")) {
+      el("inspectorSubtext").textContent = `${node.label} settings`;
+    }
+
     box.innerHTML = renderNodeInspector(node);
     bindNodeInspector(node);
     return;
   }
 
-  el("inspectorSubtext").textContent = "Flow settings and reusable variables.";
+  if (el("inspectorSubtext")) {
+    el("inspectorSubtext").textContent = "Flow settings and reusable variables.";
+  }
+
   box.innerHTML = renderFlowInspector(flow);
   bindFlowInspector(flow);
 }
@@ -588,23 +707,31 @@ function formatVariableValue(value, type) {
 }
 
 function bindFlowInspector(flow) {
-  el("flowNameInput").addEventListener("input", () => {
+  el("flowNameInput")?.addEventListener("input", () => {
     flow.name = el("flowNameInput").value;
     markDirty();
     renderFlowList();
     syncHeader();
   });
-  el("flowEnabledInput").addEventListener("change", () => {
+
+  el("flowEnabledInput")?.addEventListener("change", () => {
     flow.enabled = el("flowEnabledInput").checked;
     markDirty();
     renderFlowList();
     renderInspector();
   });
-  el("btnAddVariable").addEventListener("click", () => {
-    flow.variables.push({ key: `var_${flow.variables.length + 1}`, label: "", type: "string", value: "" });
+
+  el("btnAddVariable")?.addEventListener("click", () => {
+    flow.variables.push({
+      key: `var_${flow.variables.length + 1}`,
+      label: "",
+      type: "string",
+      value: "",
+    });
     markDirty();
     renderInspector();
   });
+
   boxBindVariableRows(flow);
 }
 
@@ -613,26 +740,31 @@ function boxBindVariableRows(flow) {
     const idx = Number(row.dataset.variableIndex || -1);
     const variable = flow.variables[idx];
     if (!variable) return;
+
     row.querySelector(".btnRemoveVariable")?.addEventListener("click", () => {
       flow.variables.splice(idx, 1);
       markDirty();
       renderInspector();
     });
+
     row.querySelector(".jsVarKey")?.addEventListener("input", (ev) => {
       variable.key = ev.target.value.trim();
       markDirty();
       const label = row.querySelector(".variableLabel");
       if (label) label.textContent = variable.key || `var_${idx + 1}`;
     });
+
     row.querySelector(".jsVarLabel")?.addEventListener("input", (ev) => {
       variable.label = ev.target.value;
       markDirty();
     });
+
     row.querySelector(".jsVarType")?.addEventListener("change", (ev) => {
       variable.type = ev.target.value;
       markDirty();
       renderInspector();
     });
+
     row.querySelector(".jsVarValue")?.addEventListener("input", (ev) => {
       variable.value = ev.target.value;
       markDirty();
@@ -658,6 +790,7 @@ function renderNodeInspector(node) {
   `;
 
   let body = "";
+
   switch (node.type) {
     case "trigger.onvif_event":
       body = `
@@ -683,6 +816,7 @@ function renderNodeInspector(node) {
         </div>
       `;
       break;
+
     case "trigger.device_offline":
     case "trigger.device_back_online":
       body = `
@@ -701,6 +835,7 @@ function renderNodeInspector(node) {
         </div>
       `;
       break;
+
     case "trigger.incoming_http_request":
       body = `
         <div class="inspectorCard">
@@ -726,20 +861,25 @@ function renderNodeInspector(node) {
         </div>
       `;
       break;
+
     case "trigger.manual":
       body = `
         <div class="inspectorCard">
           <div class="inspectorTitle">Manual trigger</div>
-          <div class="inspectorHint">This trigger is mainly for local tests from the editor.</div>
+          <div class="inspectorHint">Run this flow path manually from the editor.</div>
           <div class="fieldGrid mt-10">
             <div class="full">
               <label>Name</label>
-              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Manual test trigger" />
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Manual trigger" />
+            </div>
+            <div class="full row2 mt-0">
+              <button class="btn btn-primary" id="btnRunManualNode" type="button">Run manual trigger</button>
             </div>
           </div>
         </div>
       `;
       break;
+
     case "condition.compare":
       body = `
         <div class="inspectorCard">
@@ -777,6 +917,7 @@ function renderNodeInspector(node) {
         </div>
       `;
       break;
+
     case "operator.delay":
       body = `
         <div class="inspectorCard">
@@ -794,6 +935,7 @@ function renderNodeInspector(node) {
         </div>
       `;
       break;
+
     case "operator.set_variable":
       body = `
         <div class="inspectorCard">
@@ -819,6 +961,7 @@ function renderNodeInspector(node) {
         </div>
       `;
       break;
+
     case "operator.template":
       body = `
         <div class="inspectorCard">
@@ -841,6 +984,7 @@ function renderNodeInspector(node) {
         </div>
       `;
       break;
+
     case "action.send_http_request":
       body = `
         <div class="inspectorCard">
@@ -874,6 +1018,7 @@ function renderNodeInspector(node) {
         </div>
       `;
       break;
+
     case "action.activate_output_relay":
       body = `
         <div class="inspectorCard">
@@ -899,6 +1044,7 @@ function renderNodeInspector(node) {
         </div>
       `;
       break;
+
     case "action.log_message":
       body = `
         <div class="inspectorCard">
@@ -916,6 +1062,7 @@ function renderNodeInspector(node) {
         </div>
       `;
       break;
+
     default:
       body = `<div class="inspectorCard"><div class="inspectorHint">No editor available for this node yet.</div></div>`;
       break;
@@ -954,6 +1101,7 @@ function bindNodeInspector(node) {
 
   if (node.type === "trigger.onvif_event") {
     hydrateTopicSelect(node, false);
+
     document.getElementById("cfg_device_id")?.addEventListener("change", async () => {
       node.config.device_id = document.getElementById("cfg_device_id").value;
       node.config.topic = "";
@@ -961,14 +1109,24 @@ function bindNodeInspector(node) {
       markDirty();
       renderCanvas();
     });
+
     document.getElementById("btnRefreshTopics")?.addEventListener("click", async () => {
       await hydrateTopicSelect(node, true);
+    });
+  }
+
+  if (node.type === "trigger.manual") {
+    document.getElementById("btnRunManualNode")?.addEventListener("click", async () => {
+      try {
+        await triggerManualNode(node.id);
+      } catch {}
     });
   }
 }
 
 function applyNodeInspector(node) {
   const cfg = node.config || {};
+
   const set = (key, fallback = "") => {
     const input = document.getElementById(`cfg_${key}`);
     if (!input) return;
@@ -1065,16 +1223,24 @@ function buildWebhookUrl(path) {
 async function hydrateTopicSelect(node, force = false) {
   const select = document.getElementById("cfg_topic");
   const deviceId = document.getElementById("cfg_device_id")?.value || node.config.device_id || "";
+
   node.config.device_id = deviceId;
+
   if (!select) return;
+
   if (!deviceId) {
     select.innerHTML = `<option value="">Select device first</option>`;
     return;
   }
+
   try {
     const topics = await loadTopics(deviceId, force);
     const chosen = node.config.topic || "";
-    select.innerHTML = `<option value="">Select topic</option>${topics.map((topic) => `<option value="${escapeHtml(topic.path)}" ${topic.path === chosen ? "selected" : ""}>${escapeHtml(topic.name || topic.path)}</option>`).join("")}`;
+    select.innerHTML = `<option value="">Select topic</option>${topics.map((topic) => `
+      <option value="${escapeHtml(topic.path)}" ${topic.path === chosen ? "selected" : ""}>
+        ${escapeHtml(topic.name || topic.path)}
+      </option>
+    `).join("")}`;
   } catch (err) {
     select.innerHTML = `<option value="">Failed to load topics</option>`;
     setStatus(err.message || String(err), true);
@@ -1082,7 +1248,10 @@ async function hydrateTopicSelect(node, force = false) {
 }
 
 async function loadTopics(deviceId, force = false) {
-  if (!force && state.topicCache.has(deviceId)) return state.topicCache.get(deviceId);
+  if (!force && state.topicCache.has(deviceId)) {
+    return state.topicCache.get(deviceId);
+  }
+
   const data = await api(`/api/events/properties/${encodeURIComponent(deviceId)}`);
   const topics = Array.isArray(data?.topics) ? data.topics : [];
   state.topicCache.set(deviceId, topics);
@@ -1099,14 +1268,24 @@ function renderAll() {
 async function saveFlow() {
   const flow = currentFlow();
   if (!flow) return;
+
   validateDraft(flow);
   const payload = serializeFlow(flow);
+
   const out = flow.id
-    ? await api(`/api/flows/${encodeURIComponent(flow.id)}`, { method: "PUT", body: JSON.stringify(payload) })
-    : await api(`/api/flows`, { method: "POST", body: JSON.stringify(payload) });
+    ? await api(`/api/flows/${encodeURIComponent(flow.id)}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      })
+    : await api(`/api/flows`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+
   const saved = out.item;
   state.selectedSavedFlowId = saved.id;
   state.draft = deepClone(saved);
+
   await refreshFlows();
   clearDirty();
   setStatus("Flow saved.");
@@ -1140,6 +1319,7 @@ function validateDraft(flow) {
   if (!(flow.name || "").trim()) {
     throw new Error("Flow name is required.");
   }
+
   const variableKeys = new Set();
   for (const variable of flow.variables || []) {
     const key = (variable.key || "").trim();
@@ -1147,8 +1327,14 @@ function validateDraft(flow) {
     if (variableKeys.has(key)) throw new Error(`Duplicate variable key: ${key}`);
     variableKeys.add(key);
   }
-  if (!(flow.nodes || []).length) throw new Error("Add at least one node.");
-  if (!(flow.nodes || []).some((node) => node.category === "trigger")) throw new Error("Add at least one trigger node.");
+
+  if (!(flow.nodes || []).length) {
+    throw new Error("Add at least one node.");
+  }
+
+  if (!(flow.nodes || []).some((node) => node.category === "trigger")) {
+    throw new Error("Add at least one trigger node.");
+  }
 }
 
 async function refreshFlows() {
@@ -1156,24 +1342,41 @@ async function refreshFlows() {
   state.flows = Array.isArray(data?.items) ? data.items : [];
 }
 
-async function runFlowTest() {
+async function triggerManualNode(nodeId) {
   const flow = currentFlow();
+
   if (!flow?.id) {
-    setTestStatus("Save the flow before testing.", true);
+    setTestStatus("Save the flow before running a manual trigger.", true);
+    setStatus("Save the flow before running a manual trigger.", true);
     return;
   }
-  const preferredTrigger = flow.nodes.find((node) => node.id === state.selectedNodeId && node.category === "trigger") || flow.nodes.find((node) => node.category === "trigger");
+
+  const node = flow.nodes.find((item) => item.id === nodeId);
+  if (!node) {
+    setTestStatus("Manual trigger node not found.", true);
+    return;
+  }
+
+  if (node.type !== "trigger.manual") {
+    setTestStatus("Selected node is not a manual trigger.", true);
+    return;
+  }
+
   try {
     const out = await api(`/api/flows/test/${encodeURIComponent(flow.id)}`, {
       method: "POST",
-      body: JSON.stringify({ trigger_node_id: preferredTrigger?.id || null, trigger_payload: {} }),
+      body: JSON.stringify({
+        trigger_node_id: node.id,
+        trigger_payload: {},
+      }),
     });
-    el("testResult").classList.remove("hidden");
-    el("testResult").textContent = JSON.stringify(out.result, null, 2);
-    setTestStatus("Test executed.");
-    setStatus("Flow test executed.");
+
+    showTestResult(out.result);
+    setTestStatus(`Manual trigger "${node.label}" executed.`);
+    setStatus(`Manual trigger "${node.label}" executed.`);
   } catch (err) {
     setTestStatus(err.message || String(err), true);
+    setStatus(err.message || String(err), true);
     throw err;
   }
 }
@@ -1181,14 +1384,18 @@ async function runFlowTest() {
 function duplicateDraft() {
   const flow = currentFlow();
   if (!flow) return;
+
   const copy = deepClone(flow);
   copy.id = null;
   copy.name = `${flow.name || "Flow"} copy`;
+
   state.selectedSavedFlowId = null;
   state.draft = copy;
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
+
   markDirty();
+  clearTestResult();
   renderAll();
   setStatus("Flow duplicated into a new draft.");
 }
@@ -1196,31 +1403,38 @@ function duplicateDraft() {
 async function deleteDraft() {
   const flow = currentFlow();
   if (!flow?.id) return;
+
   await api(`/api/flows/${encodeURIComponent(flow.id)}`, { method: "DELETE" });
   await refreshFlows();
+
   state.selectedSavedFlowId = null;
   state.draft = starterFlow();
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
+
   clearDirty();
+  clearTestResult();
   renderAll();
   setStatus("Flow deleted.");
 }
 
 function bindGlobalEvents() {
-  el("btnNewFlow").addEventListener("click", () => {
+  el("btnNewFlow")?.addEventListener("click", () => {
     if (!confirmDiscard()) return;
+
     state.selectedSavedFlowId = null;
     state.draft = starterFlow();
     state.selectedNodeId = null;
     state.selectedEdgeId = null;
     state.connecting = null;
+
     clearDirty();
+    clearTestResult();
     renderAll();
     setStatus("Started a new flow.");
   });
 
-  el("btnSaveFlow").addEventListener("click", async () => {
+  el("btnSaveFlow")?.addEventListener("click", async () => {
     try {
       await saveFlow();
     } catch (err) {
@@ -1228,11 +1442,12 @@ function bindGlobalEvents() {
     }
   });
 
-  el("btnDuplicateFlow").addEventListener("click", duplicateDraft);
+  el("btnDuplicateFlow")?.addEventListener("click", duplicateDraft);
 
-  el("btnDeleteFlow").addEventListener("click", async () => {
+  el("btnDeleteFlow")?.addEventListener("click", async () => {
     if (!currentFlow()?.id) return;
     if (!window.confirm("Delete this flow?")) return;
+
     try {
       await deleteDraft();
     } catch (err) {
@@ -1240,24 +1455,17 @@ function bindGlobalEvents() {
     }
   });
 
-  el("btnTestFlow").addEventListener("click", async () => {
-    try {
-      await runFlowTest();
-    } catch (err) {
-      setStatus(err.message || String(err), true);
-    }
-  });
-
-  el("flowSearch").addEventListener("input", renderFlowList);
+  el("flowSearch")?.addEventListener("input", renderFlowList);
 
   const board = el("flowBoard");
-  board.addEventListener("click", () => {
+  board?.addEventListener("click", () => {
     if (state.connecting) {
       state.connecting = null;
       renderCanvas();
       setStatus("Connection cancelled.");
       return;
     }
+
     state.selectedNodeId = null;
     state.selectedEdgeId = null;
     renderInspector();
@@ -1267,13 +1475,16 @@ function bindGlobalEvents() {
 
   window.addEventListener("mousemove", (ev) => {
     if (!state.drag) return;
+
     const flow = currentFlow();
-    const node = flow.nodes.find((item) => item.id === state.drag.nodeId);
+    const node = flow?.nodes.find((item) => item.id === state.drag.nodeId);
     if (!node) return;
+
     const dx = ev.clientX - state.drag.startX;
     const dy = ev.clientY - state.drag.startY;
     node.x = Math.max(20, state.drag.originX + dx);
     node.y = Math.max(20, state.drag.originY + dy);
+
     markDirty();
     renderCanvas();
   });
@@ -1284,7 +1495,7 @@ function bindGlobalEvents() {
     drawEdges();
   });
 
-  el("flowBoardScroller").addEventListener("scroll", drawEdges);
+  el("flowBoardScroller")?.addEventListener("scroll", drawEdges);
   window.addEventListener("resize", drawEdges);
 
   window.addEventListener("beforeunload", (ev) => {
@@ -1296,19 +1507,26 @@ function bindGlobalEvents() {
 
 async function init() {
   bindGlobalEvents();
+
   try {
     const catalog = await api("/api/flows/catalog");
     state.catalog = catalog;
     state.devices = Array.isArray(catalog?.devices) ? catalog.devices : [];
+
     await refreshFlows();
-    state.draft = starterFlow();
-    state.selectedSavedFlowId = null;
+
+    state.draft = state.flows.length ? deepClone(state.flows[0]) : starterFlow();
+    state.selectedSavedFlowId = state.draft.id || null;
+
     clearDirty();
+    clearTestResult();
     renderPalette();
     renderAll();
   } catch (err) {
     setStatus(err.message || String(err), true);
-    el("inspectorBody").innerHTML = `<div class="emptyState">Failed to load flows UI: ${escapeHtml(err.message || String(err))}</div>`;
+    if (el("inspectorBody")) {
+      el("inspectorBody").innerHTML = `<div class="emptyState">Failed to load flows UI: ${escapeHtml(err.message || String(err))}</div>`;
+    }
   }
 }
 

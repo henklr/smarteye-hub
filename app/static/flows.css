@@ -779,3 +779,7 @@ body.flowsPage {
     max-height: 56vh;
   }
 }
+
+.flowsPage .flowNodeRunBtn {
+  width: 100%;
+}

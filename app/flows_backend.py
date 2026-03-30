@@ -303,15 +303,28 @@ def test_flow(flow_id: str, req: FlowTestRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="Flow not found")
 
     trigger_node = None
+
     if req.trigger_node_id:
         trigger_node = _node_by_id(flow, req.trigger_node_id)
-    if trigger_node is None:
-        trigger_node = next((n for n in flow["nodes"] if n["category"] == "trigger"), None)
-    if trigger_node is None:
-        raise HTTPException(status_code=400, detail="Flow has no trigger node")
+        if trigger_node is None:
+            raise HTTPException(status_code=404, detail="Trigger node not found")
+        if trigger_node.get("type") != "trigger.manual":
+            raise HTTPException(status_code=400, detail="Selected node is not a manual trigger")
+    else:
+        trigger_node = next(
+            (n for n in flow.get("nodes", []) if n.get("type") == "trigger.manual"),
+            None,
+        )
+        if trigger_node is None:
+            raise HTTPException(status_code=400, detail="Flow has no manual trigger node")
 
     trigger = _manual_trigger_from_node(flow, trigger_node, req.trigger_payload)
-    result = _run_flow_from_trigger(flow, trigger, manual=True)
+    result = _run_flow_from_trigger(
+        flow,
+        trigger,
+        start_node_id=trigger_node["id"],
+        manual=True,
+    )
     return {"ok": True, "result": result}
 
 
@@ -858,30 +871,23 @@ def dispatch_flow_trigger(trigger: Dict[str, Any]) -> int:
 
 
 def _manual_trigger_from_node(flow: Dict[str, Any], node: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    if node.get("type") != "trigger.manual":
+        raise HTTPException(status_code=400, detail="Only manual trigger nodes can be run manually")
+
     cfg = node.get("config") or {}
-    kind = node.get("type", "trigger.manual").split(".", 1)[1]
-    base: Dict[str, Any] = {
+
+    return {
         "kind": "manual",
-        "manual_kind": kind,
+        "manual_kind": "manual",
         "trigger_node_id": node["id"],
         "ts": _utc_now_iso(),
         "extra": dict(payload or {}),
-        "device_id": cfg.get("device_id") or payload.get("device_id"),
-        "method": payload.get("method") or cfg.get("method"),
-        "path": payload.get("path") or cfg.get("path"),
-        "topic": payload.get("topic") or cfg.get("topic"),
+        "device_id": cfg.get("device_id") or (payload or {}).get("device_id"),
+        "method": (payload or {}).get("method"),
+        "path": (payload or {}).get("path"),
+        "topic": (payload or {}).get("topic"),
         "flow_id": flow["id"],
     }
-    if kind == "onvif_event":
-        base.update({"kind": "onvif_event"})
-    elif kind == "device_offline":
-        base.update({"kind": "device_offline"})
-    elif kind == "device_back_online":
-        base.update({"kind": "device_back_online"})
-    elif kind == "incoming_http_request":
-        base.update({"kind": "incoming_http_request"})
-    return base
-
 
 
 def _run_flow_from_trigger(
