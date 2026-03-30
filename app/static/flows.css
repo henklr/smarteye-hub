@@ -783,3 +783,12 @@ body.flowsPage {
 .flowsPage .flowNodeRunBtn {
   width: 100%;
 }
+
+.flowsPage .flowEdgeGhost {
+  stroke: rgba(198, 161, 75, 0.9);
+  stroke-width: 3;
+  stroke-dasharray: 10 8;
+  opacity: 0.95;
+  pointer-events: none;
+  filter: drop-shadow(0 0 8px rgba(198, 161, 75, 0.22));
+}

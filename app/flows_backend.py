@@ -77,9 +77,11 @@ class Flow(FlowIn):
 
 
 class FlowTestRequest(BaseModel):
+    flow_id: Optional[str] = None
+    flow: Optional[FlowIn] = None
     trigger_node_id: Optional[str] = None
     trigger_payload: Dict[str, Any] = Field(default_factory=dict)
-
+    
 
 NODE_LIBRARY: List[Dict[str, Any]] = [
     {
@@ -296,11 +298,44 @@ def delete_flow(flow_id: str) -> Dict[str, Any]:
     return {"ok": True}
 
 
-@router.post("/api/flows/test/{flow_id}")
-def test_flow(flow_id: str, req: FlowTestRequest) -> Dict[str, Any]:
+@router.get("/api/flows/runtime/{flow_id}")
+def get_flow_runtime(flow_id: str) -> Dict[str, Any]:
     flow = _find_flow(flow_id)
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
+    return {"variables": _get_runtime_variables(flow)}
+
+
+@router.post("/api/flows/test")
+def test_flow_draft(req: FlowTestRequest) -> Dict[str, Any]:
+    return _test_flow_impl(req)
+
+
+@router.post("/api/flows/test/{flow_id}")
+def test_flow(flow_id: str, req: FlowTestRequest) -> Dict[str, Any]:
+    req = req.model_copy(update={"flow_id": flow_id})
+    return _test_flow_impl(req)
+
+
+def _test_flow_impl(req: FlowTestRequest) -> Dict[str, Any]:
+    saved_flow = None
+
+    if req.flow_id:
+        saved_flow = _find_flow(req.flow_id)
+        if saved_flow is None and req.flow is None:
+            raise HTTPException(status_code=404, detail="Flow not found")
+
+    if req.flow is not None:
+        flow = _normalize_flow_payload(
+            _dump(req.flow),
+            existing_id=(saved_flow or {}).get("id") or req.flow_id,
+            created_at=(saved_flow or {}).get("created_at"),
+        )
+    else:
+        flow = saved_flow
+
+    if flow is None:
+        raise HTTPException(status_code=400, detail="Flow payload is required")
 
     trigger_node = None
 
@@ -324,17 +359,10 @@ def test_flow(flow_id: str, req: FlowTestRequest) -> Dict[str, Any]:
         trigger,
         start_node_id=trigger_node["id"],
         manual=True,
+        persist_runtime=False,
+        append_log=False,
     )
     return {"ok": True, "result": result}
-
-
-@router.get("/api/flows/runtime/{flow_id}")
-def get_flow_runtime(flow_id: str) -> Dict[str, Any]:
-    flow = _find_flow(flow_id)
-    if not flow:
-        raise HTTPException(status_code=404, detail="Flow not found")
-    return {"variables": _get_runtime_variables(flow)}
-
 
 
 def _dump(model: Any) -> Dict[str, Any]:
@@ -895,6 +923,8 @@ def _run_flow_from_trigger(
     trigger: Dict[str, Any],
     start_node_id: Optional[str] = None,
     manual: bool = False,
+    persist_runtime: bool = True,
+    append_log: bool = True,
 ) -> Dict[str, Any]:
     nodes_by_id = {node["id"]: node for node in flow.get("nodes", [])}
     adjacency = _build_adjacency(flow)
@@ -931,7 +961,9 @@ def _run_flow_from_trigger(
             for edge in adjacency.get(node_id, {}).get(next_handle, []):
                 queue.append((edge["target"], edge.get("target_handle") or "in"))
 
-    _save_runtime_variables(flow, variables)
+    if persist_runtime:
+        _save_runtime_variables(flow, variables)
+
     summary = {
         "flow_id": flow["id"],
         "flow_name": flow["name"],
@@ -942,7 +974,10 @@ def _run_flow_from_trigger(
         "truncated": steps >= _MAX_RUN_STEPS,
         "finished_at": _utc_now_iso(),
     }
-    _append_flow_log(flow, trigger, summary)
+
+    if append_log:
+        _append_flow_log(flow, trigger, summary)
+
     return summary
 
 

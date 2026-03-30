@@ -10,6 +10,7 @@ const state = {
   selectedEdgeId: null,
   dirty: false,
   connecting: null,
+  connectionCursor: null,
   drag: null,
   topicCache: new Map(),
 };
@@ -293,6 +294,7 @@ function renderFlowList() {
       state.selectedNodeId = null;
       state.selectedEdgeId = null;
       state.connecting = null;
+      state.connectionCursor = null;
 
       clearDirty();
       clearTestResult();
@@ -465,7 +467,19 @@ function renderCanvas() {
       const handle = portEl.dataset.portHandle || "out";
 
       if (kind === "output") {
+        const board = el("flowBoard");
+        let cursor = null;
+
+        if (board) {
+          const rect = board.getBoundingClientRect();
+          cursor = {
+            x: ev.clientX - rect.left,
+            y: ev.clientY - rect.top,
+          };
+        }
+
         state.connecting = { nodeId, handle };
+        state.connectionCursor = cursor;
         state.selectedNodeId = nodeId;
         state.selectedEdgeId = null;
         renderAll();
@@ -493,6 +507,7 @@ function renderCanvas() {
         }
 
         state.connecting = null;
+        state.connectionCursor = null;
         renderAll();
         setStatus("Connection created.");
       }
@@ -504,7 +519,7 @@ function renderCanvas() {
       ev.stopPropagation();
       try {
         await triggerManualNode(button.dataset.runNodeId);
-      } catch {}
+      } catch { }
     });
 
     button.addEventListener("mousedown", (ev) => {
@@ -515,14 +530,22 @@ function renderCanvas() {
   window.requestAnimationFrame(drawEdges);
 }
 
+function makeBezierPath(sx, sy, tx, ty) {
+  const dx = Math.max(80, Math.abs(tx - sx) * 0.5);
+  return `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`;
+}
+
 function drawEdges() {
   const svg = el("flowEdges");
   const board = el("flowBoard");
   const flow = currentFlow();
 
-  if (!flow || !svg || !board) return;
+  if (!svg || !board) return;
 
   svg.innerHTML = "";
+
+  if (!flow) return;
+
   const boardRect = board.getBoundingClientRect();
 
   for (const edge of flow.edges) {
@@ -537,15 +560,14 @@ function drawEdges() {
 
     const sourceRect = sourcePort.getBoundingClientRect();
     const targetRect = targetPort.getBoundingClientRect();
+
     const sx = sourceRect.left - boardRect.left + sourceRect.width / 2;
     const sy = sourceRect.top - boardRect.top + sourceRect.height / 2;
     const tx = targetRect.left - boardRect.left + targetRect.width / 2;
     const ty = targetRect.top - boardRect.top + targetRect.height / 2;
-    const dx = Math.max(80, Math.abs(tx - sx) * 0.5);
-    const d = `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`;
 
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", d);
+    path.setAttribute("d", makeBezierPath(sx, sy, tx, ty));
     path.setAttribute("class", `flowEdgePath ${edge.id === state.selectedEdgeId ? "active" : ""}`);
     path.dataset.edgeId = edge.id;
 
@@ -558,6 +580,26 @@ function drawEdges() {
     });
 
     svg.appendChild(path);
+  }
+
+  if (state.connecting && state.connectionCursor) {
+    const sourcePort = board.querySelector(
+      `.flowPort[data-node-id="${CSS.escape(state.connecting.nodeId)}"][data-port-kind="output"][data-port-handle="${CSS.escape(state.connecting.handle || "out")}"]`
+    );
+
+    if (sourcePort) {
+      const sourceRect = sourcePort.getBoundingClientRect();
+
+      const sx = sourceRect.left - boardRect.left + sourceRect.width / 2;
+      const sy = sourceRect.top - boardRect.top + sourceRect.height / 2;
+      const tx = state.connectionCursor.x;
+      const ty = state.connectionCursor.y;
+
+      const ghost = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      ghost.setAttribute("d", makeBezierPath(sx, sy, tx, ty));
+      ghost.setAttribute("class", "flowEdgePath flowEdgeGhost");
+      svg.appendChild(ghost);
+    }
   }
 }
 
@@ -1119,7 +1161,7 @@ function bindNodeInspector(node) {
     document.getElementById("btnRunManualNode")?.addEventListener("click", async () => {
       try {
         await triggerManualNode(node.id);
-      } catch {}
+      } catch { }
     });
   }
 }
@@ -1274,13 +1316,13 @@ async function saveFlow() {
 
   const out = flow.id
     ? await api(`/api/flows/${encodeURIComponent(flow.id)}`, {
-        method: "PUT",
-        body: JSON.stringify(payload),
-      })
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
     : await api(`/api/flows`, {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
 
   const saved = out.item;
   state.selectedSavedFlowId = saved.id;
@@ -1344,10 +1386,9 @@ async function refreshFlows() {
 
 async function triggerManualNode(nodeId) {
   const flow = currentFlow();
-
-  if (!flow?.id) {
-    setTestStatus("Save the flow before running a manual trigger.", true);
-    setStatus("Save the flow before running a manual trigger.", true);
+  if (!flow) {
+    setTestStatus("No flow loaded.", true);
+    setStatus("No flow loaded.", true);
     return;
   }
 
@@ -1363,17 +1404,21 @@ async function triggerManualNode(nodeId) {
   }
 
   try {
-    const out = await api(`/api/flows/test/${encodeURIComponent(flow.id)}`, {
+    validateDraft(flow);
+
+    const out = await api(`/api/flows/test`, {
       method: "POST",
       body: JSON.stringify({
+        flow_id: flow.id || null,
+        flow: serializeFlow(flow),
         trigger_node_id: node.id,
         trigger_payload: {},
       }),
     });
 
     showTestResult(out.result);
-    setTestStatus(`Manual trigger "${node.label}" executed.`);
-    setStatus(`Manual trigger "${node.label}" executed.`);
+    setTestStatus(`Manual trigger "${node.label}" executed against the current draft.`);
+    setStatus(`Manual trigger "${node.label}" executed against the current draft.`);
   } catch (err) {
     setTestStatus(err.message || String(err), true);
     setStatus(err.message || String(err), true);
@@ -1393,6 +1438,8 @@ function duplicateDraft() {
   state.draft = copy;
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
+  state.connecting = null;
+  state.connectionCursor = null;
 
   markDirty();
   clearTestResult();
@@ -1411,6 +1458,8 @@ async function deleteDraft() {
   state.draft = starterFlow();
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
+  state.connecting = null;
+  state.connectionCursor = null;
 
   clearDirty();
   clearTestResult();
@@ -1427,6 +1476,7 @@ function bindGlobalEvents() {
     state.selectedNodeId = null;
     state.selectedEdgeId = null;
     state.connecting = null;
+    state.connectionCursor = null;
 
     clearDirty();
     clearTestResult();
@@ -1461,6 +1511,7 @@ function bindGlobalEvents() {
   board?.addEventListener("click", () => {
     if (state.connecting) {
       state.connecting = null;
+      state.connectionCursor = null;
       renderCanvas();
       setStatus("Connection cancelled.");
       return;
@@ -1471,22 +1522,6 @@ function bindGlobalEvents() {
     renderInspector();
     renderCanvas();
     drawEdges();
-  });
-
-  window.addEventListener("mousemove", (ev) => {
-    if (!state.drag) return;
-
-    const flow = currentFlow();
-    const node = flow?.nodes.find((item) => item.id === state.drag.nodeId);
-    if (!node) return;
-
-    const dx = ev.clientX - state.drag.startX;
-    const dy = ev.clientY - state.drag.startY;
-    node.x = Math.max(20, state.drag.originX + dx);
-    node.y = Math.max(20, state.drag.originY + dy);
-
-    markDirty();
-    renderCanvas();
   });
 
   window.addEventListener("mouseup", () => {
@@ -1502,6 +1537,34 @@ function bindGlobalEvents() {
     if (!state.dirty) return;
     ev.preventDefault();
     ev.returnValue = "";
+  });
+
+  window.addEventListener("mousemove", (ev) => {
+    if (state.connecting) {
+      const board = el("flowBoard");
+      if (board) {
+        const rect = board.getBoundingClientRect();
+        state.connectionCursor = {
+          x: ev.clientX - rect.left,
+          y: ev.clientY - rect.top,
+        };
+        drawEdges();
+      }
+    }
+
+    if (!state.drag) return;
+
+    const flow = currentFlow();
+    const node = flow?.nodes.find((item) => item.id === state.drag.nodeId);
+    if (!node) return;
+
+    const dx = ev.clientX - state.drag.startX;
+    const dy = ev.clientY - state.drag.startY;
+    node.x = Math.max(20, state.drag.originX + dx);
+    node.y = Math.max(20, state.drag.originY + dy);
+
+    markDirty();
+    renderCanvas();
   });
 }
 
