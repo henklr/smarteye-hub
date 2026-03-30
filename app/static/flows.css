@@ -3,6 +3,7 @@
   --flow-condition: #e2b84e;
   --flow-operator: #20c997;
   --flow-action: #ff9a4d;
+  --flow-edge-color: rgba(198, 161, 75, 0.9);
 
   --flow-grid-major: rgba(255, 255, 255, 0.04);
   --flow-grid-minor: rgba(255, 255, 255, 0.02);
@@ -302,34 +303,8 @@ body.flowsPage {
 .flowsPage .flowNodes {
   position: absolute;
   inset: 0;
-}
-
-.flowsPage .flowEdges {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
+  z-index: 2;
   pointer-events: none;
-}
-
-.flowsPage .flowEdgePath {
-  fill: none;
-  stroke: rgba(198, 161, 75, 0.9);
-  stroke-width: 3;
-  stroke-linecap: round;
-  pointer-events: auto;
-  cursor: pointer;
-  transition: stroke 0.12s ease, filter 0.12s ease;
-}
-
-.flowsPage .flowEdgePath:hover {
-  stroke: rgba(198, 161, 75, 0.82);
-}
-
-.flowsPage .flowEdgePath.active {
-  stroke: rgba(198, 161, 75, 0.98);
-  filter: drop-shadow(0 0 8px rgba(198, 161, 75, 0.35));
 }
 
 .flowsPage .flowNode {
@@ -344,6 +319,8 @@ body.flowsPage {
   color: var(--text);
   cursor: grab;
   user-select: none;
+  pointer-events: auto;
+  z-index: 3;
   transition:
     border-color 0.12s ease,
     box-shadow 0.12s ease,
@@ -687,6 +664,57 @@ body.flowsPage {
   display: none !important;
 }
 
+.flowsPage .flowNodeRunBtn {
+  width: 100%;
+}
+
+.flowsPage .flowEdges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: auto;
+  z-index: 1;
+}
+
+.flowsPage .flowEdgePath {
+  fill: none;
+  stroke: rgba(198, 161, 75, 0.9);
+  stroke-width: 3;
+  stroke-linecap: round;
+  pointer-events: none;
+  transition:
+    stroke 0.12s ease,
+    filter 0.12s ease,
+    stroke-width 0.12s ease,
+    opacity 0.12s ease;
+}
+
+.flowsPage .flowEdgePath.hovered,
+.flowsPage .flowEdgePath.active {
+  stroke: rgba(198, 161, 75, 0.98);
+  stroke-width: 4;
+  filter: drop-shadow(0 0 8px rgba(198, 161, 75, 0.35));
+}
+
+.flowsPage .flowEdgeHitArea {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 20;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.flowsPage .flowEdgeGhost {
+  stroke: var(--flow-edge-color);
+  stroke-width: 3;
+  stroke-dasharray: 10 8;
+  opacity: 0.95;
+  pointer-events: none;
+  filter: drop-shadow(0 0 8px rgba(198, 161, 75, 0.22));
+}
+
 /* Scrollbars */
 .flowsPage .flowList::-webkit-scrollbar,
 .flowsPage .paletteGroups::-webkit-scrollbar,
@@ -778,17 +806,4 @@ body.flowsPage {
     min-height: 56vh;
     max-height: 56vh;
   }
-}
-
-.flowsPage .flowNodeRunBtn {
-  width: 100%;
-}
-
-.flowsPage .flowEdgeGhost {
-  stroke: rgba(198, 161, 75, 0.9);
-  stroke-width: 3;
-  stroke-dasharray: 10 8;
-  opacity: 0.95;
-  pointer-events: none;
-  filter: drop-shadow(0 0 8px rgba(198, 161, 75, 0.22));
 }

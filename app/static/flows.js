@@ -566,20 +566,45 @@ function drawEdges() {
     const tx = targetRect.left - boardRect.left + targetRect.width / 2;
     const ty = targetRect.top - boardRect.top + targetRect.height / 2;
 
+    const d = makeBezierPath(sx, sy, tx, ty);
+
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", makeBezierPath(sx, sy, tx, ty));
+    path.setAttribute("d", d);
     path.setAttribute("class", `flowEdgePath ${edge.id === state.selectedEdgeId ? "active" : ""}`);
     path.dataset.edgeId = edge.id;
 
-    path.addEventListener("click", (ev) => {
+    const hit = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    hit.setAttribute("d", d);
+    hit.setAttribute("class", "flowEdgeHitArea");
+    hit.dataset.edgeId = edge.id;
+
+    const hoverOn = () => path.classList.add("hovered");
+    const hoverOff = () => path.classList.remove("hovered");
+
+    const removeEdge = (ev) => {
       ev.stopPropagation();
-      state.selectedEdgeId = edge.id;
-      state.selectedNodeId = null;
+
+      const liveFlow = currentFlow();
+      if (!liveFlow) return;
+
+      liveFlow.edges = liveFlow.edges.filter((item) => item.id !== edge.id);
+
+      if (state.selectedEdgeId === edge.id) {
+        state.selectedEdgeId = null;
+      }
+
+      markDirty();
       renderInspector();
       drawEdges();
-    });
+      setStatus("Connection deleted.");
+    };
+
+    hit.addEventListener("pointerenter", hoverOn);
+    hit.addEventListener("pointerleave", hoverOff);
+    hit.addEventListener("click", removeEdge);
 
     svg.appendChild(path);
+    svg.appendChild(hit);
   }
 
   if (state.connecting && state.connectionCursor) {
