@@ -12,6 +12,8 @@ const state = {
   connecting: null,
   connectionCursor: null,
   drag: null,
+  pan: null,
+  justPanned: false,
   topicCache: new Map(),
 };
 
@@ -227,6 +229,70 @@ function starterFlow() {
   };
 }
 
+function centerBoardViewport() {
+  const scroller = el("flowBoardScroller");
+  const board = el("flowBoard");
+  const nodesBox = el("flowNodes");
+
+  if (!scroller || !board || !nodesBox) return;
+
+  const nodeEls = [...nodesBox.querySelectorAll(".flowNode")];
+
+  if (!nodeEls.length) {
+    const left = Math.max(0, (board.scrollWidth - scroller.clientWidth) / 2);
+    const top = Math.max(0, (board.scrollHeight - scroller.clientHeight) / 2);
+
+    scroller.scrollLeft = left;
+    scroller.scrollTop = top;
+    drawEdges();
+    return;
+  }
+
+  let minLeft = Infinity;
+  let minTop = Infinity;
+  let maxRight = -Infinity;
+  let maxBottom = -Infinity;
+
+  for (const nodeEl of nodeEls) {
+    const left = nodeEl.offsetLeft;
+    const top = nodeEl.offsetTop;
+    const right = left + nodeEl.offsetWidth;
+    const bottom = top + nodeEl.offsetHeight;
+
+    if (left < minLeft) minLeft = left;
+    if (top < minTop) minTop = top;
+    if (right > maxRight) maxRight = right;
+    if (bottom > maxBottom) maxBottom = bottom;
+  }
+
+  const padding = 120;
+  const contentCenterX = (minLeft + maxRight) / 2;
+  const contentCenterY = (minTop + maxBottom) / 2;
+
+  const maxScrollLeft = Math.max(0, board.scrollWidth - scroller.clientWidth);
+  const maxScrollTop = Math.max(0, board.scrollHeight - scroller.clientHeight);
+
+  const targetLeft = Math.min(
+    maxScrollLeft,
+    Math.max(0, contentCenterX - scroller.clientWidth / 2)
+  );
+  const targetTop = Math.min(
+    maxScrollTop,
+    Math.max(0, contentCenterY - scroller.clientHeight / 2)
+  );
+
+  scroller.scrollLeft = Math.max(
+    0,
+    Math.min(maxScrollLeft, targetLeft - padding / 2)
+  );
+  scroller.scrollTop = Math.max(
+    0,
+    Math.min(maxScrollTop, targetTop - padding / 2)
+  );
+
+  drawEdges();
+}
+
 function syncHeader() {
   const flow = currentFlow();
   const title = flow?.name || "New flow";
@@ -299,6 +365,7 @@ function renderFlowList() {
       clearDirty();
       clearTestResult();
       renderAll();
+      window.requestAnimationFrame(centerBoardViewport);
       setStatus(`Loaded flow "${flow.name}".`);
     });
   });
@@ -1564,6 +1631,7 @@ function bindGlobalEvents() {
     clearDirty();
     clearTestResult();
     renderAll();
+    window.requestAnimationFrame(centerBoardViewport);
     setStatus("Started a new flow.");
   });
 
@@ -1590,9 +1658,40 @@ function bindGlobalEvents() {
 
   el("flowSearch")?.addEventListener("input", renderFlowList);
   el("paletteSearch")?.addEventListener("input", renderPalette);
-  
+
+  const boardScroller = el("flowBoardScroller");
+  boardScroller?.addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0) return;
+    if (state.connecting) return;
+
+    if (
+      ev.target.closest?.(".flowNode") ||
+      ev.target.closest?.(".flowPort") ||
+      ev.target.closest?.(".flowNodeRunBtn") ||
+      ev.target.closest?.(".flowEdgeHitArea")
+    ) {
+      return;
+    }
+
+    state.pan = {
+      startX: ev.clientX,
+      startY: ev.clientY,
+      scrollLeft: boardScroller.scrollLeft,
+      scrollTop: boardScroller.scrollTop,
+      moved: false,
+    };
+
+    boardScroller.classList.add("panning");
+    ev.preventDefault();
+  });
+
   const board = el("flowBoard");
   board?.addEventListener("click", () => {
+    if (state.justPanned) {
+      state.justPanned = false;
+      return;
+    }
+
     if (state.connecting) {
       state.connecting = null;
       state.connectionCursor = null;
@@ -1609,6 +1708,24 @@ function bindGlobalEvents() {
   });
 
   window.addEventListener("mouseup", () => {
+    const boardScroller = el("flowBoardScroller");
+
+    if (state.pan) {
+      const moved = state.pan.moved;
+      state.pan = null;
+      boardScroller?.classList.remove("panning");
+
+      if (moved) {
+        state.justPanned = true;
+        window.setTimeout(() => {
+          state.justPanned = false;
+        }, 0);
+      }
+
+      drawEdges();
+      return;
+    }
+
     if (!state.drag) return;
     state.drag = null;
     drawEdges();
@@ -1624,6 +1741,24 @@ function bindGlobalEvents() {
   });
 
   window.addEventListener("mousemove", (ev) => {
+    if (state.pan) {
+      const boardScroller = el("flowBoardScroller");
+      if (!boardScroller) return;
+
+      const dx = ev.clientX - state.pan.startX;
+      const dy = ev.clientY - state.pan.startY;
+
+      boardScroller.scrollLeft = state.pan.scrollLeft - dx;
+      boardScroller.scrollTop = state.pan.scrollTop - dy;
+
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        state.pan.moved = true;
+      }
+
+      drawEdges();
+      return;
+    }
+
     if (state.connecting) {
       const board = el("flowBoard");
       if (board) {
@@ -1669,6 +1804,7 @@ async function init() {
     clearTestResult();
     renderPalette();
     renderAll();
+    window.requestAnimationFrame(centerBoardViewport);
   } catch (err) {
     setStatus(err.message || String(err), true);
     if (el("inspectorBody")) {

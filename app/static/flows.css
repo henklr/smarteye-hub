@@ -290,6 +290,15 @@ body.flowsPage {
   height: 100%;
   overflow: auto;
   cursor: grab;
+  user-select: none;
+}
+
+.flowsPage .flowBoardScroller.panning {
+  cursor: grabbing;
+}
+
+.flowsPage .flowBoardScroller.panning * {
+  cursor: grabbing !important;
 }
 
 .flowsPage .flowBoard {
