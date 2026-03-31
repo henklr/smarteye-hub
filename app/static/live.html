@@ -13,7 +13,6 @@
     <div class="topbar">
       <div class="tabs">
         <a class="tab active" href="/live"><span class="tabDot"></span>Live</a>
-        <a class="tab" href="/devices"><span class="tabDot"></span>Devices</a>
         <a class="tab" href="/flows"><span class="tabDot"></span>Flows</a>
       </div>
     </div>
@@ -22,20 +21,95 @@
       <div class="liveSidebarShell" id="sidebarShell">
         <div class="card liveSidebar" id="sidebar">
           <div class="liveSidebarInner">
-            <div class="row2" style="margin-top:0;">
-              <button class="btn btn-primary" id="startAll">Start All</button>
-              <button class="btn btn-danger" id="stopAll">Stop All</button>
-            </div>
+            <section class="sidebarSection">
+              <div class="listHeader liveSidebarHeader">
+                <div>
+                  <div class="listTitle">Control center</div>
+                  <div class="listSub">Start and stop streams, reorder tiles, and manage devices in one place.</div>
+                </div>
+                <button class="btn" id="sidebarRefreshDevices" type="button">Refresh</button>
+              </div>
 
-            <div id="camList" class="camList" style="margin-top:10px;">
-              <div class="muted" style="padding:10px 2px;">Loading…</div>
-            </div>
+              <div class="row2" style="margin-top:0;">
+                <button class="btn btn-primary" id="startAll" type="button">Start All</button>
+                <button class="btn btn-danger" id="stopAll" type="button">Stop All</button>
+              </div>
+
+              <div class="statusLine compact" style="margin-top:12px;">
+                <strong>Status:</strong> <span id="sidebarListStatus" class="muted">Loading devices…</span>
+              </div>
+            </section>
+
+            <section class="sidebarSection">
+              <div class="sidebarSectionHead">
+                <div>Devices</div>
+                <div class="sidebarSectionSub">Click a device to start or stop. Drag to reorder tiles. Use Edit/Delete for device management.</div>
+              </div>
+
+              <div id="camList" class="camList" style="margin-top:10px;">
+                <div class="muted" style="padding:10px 2px;">Loading…</div>
+              </div>
+            </section>
+
+            <section class="sidebarSection">
+              <div class="sidebarSectionHead">
+                <div id="deviceFormTitle">Create device</div>
+                <div class="sidebarSectionSub">Fetch profiles before saving so a browser-safe stream profile is stored.</div>
+              </div>
+
+              <div class="grid sidebarFormGrid" style="margin-top:10px;">
+                <div data-full>
+                  <label for="name">Name</label>
+                  <input id="name" placeholder="Front Door" />
+                </div>
+
+                <div data-full>
+                  <label for="ip">Camera IP</label>
+                  <input id="ip" placeholder="192.168.1.108" />
+                </div>
+
+                <div>
+                  <label for="onvif_port">ONVIF Port</label>
+                  <input id="onvif_port" value="80" />
+                </div>
+
+                <div>
+                  <label for="username">Username</label>
+                  <input id="username" placeholder="admin" />
+                </div>
+
+                <div data-full>
+                  <label for="password">Password</label>
+                  <input id="password" type="password" placeholder="••••••••" />
+                </div>
+
+                <button class="btn" id="fetchProfiles" type="button" data-full>Fetch profiles</button>
+
+                <div data-full>
+                  <label for="profiles">Profile (saved on device)</label>
+                  <select id="profiles" disabled>
+                    <option>Fetch profiles first…</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="row2" style="margin-top:12px;">
+                <button class="btn btn-primary" id="save" type="button">Save</button>
+                <button class="btn" id="new" type="button">New</button>
+                <button class="btn" id="clear" type="button">Clear</button>
+                <button class="btn btn-danger" id="delete" type="button" disabled>Delete</button>
+              </div>
+
+              <div class="statusLine compact" style="margin-top:12px;">
+                <strong>Status:</strong> <span id="deviceFormStatus" class="muted">Ready.</span>
+              </div>
+            </section>
           </div>
         </div>
 
-        <button class="sidebarCollapseRail" id="sidebarCollapseBtn" type="button" title="Hide cameras"
-          aria-label="Hide cameras">
-          <span class="sidebarCollapseRailIcon">❮</span>
+        <button class="sidebarCollapseRail" id="sidebarCollapseBtn" type="button" title="Show control center"
+          aria-label="Show control center">
+          <span class="sidebarCollapseRailIcon">❯</span>
         </button>
       </div>
 

@@ -275,6 +275,7 @@ input[type="checkbox"] {
   font-weight: 800;
   cursor: pointer;
   user-select: none;
+  text-decoration: none;
   transition:
     filter 0.12s ease,
     background 0.12s ease,
@@ -373,6 +374,12 @@ input[type="checkbox"] {
   background: rgba(0, 0, 0, 0.18);
   color: var(--muted);
   font-size: 13px;
+}
+
+.statusLine.compact {
+  margin-top: 0;
+  padding: 9px 11px;
+  font-size: 12px;
 }
 
 .statusLine strong {
@@ -969,7 +976,8 @@ code {
   flex-direction: row;
   align-items: stretch;
   gap: 0;
-  width: 360px;
+  width: 430px;
+  max-width: min(430px, 42vw);
   min-width: 0;
   align-self: start;
 }
@@ -981,6 +989,48 @@ code {
 
 .liveSidebarInner {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: calc(100vh - 104px);
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.liveSidebarHeader {
+  margin-bottom: 0;
+}
+
+.sidebarSection {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 12px;
+}
+
+.sidebarSectionHead {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 14px;
+  font-weight: 900;
+  color: var(--text);
+}
+
+.sidebarSectionSub {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.sidebarFormGrid {
+  grid-template-columns: 1fr 1fr;
+  align-items: end;
+}
+
+.sidebarFormGrid > *[data-full] {
+  grid-column: 1 / -1;
 }
 
 .liveMain {
@@ -1023,6 +1073,7 @@ code {
 
 .liveLayout.sidebarHidden .liveSidebarShell {
   width: 22px;
+  max-width: 22px;
 }
 
 .liveLayout.sidebarHidden .liveSidebar {
@@ -1074,6 +1125,9 @@ code {
 
   .liveSidebarInner {
     width: 100%;
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
   }
 
   .sidebarCollapseRail {
@@ -1092,6 +1146,7 @@ code {
 
   .liveLayout.sidebarHidden .liveSidebarShell {
     width: 100%;
+    max-width: 100%;
   }
 
   .liveLayout.sidebarHidden .liveSidebar {
@@ -1103,9 +1158,13 @@ code {
   }
 
   .camList {
-    max-height: min(42vh, 420px);
+    max-height: min(38vh, 380px);
     overflow: auto;
     padding-right: 2px;
+  }
+
+  .sidebarFormGrid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1147,7 +1206,7 @@ code {
 .camItemTop {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
 }
 
@@ -1156,6 +1215,16 @@ code {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  flex: 1 1 auto;
+}
+
+.camItemTopActions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
 }
 
 .camDragHandle {
@@ -1206,6 +1275,33 @@ code {
   font-weight: 800;
 }
 
+.camMiniBtn {
+  padding: 6px 8px;
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.camMiniBtn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--stroke-2);
+}
+
+.camMiniBtn.danger {
+  border-color: rgba(223, 102, 114, 0.2);
+  background: rgba(223, 102, 114, 0.08);
+}
+
+.camMiniBtn.danger:hover {
+  background: rgba(223, 102, 114, 0.14);
+  border-color: rgba(223, 102, 114, 0.3);
+}
+
 .camItem.ready .camBadge {
   border-color: rgba(61, 195, 161, 0.24);
   background: rgba(61, 195, 161, 0.08);
@@ -1221,6 +1317,11 @@ code {
 .camItem.active {
   border-color: rgba(198, 161, 75, 0.28);
   box-shadow: 0 0 0 3px rgba(198, 161, 75, 0.08);
+}
+
+.camItem.is-editing {
+  border-color: rgba(198, 161, 75, 0.36);
+  box-shadow: 0 0 0 3px rgba(198, 161, 75, 0.1);
 }
 
 .camItem.is-live {
@@ -1589,7 +1690,7 @@ code {
 }
 
 #videoGrid:empty::before {
-  content: "Select a camera from the list";
+  content: "Open a stream from the control center";
   color: rgba(255, 255, 255, 0.46);
   font-size: 15px;
   font-weight: 800;
@@ -1694,7 +1795,8 @@ body.tileMaximizedMode #videoGrid {
     pointer-events: auto;
 
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
     gap: 6px;
 
     width: 100%;
@@ -1834,24 +1936,20 @@ body.tileMaximizedMode #videoGrid {
   white-space: nowrap;
 }
 
-/* the badge already shows Trigger / Action / etc */
 .flowsPage .flowNodeType {
   display: none;
 }
 
-/* give preview text cleaner spacing */
 .flowsPage .flowNodePreview {
   margin-top: 10px;
   line-height: 1.45;
   padding-right: 8px;
 }
 
-/* move handles slightly lower so lines don't cut through the title area */
 .flowsPage .portStack {
   top: 58%;
 }
 
-/* hide inline port labels like "out" since they collide with content */
 .flowsPage .flowPortLabel {
   display: none;
 }

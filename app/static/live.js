@@ -1,9 +1,28 @@
 const camListEl = document.getElementById("camList");
+const sidebarListStatus = document.getElementById("sidebarListStatus");
+const deviceFormStatus = document.getElementById("deviceFormStatus");
+const deviceFormTitle = document.getElementById("deviceFormTitle");
+const refreshDevicesBtn = document.getElementById("sidebarRefreshDevices");
 
 const startAllBtn = document.getElementById("startAll");
 const stopAllBtn = document.getElementById("stopAll");
 
+const nameEl = document.getElementById("name");
+const ipEl = document.getElementById("ip");
+const portEl = document.getElementById("onvif_port");
+const userEl = document.getElementById("username");
+const passEl = document.getElementById("password");
+const fetchBtn = document.getElementById("fetchProfiles");
+const profilesSel = document.getElementById("profiles");
+const saveBtn = document.getElementById("save");
+const newBtn = document.getElementById("new");
+const clearBtn = document.getElementById("clear");
+const deleteBtn = document.getElementById("delete");
+
 const videoGrid = document.getElementById("videoGrid");
+const layoutEl = document.getElementById("liveLayout");
+const sidebarCollapseBtn = document.getElementById("sidebarCollapseBtn");
+const sidebarCollapseRailIcon = sidebarCollapseBtn?.querySelector(".sidebarCollapseRailIcon");
 
 const LS_KEY = "live.sidebarHidden";
 const LS_GRID_KEY = "live.gridState";
@@ -12,6 +31,9 @@ const LS_DEVICE_ORDER_KEY = "live.deviceOrder";
 const RETRY_DELAY_MS = 4000;
 
 let devices = [];
+let editingId = null;
+let lastProfiles = [];
+
 const streams = new Map();
 const ptzCapsCache = new Map();
 
@@ -42,6 +64,7 @@ async function api(url, opts) {
   const res = await fetch(url, opts);
   const text = await res.text();
   let data = null;
+
   try {
     data = text ? JSON.parse(text) : null;
   } catch {}
@@ -64,10 +87,12 @@ async function ptzPost(url, body = null) {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     let detail = text || res.statusText;
+
     try {
       const parsed = text ? JSON.parse(text) : null;
       if (parsed?.detail) detail = parsed.detail;
     } catch {}
+
     throw new Error(`${res.status} ${res.statusText}: ${detail}`);
   }
 }
@@ -80,6 +105,25 @@ function escapeHtml(s) {
     '"': "&quot;",
     "'": "&#39;",
   }[c]));
+}
+
+function setListStatus(text) {
+  sidebarListStatus.textContent = text;
+}
+
+function setFormStatus(text) {
+  deviceFormStatus.textContent = text;
+}
+
+function updateListStatusSummary(prefix = "") {
+  if (prefix) {
+    setListStatus(prefix);
+    return;
+  }
+
+  const readyCount = devices.filter(profileReady).length;
+  const activeCount = streams.size;
+  setListStatus(`${devices.length} device(s). ${readyCount} ready. ${activeCount} streaming.`);
 }
 
 function getTileOrder() {
@@ -385,7 +429,7 @@ function getVisualState(entry, ready) {
     return {
       className: "",
       badge: ready ? "READY" : "SETUP",
-      subtitle: ready ? null : "Not ready (select profile in Devices)",
+      subtitle: ready ? null : "Not ready (fetch and save a profile)",
     };
   }
 
@@ -418,7 +462,7 @@ function getVisualState(entry, ready) {
   return {
     className: "",
     badge: ready ? "READY" : "SETUP",
-    subtitle: ready ? null : "Not ready (select profile in Devices)",
+    subtitle: ready ? null : "Not ready (fetch and save a profile)",
   };
 }
 
@@ -434,7 +478,8 @@ function applyTileStateClasses(entry) {
 
 function renderList() {
   if (!devices.length) {
-    camListEl.innerHTML = `<div class="muted" style="padding:10px 2px;">No devices. Add some in Devices.</div>`;
+    camListEl.innerHTML = `<div class="muted" style="padding:10px 2px;">No devices yet. Use the form below to add one.</div>`;
+    updateListStatusSummary();
     return;
   }
 
@@ -442,36 +487,91 @@ function renderList() {
     const ready = profileReady(d);
     const entry = getEntry(d.id);
     const present = !!entry;
-
     const visual = getVisualState(entry, ready);
-    const subtitle = visual.subtitle ?? (d.profile_label || d.profile_token);
+    const subtitleText = visual.subtitle ?? (d.profile_label || d.profile_token || "No saved profile");
+    const ipPart = d.ip ? `${d.ip} • ` : "";
 
     const cls = [
       "camItem",
       ready ? "ready" : "notReady",
       present ? "active" : "",
       visual.className,
+      editingId === d.id ? "is-editing" : "",
     ].join(" ");
 
     return `
-      <div class="${cls}" data-id="${d.id}" draggable="true">
+      <div class="${cls}" data-id="${escapeHtml(d.id)}" draggable="true">
         <div class="camItemTop">
           <div class="camItemTitleRow">
             <button
               class="camDragHandle"
               type="button"
               draggable="false"
-              aria-label="Reorder camera"
+              aria-label="Reorder device"
               title="Drag to reorder"
             >⋮⋮</button>
             <div class="camName">${escapeHtml(d.name || d.ip || d.id)}</div>
           </div>
-          <div class="camBadge">${escapeHtml(visual.badge)}</div>
+
+          <div class="camItemTopActions">
+            <div class="camBadge">${escapeHtml(visual.badge)}</div>
+            <button class="camMiniBtn" type="button" data-action="edit" draggable="false">Edit</button>
+            <button class="camMiniBtn danger" type="button" data-action="delete" draggable="false">Delete</button>
+          </div>
         </div>
-        <div class="camSub">${escapeHtml(subtitle)}</div>
+
+        <div class="camSub">${escapeHtml(ipPart + subtitleText)}</div>
       </div>
     `;
   }).join("");
+
+  updateListStatusSummary();
+}
+
+function clearProfilesUI(msg = "Fetch profiles first…") {
+  lastProfiles = [];
+  profilesSel.disabled = true;
+  profilesSel.innerHTML = `<option>${escapeHtml(msg)}</option>`;
+}
+
+function clearForm() {
+  editingId = null;
+  deviceFormTitle.textContent = "Create device";
+  nameEl.value = "";
+  ipEl.value = "";
+  portEl.value = "80";
+  userEl.value = "";
+  passEl.value = "";
+  deleteBtn.disabled = true;
+  clearProfilesUI();
+  renderList();
+  setFormStatus("Fill details, then Fetch profiles.");
+}
+
+function fillForm(d) {
+  editingId = d.id;
+  deviceFormTitle.textContent = `Edit device (${d.name || d.ip || d.id})`;
+
+  nameEl.value = d.name || "";
+  ipEl.value = d.ip || "";
+  portEl.value = String(d.onvif_port ?? 80);
+  userEl.value = d.username || "";
+  passEl.value = d.password || "";
+  deleteBtn.disabled = false;
+
+  clearProfilesUI("Fetch profiles to select…");
+
+  if (d.profile_token) {
+    profilesSel.innerHTML = `<option value="${escapeHtml(d.profile_token)}">${escapeHtml(d.profile_label || d.profile_token)}</option>`;
+    profilesSel.disabled = false;
+  }
+
+  renderList();
+  setFormStatus(
+    d.profile_token
+      ? "Loaded. Fetch profiles to confirm you are using the right profile."
+      : "Loaded. Fetch profiles to select one."
+  );
 }
 
 async function loadDevices() {
@@ -479,9 +579,17 @@ async function loadDevices() {
     const data = await api("/api/devices", { method: "GET" });
     devices = data.devices || [];
     applyDeviceOrder(loadDeviceOrder());
+    saveDeviceOrder();
     renderList();
+
+    if (editingId && !devices.some((d) => d.id === editingId)) {
+      clearForm();
+    } else {
+      updateListStatusSummary();
+    }
   } catch (e) {
     camListEl.innerHTML = `<div class="muted" style="padding:10px 2px;">Failed to load devices: ${escapeHtml(e.message || e)}</div>`;
+    setListStatus(`Failed to load devices: ${String(e.message || e)}`);
     console.error("Failed to load devices", e);
   }
 }
@@ -1340,9 +1448,11 @@ function installPtzControls(device, entry, caps) {
         if (!activeJoystick) return;
         activeJoystick = false;
         if (activeMode === "joystick") activeMode = "idle";
+
         try {
           joystick.releasePointerCapture(upEv.pointerId);
         } catch {}
+
         joystick.removeEventListener("pointermove", onMove);
         joystick.removeEventListener("pointerup", onUp);
         joystick.removeEventListener("pointercancel", onUp);
@@ -1443,6 +1553,7 @@ async function startDevice(device, { restore = false } = {}) {
       applyDeviceOrder(loadDeviceOrder());
       const fresh = devices.find((d) => d.id === device.id);
       if (fresh) device = fresh;
+      renderList();
     } catch {}
   }
 
@@ -1489,7 +1600,6 @@ async function startDevice(device, { restore = false } = {}) {
     : devices.map((d) => d.id);
 
   applyTileOrder(targetOrder);
-
   applyTileStateClasses(entry);
   recomputeGrid();
   renderList();
@@ -1592,6 +1702,116 @@ async function restoreGrid() {
   updateSidebarCollapseAvailability();
 }
 
+function readCredsOnly() {
+  const ip = ipEl.value.trim();
+  const onvif_port = parseInt((portEl.value || "80").trim(), 10);
+  const username = userEl.value.trim();
+  const password = passEl.value;
+
+  if (!ip) throw new Error("IP is required.");
+  if (!username) throw new Error("Username is required.");
+  if (!password) throw new Error("Password is required.");
+  if (!Number.isFinite(onvif_port) || onvif_port <= 0) throw new Error("Invalid ONVIF port.");
+
+  return { ip, onvif_port, username, password };
+}
+
+function profileLabel(p) {
+  const parts = [];
+  if (p.name) parts.push(p.name);
+  if (p.encoding) parts.push(String(p.encoding));
+  if (p.width && p.height) parts.push(`${p.width}x${p.height}`);
+  if (p.recommended) parts.push("recommended");
+  else if (p.browser_compatible === false) parts.push("not browser-safe");
+  return parts.length ? parts.join(" • ") : p.token;
+}
+
+function readFormFull() {
+  const name = nameEl.value.trim();
+  if (!name) throw new Error("Name is required.");
+
+  const creds = readCredsOnly();
+
+  const profile_token = profilesSel.disabled ? null : (profilesSel.value || null);
+  const selected = lastProfiles.find((p) => p.token === profile_token);
+  const profile_label = profile_token
+    ? (selected ? profileLabel(selected) : (profilesSel.selectedOptions?.[0]?.textContent || profile_token))
+    : null;
+
+  return { name, ...creds, profile_token, profile_label };
+}
+
+async function fetchProfiles() {
+  setFormStatus("Fetching profiles…");
+  clearProfilesUI("Loading…");
+
+  const creds = readCredsOnly();
+
+  const data = await api("/api/profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(creds),
+  });
+
+  const profs = data.profiles || [];
+  if (!profs.length) throw new Error("No profiles returned.");
+
+  lastProfiles = profs;
+
+  profilesSel.innerHTML = "";
+  for (const p of profs) {
+    const opt = document.createElement("option");
+    opt.value = p.token;
+    opt.textContent = profileLabel(p);
+    profilesSel.appendChild(opt);
+  }
+  profilesSel.disabled = false;
+
+  if (editingId) {
+    const d = devices.find((x) => x.id === editingId);
+    if (d?.profile_token) profilesSel.value = d.profile_token;
+  }
+
+  const recommended = profs.find((p) => p.recommended);
+  if (recommended) {
+    profilesSel.value = recommended.token;
+    setFormStatus(`Profiles loaded (${profs.length}). Recommended H264 profile selected.`);
+  } else {
+    setFormStatus(`Profiles loaded (${profs.length}), but no browser-safe H264 profile was found.`);
+  }
+}
+
+async function deleteDeviceById(deviceId) {
+  const d = devices.find((x) => x.id === deviceId);
+  if (!d) return;
+
+  const label = d.name || d.ip || d.id;
+  if (!window.confirm(`Delete device "${label}"?`)) return;
+
+  try {
+    setFormStatus("Deleting…");
+
+    if (isStreaming(deviceId)) {
+      await stopDevice(deviceId, { force: true });
+    }
+
+    await api(`/api/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
+
+    ptzCapsCache.delete(deviceId);
+    devices = devices.filter((x) => x.id !== deviceId);
+    saveDeviceOrder();
+
+    if (editingId === deviceId) {
+      clearForm();
+    }
+
+    await loadDevices();
+    setFormStatus("Deleted.");
+  } catch (e) {
+    setFormStatus(`Error: ${String(e.message || e)}`);
+  }
+}
+
 camListEl.addEventListener("click", async (ev) => {
   if (Date.now() < suppressListClickUntil) return;
 
@@ -1602,11 +1822,118 @@ camListEl.addEventListener("click", async (ev) => {
   const d = devices.find((x) => x.id === id);
   if (!d) return;
 
+  const actionBtn = ev.target.closest("[data-action]");
+  if (actionBtn) {
+    ev.preventDefault();
+    ev.stopPropagation();
+
+    const action = actionBtn.getAttribute("data-action");
+    if (action === "edit") {
+      fillForm(d);
+      setSidebarHidden(false);
+      return;
+    }
+
+    if (action === "delete") {
+      await deleteDeviceById(d.id);
+      return;
+    }
+  }
+
+  if (ev.target.closest(".camDragHandle")) return;
+
   if (isStreaming(d.id)) {
     await stopDevice(d.id);
   } else {
     await startDevice(d);
   }
+});
+
+fetchBtn.addEventListener("click", async () => {
+  try {
+    await fetchProfiles();
+  } catch (e) {
+    clearProfilesUI("Fetch failed");
+    setFormStatus(`Error: ${String(e.message || e)}`);
+  }
+});
+
+saveBtn.addEventListener("click", async () => {
+  try {
+    setFormStatus("Saving…");
+    const payload = readFormFull();
+
+    if (!payload.profile_token) {
+      throw new Error("Select a profile before saving.");
+    }
+
+    if (editingId) {
+      const currentId = editingId;
+      const wasStreaming = isStreaming(currentId);
+
+      await api(`/api/devices/${encodeURIComponent(currentId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      await api(`/api/devices/${encodeURIComponent(currentId)}/refresh-stream`, {
+        method: "POST",
+      });
+
+      if (wasStreaming) {
+        await stopDevice(currentId, { force: true });
+      }
+
+      await loadDevices();
+      clearForm();
+
+      if (wasStreaming) {
+        const refreshed = devices.find((d) => d.id === currentId);
+        if (refreshed?.profile_token) {
+          await startDevice(refreshed, { restore: true });
+        }
+      }
+
+      setFormStatus("Updated.");
+    } else {
+      await api("/api/devices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      await loadDevices();
+      clearForm();
+      setFormStatus("Created.");
+    }
+  } catch (e) {
+    setFormStatus(`Error: ${String(e.message || e)}`);
+  }
+});
+
+newBtn.addEventListener("click", () => {
+  editingId = null;
+  deviceFormTitle.textContent = "Create device";
+  deleteBtn.disabled = true;
+  clearProfilesUI("Fetch profiles to select…");
+  renderList();
+  setFormStatus("Creating new device (fields copied). Fetch profiles and Save.");
+});
+
+clearBtn.addEventListener("click", () => {
+  clearForm();
+  setFormStatus("Form cleared.");
+});
+
+deleteBtn.addEventListener("click", async () => {
+  if (!editingId) return;
+  await deleteDeviceById(editingId);
+});
+
+refreshDevicesBtn?.addEventListener("click", async () => {
+  setListStatus("Refreshing devices…");
+  await loadDevices();
 });
 
 startAllBtn.addEventListener("click", async () => {
@@ -1632,36 +1959,21 @@ stopAllBtn.addEventListener("click", async () => {
 });
 
 function updateSidebarCollapseAvailability() {
-  const hasStreams = streams.size > 0;
-
-  if (!hasStreams && layoutEl.classList.contains("sidebarHidden")) {
-    layoutEl.classList.remove("sidebarHidden");
-    localStorage.setItem(LS_KEY, "0");
-  }
-
-  if (sidebarCollapseBtn) {
-    sidebarCollapseBtn.disabled = !hasStreams;
-    sidebarCollapseBtn.style.opacity = hasStreams ? "" : "0.45";
-    sidebarCollapseBtn.style.cursor = hasStreams ? "pointer" : "not-allowed";
-    sidebarCollapseBtn.title = hasStreams ? sidebarCollapseBtn.title : "No active streams";
-    sidebarCollapseBtn.setAttribute(
-      "aria-label",
-      hasStreams ? sidebarCollapseBtn.getAttribute("aria-label") || "Hide cameras" : "No active streams"
-    );
-  }
-
   const hidden = layoutEl.classList.contains("sidebarHidden");
+  const isMobile = window.matchMedia("(max-width: 980px)").matches;
+
   if (sidebarCollapseRailIcon) {
-    const isMobile = window.matchMedia("(max-width: 980px)").matches;
     sidebarCollapseRailIcon.textContent = isMobile
       ? (hidden ? "▾" : "▴")
       : (hidden ? "❯" : "❮");
   }
-}
 
-const layoutEl = document.getElementById("liveLayout");
-const sidebarCollapseBtn = document.getElementById("sidebarCollapseBtn");
-const sidebarCollapseRailIcon = sidebarCollapseBtn?.querySelector(".sidebarCollapseRailIcon");
+  if (sidebarCollapseBtn) {
+    const label = hidden ? "Show control center" : "Hide control center";
+    sidebarCollapseBtn.title = label;
+    sidebarCollapseBtn.setAttribute("aria-label", label);
+  }
+}
 
 function setSidebarHidden(hidden) {
   const isMobile = window.matchMedia("(max-width: 980px)").matches;
@@ -1675,7 +1987,7 @@ function setSidebarHidden(hidden) {
   }
 
   if (sidebarCollapseBtn) {
-    const label = hidden ? "Show cameras" : "Hide cameras";
+    const label = hidden ? "Show control center" : "Hide control center";
     sidebarCollapseBtn.title = label;
     sidebarCollapseBtn.setAttribute("aria-label", label);
   }
@@ -1685,7 +1997,6 @@ function setSidebarHidden(hidden) {
 }
 
 sidebarCollapseBtn?.addEventListener("click", () => {
-  if (streams.size === 0) return;
   const hidden = layoutEl.classList.contains("sidebarHidden");
   setSidebarHidden(!hidden);
 });
@@ -1696,14 +2007,17 @@ window.addEventListener("resize", () => {
   recomputeGrid();
 });
 
-setSidebarHidden(localStorage.getItem(LS_KEY) === "1");
-updateSidebarCollapseAvailability();
-
 recomputeGrid();
 installListDnD();
+clearForm();
+setSidebarHidden(true);
+updateSidebarCollapseAvailability();
 
 (async function init() {
   await loadDevices();
   await restoreGrid();
-  window.addEventListener("focus", loadDevices);
+
+  window.addEventListener("focus", () => {
+    loadDevices().catch(() => {});
+  });
 })();
