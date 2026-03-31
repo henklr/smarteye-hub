@@ -1662,10 +1662,27 @@ async function triggerManualNode(nodeId) {
   try {
     validateDraft(flow);
 
-    const out = await api(`/api/flows/test`, {
+    let out = null;
+
+    if (flow.id) {
+      out = await api(`/api/flows/run-manual/${encodeURIComponent(flow.id)}`, {
+        method: "POST",
+        body: JSON.stringify({
+          trigger_node_id: node.id,
+          trigger_payload: {},
+        }),
+      });
+
+      showTestResult(out.result);
+      setTestStatus(`Manual trigger "${node.label}" executed with persisted runtime state.`);
+      setStatus(`Manual trigger "${node.label}" executed with persisted runtime state.`);
+      return;
+    }
+
+    out = await api(`/api/flows/test`, {
       method: "POST",
       body: JSON.stringify({
-        flow_id: flow.id || null,
+        flow_id: null,
         flow: serializeFlow(flow),
         trigger_node_id: node.id,
         trigger_payload: {},
@@ -1673,8 +1690,8 @@ async function triggerManualNode(nodeId) {
     });
 
     showTestResult(out.result);
-    setTestStatus(`Manual trigger "${node.label}" executed against the current draft.`);
-    setStatus(`Manual trigger "${node.label}" executed against the current draft.`);
+    setTestStatus(`Manual trigger "${node.label}" executed against the current draft (stateless test).`);
+    setStatus(`Manual trigger "${node.label}" executed against the current draft (stateless test).`);
   } catch (err) {
     setTestStatus(err.message || String(err), true);
     setStatus(err.message || String(err), true);

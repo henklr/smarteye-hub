@@ -317,6 +317,40 @@ def test_flow(flow_id: str, req: FlowTestRequest) -> Dict[str, Any]:
     return _test_flow_impl(req)
 
 
+@router.post("/api/flows/run-manual/{flow_id}")
+def run_manual_flow(flow_id: str, req: FlowTestRequest) -> Dict[str, Any]:
+    flow = _find_flow(flow_id)
+    if flow is None:
+        raise HTTPException(status_code=404, detail="Flow not found")
+
+    if req.trigger_node_id:
+        trigger_node = _node_by_id(flow, req.trigger_node_id)
+        if trigger_node is None:
+            raise HTTPException(status_code=404, detail="Trigger node not found")
+        if trigger_node.get("type") != "trigger.manual":
+            raise HTTPException(status_code=400, detail="Selected node is not a manual trigger")
+    else:
+        trigger_node = next(
+            (n for n in flow.get("nodes", []) if n.get("type") == "trigger.manual"),
+            None,
+        )
+        if trigger_node is None:
+            raise HTTPException(status_code=400, detail="Flow has no manual trigger node")
+
+    trigger = _manual_trigger_from_node(flow, trigger_node, req.trigger_payload)
+
+    result = _run_flow_from_trigger(
+        flow,
+        trigger,
+        start_node_id=trigger_node["id"],
+        manual=True,
+        persist_runtime=True,
+        append_log=True,
+    )
+
+    return {"ok": True, "result": result}
+
+
 def _test_flow_impl(req: FlowTestRequest) -> Dict[str, Any]:
     saved_flow = None
 
