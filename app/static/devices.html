@@ -3,108 +3,26 @@
 
 <head>
   <meta charset="utf-8" />
+  <meta http-equiv="refresh" content="0; url=/live" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Devices</title>
+  <title>Devices moved</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 
 <body>
-  <div class="wrap full">
-    <div class="topbar">
-      <div class="tabs">
-        <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
-        <a class="tab active" href="/devices"><span class="tabDot"></span>Devices</a>
-        <a class="tab" href="/flows"><span class="tabDot"></span>Flows</a>
-      </div>
-    </div>
-
-    <div class="split">
-      <div class="card">
-        <div class="listHeader">
-          <div>
-            <div class="listTitle">Saved devices</div>
-            <div class="listSub">Click a row to edit. Use Refresh to reload the list.</div>
-          </div>
-          <button class="btn" id="refresh">Refresh</button>
-        </div>
-
-        <div class="tableWrap">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>IP</th>
-                <th>Ready</th>
-                <th>Stream</th>
-              </tr>
-            </thead>
-            <tbody id="devTbody">
-              <tr>
-                <td colspan="4" class="muted">Loading…</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="statusLine" style="margin-top:12px;">
-          <strong>Status:</strong> <span id="listStatus" class="muted">Idle</span>
-        </div>
+  <div class="wrap">
+    <div class="card">
+      <div class="listTitle">Devices moved into Live</div>
+      <div class="listSub" style="margin-top:8px;">
+        Device management now lives inside the Live sidebar. You should be redirected automatically.
       </div>
 
-      <div class="card">
-        <div style="font-weight:900; margin-bottom:8px;" id="formTitle">Add device</div>
-
-        <div class="grid" style="grid-template-columns: 1fr 0.6fr; margin-top:0;">
-          <div data-full>
-            <label>Name</label>
-            <input id="name" placeholder="Front Door" />
-          </div>
-
-          <div data-full>
-            <label>Camera IP</label>
-            <input id="ip" placeholder="192.168.1.108" />
-          </div>
-
-          <div>
-            <label>ONVIF Port</label>
-            <input id="onvif_port" value="80" />
-          </div>
-
-          <div>
-            <label>Username</label>
-            <input id="username" placeholder="admin" />
-          </div>
-
-          <div data-full>
-            <label>Password</label>
-            <input id="password" type="password" placeholder="••••••••" />
-          </div>
-
-          <button class="btn" id="fetchProfiles" data-full>Fetch profiles</button>
-
-          <div data-full>
-            <label>Profile (saved on device)</label>
-            <select id="profiles" disabled>
-              <option>Fetch profiles first…</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="row2" style="margin-top:12px;">
-          <button class="btn btn-primary" id="save">Save</button>
-          <button class="btn" id="new">New</button>
-          <button class="btn" id="clear">Clear</button>
-          <button class="btn btn-danger" id="delete" disabled>Delete</button>
-        </div>
-
-        <div class="statusLine" style="margin-top:12px;">
-          <strong>Status:</strong> <span id="formStatus" class="muted">Ready.</span>
-        </div>
+      <div class="row2" style="margin-top:14px;">
+        <a class="btn btn-primary" href="/live">Open Live</a>
+        <a class="btn" href="/flows">Open Flows</a>
       </div>
     </div>
   </div>
-
-  <script src="/static/devices.js"></script>
 </body>
 
 </html>
