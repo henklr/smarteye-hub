@@ -2,7 +2,7 @@ const camListEl = document.getElementById("camList");
 const sidebarListStatus = document.getElementById("sidebarListStatus");
 const deviceFormStatus = document.getElementById("deviceFormStatus");
 const deviceFormTitle = document.getElementById("deviceFormTitle");
-const refreshDevicesBtn = document.getElementById("sidebarRefreshDevices");
+const refreshDevicesBtn = document.getElementById("overlayRefreshDevices");
 
 const startAllBtn = document.getElementById("startAll");
 const stopAllBtn = document.getElementById("stopAll");
@@ -19,12 +19,13 @@ const newBtn = document.getElementById("new");
 const clearBtn = document.getElementById("clear");
 const deleteBtn = document.getElementById("delete");
 
-const videoGrid = document.getElementById("videoGrid");
-const layoutEl = document.getElementById("liveLayout");
-const sidebarCollapseBtn = document.getElementById("sidebarCollapseBtn");
-const sidebarCollapseRailIcon = sidebarCollapseBtn?.querySelector(".sidebarCollapseRailIcon");
+const openDevicesBtn = document.getElementById("openDevicesBtn");
+const closeDevicesBtn = document.getElementById("closeDevicesBtn");
+const devicesOverlay = document.getElementById("devicesOverlay");
+const devicesOverlayBackdrop = document.getElementById("devicesOverlayBackdrop");
 
-const LS_KEY = "live.sidebarHidden";
+const videoGrid = document.getElementById("videoGrid");
+
 const LS_GRID_KEY = "live.gridState";
 const LS_DEVICE_ORDER_KEY = "live.deviceOrder";
 
@@ -124,6 +125,26 @@ function updateListStatusSummary(prefix = "") {
   const readyCount = devices.filter(profileReady).length;
   const activeCount = streams.size;
   setListStatus(`${devices.length} device(s). ${readyCount} ready. ${activeCount} streaming.`);
+}
+
+function openDevicesOverlay() {
+  devicesOverlay.classList.remove("hidden");
+  devicesOverlay.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modalOpen");
+  openDevicesBtn?.classList.add("active");
+}
+
+function closeDevicesOverlay() {
+  devicesOverlay.classList.add("hidden");
+  devicesOverlay.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modalOpen");
+  openDevicesBtn?.classList.remove("active");
+}
+
+function ensureDevicesVisibleWhenNoStreams() {
+  if (streams.size === 0) {
+    openDevicesOverlay();
+  }
 }
 
 function getTileOrder() {
@@ -827,7 +848,14 @@ function installTileFullscreen(tile) {
 }
 
 document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape" && maximizedTile) {
+  if (ev.key !== "Escape") return;
+
+  if (!devicesOverlay.classList.contains("hidden")) {
+    closeDevicesOverlay();
+    return;
+  }
+
+  if (maximizedTile) {
     toggleTileMaximized(maximizedTile);
   }
 });
@@ -1101,10 +1129,7 @@ function handleEntryFailure(device, entry, error) {
 
   const message = error?.message || String(error) || "Stream failed";
   setEntryState(device.id, STREAM_STATE.ERROR, message);
-
-  if (!restoringGrid) {
-    saveGridState();
-  }
+  saveGridState();
 
   scheduleRetry(device, entry);
 }
@@ -1133,7 +1158,7 @@ async function connectEntry(device, entry) {
       clearRetryTimer(cur);
       cur.retryScheduled = false;
       setEntryState(device.id, STREAM_STATE.LIVE);
-      if (!restoringGrid) saveGridState();
+      saveGridState();
       return;
     }
 
@@ -1603,11 +1628,7 @@ async function startDevice(device, { restore = false } = {}) {
   applyTileStateClasses(entry);
   recomputeGrid();
   renderList();
-  updateSidebarCollapseAvailability();
-
-  if (!restoringGrid) {
-    saveGridState();
-  }
+  saveGridState();
 
   entry.startingPromise = connectEntry(device, entry);
   return entry.startingPromise;
@@ -1666,11 +1687,8 @@ async function stopDevice(deviceId, { force = false } = {}) {
 
   recomputeGrid();
   renderList();
-  updateSidebarCollapseAvailability();
-
-  if (!restoringGrid) {
-    saveGridState();
-  }
+  saveGridState();
+  ensureDevicesVisibleWhenNoStreams();
 }
 
 async function restoreGrid() {
@@ -1698,8 +1716,6 @@ async function restoreGrid() {
     saveGridState();
     recomputeGrid();
   }
-
-  updateSidebarCollapseAvailability();
 }
 
 function readCredsOnly() {
@@ -1807,6 +1823,7 @@ async function deleteDeviceById(deviceId) {
 
     await loadDevices();
     setFormStatus("Deleted.");
+    ensureDevicesVisibleWhenNoStreams();
   } catch (e) {
     setFormStatus(`Error: ${String(e.message || e)}`);
   }
@@ -1830,7 +1847,6 @@ camListEl.addEventListener("click", async (ev) => {
     const action = actionBtn.getAttribute("data-action");
     if (action === "edit") {
       fillForm(d);
-      setSidebarHidden(false);
       return;
     }
 
@@ -1955,67 +1971,42 @@ stopAllBtn.addEventListener("click", async () => {
   );
 
   saveGridState();
-  updateSidebarCollapseAvailability();
+  ensureDevicesVisibleWhenNoStreams();
 });
 
-function updateSidebarCollapseAvailability() {
-  const hidden = layoutEl.classList.contains("sidebarHidden");
-  const isMobile = window.matchMedia("(max-width: 980px)").matches;
+openDevicesBtn?.addEventListener("click", () => {
+  openDevicesOverlay();
+});
 
-  if (sidebarCollapseRailIcon) {
-    sidebarCollapseRailIcon.textContent = isMobile
-      ? (hidden ? "▾" : "▴")
-      : (hidden ? "❯" : "❮");
-  }
+closeDevicesBtn?.addEventListener("click", () => {
+  closeDevicesOverlay();
+});
 
-  if (sidebarCollapseBtn) {
-    const label = hidden ? "Show control center" : "Hide control center";
-    sidebarCollapseBtn.title = label;
-    sidebarCollapseBtn.setAttribute("aria-label", label);
-  }
-}
-
-function setSidebarHidden(hidden) {
-  const isMobile = window.matchMedia("(max-width: 980px)").matches;
-
-  layoutEl.classList.toggle("sidebarHidden", !!hidden);
-
-  if (sidebarCollapseRailIcon) {
-    sidebarCollapseRailIcon.textContent = isMobile
-      ? (hidden ? "▾" : "▴")
-      : (hidden ? "❯" : "❮");
-  }
-
-  if (sidebarCollapseBtn) {
-    const label = hidden ? "Show control center" : "Hide control center";
-    sidebarCollapseBtn.title = label;
-    sidebarCollapseBtn.setAttribute("aria-label", label);
-  }
-
-  localStorage.setItem(LS_KEY, hidden ? "1" : "0");
-  requestAnimationFrame(recomputeGrid);
-}
-
-sidebarCollapseBtn?.addEventListener("click", () => {
-  const hidden = layoutEl.classList.contains("sidebarHidden");
-  setSidebarHidden(!hidden);
+devicesOverlayBackdrop?.addEventListener("click", () => {
+  closeDevicesOverlay();
 });
 
 window.addEventListener("resize", () => {
-  const hidden = layoutEl.classList.contains("sidebarHidden");
-  setSidebarHidden(hidden);
   recomputeGrid();
 });
 
 recomputeGrid();
 installListDnD();
 clearForm();
-setSidebarHidden(true);
-updateSidebarCollapseAvailability();
 
 (async function init() {
   await loadDevices();
   await restoreGrid();
+
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("devices") === "1") {
+    openDevicesOverlay();
+    params.delete("devices");
+    const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}${window.location.hash || ""}`;
+    window.history.replaceState({}, "", next);
+  } else {
+    ensureDevicesVisibleWhenNoStreams();
+  }
 
   window.addEventListener("focus", () => {
     loadDevices().catch(() => {});
