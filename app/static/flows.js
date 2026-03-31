@@ -180,39 +180,128 @@ function flowSummary(flow) {
   return `${triggers} trigger${triggers === 1 ? "" : "s"} · ${conditions} condition${conditions === 1 ? "" : "s"} · ${operators} operator${operators === 1 ? "" : "s"} · ${actions} action${actions === 1 ? "" : "s"}`;
 }
 
+function flowVariableLabel(key) {
+  const vars = currentFlow()?.variables || [];
+  const hit = vars.find((item) => item.key === key);
+  return hit?.label?.trim() || hit?.key || key || "variable";
+}
+
+function displayNodeTitle(node) {
+  if (!node) return "";
+  const raw = String(node.label || "").trim();
+
+  if (node.type === "condition.compare" && (!raw || raw === "Compare" || raw === "If")) {
+    return "If";
+  }
+
+  return raw || "";
+}
+
+function compareOperatorLabel(value) {
+  const map = {
+    equals: "is",
+    not_equals: "is not",
+    contains: "contains",
+    not_contains: "does not contain",
+    greater_than: "is greater than",
+    greater_than_or_equal: "is greater than or equal to",
+    less_than: "is less than",
+    less_than_or_equal: "is less than or equal to",
+    is_true: "is true",
+    is_false: "is false",
+  };
+
+  return map[value] || String(value || "is");
+}
+
+function compareSideLabel(source, value) {
+  const src = String(source || "literal").trim().toLowerCase();
+  const raw = String(value ?? "").trim();
+
+  if (src === "variable") {
+    return flowVariableLabel(raw);
+  }
+
+  if (src === "trigger") {
+    return raw ? `trigger ${raw}` : "trigger value";
+  }
+
+  if (!raw) return "empty value";
+  if (/^(true|false)$/i.test(raw)) return raw.toLowerCase();
+  if (!Number.isNaN(Number(raw))) return raw;
+
+  return `"${raw}"`;
+}
+
+function displayPortLabel(node, kind, port) {
+  if (node?.type === "condition.compare" && kind === "output") {
+    if (port === "true") return "THEN";
+    if (port === "false") return "ELSE";
+  }
+
+  return "";
+}
+
+function portUiLabel(nodeId, kind, handle) {
+  const node = currentFlow()?.nodes.find((item) => item.id === nodeId);
+  return displayPortLabel(node, kind, handle) || handle;
+}
+
 function nodePreview(node) {
   const cfg = node.config || {};
+
   switch (node.type) {
     case "trigger.onvif_event": {
       const device = state.devices.find((item) => item.id === cfg.device_id);
       return `${device?.name || cfg.device_id || "device"} → ${cfg.topic || "topic"}`;
     }
+
     case "trigger.device_offline": {
       const device = state.devices.find((item) => item.id === cfg.device_id);
       return `When ${device?.name || cfg.device_id || "device"} goes offline`;
     }
+
     case "trigger.device_back_online": {
       const device = state.devices.find((item) => item.id === cfg.device_id);
       return `When ${device?.name || cfg.device_id || "device"} comes back online`;
     }
+
     case "trigger.incoming_http_request":
       return `${cfg.method || "ANY"} ${cfg.path || "/"}`;
+
     case "trigger.manual":
       return "Run this node manually from the editor";
-    case "condition.compare":
-      return `${cfg.left_source || "literal"}:${cfg.left_value || ""} ${cfg.operator || "equals"} ${cfg.right_source || "literal"}:${cfg.right_value || ""}`;
+
+    case "condition.compare": {
+      const left = compareSideLabel(cfg.left_source || "variable", cfg.left_value || "");
+      const operator = compareOperatorLabel(cfg.operator || "equals");
+
+      if (cfg.operator === "is_true" || cfg.operator === "is_false") {
+        return `If ${left} ${operator}`;
+      }
+
+      const right = compareSideLabel(cfg.right_source || "literal", cfg.right_value || "");
+      return `If ${left} ${operator} ${right}`;
+    }
+
     case "operator.delay":
       return `Wait ${cfg.seconds ?? 0}s`;
+
     case "operator.set_variable":
       return `${cfg.variable_key || "variable"} ← ${cfg.value_source || "literal"}:${cfg.value || ""}`;
+
     case "operator.template":
       return `${cfg.variable_key || "variable"} ← template`;
+
     case "action.send_http_request":
       return `${cfg.method || "POST"} ${cfg.url || ""}`;
+
     case "action.activate_output_relay":
       return `${cfg.mode || "pulse"}${cfg.mode === "pulse" ? ` for ${cfg.activation_seconds || 0}s` : ""}`;
+
     case "action.log_message":
       return cfg.message || "Log message";
+
     default:
       return node.label;
   }
@@ -469,7 +558,7 @@ function renderCanvas() {
       <div class="flowNode ${node.category} ${node.id === state.selectedNodeId ? "selected" : ""}" data-node-id="${escapeHtml(node.id)}" style="left:${Number(node.x) || 0}px; top:${Number(node.y) || 0}px;">
         <div class="flowNodeTop">
           <div>
-            <div class="flowNodeLabel">${escapeHtml(node.label)}</div>
+            <div class="flowNodeLabel">${escapeHtml(displayNodeTitle(node) || node.label)}</div>
             <div class="flowNodeType">${escapeHtml(meta.label)}</div>
           </div>
           <span class="nodeBadge">${escapeHtml(meta.label)}</span>
@@ -486,16 +575,25 @@ function renderCanvas() {
         <div class="flowNodePorts">
           <div class="portStack inputs">
             ${ports.inputs.map((port) => `
-              <button class="flowPort ${state.connecting && state.connecting.nodeId === node.id && state.connecting.handle === port && state.connecting.kind === "input" ? "active" : ""}" type="button" data-port-kind="input" data-port-handle="${escapeHtml(port)}" data-node-id="${escapeHtml(node.id)}">
-                <span class="flowPortLabel">${escapeHtml(port)}</span>
-              </button>
+              <div class="flowPortRow input">
+                <button class="flowPort ${state.connecting && state.connecting.nodeId === node.id && state.connecting.handle === port && state.connecting.kind === "input" ? "active" : ""}" type="button" data-port-kind="input" data-port-handle="${escapeHtml(port)}" data-node-id="${escapeHtml(node.id)}"></button>
+                ${displayPortLabel(node, "input", port) ? `
+                  <span class="flowBranchLabel neutral">${escapeHtml(displayPortLabel(node, "input", port))}</span>
+                ` : ""}
+              </div>
             `).join("")}
           </div>
+
           <div class="portStack outputs">
             ${ports.outputs.map((port) => `
-              <button class="flowPort ${state.connecting && state.connecting.nodeId === node.id && state.connecting.handle === port && state.connecting.kind === "output" ? "active" : ""}" type="button" data-port-kind="output" data-port-handle="${escapeHtml(port)}" data-node-id="${escapeHtml(node.id)}">
-                <span class="flowPortLabel">${escapeHtml(port)}</span>
-              </button>
+              <div class="flowPortRow output">
+                ${displayPortLabel(node, "output", port) ? `
+                  <span class="flowBranchLabel ${port === "true" ? "then" : port === "false" ? "else" : "neutral"}">
+                    ${escapeHtml(displayPortLabel(node, "output", port))}
+                  </span>
+                ` : ""}
+                <button class="flowPort ${state.connecting && state.connecting.nodeId === node.id && state.connecting.handle === port && state.connecting.kind === "output" ? "active" : ""}" type="button" data-port-kind="output" data-port-handle="${escapeHtml(port)}" data-node-id="${escapeHtml(node.id)}"></button>
+              </div>
             `).join("")}
           </div>
         </div>
@@ -567,10 +665,12 @@ function renderCanvas() {
         state.selectedNodeId = nodeId;
         state.selectedEdgeId = null;
         renderAll();
+
+        const uiHandle = portUiLabel(nodeId, kind, handle);
         setStatus(
           kind === "input"
-            ? `Connection started from input "${handle}". Click an output port to finish.`
-            : `Connection started from output "${handle}". Click an input port to finish.`
+            ? `Connection started from input "${uiHandle}". Click an output port to finish.`
+            : `Connection started from output "${uiHandle}". Click an input port to finish.`
         );
         return;
       }
@@ -593,10 +693,12 @@ function renderCanvas() {
         state.selectedNodeId = nodeId;
         state.selectedEdgeId = null;
         renderAll();
+
+        const uiHandle = portUiLabel(nodeId, kind, handle);
         setStatus(
           kind === "input"
-            ? `Connection restarted from input "${handle}". Click an output port to finish.`
-            : `Connection restarted from output "${handle}". Click an input port to finish.`
+            ? `Connection restarted from input "${uiHandle}". Click an output port to finish.`
+            : `Connection restarted from output "${uiHandle}". Click an input port to finish.`
         );
         return;
       }
@@ -806,7 +908,7 @@ function renderInspector() {
     }
 
     if (el("inspectorSubtext")) {
-      el("inspectorSubtext").textContent = `${node.label} settings`;
+      el("inspectorSubtext").textContent = `${displayNodeTitle(node) || node.label} settings`;
     }
 
     box.innerHTML = renderNodeInspector(node);
@@ -949,6 +1051,8 @@ function boxBindVariableRows(flow) {
     row.querySelector(".jsVarLabel")?.addEventListener("input", (ev) => {
       variable.label = ev.target.value;
       markDirty();
+      renderCanvas();
+      renderInspector();
     });
 
     row.querySelector(".jsVarType")?.addEventListener("change", (ev) => {
@@ -969,7 +1073,7 @@ function renderNodeInspector(node) {
   const common = `
     <div class="inspectorCard">
       <div class="rowSplit">
-        <div class="inspectorTitle" style="margin-bottom:0;">${escapeHtml(node.label)}</div>
+        <div class="inspectorTitle" style="margin-bottom:0;">${escapeHtml(displayNodeTitle(node) || node.label)}</div>
         <button class="btn btn-danger" id="btnDeleteNode" type="button">Delete node</button>
       </div>
       <div class="fieldGrid mt-10">
@@ -1075,18 +1179,19 @@ function renderNodeInspector(node) {
     case "condition.compare":
       body = `
         <div class="inspectorCard">
-          <div class="inspectorTitle">Compare</div>
+          <div class="inspectorTitle">If condition</div>
+          <div class="inspectorHint">Checks a condition, then follows THEN when it passes or ELSE when it fails.</div>
           <div class="fieldGrid">
             <div class="full">
               <label>Name</label>
               <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
             </div>
             <div>
-              <label>Left source</label>
+              <label>If source</label>
               <select id="cfg_left_source">${sourceOptionsHtml(cfg.left_source || "variable")}</select>
             </div>
             <div>
-              <label>Left value</label>
+              <label>If value / path</label>
               <input id="cfg_left_value" value="${escapeHtml(cfg.left_value || "")}" placeholder="armed or extra.changed.IsMotion" list="variableKeysList" />
             </div>
             <div>
@@ -1094,15 +1199,15 @@ function renderNodeInspector(node) {
               <select id="cfg_operator">${compareOperatorOptionsHtml(cfg.operator || "equals")}</select>
             </div>
             <div>
-              <label>Cast</label>
+              <label>Cast as</label>
               <select id="cfg_cast">${castOptionsHtml(cfg.cast || "auto")}</select>
             </div>
             <div>
-              <label>Right source</label>
+              <label>Compare to source</label>
               <select id="cfg_right_source">${sourceOptionsHtml(cfg.right_source || "literal")}</select>
             </div>
             <div>
-              <label>Right value</label>
+              <label>Compare to value / path</label>
               <input id="cfg_right_value" value="${escapeHtml(cfg.right_value || "")}" placeholder="true" list="variableKeysList" />
             </div>
           </div>
@@ -1283,6 +1388,7 @@ function bindNodeInspector(node) {
     node.label = ev.target.value;
     markDirty();
     renderCanvas();
+    renderInspector();
   });
 
   for (const element of document.querySelectorAll("#inspectorBody input, #inspectorBody select, #inspectorBody textarea")) {
