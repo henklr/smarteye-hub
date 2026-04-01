@@ -22,7 +22,7 @@ from onvif import ONVIFCamera
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from flows_backend import (
+from flows import (
     router as flows_router,
     dispatch_flow_trigger,
     get_flow_topics_for_device,
