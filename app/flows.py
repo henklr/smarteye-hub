@@ -16,6 +16,14 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from physical_io import (
+    activate_physical_output,
+    physical_channels,
+    physical_io_catalog,
+    physical_io_state,
+    read_physical_input,
+)
+
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -129,6 +137,33 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "defaults": {"name": ""},
     },
     {
+        "type": "trigger.digital_input_changed",
+        "category": "trigger",
+        "label": "Digital input changed",
+        "description": "Starts when a selected Automation HAT Mini digital input changes.",
+        "color": "#4f8cff",
+        "ports": {"inputs": [], "outputs": ["out"]},
+        "defaults": {"channel": "1", "name": ""},
+    },
+    {
+        "type": "trigger.analog_input_above",
+        "category": "trigger",
+        "label": "Analog input goes above",
+        "description": "Starts when a selected Automation HAT Mini analog input crosses above the threshold.",
+        "color": "#4f8cff",
+        "ports": {"inputs": [], "outputs": ["out"]},
+        "defaults": {"channel": "1", "threshold": 1.0, "name": ""},
+    },
+    {
+        "type": "trigger.analog_input_below",
+        "category": "trigger",
+        "label": "Analog input goes below",
+        "description": "Starts when a selected Automation HAT Mini analog input crosses below the threshold.",
+        "color": "#4f8cff",
+        "ports": {"inputs": [], "outputs": ["out"]},
+        "defaults": {"channel": "1", "threshold": 1.0, "name": ""},
+    },
+    {
         "type": "condition.compare",
         "category": "condition",
         "label": "Compare",
@@ -182,6 +217,15 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         },
     },
     {
+        "type": "operator.physical_input",
+        "category": "operator",
+        "label": "Physical input",
+        "description": "Reads the current value from a selected Automation HAT Mini digital or analog input.",
+        "color": "#17b978",
+        "ports": {"inputs": ["in"], "outputs": ["out"]},
+        "defaults": {"input_kind": "digital", "channel": "1", "name": ""},
+    },
+    {
         "type": "action.send_http_request",
         "category": "action",
         "label": "Send HTTP request",
@@ -198,13 +242,13 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         },
     },
     {
-        "type": "action.activate_output_relay",
+        "type": "action.activate_physical_output",
         "category": "action",
-        "label": "Activate output relay",
-        "description": "Placeholder relay action compatible with your existing backend.",
+        "label": "Activate physical output",
+        "description": "Turns an Automation HAT Mini output on, off, or pulses it for a number of seconds.",
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
-        "defaults": {"mode": "pulse", "activation_seconds": 2, "name": ""},
+        "defaults": {"channel": "1", "mode": "pulse", "pulse_seconds": 2, "name": ""},
     },
     {
         "type": "action.log_message",
@@ -230,6 +274,7 @@ def flows_catalog() -> Dict[str, Any]:
     return {
         "nodes": NODE_LIBRARY,
         "devices": _load_devices(),
+        "physical_io": physical_io_catalog(),
         "http_methods": sorted(_VALID_HTTP_METHODS),
         "operators": [
             {"value": "equals", "label": "Equals"},
@@ -244,6 +289,11 @@ def flows_catalog() -> Dict[str, Any]:
             {"value": "is_false", "label": "Is false"},
         ],
     }
+
+
+@router.get("/api/physical-io/state")
+def get_physical_io_state() -> Dict[str, Any]:
+    return physical_io_state(refresh=False)
 
 
 @router.get("/api/flows")
@@ -593,16 +643,27 @@ def _normalize_flow_payload(
 
 
 def _normalize_node_payload(raw: Dict[str, Any], variable_keys: set[str]) -> Dict[str, Any]:
-    node_type = str(raw.get("type") or "").strip()
+    source_node_type = str(raw.get("type") or "").strip()
+    node_type = source_node_type
     node_id = str(raw.get("id") or "").strip() or uuid.uuid4().hex[:10]
+    raw_label = str(raw.get("label") or "").strip()
+    raw_config = deepcopy(raw.get("config") or {})
+
+    if node_type == "action.activate_output_relay":
+        node_type = "action.activate_physical_output"
+        if raw_label == "Activate output relay":
+            raw_label = ""
+        if "pulse_seconds" not in raw_config and "activation_seconds" in raw_config:
+            raw_config["pulse_seconds"] = raw_config.get("activation_seconds")
+
     if node_type not in NODE_LIBRARY_BY_TYPE:
         raise HTTPException(status_code=400, detail=f"Unsupported node type: {node_type}")
 
     definition = NODE_LIBRARY_BY_TYPE[node_type]
     category = definition["category"]
-    label = str(raw.get("label") or definition["label"]).strip() or definition["label"]
+    label = raw_label or definition["label"]
     config = deepcopy(definition.get("defaults") or {})
-    config.update(raw.get("config") or {})
+    config.update(raw_config)
     config = _normalize_node_config(node_type, config, variable_keys)
 
     return {
@@ -660,6 +721,18 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
     if node_type == "trigger.manual":
         return cfg
 
+    if node_type == "trigger.digital_input_changed":
+        cfg["channel"] = _normalize_physical_channel(cfg.get("channel"), "digital")
+        return cfg
+
+    if node_type in {"trigger.analog_input_above", "trigger.analog_input_below"}:
+        cfg["channel"] = _normalize_physical_channel(cfg.get("channel"), "analog")
+        try:
+            cfg["threshold"] = float(cfg.get("threshold") or 0)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Analog threshold must be numeric")
+        return cfg
+
     if node_type == "condition.compare":
         cfg["left_source"] = _normalize_source_type(cfg.get("left_source"), allow_trigger=True)
         cfg["right_source"] = _normalize_source_type(cfg.get("right_source"), allow_trigger=True)
@@ -697,6 +770,11 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
             raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['variable_key']}")
         return cfg
 
+    if node_type == "operator.physical_input":
+        cfg["input_kind"] = _normalize_physical_input_kind(cfg.get("input_kind"))
+        cfg["channel"] = _normalize_physical_channel(cfg.get("channel"), cfg["input_kind"])
+        return cfg
+
     if node_type == "action.send_http_request":
         cfg["method"] = _normalize_http_method(cfg.get("method"), allow_any=False)
         cfg["url"] = str(cfg.get("url") or "").strip()
@@ -713,16 +791,17 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
         _parse_headers_json(cfg["headers"])
         return cfg
 
-    if node_type == "action.activate_output_relay":
+    if node_type == "action.activate_physical_output":
+        cfg["channel"] = _normalize_physical_channel(cfg.get("channel"), "output")
         cfg["mode"] = str(cfg.get("mode") or "pulse").strip().lower()
         if cfg["mode"] not in {"on", "off", "pulse"}:
-            raise HTTPException(status_code=400, detail="Relay mode must be on, off or pulse")
+            raise HTTPException(status_code=400, detail="Physical output mode must be on, off or pulse")
         try:
-            cfg["activation_seconds"] = float(cfg.get("activation_seconds") or 2)
+            cfg["pulse_seconds"] = float(cfg.get("pulse_seconds") or 2)
         except Exception:
-            raise HTTPException(status_code=400, detail="Relay activation_seconds must be numeric")
-        if cfg["mode"] == "pulse" and cfg["activation_seconds"] <= 0:
-            raise HTTPException(status_code=400, detail="Relay activation_seconds must be greater than 0")
+            raise HTTPException(status_code=400, detail="Physical output pulse_seconds must be numeric")
+        if cfg["mode"] == "pulse" and cfg["pulse_seconds"] <= 0:
+            raise HTTPException(status_code=400, detail="Physical output pulse_seconds must be greater than 0")
         return cfg
 
     if node_type == "action.log_message":
@@ -777,6 +856,42 @@ def _normalize_topic(value: Any) -> str:
             part = part.split(":", 1)[1]
         cleaned.append(part)
     return "/".join(cleaned)
+
+
+def _normalize_physical_input_kind(value: Any) -> str:
+    kind = str(value or "digital").strip().lower()
+    return kind if kind in {"digital", "analog"} else "digital"
+
+
+def _normalize_physical_channel(value: Any, kind: str) -> str:
+    label = {
+        "digital": "digital input",
+        "analog": "analog input",
+        "output": "output",
+    }.get(kind, kind)
+
+    try:
+        channel = int(str(value or "").strip())
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Select a valid {label} channel")
+
+    if channel not in physical_channels(kind):
+        raise HTTPException(status_code=400, detail=f"Select a valid {label} channel")
+
+    return str(channel)
+
+
+def _format_physical_value(kind: str, value: Any) -> str:
+    if value is None:
+        return "Unavailable"
+    if kind == "analog":
+        try:
+            return f"{float(value):.2f} V"
+        except Exception:
+            return str(value)
+    if kind == "output":
+        return "On" if _to_bool(value) else "Off"
+    return "High" if _to_bool(value) else "Low"
 
 
 
@@ -905,6 +1020,27 @@ def _trigger_matches_node(node: Dict[str, Any], trigger: Dict[str, Any]) -> bool
         got_method = _normalize_http_method(trigger.get("method"), allow_any=False)
         method_ok = wanted_method == "ANY" or wanted_method == got_method
         return path_ok and method_ok
+
+    if node_type == "trigger.digital_input_changed":
+        return kind == "digital_input_changed" and str(cfg.get("channel") or "") == str(trigger.get("channel") or "")
+
+    if node_type in {"trigger.analog_input_above", "trigger.analog_input_below"}:
+        if kind != "analog_input_changed":
+            return False
+        if str(cfg.get("channel") or "") != str(trigger.get("channel") or ""):
+            return False
+
+        try:
+            threshold = float(cfg.get("threshold") or 0)
+            previous_value = float(trigger.get("previous_value"))
+            current_value = float(trigger.get("value"))
+        except Exception:
+            return False
+
+        if node_type == "trigger.analog_input_above":
+            return previous_value <= threshold < current_value
+
+        return previous_value >= threshold > current_value
 
     return False
 
@@ -1068,6 +1204,23 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         result["next_handles"] = ["out"]
         return result
 
+    if node_type == "operator.physical_input":
+        input_kind = _normalize_physical_input_kind(cfg.get("input_kind"))
+        channel = _normalize_physical_channel(cfg.get("channel"), input_kind)
+        try:
+            reading = read_physical_input(input_kind, int(channel))
+            result["input_kind"] = input_kind
+            result["channel"] = channel
+            result["input_label"] = reading.get("label")
+            result["value"] = reading.get("value")
+            result["updated_at"] = reading.get("updated_at")
+            result["message"] = f"{reading.get('label') or f'{input_kind} {channel}'} = {_format_physical_value(input_kind, reading.get('value'))}"
+        except Exception as exc:
+            result["ok"] = False
+            result["error"] = str(exc)
+        result["next_handles"] = ["out"]
+        return result
+
     if node_type == "action.send_http_request":
         method = _normalize_http_method(cfg.get("method"), allow_any=False)
         url = _render_template(str(cfg.get("url") or ""), context)
@@ -1100,13 +1253,20 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         result["next_handles"] = ["out"]
         return result
 
-    if node_type == "action.activate_output_relay":
-        result["relay"] = {
-            "mode": cfg.get("mode"),
-            "activation_seconds": cfg.get("activation_seconds"),
-            "placeholder": True,
-        }
-        result["message"] = "Relay action accepted. Wire this to your hardware implementation."
+    if node_type == "action.activate_physical_output":
+        channel = _normalize_physical_channel(cfg.get("channel"), "output")
+        mode = str(cfg.get("mode") or "pulse").strip().lower()
+        pulse_seconds = float(cfg.get("pulse_seconds") or 2)
+        try:
+            output_result = activate_physical_output(int(channel), mode, pulse_seconds)
+            result["channel"] = channel
+            result["mode"] = mode
+            result["pulse_seconds"] = pulse_seconds
+            result["output"] = output_result
+            result["message"] = output_result.get("message")
+        except Exception as exc:
+            result["ok"] = False
+            result["error"] = str(exc)
         result["next_handles"] = ["out"]
         return result
 

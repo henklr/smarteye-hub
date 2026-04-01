@@ -27,6 +27,7 @@ from flows import (
     dispatch_flow_trigger,
     get_flow_topics_for_device,
 )
+from physical_io import start_physical_io_monitor, stop_physical_io_monitor
 
 app = FastAPI()
 
@@ -1921,6 +1922,8 @@ def _on_startup():
             name="flow-monitor",
         )
         _flow_monitor_thread.start()
+
+        start_physical_io_monitor(dispatch_flow_trigger)
         
         for d in devs:
             req = EventsStartRequest(
@@ -1954,6 +1957,7 @@ def _on_shutdown():
             pass
 
     _flow_monitor_stop.set()
+    stop_physical_io_monitor()
 
     with _ptz_watchdog_lock:
         timers = list(_ptz_watchdogs.values())

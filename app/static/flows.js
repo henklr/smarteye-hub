@@ -5,6 +5,8 @@ const state = {
   devices: [],
   flows: [],
   draft: null,
+  physicalState: null,
+  physicalStateTimer: null,
   selectedSavedFlowId: null,
   selectedNodeId: null,
   selectedEdgeId: null,
@@ -22,6 +24,15 @@ const CATEGORY_META = {
   condition: { label: "Condition", color: "#9c6bff" },
   operator: { label: "Operator", color: "#17b978" },
   action: { label: "Action", color: "#ff8c42" },
+};
+
+const DEFAULT_PHYSICAL_IO = {
+  supported: false,
+  available: false,
+  error: null,
+  digital_inputs: [1, 2, 3].map((channel) => ({ kind: "digital", channel: String(channel), label: `Digital input ${channel}` })),
+  analog_inputs: [1, 2, 3].map((channel) => ({ kind: "analog", channel: String(channel), label: `Analog input ${channel}` })),
+  outputs: [1, 2, 3].map((channel) => ({ kind: "output", channel: String(channel), label: `Output ${channel}` })),
 };
 
 async function api(path, opts = {}) {
@@ -171,6 +182,105 @@ function methodOptionsHtml(selected = "POST", allowAny = false) {
   return out.join("");
 }
 
+function physicalCatalog() {
+  return state.catalog?.physical_io || DEFAULT_PHYSICAL_IO;
+}
+
+function physicalChannels(kind) {
+  const key = kind === "analog" ? "analog_inputs" : kind === "output" ? "outputs" : "digital_inputs";
+  const items = physicalCatalog()?.[key];
+  return Array.isArray(items) && items.length ? items : DEFAULT_PHYSICAL_IO[key];
+}
+
+function physicalInputKindOptionsHtml(selected = "digital") {
+  return [
+    ["digital", "Digital input"],
+    ["analog", "Analog input"],
+  ]
+    .map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`)
+    .join("");
+}
+
+function physicalChannelOptionsHtml(kind, selected = "") {
+  return physicalChannels(kind)
+    .map((item) => `<option value="${escapeHtml(item.channel)}" ${String(item.channel) === String(selected) ? "selected" : ""}>${escapeHtml(item.label)}</option>`)
+    .join("");
+}
+
+function physicalInputChannelOptionsHtml(kind, selected = "") {
+  return physicalChannelOptionsHtml(kind, selected);
+}
+
+function physicalOutputOptionsHtml(selected = "") {
+  return physicalChannelOptionsHtml("output", selected);
+}
+
+function normalizePhysicalChannelSelection(kind, value) {
+  const options = physicalChannels(kind);
+  if (!options.length) return "";
+  const wanted = String(value || "");
+  const match = options.find((item) => String(item.channel) === wanted);
+  return String((match || options[0]).channel);
+}
+
+function physicalEntry(kind, channel) {
+  const key = kind === "analog" ? "analog_inputs" : kind === "output" ? "outputs" : "digital_inputs";
+  const items = state.physicalState?.[key];
+  if (!Array.isArray(items)) return null;
+  return items.find((item) => String(item.channel) === String(channel)) || null;
+}
+
+function physicalLabel(kind, channel) {
+  return physicalEntry(kind, channel)?.label
+    || physicalChannels(kind).find((item) => String(item.channel) === String(channel))?.label
+    || `${kind} ${channel}`;
+}
+
+function formatPhysicalValue(kind, value) {
+  if (value == null || value === "") {
+    if (state.physicalState?.available === false && state.physicalState?.error) return "Unavailable";
+    return "Loading...";
+  }
+
+  if (kind === "analog") {
+    const number = Number(value);
+    return Number.isFinite(number) ? `${number.toFixed(2)} V` : String(value);
+  }
+
+  if (kind === "output") {
+    return Number(value) ? "On" : "Off";
+  }
+
+  return Number(value) ? "High" : "Low";
+}
+
+function formatPhysicalUpdatedTime(value) {
+  if (!value) return "";
+  try {
+    return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch {
+    return String(value);
+  }
+}
+
+function physicalMetaText() {
+  if (!state.physicalState) return "Loading physical I/O...";
+  if (state.physicalState.available) {
+    const updated = formatPhysicalUpdatedTime(state.physicalState.updated_at);
+    return updated ? `Live value updated ${updated}` : "Live value available";
+  }
+  return state.physicalState.error || "Physical I/O unavailable.";
+}
+
+function physicalLiveValueText(kind, channel) {
+  return formatPhysicalValue(kind, physicalEntry(kind, channel)?.value);
+}
+
+function formatAnalogThreshold(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(2) : "0.00";
+}
+
 function flowSummary(flow) {
   const nodes = flow.nodes || [];
   const triggers = nodes.filter((node) => node.category === "trigger").length;
@@ -271,6 +381,15 @@ function nodePreview(node) {
     case "trigger.manual":
       return "Run this node manually from the editor";
 
+    case "trigger.digital_input_changed":
+      return `When ${physicalLabel("digital", cfg.channel || "1")} changes · now ${physicalLiveValueText("digital", cfg.channel || "1")}`;
+
+    case "trigger.analog_input_above":
+      return `${physicalLabel("analog", cfg.channel || "1")} > ${formatAnalogThreshold(cfg.threshold)} V · now ${physicalLiveValueText("analog", cfg.channel || "1")}`;
+
+    case "trigger.analog_input_below":
+      return `${physicalLabel("analog", cfg.channel || "1")} < ${formatAnalogThreshold(cfg.threshold)} V · now ${physicalLiveValueText("analog", cfg.channel || "1")}`;
+
     case "condition.compare": {
       const left = compareSideLabel(cfg.left_source || "variable", cfg.left_value || "");
       const operator = compareOperatorLabel(cfg.operator || "equals");
@@ -292,11 +411,14 @@ function nodePreview(node) {
     case "operator.template":
       return `${cfg.variable_key || "variable"} ← template`;
 
+    case "operator.physical_input":
+      return `${physicalLabel(cfg.input_kind || "digital", cfg.channel || "1")} = ${physicalLiveValueText(cfg.input_kind || "digital", cfg.channel || "1")}`;
+
     case "action.send_http_request":
       return `${cfg.method || "POST"} ${cfg.url || ""}`;
 
-    case "action.activate_output_relay":
-      return `${cfg.mode || "pulse"}${cfg.mode === "pulse" ? ` for ${cfg.activation_seconds || 0}s` : ""}`;
+    case "action.activate_physical_output":
+      return `${physicalLabel("output", cfg.channel || "1")} · ${cfg.mode || "pulse"}${cfg.mode === "pulse" ? ` for ${cfg.pulse_seconds || 0}s` : ""} · now ${physicalLiveValueText("output", cfg.channel || "1")}`;
 
     case "action.log_message":
       return cfg.message || "Log message";
@@ -563,7 +685,7 @@ function renderCanvas() {
           <span class="nodeBadge">${escapeHtml(meta.label)}</span>
         </div>
 
-        <div class="flowNodePreview">${escapeHtml(nodePreview(node))}</div>
+        <div class="flowNodePreview" data-node-preview-id="${escapeHtml(node.id)}">${escapeHtml(nodePreview(node))}</div>
 
         ${node.type === "trigger.manual" ? `
           <div class="mt-10">
@@ -923,6 +1045,16 @@ function renderInspector() {
   bindFlowInspector(flow);
 }
 
+function renderPhysicalLiveField(kind, channel, label = "Current value") {
+  return `
+    <div class="full">
+      <label>${escapeHtml(label)}</label>
+      <input id="physicalCurrentValue" value="${escapeHtml(physicalLiveValueText(kind, channel))}" readonly />
+    </div>
+    <div class="full inlineMeta" id="physicalCurrentMeta">${escapeHtml(physicalMetaText())}</div>
+  `;
+}
+
 function renderFlowInspector(flow) {
   return `
     <div class="inspectorCard">
@@ -1163,6 +1295,49 @@ function renderNodeInspector(node) {
       `;
       break;
 
+    case "trigger.digital_input_changed":
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Digital input trigger</div>
+          <div class="fieldGrid">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+            <div class="full">
+              <label>Input</label>
+              <select id="cfg_channel">${physicalChannelOptionsHtml("digital", cfg.channel || "1")}</select>
+            </div>
+            ${renderPhysicalLiveField("digital", cfg.channel || "1", "Current state")}
+          </div>
+        </div>
+      `;
+      break;
+
+    case "trigger.analog_input_above":
+    case "trigger.analog_input_below":
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Analog threshold trigger</div>
+          <div class="fieldGrid">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+            <div>
+              <label>Input</label>
+              <select id="cfg_channel">${physicalChannelOptionsHtml("analog", cfg.channel || "1")}</select>
+            </div>
+            <div>
+              <label>Threshold (V)</label>
+              <input id="cfg_threshold" type="number" step="0.01" value="${escapeHtml(cfg.threshold ?? 1)}" />
+            </div>
+            ${renderPhysicalLiveField("analog", cfg.channel || "1", "Current voltage")}
+          </div>
+        </div>
+      `;
+      break;
+
     case "condition.compare":
       body = `
         <div class="inspectorCard">
@@ -1269,6 +1444,29 @@ function renderNodeInspector(node) {
       `;
       break;
 
+    case "operator.physical_input":
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Physical input</div>
+          <div class="fieldGrid">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+            <div>
+              <label>Input type</label>
+              <select id="cfg_input_kind">${physicalInputKindOptionsHtml(cfg.input_kind || "digital")}</select>
+            </div>
+            <div>
+              <label>Input</label>
+              <select id="cfg_channel">${physicalInputChannelOptionsHtml(cfg.input_kind || "digital", cfg.channel || "1")}</select>
+            </div>
+            ${renderPhysicalLiveField(cfg.input_kind || "digital", cfg.channel || "1")}
+          </div>
+        </div>
+      `;
+      break;
+
     case "action.send_http_request":
       body = `
         <div class="inspectorCard">
@@ -1303,14 +1501,18 @@ function renderNodeInspector(node) {
       `;
       break;
 
-    case "action.activate_output_relay":
+    case "action.activate_physical_output":
       body = `
         <div class="inspectorCard">
-          <div class="inspectorTitle">Relay action</div>
+          <div class="inspectorTitle">Physical output</div>
           <div class="fieldGrid">
             <div class="full">
               <label>Name</label>
               <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+            <div>
+              <label>Output</label>
+              <select id="cfg_channel">${physicalOutputOptionsHtml(cfg.channel || "1")}</select>
             </div>
             <div>
               <label>Mode</label>
@@ -1321,9 +1523,10 @@ function renderNodeInspector(node) {
               </select>
             </div>
             <div>
-              <label>Activation seconds</label>
-              <input id="cfg_activation_seconds" type="number" min="0.1" step="0.1" value="${escapeHtml(cfg.activation_seconds ?? 2)}" />
+              <label>Pulse seconds</label>
+              <input id="cfg_pulse_seconds" type="number" min="0.1" step="0.1" value="${escapeHtml(cfg.pulse_seconds ?? 2)}" />
             </div>
+            ${renderPhysicalLiveField("output", cfg.channel || "1", "Current output state")}
           </div>
         </div>
       `;
@@ -1407,6 +1610,13 @@ function bindNodeInspector(node) {
       } catch { }
     });
   }
+
+  if (node.type === "operator.physical_input") {
+    document.getElementById("cfg_input_kind")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+  }
 }
 
 function applyNodeInspector(node) {
@@ -1437,6 +1647,16 @@ function applyNodeInspector(node) {
     case "trigger.manual":
       set("name");
       break;
+    case "trigger.digital_input_changed":
+      set("name");
+      set("channel");
+      break;
+    case "trigger.analog_input_above":
+    case "trigger.analog_input_below":
+      set("name");
+      set("channel");
+      set("threshold");
+      break;
     case "condition.compare":
       set("name");
       set("left_source");
@@ -1461,6 +1681,11 @@ function applyNodeInspector(node) {
       set("variable_key");
       set("template");
       break;
+    case "operator.physical_input":
+      set("name");
+      set("input_kind");
+      set("channel");
+      break;
     case "action.send_http_request":
       set("name");
       set("method");
@@ -1469,10 +1694,11 @@ function applyNodeInspector(node) {
       set("headers");
       set("body");
       break;
-    case "action.activate_output_relay":
+    case "action.activate_physical_output":
       set("name");
+      set("channel");
       set("mode");
-      set("activation_seconds");
+      set("pulse_seconds");
       break;
     case "action.log_message":
       set("name");
@@ -1484,9 +1710,27 @@ function applyNodeInspector(node) {
     cfg.path = normalizePath(cfg.path || "");
   }
 
+  if (node.type === "operator.physical_input") {
+    cfg.input_kind = cfg.input_kind || "digital";
+    cfg.channel = normalizePhysicalChannelSelection(cfg.input_kind, cfg.channel || "1");
+  }
+
+  if (node.type === "trigger.digital_input_changed") {
+    cfg.channel = normalizePhysicalChannelSelection("digital", cfg.channel || "1");
+  }
+
+  if (node.type === "trigger.analog_input_above" || node.type === "trigger.analog_input_below") {
+    cfg.channel = normalizePhysicalChannelSelection("analog", cfg.channel || "1");
+  }
+
+  if (node.type === "action.activate_physical_output") {
+    cfg.channel = normalizePhysicalChannelSelection("output", cfg.channel || "1");
+  }
+
   markDirty();
   renderCanvas();
   drawEdges();
+  refreshPhysicalUi();
 }
 
 function normalizePath(value) {
@@ -1543,11 +1787,105 @@ async function loadTopics(deviceId, force = false) {
   return topics;
 }
 
+function refreshPhysicalNodePreviews() {
+  const flow = currentFlow();
+  if (!flow) return;
+
+  for (const node of flow.nodes || []) {
+    const preview = document.querySelector(`.flowNodePreview[data-node-preview-id="${CSS.escape(node.id)}"]`);
+    if (!preview) continue;
+    preview.textContent = nodePreview(node);
+  }
+}
+
+function refreshPhysicalInspectorLiveValues() {
+  const flow = currentFlow();
+  if (!flow || !state.selectedNodeId) return;
+
+  const node = flow.nodes.find((item) => item.id === state.selectedNodeId);
+  if (!node) return;
+
+  let kind = null;
+  let channel = null;
+  let labelText = "Current value";
+  const cfg = node.config || {};
+
+  switch (node.type) {
+    case "operator.physical_input":
+      kind = cfg.input_kind || "digital";
+      channel = cfg.channel || "1";
+      labelText = "Current value";
+      break;
+    case "trigger.digital_input_changed":
+      kind = "digital";
+      channel = cfg.channel || "1";
+      labelText = "Current state";
+      break;
+    case "trigger.analog_input_above":
+    case "trigger.analog_input_below":
+      kind = "analog";
+      channel = cfg.channel || "1";
+      labelText = "Current voltage";
+      break;
+    case "action.activate_physical_output":
+      kind = "output";
+      channel = cfg.channel || "1";
+      labelText = "Current output state";
+      break;
+    default:
+      break;
+  }
+
+  const input = document.getElementById("physicalCurrentValue");
+  if (input && kind && channel) {
+    input.value = physicalLiveValueText(kind, channel);
+    input.setAttribute("aria-label", labelText);
+  }
+
+  const meta = document.getElementById("physicalCurrentMeta");
+  if (meta) {
+    meta.textContent = physicalMetaText();
+  }
+}
+
+function refreshPhysicalUi() {
+  refreshPhysicalNodePreviews();
+  refreshPhysicalInspectorLiveValues();
+}
+
+async function refreshPhysicalState(silent = true) {
+  try {
+    state.physicalState = await api("/api/physical-io/state");
+    refreshPhysicalUi();
+  } catch (err) {
+    state.physicalState = {
+      ...DEFAULT_PHYSICAL_IO,
+      available: false,
+      error: err.message || String(err),
+    };
+    refreshPhysicalUi();
+    if (!silent) {
+      setStatus(err.message || String(err), true);
+    }
+  }
+}
+
+function startPhysicalStatePolling() {
+  if (state.physicalStateTimer) {
+    window.clearInterval(state.physicalStateTimer);
+  }
+
+  state.physicalStateTimer = window.setInterval(() => {
+    refreshPhysicalState(true).catch(() => { });
+  }, 1000);
+}
+
 function renderAll() {
   syncHeader();
   renderFlowList();
   renderCanvas();
   renderInspector();
+  refreshPhysicalUi();
 }
 
 async function saveFlow() {
@@ -1905,6 +2243,8 @@ async function init() {
     state.devices = Array.isArray(catalog?.devices) ? catalog.devices : [];
 
     await refreshFlows();
+  await refreshPhysicalState(true);
+  startPhysicalStatePolling();
 
     state.draft = state.flows.length ? deepClone(state.flows[0]) : starterFlow();
     state.selectedSavedFlowId = state.draft.id || null;
