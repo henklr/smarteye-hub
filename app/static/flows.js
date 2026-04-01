@@ -960,7 +960,7 @@ function renderFlowInspector(flow) {
             <div class="fieldGrid">
               <div>
                 <label>Key</label>
-                <input class="jsVarKey" value="${escapeHtml(variable.key || "")}" placeholder="armed" />
+                <input class="jsVarKey" value="${escapeHtml(variable.key || "")}" placeholder="var_1" />
               </div>
               <div>
                 <label>Type</label>
