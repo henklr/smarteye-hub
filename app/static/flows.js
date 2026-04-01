@@ -181,9 +181,8 @@ function flowSummary(flow) {
 }
 
 function flowVariableLabel(key) {
-  const vars = currentFlow()?.variables || [];
-  const hit = vars.find((item) => item.key === key);
-  return hit?.label?.trim() || hit?.key || key || "variable";
+  const raw = String(key || "").trim();
+  return raw || "variable";
 }
 
 function displayNodeTitle(node) {
@@ -964,10 +963,6 @@ function renderFlowInspector(flow) {
                 <input class="jsVarKey" value="${escapeHtml(variable.key || "")}" placeholder="armed" />
               </div>
               <div>
-                <label>Label</label>
-                <input class="jsVarLabel" value="${escapeHtml(variable.label || "")}" placeholder="Armed" />
-              </div>
-              <div>
                 <label>Type</label>
                 <select class="jsVarType">
                   <option value="string" ${(variable.type || "string") === "string" ? "selected" : ""}>String</option>
@@ -1018,7 +1013,6 @@ function bindFlowInspector(flow) {
   el("btnAddVariable")?.addEventListener("click", () => {
     flow.variables.push({
       key: `var_${flow.variables.length + 1}`,
-      label: "",
       type: "string",
       value: "",
     });
@@ -1046,13 +1040,6 @@ function boxBindVariableRows(flow) {
       markDirty();
       const label = row.querySelector(".variableLabel");
       if (label) label.textContent = variable.key || `var_${idx + 1}`;
-    });
-
-    row.querySelector(".jsVarLabel")?.addEventListener("input", (ev) => {
-      variable.label = ev.target.value;
-      markDirty();
-      renderCanvas();
-      renderInspector();
     });
 
     row.querySelector(".jsVarType")?.addEventListener("change", (ev) => {
@@ -1596,7 +1583,6 @@ function serializeFlow(flow) {
     enabled: !!flow.enabled,
     variables: (flow.variables || []).map((variable) => ({
       key: (variable.key || "").trim(),
-      label: variable.label || variable.key,
       type: variable.type || "string",
       value: variable.value,
     })),

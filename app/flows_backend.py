@@ -39,7 +39,6 @@ router = APIRouter(tags=["flows"])
 
 class FlowVariableModel(BaseModel):
     key: str = Field(..., min_length=1)
-    label: Optional[str] = None
     type: str = "string"
     value: Any = ""
 
@@ -542,7 +541,6 @@ def _normalize_flow_payload(
         variables.append(
             {
                 "key": key,
-                "label": str(raw.get("label") or key).strip() or key,
                 "type": vtype,
                 "value": _coerce_runtime_value(raw.get("value"), vtype),
             }
