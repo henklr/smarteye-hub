@@ -30,6 +30,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DEVICES_JSON = DATA_DIR / "devices.json"
 FLOWS_JSON = DATA_DIR / "flows.json"
+PUBLIC_VARIABLES_JSON = DATA_DIR / "public_variables.json"
 FLOW_STATE_JSON = DATA_DIR / "flow_state.json"
 FLOW_LOG_FILE = Path(os.getenv("FLOW_LOG_FILE", str(DATA_DIR / "flows.log")))
 FLOW_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -88,6 +89,10 @@ class FlowTestRequest(BaseModel):
     flow: Optional[FlowIn] = None
     trigger_node_id: Optional[str] = None
     trigger_payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PublicVariablesIn(BaseModel):
+    items: List[FlowVariableModel] = Field(default_factory=list)
     
 
 NODE_LIBRARY: List[Dict[str, Any]] = [
@@ -296,6 +301,33 @@ def get_physical_io_state() -> Dict[str, Any]:
     return physical_io_state(refresh=False)
 
 
+@router.get("/api/public-variables")
+def list_public_variables() -> Dict[str, Any]:
+    _migrate_legacy_flow_variables()
+    return _public_variables_response()
+
+
+@router.put("/api/public-variables")
+def save_public_variables(req: PublicVariablesIn) -> Dict[str, Any]:
+    _migrate_legacy_flow_variables()
+
+    items = _normalize_variable_items((_dump(req) or {}).get("items") or [])
+    existing_keys = {item["key"] for item in _load_public_variable_definitions()}
+    next_keys = {item["key"] for item in items}
+    usages = _describe_public_variable_usages(existing_keys - next_keys)
+    if usages:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot remove public variables still used by saved flows: " + "; ".join(usages),
+        )
+
+    with _storage_lock:
+        _save_public_variable_definitions(items)
+
+    _reconcile_public_variable_runtime_values(items)
+    return {"ok": True, **_public_variables_response()}
+
+
 @router.get("/api/flows")
 def list_flows() -> Dict[str, Any]:
     return {"items": _load_flows()}
@@ -495,6 +527,7 @@ def _load_devices() -> List[Dict[str, Any]]:
 
 
 def _load_flows() -> List[Dict[str, Any]]:
+    _migrate_legacy_flow_variables()
     payload = _load_json(FLOWS_JSON, {"items": []})
     items = payload.get("items") if isinstance(payload, dict) else []
     out: List[Dict[str, Any]] = []
@@ -510,15 +543,43 @@ def _save_flows(items: List[Dict[str, Any]]) -> None:
     _atomic_save_json(FLOWS_JSON, {"items": items})
 
 
+def _load_public_variable_definitions() -> List[Dict[str, Any]]:
+    payload = _load_json(PUBLIC_VARIABLES_JSON, {"items": []})
+    items = payload.get("items") if isinstance(payload, dict) else []
+    return _normalize_variable_items(items)
+
+
+def _save_public_variable_definitions(items: List[Dict[str, Any]]) -> None:
+    _atomic_save_json(PUBLIC_VARIABLES_JSON, {"items": items})
+
+
 
 def _load_runtime_state() -> Dict[str, Any]:
-    payload = _load_json(FLOW_STATE_JSON, {"flows": {}})
+    payload = _load_json(FLOW_STATE_JSON, {"flows": {}, "public_variables": {"values": {}, "updated_at": None}})
     if not isinstance(payload, dict):
-        return {"flows": {}}
+        return {"flows": {}, "public_variables": {"values": {}, "updated_at": None}}
+
     flows = payload.get("flows")
     if not isinstance(flows, dict):
         flows = {}
-    return {"flows": flows}
+
+    public_state = payload.get("public_variables")
+    if not isinstance(public_state, dict):
+        public_state = {}
+
+    public_values = public_state.get("values")
+    if not isinstance(public_values, dict):
+        public_values = {}
+
+    updated_at = str(public_state.get("updated_at") or "").strip() or None
+
+    return {
+        "flows": flows,
+        "public_variables": {
+            "values": public_values,
+            "updated_at": updated_at,
+        },
+    }
 
 
 
@@ -532,6 +593,71 @@ def _delete_runtime_state_for_flow(flow_id: str) -> None:
         payload = _load_runtime_state()
         payload.setdefault("flows", {}).pop(flow_id, None)
         _save_runtime_state(payload)
+
+
+def _migrate_legacy_flow_variables() -> None:
+    changed_public = False
+    changed_flows = False
+
+    with _storage_lock:
+        public_payload = _load_json(PUBLIC_VARIABLES_JSON, {"items": []})
+        public_items = _normalize_variable_items(public_payload.get("items") if isinstance(public_payload, dict) else [])
+        public_keys = {item["key"] for item in public_items}
+
+        flows_payload = _load_json(FLOWS_JSON, {"items": []})
+        raw_items = flows_payload.get("items") if isinstance(flows_payload, dict) else []
+        if not isinstance(raw_items, list):
+            raw_items = []
+
+        for raw_flow in raw_items:
+            if not isinstance(raw_flow, dict):
+                continue
+
+            legacy_items = _normalize_variable_items(raw_flow.get("variables") or [])
+            for item in legacy_items:
+                if item["key"] in public_keys:
+                    continue
+                public_items.append(item)
+                public_keys.add(item["key"])
+                changed_public = True
+
+            if raw_flow.get("variables"):
+                raw_flow["variables"] = []
+                changed_flows = True
+
+        if changed_public:
+            _save_public_variable_definitions(public_items)
+
+        if changed_flows:
+            _atomic_save_json(FLOWS_JSON, {"items": raw_items})
+
+    if changed_public:
+        _reconcile_public_variable_runtime_values(public_items)
+
+
+def _merge_public_variable_definitions(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    incoming = _normalize_variable_items(items)
+    if not incoming:
+        return _load_public_variable_definitions()
+
+    changed = False
+    with _storage_lock:
+        current = _load_public_variable_definitions()
+        current_keys = {item["key"] for item in current}
+        for item in incoming:
+            if item["key"] in current_keys:
+                continue
+            current.append(item)
+            current_keys.add(item["key"])
+            changed = True
+
+        if changed:
+            _save_public_variable_definitions(current)
+
+    if changed:
+        _reconcile_public_variable_runtime_values(current)
+
+    return current
 
 
 
@@ -574,34 +700,16 @@ def _normalize_flow_payload(
     if not name:
         raise HTTPException(status_code=400, detail="Flow name is required")
 
-    variables: List[Dict[str, Any]] = []
-    seen_variable_keys: set[str] = set()
-    for raw in list(data.get("variables") or []):
-        if not isinstance(raw, dict):
-            continue
-        key = str(raw.get("key") or "").strip()
-        if not key:
-            continue
-        if key in seen_variable_keys:
-            raise HTTPException(status_code=400, detail=f"Duplicate variable key: {key}")
-        seen_variable_keys.add(key)
-        vtype = str(raw.get("type") or "string").strip().lower()
-        if vtype not in {"string", "number", "boolean", "json"}:
-            vtype = "string"
-        variables.append(
-            {
-                "key": key,
-                "type": vtype,
-                "value": _coerce_runtime_value(raw.get("value"), vtype),
-            }
-        )
+    legacy_variables = _normalize_variable_items(data.get("variables") or [])
+    public_variables = _merge_public_variable_definitions(legacy_variables) if legacy_variables else _load_public_variable_definitions()
+    public_variable_keys = {item["key"] for item in public_variables}
 
     nodes: List[Dict[str, Any]] = []
     node_ids: set[str] = set()
     for raw in list(data.get("nodes") or []):
         if not isinstance(raw, dict):
             continue
-        node = _normalize_node_payload(raw, seen_variable_keys)
+        node = _normalize_node_payload(raw, public_variable_keys)
         if node["id"] in node_ids:
             raise HTTPException(status_code=400, detail=f"Duplicate node id: {node['id']}")
         node_ids.add(node["id"])
@@ -633,7 +741,7 @@ def _normalize_flow_payload(
         "id": existing_id or uuid.uuid4().hex[:12],
         "name": name,
         "enabled": bool(data.get("enabled", True)),
-        "variables": variables,
+        "variables": [],
         "nodes": nodes,
         "edges": edges,
         "created_at": created_at or _utc_now_iso(),
@@ -738,8 +846,12 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
         cfg["right_source"] = _normalize_source_type(cfg.get("right_source"), allow_trigger=True)
         cfg["operator"] = str(cfg.get("operator") or "equals").strip()
         cfg["cast"] = str(cfg.get("cast") or "auto").strip()
-        cfg["left_value"] = str(cfg.get("left_value") or "")
-        cfg["right_value"] = str(cfg.get("right_value") or "")
+        cfg["left_value"] = str(cfg.get("left_value") or "").strip()
+        cfg["right_value"] = str(cfg.get("right_value") or "").strip()
+        if cfg["left_source"] == "variable" and cfg["left_value"] and cfg["left_value"] not in variable_keys:
+            raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['left_value']}")
+        if cfg["right_source"] == "variable" and cfg["right_value"] and cfg["right_value"] not in variable_keys:
+            raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['right_value']}")
         return cfg
 
     if node_type == "operator.delay":
@@ -754,11 +866,13 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
     if node_type == "operator.set_variable":
         cfg["variable_key"] = str(cfg.get("variable_key") or "").strip()
         cfg["value_source"] = _normalize_source_type(cfg.get("value_source"), allow_trigger=True)
-        cfg["value"] = str(cfg.get("value") or "")
+        cfg["value"] = str(cfg.get("value") or "").strip()
         if not cfg["variable_key"]:
             raise HTTPException(status_code=400, detail="Set variable needs a variable key")
         if cfg["variable_key"] not in variable_keys:
             raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['variable_key']}")
+        if cfg["value_source"] == "variable" and cfg["value"] and cfg["value"] not in variable_keys:
+            raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['value']}")
         return cfg
 
     if node_type == "operator.template":
@@ -926,6 +1040,37 @@ def _coerce_runtime_value(value: Any, variable_type: str) -> Any:
     return "" if value is None else str(value)
 
 
+def _normalize_variable_items(items: Any) -> List[Dict[str, Any]]:
+    variables: List[Dict[str, Any]] = []
+    seen_variable_keys: set[str] = set()
+
+    for raw in list(items or []):
+        if not isinstance(raw, dict):
+            continue
+
+        key = str(raw.get("key") or "").strip()
+        if not key:
+            continue
+
+        if key in seen_variable_keys:
+            raise HTTPException(status_code=400, detail=f"Duplicate variable key: {key}")
+
+        seen_variable_keys.add(key)
+        variable_type = str(raw.get("type") or "string").strip().lower()
+        if variable_type not in {"string", "number", "boolean", "json"}:
+            variable_type = "string"
+
+        variables.append(
+            {
+                "key": key,
+                "type": variable_type,
+                "value": _coerce_runtime_value(raw.get("value"), variable_type),
+            }
+        )
+
+    return variables
+
+
 
 def get_flow_topics_for_device(device_id: str) -> List[str]:
     topics: set[str] = set()
@@ -957,29 +1102,149 @@ def _build_adjacency(flow: Dict[str, Any]) -> Dict[str, Dict[str, List[Dict[str,
 
 
 
-def _flow_variable_defaults(flow: Dict[str, Any]) -> Dict[str, Any]:
-    return {item["key"]: deepcopy(item.get("value")) for item in flow.get("variables", [])}
+def _public_variable_definitions_by_key(items: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Dict[str, Any]]:
+    definitions = items if items is not None else _load_public_variable_definitions()
+    return {item["key"]: item for item in definitions}
+
+
+
+def _public_variable_defaults(items: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    definitions = items if items is not None else _load_public_variable_definitions()
+    return {item["key"]: deepcopy(item.get("value")) for item in definitions}
+
+
+
+def _public_variable_values(items: Optional[List[Dict[str, Any]]] = None) -> Tuple[Dict[str, Any], Optional[str]]:
+    definitions = items if items is not None else _load_public_variable_definitions()
+    defaults = _public_variable_defaults(definitions)
+    definitions_by_key = _public_variable_definitions_by_key(definitions)
+
+    with _runtime_lock:
+        state = _load_runtime_state()
+        public_state = state.get("public_variables") or {}
+        saved = public_state.get("values") or {}
+        updated_at = str(public_state.get("updated_at") or "").strip() or None
+
+    merged = dict(defaults)
+    if isinstance(saved, dict):
+        for key, value in saved.items():
+            definition = definitions_by_key.get(key)
+            if definition is None:
+                continue
+            merged[key] = _coerce_runtime_value(value, definition["type"])
+
+    return merged, updated_at
+
+
+
+def _public_variables_response() -> Dict[str, Any]:
+    definitions = _load_public_variable_definitions()
+    current_values, updated_at = _public_variable_values(definitions)
+    return {
+        "items": [
+            {
+                **item,
+                "current_value": deepcopy(current_values.get(item["key"], item.get("value"))),
+            }
+            for item in definitions
+        ],
+        "updated_at": updated_at,
+    }
+
+
+
+def _reconcile_public_variable_runtime_values(items: Optional[List[Dict[str, Any]]] = None) -> None:
+    definitions = items if items is not None else _load_public_variable_definitions()
+
+    with _runtime_lock:
+        payload = _load_runtime_state()
+        public_state = payload.setdefault("public_variables", {})
+        saved = public_state.get("values")
+        if not isinstance(saved, dict):
+            saved = {}
+
+        merged: Dict[str, Any] = {}
+        for item in definitions:
+            key = item["key"]
+            merged[key] = _coerce_runtime_value(saved.get(key, item.get("value")), item["type"])
+
+        public_state["values"] = merged
+        public_state["updated_at"] = _utc_now_iso()
+        _save_runtime_state(payload)
+
+
+
+def _flow_variable_references(flow: Dict[str, Any]) -> set[str]:
+    references: set[str] = set()
+
+    for node in flow.get("nodes", []):
+        cfg = node.get("config") or {}
+        node_type = node.get("type")
+
+        if node_type in {"operator.set_variable", "operator.template"}:
+            key = str(cfg.get("variable_key") or "").strip()
+            if key:
+                references.add(key)
+
+        if node_type == "operator.set_variable" and str(cfg.get("value_source") or "").strip() == "variable":
+            key = str(cfg.get("value") or "").strip()
+            if key:
+                references.add(key)
+
+        if node_type == "condition.compare":
+            if str(cfg.get("left_source") or "").strip() == "variable":
+                key = str(cfg.get("left_value") or "").strip()
+                if key:
+                    references.add(key)
+
+            if str(cfg.get("right_source") or "").strip() == "variable":
+                key = str(cfg.get("right_value") or "").strip()
+                if key:
+                    references.add(key)
+
+    return references
+
+
+
+def _describe_public_variable_usages(variable_keys: set[str]) -> List[str]:
+    if not variable_keys:
+        return []
+
+    usages: List[str] = []
+    for flow in _load_flows():
+        hits = sorted(_flow_variable_references(flow) & variable_keys)
+        if hits:
+            usages.append(f"{flow['name']}: {', '.join(hits)}")
+
+    return usages
 
 
 
 def _get_runtime_variables(flow: Dict[str, Any]) -> Dict[str, Any]:
-    defaults = _flow_variable_defaults(flow)
-    with _runtime_lock:
-        state = _load_runtime_state()
-        saved = (state.get("flows") or {}).get(flow["id"], {}).get("variables") or {}
-    merged = dict(defaults)
-    merged.update(saved)
-    return merged
+    values, _ = _public_variable_values()
+    return values
 
 
 
-def _save_runtime_variables(flow: Dict[str, Any], variables: Dict[str, Any]) -> None:
+def _save_runtime_variables(flow: Dict[str, Any], variables: Dict[str, Any], changed_keys: Optional[set[str]] = None) -> None:
+    definitions = _load_public_variable_definitions()
+    definitions_by_key = _public_variable_definitions_by_key(definitions)
+    keys_to_save = {key for key in (changed_keys or set(definitions_by_key)) if key in definitions_by_key}
+    if not keys_to_save:
+        return
+
     with _runtime_lock:
         payload = _load_runtime_state()
-        flows = payload.setdefault("flows", {})
-        flow_state = flows.setdefault(flow["id"], {})
-        flow_state["variables"] = variables
-        flow_state["updated_at"] = _utc_now_iso()
+        public_state = payload.setdefault("public_variables", {})
+        saved = public_state.get("values")
+        if not isinstance(saved, dict):
+            saved = {}
+
+        for key in keys_to_save:
+            saved[key] = _coerce_runtime_value(variables.get(key), definitions_by_key[key]["type"])
+
+        public_state["values"] = {key: saved[key] for key in definitions_by_key if key in saved}
+        public_state["updated_at"] = _utc_now_iso()
         _save_runtime_state(payload)
 
 
@@ -1097,6 +1362,7 @@ def _run_flow_from_trigger(
     nodes_by_id = {node["id"]: node for node in flow.get("nodes", [])}
     adjacency = _build_adjacency(flow)
     variables = _get_runtime_variables(flow)
+    variable_definitions = _public_variable_definitions_by_key()
     node_results: List[Dict[str, Any]] = []
 
     if start_node_id is None:
@@ -1112,6 +1378,8 @@ def _run_flow_from_trigger(
         "flow": flow,
         "trigger": trigger,
         "variables": variables,
+        "variable_definitions": variable_definitions,
+        "changed_variables": set(),
         "results": node_results,
         "manual": manual,
         "started_at": _utc_now_iso(),
@@ -1129,8 +1397,9 @@ def _run_flow_from_trigger(
             for edge in adjacency.get(node_id, {}).get(next_handle, []):
                 queue.append((edge["target"], edge.get("target_handle") or "in"))
 
-    if persist_runtime:
-        _save_runtime_variables(flow, variables)
+    changed_variables = context.get("changed_variables") or set()
+    if persist_runtime and changed_variables:
+        _save_runtime_variables(flow, variables, changed_keys=changed_variables)
 
     summary = {
         "flow_id": flow["id"],
@@ -1188,8 +1457,13 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
 
     if node_type == "operator.set_variable":
         key = str(cfg.get("variable_key") or "").strip()
-        value = _resolve_value(cfg.get("value_source"), cfg.get("value"), context)
+        value = _coerce_variable_assignment(
+            key,
+            _resolve_value(cfg.get("value_source"), cfg.get("value"), context),
+            context,
+        )
         context["variables"][key] = value
+        context.setdefault("changed_variables", set()).add(key)
         result["variable_key"] = key
         result["value"] = value
         result["next_handles"] = ["out"]
@@ -1197,8 +1471,13 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
 
     if node_type == "operator.template":
         key = str(cfg.get("variable_key") or "").strip()
-        value = _render_template(str(cfg.get("template") or ""), context)
+        value = _coerce_variable_assignment(
+            key,
+            _render_template(str(cfg.get("template") or ""), context),
+            context,
+        )
         context["variables"][key] = value
+        context.setdefault("changed_variables", set()).add(key)
         result["variable_key"] = key
         result["value"] = value
         result["next_handles"] = ["out"]
@@ -1291,6 +1570,15 @@ def _resolve_value(source: Any, value: Any, context: Dict[str, Any]) -> Any:
     if source_type == "trigger":
         return _get_by_path(context.get("trigger") or {}, raw)
     return raw
+
+
+
+def _coerce_variable_assignment(variable_key: str, value: Any, context: Dict[str, Any]) -> Any:
+    definitions = context.get("variable_definitions") or {}
+    definition = definitions.get(variable_key) if isinstance(definitions, dict) else None
+    if not isinstance(definition, dict):
+        return value
+    return _coerce_runtime_value(value, str(definition.get("type") or "string"))
 
 
 

@@ -20,7 +20,7 @@
 
     <div class="flowsShell">
       <aside class="card flowsSidebar">
-        <div class="flowsSidebarBlock">
+        <div class="flowsSidebarBlock flowsSidebarSaved">
           <div class="listHeader compact">
             <div>
               <div class="listTitle">Saved flows</div>
@@ -33,7 +33,22 @@
           <div id="flowList" class="flowList mt-10"></div>
         </div>
 
-        <div class="flowsSidebarBlock">
+        <div class="flowsSidebarBlock flowsSidebarVariables">
+          <div class="rowSplit">
+            <div>
+              <div class="listTitle small">Variables</div>
+              <div class="listSub" id="publicVariablesMeta">Shared across all flows.</div>
+            </div>
+            <div class="row2 mt-0">
+              <button class="btn" id="btnAddPublicVariable" type="button">Add</button>
+              <button class="btn btn-primary" id="btnSavePublicVariables" type="button">Save</button>
+            </div>
+          </div>
+
+          <div id="publicVariableList" class="varList publicVariableList"></div>
+        </div>
+
+        <div class="flowsSidebarBlock flowsSidebarPalette">
           <div class="listTitle small">Palette</div>
 
           <input id="paletteSearch" placeholder="Search blocks" />
@@ -75,7 +90,7 @@
       <aside class="card flowsInspector">
         <div class="flowInspectorHeader">
           <div class="listTitle">Inspector</div>
-          <div class="listSub" id="inspectorSubtext">Flow settings and reusable variables.</div>
+          <div class="listSub" id="inspectorSubtext">Flow settings.</div>
         </div>
 
         <div id="inspectorBody" class="inspectorBody"></div>

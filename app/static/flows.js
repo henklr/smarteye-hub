@@ -5,6 +5,11 @@ const state = {
   devices: [],
   flows: [],
   draft: null,
+  publicVariables: [],
+  publicVariablesDirty: false,
+  publicVariablesInteracting: false,
+  publicVariablesUpdatedAt: null,
+  publicVariablesTimer: null,
   physicalState: null,
   physicalStateTimer: null,
   selectedSavedFlowId: null,
@@ -116,6 +121,25 @@ function currentFlow() {
   return state.draft;
 }
 
+function currentPublicVariables() {
+  return state.publicVariables || [];
+}
+
+function normalizeVariableType(value) {
+  const type = String(value || "string").trim().toLowerCase();
+  return ["string", "number", "boolean", "json"].includes(type) ? type : "string";
+}
+
+function parseBooleanLike(value) {
+  if (typeof value === "boolean") return value;
+  return ["1", "true", "yes", "on"].includes(String(value ?? "").trim().toLowerCase());
+}
+
+function publicVariableByKey(key) {
+  const wanted = String(key || "").trim();
+  return currentPublicVariables().find((item) => String(item.key || "").trim() === wanted) || null;
+}
+
 function makeId(prefix) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -131,7 +155,7 @@ function deviceOptionsHtml(selected = "") {
 }
 
 function variableKeyOptionsHtml(selected = "") {
-  const vars = currentFlow()?.variables || [];
+  const vars = currentPublicVariables();
   const options = [`<option value="">Select variable</option>`];
   for (const variable of vars) {
     options.push(
@@ -139,6 +163,17 @@ function variableKeyOptionsHtml(selected = "") {
     );
   }
   return options.join("");
+}
+
+function variableTypeOptionsHtml(selected = "string") {
+  return [
+    ["string", "String"],
+    ["number", "Number"],
+    ["boolean", "Boolean"],
+    ["json", "JSON"],
+  ]
+    .map(([value, label]) => `<option value="${value}" ${value === (selected || "string") ? "selected" : ""}>${label}</option>`)
+    .join("");
 }
 
 function sourceOptionsHtml(selected = "literal") {
@@ -433,7 +468,6 @@ function starterFlow() {
     id: null,
     name: "New flow",
     enabled: true,
-    variables: [],
     nodes: [],
     edges: [],
   };
@@ -554,7 +588,6 @@ function renderFlowList() {
       <div class="chipRow">
         <span class="miniPill">${flow.nodes.length} nodes</span>
         <span class="miniPill">${flow.edges.length} links</span>
-        <span class="miniPill">${flow.variables.length} vars</span>
       </div>
     </div>
   `).join("");
@@ -1038,7 +1071,7 @@ function renderInspector() {
   }
 
   if (el("inspectorSubtext")) {
-    el("inspectorSubtext").textContent = "Flow settings and reusable variables.";
+    el("inspectorSubtext").textContent = "Flow settings.";
   }
 
   box.innerHTML = renderFlowInspector(flow);
@@ -1072,59 +1105,306 @@ function renderFlowInspector(flow) {
         </div>
       </div>
     </div>
-
-    <div class="inspectorCard">
-      <div class="rowSplit">
-        <div class="inspectorTitle" style="margin-bottom:0;">Variables</div>
-        <button class="btn" id="btnAddVariable" type="button">Add variable</button>
-      </div>
-      <div class="inspectorHint mt-8">Conditions and operators can read and update these variables.</div>
-      <div class="variableList mt-10">
-        ${(flow.variables || []).length ? flow.variables.map((variable, idx) => `
-          <div class="variableRow" data-variable-index="${idx}">
-            <div class="variableRowHead">
-              <div>
-                <div class="variableLabel">${escapeHtml(variable.key || `var_${idx + 1}`)}</div>
-                <div class="inlineMeta">${escapeHtml(variable.type || "string")}</div>
-              </div>
-              <button class="btn btn-danger btnRemoveVariable" type="button">Remove</button>
-            </div>
-            <div class="fieldGrid">
-              <div>
-                <label>Key</label>
-                <input class="jsVarKey" value="${escapeHtml(variable.key || "")}" placeholder="var_1" />
-              </div>
-              <div>
-                <label>Type</label>
-                <select class="jsVarType">
-                  <option value="string" ${(variable.type || "string") === "string" ? "selected" : ""}>String</option>
-                  <option value="number" ${(variable.type || "string") === "number" ? "selected" : ""}>Number</option>
-                  <option value="boolean" ${(variable.type || "string") === "boolean" ? "selected" : ""}>Boolean</option>
-                  <option value="json" ${(variable.type || "string") === "json" ? "selected" : ""}>JSON</option>
-                </select>
-              </div>
-              <div>
-                <label>Default value</label>
-                <input class="jsVarValue" value="${escapeHtml(formatVariableValue(variable.value, variable.type))}" placeholder="value" />
-              </div>
-            </div>
-          </div>
-        `).join("") : `<div class="emptyState">No variables yet.</div>`}
-      </div>
-    </div>
   `;
 }
 
 function formatVariableValue(value, type) {
-  if (type === "json") {
+  const normalizedType = normalizeVariableType(type);
+
+  if (normalizedType === "json") {
+    if (typeof value === "string") {
+      try {
+        return JSON.stringify(JSON.parse(value), null, 0);
+      } catch {
+        return value;
+      }
+    }
+
     try {
       return JSON.stringify(value ?? {}, null, 0);
     } catch {
       return "{}";
     }
   }
-  if (type === "boolean") return value ? "true" : "false";
+
+  if (normalizedType === "boolean") return parseBooleanLike(value) ? "true" : "false";
   return value == null ? "" : String(value);
+}
+
+function renderVariableValueEditor({ inputId = "", inputClass = "", value = "", type = "string", placeholder = "value", readOnly = false, rows = 4 } = {}) {
+  const normalizedType = normalizeVariableType(type);
+  const idAttr = inputId ? ` id="${escapeHtml(inputId)}"` : "";
+  const classAttr = inputClass ? ` class="${escapeHtml(inputClass)}"` : "";
+  const readOnlyAttr = readOnly ? " readonly" : "";
+  const disabledAttr = readOnly ? " disabled" : "";
+
+  if (normalizedType === "boolean" && !readOnly) {
+    const normalizedValue = formatVariableValue(value, normalizedType);
+    return `
+      <select${idAttr}${classAttr}>
+        <option value="true" ${normalizedValue === "true" ? "selected" : ""}>True</option>
+        <option value="false" ${normalizedValue === "false" ? "selected" : ""}>False</option>
+      </select>
+    `;
+  }
+
+  if (normalizedType === "number" && !readOnly) {
+    return `<input${idAttr}${classAttr} type="number" step="any" value="${escapeHtml(formatVariableValue(value, normalizedType))}" placeholder="${escapeHtml(placeholder)}" />`;
+  }
+
+  if (normalizedType === "json") {
+    return `<textarea${idAttr}${classAttr} rows="${rows}" placeholder="${escapeHtml(placeholder)}"${readOnlyAttr}>${escapeHtml(formatVariableValue(value, normalizedType))}</textarea>`;
+  }
+
+  return `<input${idAttr}${classAttr} value="${escapeHtml(formatVariableValue(value, normalizedType))}" placeholder="${escapeHtml(placeholder)}"${readOnlyAttr}${disabledAttr} />`;
+}
+
+function renderSetVariableValueControl(cfg) {
+  const target = publicVariableByKey(cfg.variable_key || "");
+  const targetType = normalizeVariableType(target?.type || "string");
+  const valueSource = String(cfg.value_source || "literal").trim().toLowerCase();
+
+  if (valueSource === "variable") {
+    return `<select id="cfg_value">${variableKeyOptionsHtml(cfg.value || "")}</select>`;
+  }
+
+  if (valueSource === "trigger") {
+    return `<input id="cfg_value" value="${escapeHtml(cfg.value || "")}" placeholder="trigger.path.to.value" list="variableKeysList" />`;
+  }
+
+  return renderVariableValueEditor({
+    inputId: "cfg_value",
+    value: cfg.value,
+    type: targetType,
+    placeholder: targetType === "json" ? '{"key":"value"}' : "literal value",
+    rows: 5,
+  });
+}
+
+function publicVariablesDefinitionFingerprint(items = []) {
+  return JSON.stringify(
+    (items || []).map((item) => [
+      (item?.key || "").trim(),
+      item?.type || "string",
+      formatVariableValue(item?.value, item?.type),
+    ])
+  );
+}
+
+function publicVariablesMetaText() {
+  const count = currentPublicVariables().length;
+  const base = count
+    ? `${count} shared variable${count === 1 ? "" : "s"}`
+    : "No shared variables";
+
+  if (state.publicVariablesDirty) {
+    return `${base} · unsaved changes`;
+  }
+
+  const updated = formatPhysicalUpdatedTime(state.publicVariablesUpdatedAt);
+  if (updated) {
+    return `${base} · live values ${updated}`;
+  }
+
+  return `${base} · available to every flow`;
+}
+
+function syncPublicVariablesHeader() {
+  if (el("publicVariablesMeta")) {
+    el("publicVariablesMeta").textContent = publicVariablesMetaText();
+  }
+
+  if (el("btnSavePublicVariables")) {
+    el("btnSavePublicVariables").disabled = !state.publicVariablesDirty;
+  }
+}
+
+function markPublicVariablesDirty() {
+  state.publicVariablesDirty = true;
+  syncPublicVariablesHeader();
+}
+
+function clearPublicVariablesDirty() {
+  state.publicVariablesDirty = false;
+  syncPublicVariablesHeader();
+}
+
+function setPublicVariablesInteracting(active) {
+  state.publicVariablesInteracting = !!active;
+}
+
+function nextPublicVariableKey() {
+  const existing = new Set(currentPublicVariables().map((item) => (item.key || "").trim()).filter(Boolean));
+  let idx = currentPublicVariables().length + 1;
+  while (existing.has(`var_${idx}`)) {
+    idx += 1;
+  }
+  return `var_${idx}`;
+}
+
+function validatePublicVariables() {
+  const keys = new Set();
+
+  for (const variable of currentPublicVariables()) {
+    const key = (variable.key || "").trim();
+    if (!key) {
+      throw new Error("Every public variable needs a key.");
+    }
+    if (keys.has(key)) {
+      throw new Error(`Duplicate variable key: ${key}`);
+    }
+    keys.add(key);
+  }
+}
+
+function serializePublicVariables() {
+  return {
+    items: currentPublicVariables().map((variable) => ({
+      key: (variable.key || "").trim(),
+      type: normalizeVariableType(variable.type),
+      value: variable.value,
+    })),
+  };
+}
+
+function renderPublicVariablesSidebar() {
+  const box = el("publicVariableList");
+  if (!box) return;
+
+  syncPublicVariablesHeader();
+
+  if (!currentPublicVariables().length) {
+    box.innerHTML = `<div class="emptyState">No shared variables yet.</div>`;
+    return;
+  }
+
+  box.innerHTML = currentPublicVariables().map((variable, idx) => {
+    const variableType = normalizeVariableType(variable.type);
+
+    return `
+      <div class="varCard" data-public-variable-index="${idx}">
+        <div class="varCardTop">
+          <div>
+            <div class="varCardName">${escapeHtml(variable.key || `var_${idx + 1}`)}</div>
+            <div class="varCardType">${escapeHtml(variableType)}</div>
+          </div>
+          <button class="btn btn-danger btnRemovePublicVariable" type="button">Remove</button>
+        </div>
+        <div class="fieldGrid">
+          <div>
+            <label>Key</label>
+            <input class="jsPublicVarKey" value="${escapeHtml(variable.key || "")}" placeholder="var_1" />
+          </div>
+          <div>
+            <label>Type</label>
+            <select class="jsPublicVarType">${variableTypeOptionsHtml(variableType)}</select>
+          </div>
+          <div>
+            <label>Default value</label>
+            ${renderVariableValueEditor({
+              inputClass: "jsPublicVarValue",
+              value: variable.value,
+              type: variableType,
+              placeholder: variableType === "json" ? '{"key":"value"}' : "value",
+              rows: 4,
+            })}
+          </div>
+          <div class="full">
+            <label>Current value</label>
+            ${renderVariableValueEditor({
+              inputClass: "jsPublicVarCurrentValue",
+              value: variable.current_value,
+              type: variableType,
+              readOnly: true,
+              rows: 4,
+            })}
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  bindPublicVariableRows();
+  refreshPublicVariableRuntimeUi();
+}
+
+function bindPublicVariableRows() {
+  document.querySelectorAll("#publicVariableList .varCard").forEach((row) => {
+    const idx = Number(row.dataset.publicVariableIndex || -1);
+    const getVariable = () => currentPublicVariables()[idx];
+
+    row.querySelector(".btnRemovePublicVariable")?.addEventListener("click", () => {
+      if (!getVariable()) return;
+      state.publicVariables.splice(idx, 1);
+      markPublicVariablesDirty();
+      renderPublicVariablesSidebar();
+      renderInspector();
+    });
+
+    row.querySelector(".jsPublicVarKey")?.addEventListener("input", (ev) => {
+      const variable = getVariable();
+      if (!variable) return;
+      variable.key = ev.target.value.trim();
+      markPublicVariablesDirty();
+
+      const title = row.querySelector(".varCardName");
+      if (title) title.textContent = variable.key || `var_${idx + 1}`;
+    });
+
+    row.querySelector(".jsPublicVarKey")?.addEventListener("change", () => {
+      renderInspector();
+    });
+
+    const syncVariableType = (value) => {
+      const variable = getVariable();
+      if (!variable) return;
+
+      const nextType = normalizeVariableType(value);
+      if (normalizeVariableType(variable.type) === nextType) return;
+
+      variable.type = nextType;
+      markPublicVariablesDirty();
+      renderPublicVariablesSidebar();
+      renderInspector();
+    };
+
+    row.querySelector(".jsPublicVarType")?.addEventListener("input", (ev) => {
+      syncVariableType(ev.target.value);
+    });
+
+    row.querySelector(".jsPublicVarType")?.addEventListener("change", (ev) => {
+      syncVariableType(ev.target.value);
+    });
+
+    row.querySelector(".jsPublicVarValue")?.addEventListener("input", (ev) => {
+      const variable = getVariable();
+      if (!variable) return;
+      variable.value = ev.target.value;
+      markPublicVariablesDirty();
+    });
+
+    row.querySelector(".jsPublicVarValue")?.addEventListener("change", (ev) => {
+      const variable = getVariable();
+      if (!variable) return;
+      variable.value = ev.target.value;
+      markPublicVariablesDirty();
+    });
+  });
+}
+
+function refreshPublicVariableRuntimeUi() {
+  syncPublicVariablesHeader();
+
+  document.querySelectorAll("#publicVariableList .varCard").forEach((row) => {
+    const idx = Number(row.dataset.publicVariableIndex || -1);
+    const variable = currentPublicVariables()[idx];
+    if (!variable) return;
+
+    const currentInput = row.querySelector(".jsPublicVarCurrentValue");
+    if (currentInput) {
+      currentInput.value = formatVariableValue(variable.current_value, variable.type);
+    }
+  });
 }
 
 function bindFlowInspector(flow) {
@@ -1140,50 +1420,6 @@ function bindFlowInspector(flow) {
     markDirty();
     renderFlowList();
     renderInspector();
-  });
-
-  el("btnAddVariable")?.addEventListener("click", () => {
-    flow.variables.push({
-      key: `var_${flow.variables.length + 1}`,
-      type: "string",
-      value: "",
-    });
-    markDirty();
-    renderInspector();
-  });
-
-  boxBindVariableRows(flow);
-}
-
-function boxBindVariableRows(flow) {
-  document.querySelectorAll(".variableRow").forEach((row) => {
-    const idx = Number(row.dataset.variableIndex || -1);
-    const variable = flow.variables[idx];
-    if (!variable) return;
-
-    row.querySelector(".btnRemoveVariable")?.addEventListener("click", () => {
-      flow.variables.splice(idx, 1);
-      markDirty();
-      renderInspector();
-    });
-
-    row.querySelector(".jsVarKey")?.addEventListener("input", (ev) => {
-      variable.key = ev.target.value.trim();
-      markDirty();
-      const label = row.querySelector(".variableLabel");
-      if (label) label.textContent = variable.key || `var_${idx + 1}`;
-    });
-
-    row.querySelector(".jsVarType")?.addEventListener("change", (ev) => {
-      variable.type = ev.target.value;
-      markDirty();
-      renderInspector();
-    });
-
-    row.querySelector(".jsVarValue")?.addEventListener("input", (ev) => {
-      variable.value = ev.target.value;
-      markDirty();
-    });
   });
 }
 
@@ -1414,7 +1650,7 @@ function renderNodeInspector(node) {
             </div>
             <div class="full">
               <label>Value</label>
-              <input id="cfg_value" value="${escapeHtml(cfg.value || "")}" placeholder="literal, variable key, or trigger path" list="variableKeysList" />
+              ${renderSetVariableValueControl(cfg)}
             </div>
           </div>
         </div>
@@ -1557,7 +1793,7 @@ function renderNodeInspector(node) {
 
   return `${common}
     <datalist id="variableKeysList">
-      ${(currentFlow().variables || []).map((variable) => `<option value="${escapeHtml(variable.key)}"></option>`).join("")}
+      ${currentPublicVariables().map((variable) => `<option value="${escapeHtml(variable.key)}"></option>`).join("")}
     </datalist>
     ${body}
   `;
@@ -1613,6 +1849,18 @@ function bindNodeInspector(node) {
 
   if (node.type === "operator.physical_input") {
     document.getElementById("cfg_input_kind")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+  }
+
+  if (node.type === "operator.set_variable") {
+    document.getElementById("cfg_variable_key")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+
+    document.getElementById("cfg_value_source")?.addEventListener("change", () => {
       applyNodeInspector(node);
       renderInspector();
     });
@@ -1853,6 +2101,78 @@ function refreshPhysicalUi() {
   refreshPhysicalInspectorLiveValues();
 }
 
+async function refreshPublicVariables(silent = true) {
+  try {
+    const data = await api("/api/public-variables");
+    const incoming = Array.isArray(data?.items) ? data.items : [];
+    const incomingFingerprint = publicVariablesDefinitionFingerprint(incoming);
+    const currentFingerprint = publicVariablesDefinitionFingerprint(state.publicVariables);
+
+    state.publicVariablesUpdatedAt = data?.updated_at || null;
+
+    const liveByKey = new Map(
+      incoming.map((item) => [item.key, item.current_value])
+    );
+
+    if (state.publicVariablesDirty || state.publicVariablesInteracting) {
+      for (const item of state.publicVariables) {
+        if (liveByKey.has(item.key)) {
+          item.current_value = liveByKey.get(item.key);
+        }
+      }
+      refreshPublicVariableRuntimeUi();
+      return;
+    }
+
+    if (incomingFingerprint !== currentFingerprint) {
+      state.publicVariables = incoming;
+      renderPublicVariablesSidebar();
+      renderInspector();
+      return;
+    }
+
+    // Same definitions, only refresh runtime values in place.
+    // Keeping the same objects avoids stale event-handler references.
+    for (const item of state.publicVariables) {
+      if (liveByKey.has(item.key)) {
+        item.current_value = liveByKey.get(item.key);
+      }
+    }
+
+    refreshPublicVariableRuntimeUi();
+  } catch (err) {
+    if (!silent) {
+      setStatus(err.message || String(err), true);
+    }
+  }
+}
+
+function startPublicVariablesPolling() {
+  if (state.publicVariablesTimer) {
+    window.clearInterval(state.publicVariablesTimer);
+  }
+
+  state.publicVariablesTimer = window.setInterval(() => {
+    refreshPublicVariables(true).catch(() => { });
+  }, 1000);
+}
+
+async function savePublicVariables() {
+  validatePublicVariables();
+
+  const out = await api("/api/public-variables", {
+    method: "PUT",
+    body: JSON.stringify(serializePublicVariables()),
+  });
+
+  state.publicVariables = Array.isArray(out?.items) ? out.items : [];
+  state.publicVariablesUpdatedAt = out?.updated_at || null;
+  clearPublicVariablesDirty();
+  renderPublicVariablesSidebar();
+  renderInspector();
+  setStatus("Public variables saved.");
+}
+
 async function refreshPhysicalState(silent = true) {
   try {
     state.physicalState = await api("/api/physical-io/state");
@@ -1883,9 +2203,11 @@ function startPhysicalStatePolling() {
 function renderAll() {
   syncHeader();
   renderFlowList();
+  renderPublicVariablesSidebar();
   renderCanvas();
   renderInspector();
   refreshPhysicalUi();
+  refreshPublicVariableRuntimeUi();
 }
 
 async function saveFlow() {
@@ -1919,11 +2241,6 @@ function serializeFlow(flow) {
   return {
     name: flow.name,
     enabled: !!flow.enabled,
-    variables: (flow.variables || []).map((variable) => ({
-      key: (variable.key || "").trim(),
-      type: variable.type || "string",
-      value: variable.value,
-    })),
     nodes: (flow.nodes || []).map((node) => ({
       id: node.id,
       type: node.type,
@@ -1940,14 +2257,6 @@ function serializeFlow(flow) {
 function validateDraft(flow) {
   if (!(flow.name || "").trim()) {
     throw new Error("Flow name is required.");
-  }
-
-  const variableKeys = new Set();
-  for (const variable of flow.variables || []) {
-    const key = (variable.key || "").trim();
-    if (!key) throw new Error("Every variable needs a key.");
-    if (variableKeys.has(key)) throw new Error(`Duplicate variable key: ${key}`);
-    variableKeys.add(key);
   }
 
   if (!(flow.nodes || []).length) {
@@ -1998,6 +2307,7 @@ async function triggerManualNode(nodeId) {
       });
 
       showTestResult(out.result);
+      await refreshPublicVariables(true);
       setTestStatus(`Manual trigger "${node.label}" executed with persisted runtime state.`);
       setStatus(`Manual trigger "${node.label}" executed with persisted runtime state.`);
       return;
@@ -2065,6 +2375,19 @@ async function deleteDraft() {
 }
 
 function bindGlobalEvents() {
+  el("publicVariableList")?.addEventListener("focusin", () => {
+    setPublicVariablesInteracting(true);
+  });
+
+  el("publicVariableList")?.addEventListener("focusout", (ev) => {
+    const nextTarget = ev.relatedTarget;
+    const currentTarget = ev.currentTarget;
+    if (nextTarget instanceof Node && currentTarget instanceof Node && currentTarget.contains(nextTarget)) {
+      return;
+    }
+    setPublicVariablesInteracting(false);
+  });
+
   el("btnNewFlow")?.addEventListener("click", () => {
     if (!confirmDiscard()) return;
 
@@ -2098,6 +2421,26 @@ function bindGlobalEvents() {
 
     try {
       await deleteDraft();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+
+  el("btnAddPublicVariable")?.addEventListener("click", () => {
+    state.publicVariables.push({
+      key: nextPublicVariableKey(),
+      type: "string",
+      value: "",
+      current_value: "",
+    });
+    markPublicVariablesDirty();
+    renderPublicVariablesSidebar();
+    renderInspector();
+  });
+
+  el("btnSavePublicVariables")?.addEventListener("click", async () => {
+    try {
+      await savePublicVariables();
     } catch (err) {
       setStatus(err.message || String(err), true);
     }
@@ -2182,7 +2525,7 @@ function bindGlobalEvents() {
   window.addEventListener("resize", drawEdges);
 
   window.addEventListener("beforeunload", (ev) => {
-    if (!state.dirty) return;
+    if (!state.dirty && !state.publicVariablesDirty) return;
     ev.preventDefault();
     ev.returnValue = "";
   });
@@ -2243,13 +2586,16 @@ async function init() {
     state.devices = Array.isArray(catalog?.devices) ? catalog.devices : [];
 
     await refreshFlows();
-  await refreshPhysicalState(true);
-  startPhysicalStatePolling();
+    await refreshPublicVariables(true);
+    await refreshPhysicalState(true);
+    startPublicVariablesPolling();
+    startPhysicalStatePolling();
 
     state.draft = state.flows.length ? deepClone(state.flows[0]) : starterFlow();
     state.selectedSavedFlowId = state.draft.id || null;
 
     clearDirty();
+    clearPublicVariablesDirty();
     clearTestResult();
     renderPalette();
     renderAll();

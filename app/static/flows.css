@@ -56,12 +56,16 @@ body.flowsPage {
 }
 
 /* Saved flows section sizes to content, but list can scroll */
-.flowsPage .flowsSidebarBlock:first-child {
+.flowsPage .flowsSidebarSaved {
+  flex: 0 0 auto;
+}
+
+.flowsPage .flowsSidebarVariables {
   flex: 0 0 auto;
 }
 
 /* Palette takes remaining height */
-.flowsPage .flowsSidebarBlock:last-child {
+.flowsPage .flowsSidebarPalette {
   flex: 1 1 auto;
   min-height: 0;
 }
@@ -172,6 +176,17 @@ body.flowsPage {
   padding-right: 4px;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+}
+
+.flowsPage .publicVariableList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  max-height: clamp(180px, 26vh, 360px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
 }
 
 .flowsPage .paletteGroup {
@@ -780,6 +795,7 @@ body.flowsPage {
 
 /* Scrollbars */
 .flowsPage .flowList::-webkit-scrollbar,
+.flowsPage .publicVariableList::-webkit-scrollbar,
 .flowsPage .paletteGroups::-webkit-scrollbar,
 .flowsPage .inspectorBody::-webkit-scrollbar,
 .flowsPage .testResult::-webkit-scrollbar,
@@ -789,6 +805,7 @@ body.flowsPage {
 }
 
 .flowsPage .flowList::-webkit-scrollbar-thumb,
+.flowsPage .publicVariableList::-webkit-scrollbar-thumb,
 .flowsPage .paletteGroups::-webkit-scrollbar-thumb,
 .flowsPage .inspectorBody::-webkit-scrollbar-thumb,
 .flowsPage .testResult::-webkit-scrollbar-thumb,
@@ -798,6 +815,7 @@ body.flowsPage {
 }
 
 .flowsPage .flowList::-webkit-scrollbar-track,
+.flowsPage .publicVariableList::-webkit-scrollbar-track,
 .flowsPage .paletteGroups::-webkit-scrollbar-track,
 .flowsPage .inspectorBody::-webkit-scrollbar-track,
 .flowsPage .testResult::-webkit-scrollbar-track,
@@ -830,6 +848,7 @@ body.flowsPage {
   }
 
   .flowsPage .flowList,
+  .flowsPage .publicVariableList,
   .flowsPage .paletteGroups,
   .flowsPage .inspectorBody {
     max-height: none;
