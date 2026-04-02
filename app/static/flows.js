@@ -676,12 +676,16 @@ function syncHeader() {
       : (state.dirty ? "Unsaved draft · changes pending" : "Unsaved draft");
   }
 
-  if (el("btnDeleteFlow")) {
-    el("btnDeleteFlow").disabled = !flow?.id;
+  for (const buttonId of ["btnDeleteFlow", "btnInspectorDeleteFlow"]) {
+    if (el(buttonId)) {
+      el(buttonId).disabled = !flow?.id;
+    }
   }
 
-  if (el("btnSaveFlow")) {
-    el("btnSaveFlow").disabled = !flow || !state.dirty;
+  for (const buttonId of ["btnSaveFlow", "btnInspectorSaveFlow"]) {
+    if (el(buttonId)) {
+      el(buttonId).disabled = !flow || !state.dirty;
+    }
   }
 }
 
@@ -1454,6 +1458,18 @@ function renderFlowInspector(flow) {
         </div>
       </div>
     </div>
+    <div class="inspectorCard inspectorActionsCard">
+      <div class="inspectorActionHeader">
+        <div class="inspectorTitle">Flow actions</div>
+        <div class="inspectorHint">Create, save, duplicate, or remove this flow.</div>
+      </div>
+      <div class="inspectorActionGrid inspectorActionGrid--twoUp">
+        <button class="btn btn-primary" id="btnInspectorNewFlow" type="button">New</button>
+        <button class="btn" id="btnInspectorSaveFlow" type="button">Save</button>
+        <button class="btn" id="btnInspectorDuplicateFlow" type="button">Duplicate</button>
+        <button class="btn btn-danger" id="btnInspectorDeleteFlow" type="button">Delete</button>
+      </div>
+    </div>
   `;
 }
 
@@ -1488,6 +1504,17 @@ function renderPublicVariableInspector(variable, index) {
             rows: 5,
           })}
         </div>
+      </div>
+    </div>
+    <div class="inspectorCard inspectorActionsCard">
+      <div class="inspectorActionHeader">
+        <div class="inspectorTitle">Variable actions</div>
+        <div class="inspectorHint">Create a new variable, save changes, or remove the selected variable.</div>
+      </div>
+      <div class="inspectorActionGrid">
+        <button class="btn btn-primary" id="btnInspectorAddPublicVariable" type="button">New</button>
+        <button class="btn" id="btnInspectorSavePublicVariables" type="button">Save</button>
+        <button class="btn btn-danger" id="btnInspectorDeletePublicVariable" type="button">Delete</button>
       </div>
     </div>
   `;
@@ -1603,12 +1630,16 @@ function publicVariablesDefinitionFingerprint(items = []) {
 }
 
 function syncPublicVariablesHeader() {
-  if (el("btnSavePublicVariables")) {
-    el("btnSavePublicVariables").disabled = !state.publicVariablesDirty;
+  for (const buttonId of ["btnSavePublicVariables", "btnInspectorSavePublicVariables"]) {
+    if (el(buttonId)) {
+      el(buttonId).disabled = !state.publicVariablesDirty;
+    }
   }
 
-  if (el("btnDeletePublicVariable")) {
-    el("btnDeletePublicVariable").disabled = currentSelectedPublicVariable() == null;
+  for (const buttonId of ["btnDeletePublicVariable", "btnInspectorDeletePublicVariable"]) {
+    if (el(buttonId)) {
+      el(buttonId).disabled = currentSelectedPublicVariable() == null;
+    }
   }
 }
 
@@ -1825,6 +1856,18 @@ function bindPublicVariableInspector(index) {
   const inspector = document.getElementById("publicVariableInspectorBody");
   const getVariable = () => currentPublicVariables()[index];
 
+  document.getElementById("btnInspectorAddPublicVariable")?.addEventListener("click", () => {
+    handleAddPublicVariable();
+  });
+
+  document.getElementById("btnInspectorSavePublicVariables")?.addEventListener("click", async () => {
+    await handleSavePublicVariables();
+  });
+
+  document.getElementById("btnInspectorDeletePublicVariable")?.addEventListener("click", () => {
+    handleDeletePublicVariable();
+  });
+
   inspector?.addEventListener("focusin", () => {
     setPublicVariablesInteracting(true);
   });
@@ -1917,6 +1960,22 @@ function refreshPublicVariableRuntimeUi() {
 }
 
 function bindFlowInspector(flow) {
+  document.getElementById("btnInspectorNewFlow")?.addEventListener("click", () => {
+    handleNewFlow();
+  });
+
+  document.getElementById("btnInspectorSaveFlow")?.addEventListener("click", async () => {
+    await handleSaveFlow();
+  });
+
+  document.getElementById("btnInspectorDeleteFlow")?.addEventListener("click", async () => {
+    await handleDeleteFlow();
+  });
+
+  document.getElementById("btnInspectorDuplicateFlow")?.addEventListener("click", () => {
+    duplicateDraft();
+  });
+
   el("flowNameInput")?.addEventListener("input", () => {
     flow.name = el("flowNameInput").value;
     markDirty();
@@ -2314,8 +2373,14 @@ function renderNodeInspector(node) {
       ${currentPublicVariables().map((variable) => `<option value="${escapeHtml(variable.key)}"></option>`).join("")}
     </datalist>
     ${body}
-    <div class="inspectorCard">
-      <button class="btn btn-danger" id="btnDeleteNode" type="button">Delete node</button>
+    <div class="inspectorCard inspectorActionsCard inspectorActionsCard--danger">
+      <div class="inspectorActionHeader">
+        <div class="inspectorTitle">Node actions</div>
+        <div class="inspectorHint">Remove this node and its connections from the flow.</div>
+      </div>
+      <div class="inspectorActionGrid inspectorActionGrid--single">
+        <button class="btn btn-danger" id="btnDeleteNode" type="button">Delete node</button>
+      </div>
     </div>
   `;
 }
