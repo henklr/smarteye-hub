@@ -6,9 +6,9 @@ const state = {
   flows: [],
   draft: null,
   sidebarSections: {
-    saved: { expanded: false, touched: false },
-    variables: { expanded: false, touched: false },
-    palette: { expanded: false, touched: false },
+    saved: { expanded: true, touched: false },
+    variables: { expanded: true, touched: false },
+    palette: { expanded: true, touched: false },
   },
   publicVariables: [],
   publicVariablesDirty: false,
@@ -29,6 +29,8 @@ const state = {
   justPanned: false,
   topicCache: new Map(),
 };
+
+const SIDEBAR_SECTION_STATE_KEY = "flows.sidebarSections";
 
 const CATEGORY_META = {
   trigger: { label: "Trigger", color: "#4f8cff" },
@@ -685,10 +687,39 @@ function confirmDiscard() {
   return window.confirm("You have unsaved changes. Discard them?");
 }
 
+function loadSidebarSectionState() {
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_SECTION_STATE_KEY);
+    if (!raw) return;
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return;
+
+    for (const [sectionId, section] of Object.entries(state.sidebarSections)) {
+      if (typeof parsed[sectionId] !== "boolean") continue;
+      section.expanded = parsed[sectionId];
+      section.touched = true;
+    }
+  } catch {
+    // Ignore invalid or unavailable local storage.
+  }
+}
+
+function persistSidebarSectionState() {
+  try {
+    const payload = Object.fromEntries(
+      Object.entries(state.sidebarSections).map(([sectionId, section]) => [sectionId, !!section.expanded])
+    );
+    window.localStorage.setItem(SIDEBAR_SECTION_STATE_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore unavailable local storage.
+  }
+}
+
 function sidebarSectionExpanded(sectionId, hasItems = true) {
   const section = state.sidebarSections[sectionId];
   if (!section) return true;
-  return section.touched ? !!section.expanded : !hasItems;
+  return section.touched ? !!section.expanded : true;
 }
 
 function syncSidebarSection(sectionId, hasItems = true) {
@@ -710,6 +741,7 @@ function setSidebarSectionExpanded(sectionId, expanded) {
   if (!section) return;
   section.expanded = !!expanded;
   section.touched = true;
+  persistSidebarSectionState();
   syncSidebarSection(sectionId, document.querySelector(`[data-sidebar-section="${sectionId}"]`)?.dataset.hasItems !== "false");
 }
 
@@ -2978,6 +3010,7 @@ function bindGlobalEvents() {
 }
 
 async function init() {
+  loadSidebarSectionState();
   bindGlobalEvents();
 
   try {
