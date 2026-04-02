@@ -1329,25 +1329,6 @@ function renderFlowInspector(flow) {
         </div>
       </div>
     </div>
-    ${renderPublicVariablesInspector()}
-  `;
-}
-
-function renderPublicVariablesInspector() {
-  const hasVariables = currentPublicVariables().length > 0;
-
-  return `
-    <div class="inspectorCard">
-      <div class="rowSplit">
-        <div>
-          <div class="inspectorTitle" style="margin-bottom:4px;">Shared variables</div>
-          <div class="inspectorHint" id="publicVariablesInspectorMeta">${escapeHtml(publicVariablesMetaText())}</div>
-        </div>
-      </div>
-      <div class="inspectorHint mt-10">
-        ${hasVariables ? "Select a variable from the sidebar preview to edit it here." : "Create a shared variable to use it across flows."}
-      </div>
-    </div>
   `;
 }
 
@@ -1517,10 +1498,6 @@ function publicVariablesMetaText() {
 function syncPublicVariablesHeader() {
   if (el("publicVariablesMeta")) {
     el("publicVariablesMeta").textContent = publicVariablesMetaText();
-  }
-
-  if (el("publicVariablesInspectorMeta")) {
-    el("publicVariablesInspectorMeta").textContent = publicVariablesMetaText();
   }
 
   if (el("btnSavePublicVariables")) {
