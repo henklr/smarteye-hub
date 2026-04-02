@@ -758,27 +758,21 @@ function renderFlowList() {
   const items = state.flows.filter((flow) => {
     if (!q) return true;
     return [flow.name, flowSummary(flow)].join(" ").toLowerCase().includes(q);
-  }).filter((flow) => flow.id !== activeFlow?.id);
+  });
 
   const box = el("flowList");
   if (!box) return;
 
   syncSidebarSection("saved", Boolean(activeFlow) || items.length > 0);
 
-  const activeSummary = activeFlow ? flowSummary(activeFlow) : "No flow selected.";
-  const activeStatus = activeFlow?.enabled ? "Enabled" : "Disabled";
-  const activeStatusClass = activeFlow?.enabled ? "enabled" : "disabled";
-  const activeName = activeFlow?.name || "New flow";
-  const activeId = activeFlow?.id ? `<div class="flowListItemMeta">${escapeHtml(activeSummary)}</div>` : `<div class="flowListItemMeta">Unsaved draft</div>`;
-
-  box.innerHTML = `
+  const neutralCard = !activeFlow?.id ? `
     <div class="flowListItem flowListCurrent active" data-current-flow="true">
       <div class="flowListItemTop">
         <div>
-          <div class="flowListItemName">${escapeHtml(activeName)}</div>
-          ${activeId}
+          <div class="flowListItemName">${escapeHtml(activeFlow?.name || "New flow")}</div>
+          <div class="flowListItemMeta">Unsaved draft</div>
         </div>
-        <div class="miniPill ${activeStatusClass}">${activeStatus}</div>
+        <div class="miniPill ${(activeFlow?.enabled ?? true) ? "enabled" : "disabled"}">${(activeFlow?.enabled ?? true) ? "Enabled" : "Disabled"}</div>
       </div>
       <div class="chipRow">
         <span class="miniPill">${activeFlow?.nodes?.length || 0} nodes</span>
@@ -789,10 +783,15 @@ function renderFlowList() {
         <button class="btn btn-compact" id="btnSaveFlow" type="button">Save</button>
         <button class="btn btn-danger btn-compact" id="btnDeleteFlow" type="button">Delete</button>
         <button class="btn btn-compact" id="btnDuplicateFlow" type="button">Duplicate</button>
+        <button class="btn btn-compact" id="btnExportFlows" type="button">Export</button>
+        <button class="btn btn-compact" id="btnImportFlows" type="button">Import</button>
       </div>
-    </div>
+    </div>` : "";
+
+  box.innerHTML = `
+    ${neutralCard}
     ${items.length ? items.map((flow) => `
-    <div class="flowListItem ${flow.id === state.selectedSavedFlowId ? "active" : ""}" data-id="${escapeHtml(flow.id)}">
+    <div class="flowListItem ${flow.id === state.selectedSavedFlowId ? "active flowListCurrent" : ""}" ${flow.id === state.selectedSavedFlowId ? 'data-current-flow="true"' : ""} data-id="${escapeHtml(flow.id)}">
       <div class="flowListItemTop">
         <div>
           <div class="flowListItemName">${escapeHtml(flow.name)}</div>
@@ -804,6 +803,15 @@ function renderFlowList() {
         <span class="miniPill">${flow.nodes.length} nodes</span>
         <span class="miniPill">${flow.edges.length} links</span>
       </div>
+      ${flow.id === state.selectedSavedFlowId ? `
+      <div class="flowListActions">
+        <button class="btn btn-primary btn-compact" id="btnNewFlow" type="button">New</button>
+        <button class="btn btn-compact" id="btnSaveFlow" type="button">Save</button>
+        <button class="btn btn-danger btn-compact" id="btnDeleteFlow" type="button">Delete</button>
+        <button class="btn btn-compact" id="btnDuplicateFlow" type="button">Duplicate</button>
+        <button class="btn btn-compact" id="btnExportFlows" type="button">Export</button>
+        <button class="btn btn-compact" id="btnImportFlows" type="button">Import</button>
+      </div>` : ""}
     </div>
   `).join("") : ""}
   `;
@@ -818,7 +826,7 @@ function renderFlowList() {
     drawEdges();
   });
 
-  box.querySelectorAll(".flowListItem[data-id]").forEach((node) => {
+  box.querySelectorAll(".flowListItem[data-id]:not(.flowListCurrent)").forEach((node) => {
     node.addEventListener("click", () => {
       const flow = state.flows.find((item) => item.id === node.dataset.id);
       if (!flow) return;
@@ -853,6 +861,193 @@ function handleNewFlow() {
   renderAll();
   window.requestAnimationFrame(centerBoardViewport);
   setStatus("Started a new flow.");
+}
+
+function draftHasExportableContent(flow) {
+  if (!flow) return false;
+  const name = String(flow.name || "").trim();
+  return (flow.nodes || []).length > 0
+    || (flow.edges || []).length > 0
+    || (name && name !== starterFlow().name);
+}
+
+function normalizedFlowName(name) {
+  return String(name || "").trim().toLowerCase();
+}
+
+function makeUniqueFlowName(baseName, { excludeId = null, reservedNames = null } = {}) {
+  const base = String(baseName || "").trim() || "New flow";
+  const used = reservedNames instanceof Set
+    ? new Set([...reservedNames].map((name) => normalizedFlowName(name)))
+    : new Set();
+
+  for (const flow of state.flows || []) {
+    if (excludeId && flow.id === excludeId) continue;
+    used.add(normalizedFlowName(flow.name));
+  }
+
+  if (!used.has(normalizedFlowName(base))) {
+    return base;
+  }
+
+  let index = 2;
+  while (used.has(normalizedFlowName(`${base} ${index}`))) {
+    index += 1;
+  }
+  return `${base} ${index}`;
+}
+
+function importedFlowName(name, index, reservedNames) {
+  const base = String(name || "").trim() || `Imported flow ${index + 1}`;
+  const nextName = makeUniqueFlowName(`${base} (imported)`, { reservedNames });
+  reservedNames?.add(nextName);
+  return nextName;
+}
+
+function exportedFlowItem() {
+  const draft = currentFlow();
+  if (!draft) return null;
+
+  return {
+    ...(draft.id ? { id: draft.id } : {}),
+    ...serializeFlow(draft),
+  };
+}
+
+function downloadJsonFile(filename, payload) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function buildFlowImportPayload(item, index, reservedNames) {
+  if (!item || typeof item !== "object") {
+    throw new Error(`Imported flow ${index + 1} is not an object.`);
+  }
+
+  return serializeFlow({
+    name: importedFlowName(item.name, index, reservedNames),
+    enabled: item.enabled !== false,
+    nodes: Array.isArray(item.nodes) ? item.nodes : [],
+    edges: Array.isArray(item.edges) ? item.edges : [],
+  });
+}
+
+function pickJsonFile() {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/json,.json";
+    input.style.display = "none";
+    document.body.appendChild(input);
+
+    input.addEventListener("change", () => {
+      const [file] = Array.from(input.files || []);
+      input.remove();
+      resolve(file || null);
+    }, { once: true });
+
+    input.click();
+  });
+}
+
+async function readTextFile(file) {
+  return await file.text();
+}
+
+function importableFlowItems(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.items)) return payload.items;
+  if (Array.isArray(payload?.flows)) return payload.flows;
+  return [];
+}
+
+function importSelectionTarget(importedIds = []) {
+  const preferredId = importedIds.find((id) => id && state.flows.some((flow) => flow.id === id));
+  if (preferredId) return state.flows.find((flow) => flow.id === preferredId) || null;
+
+  const currentId = currentFlow()?.id;
+  if (currentId) {
+    const existing = state.flows.find((flow) => flow.id === currentId);
+    if (existing) return existing;
+  }
+
+  return state.flows[0] || null;
+}
+
+function exportFlows() {
+  const item = exportedFlowItem();
+  if (!item) {
+    setStatus("No flow selected to export.", true);
+    return;
+  }
+
+  const exportName = String(item.name || "flow").trim() || "flow";
+  const safeName = exportName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "flow";
+
+  downloadJsonFile(`${safeName}-export-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`, {
+    version: 1,
+    exported_at: new Date().toISOString(),
+    items: [item],
+  });
+  setStatus(`Exported flow "${item.name}".`);
+}
+
+async function importFlows() {
+  if (!confirmDiscard()) return;
+
+  const file = await pickJsonFile();
+  if (!file) return;
+
+  let payload;
+  try {
+    payload = JSON.parse(await readTextFile(file));
+  } catch {
+    setStatus("Failed to read flows import file.", true);
+    return;
+  }
+
+  const rawItems = importableFlowItems(payload);
+  if (!rawItems.length) {
+    setStatus("No flows found in the import file.", true);
+    return;
+  }
+
+  const reservedNames = new Set((state.flows || []).map((flow) => flow.name));
+  const prepared = rawItems.map((item, index) => buildFlowImportPayload(item, index, reservedNames));
+
+  try {
+    const importedIds = [];
+
+    for (const item of prepared) {
+      const out = await api(`/api/flows`, {
+        method: "POST",
+        body: JSON.stringify(item),
+      });
+      if (out?.item?.id) importedIds.push(out.item.id);
+    }
+
+    await refreshFlows();
+    const nextFlow = importSelectionTarget(importedIds);
+    state.selectedSavedFlowId = nextFlow?.id || null;
+    state.draft = nextFlow ? deepClone(nextFlow) : starterFlow();
+    clearEditorSelection();
+    state.connecting = null;
+    state.connectionCursor = null;
+    clearDirty();
+    clearTestResult();
+    renderAll();
+    window.requestAnimationFrame(centerBoardViewport);
+    setStatus(`Imported ${prepared.length} flow${prepared.length === 1 ? "" : "s"}.`);
+  } catch (err) {
+    setStatus(err.message || String(err), true);
+  }
 }
 
 async function handleSaveFlow() {
@@ -893,6 +1088,16 @@ function bindFlowActionButtons() {
   el("btnDeleteFlow")?.addEventListener("click", async (event) => {
     event.stopPropagation();
     await handleDeleteFlow();
+  });
+
+  el("btnExportFlows")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    exportFlows();
+  });
+
+  el("btnImportFlows")?.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    await importFlows();
   });
 }
 
@@ -1461,13 +1666,15 @@ function renderFlowInspector(flow) {
     <div class="inspectorCard inspectorActionsCard">
       <div class="inspectorActionHeader">
         <div class="inspectorTitle">Flow actions</div>
-        <div class="inspectorHint">Create, save, duplicate, or remove this flow.</div>
+        <div class="inspectorHint">Create, save, duplicate, import, export, or remove this flow.</div>
       </div>
       <div class="inspectorActionGrid inspectorActionGrid--twoUp">
         <button class="btn btn-primary" id="btnInspectorNewFlow" type="button">New</button>
         <button class="btn" id="btnInspectorSaveFlow" type="button">Save</button>
         <button class="btn" id="btnInspectorDuplicateFlow" type="button">Duplicate</button>
         <button class="btn btn-danger" id="btnInspectorDeleteFlow" type="button">Delete</button>
+        <button class="btn" id="btnInspectorExportFlows" type="button">Export</button>
+        <button class="btn" id="btnInspectorImportFlows" type="button">Import</button>
       </div>
     </div>
   `;
@@ -1732,7 +1939,7 @@ function renderPublicVariablesSidebar() {
 
   const q = (el("variableSearch")?.value || "").trim().toLowerCase();
   const selectedVariable = currentSelectedPublicVariable();
-  const items = currentPublicVariables().map((variable, idx) => ({ variable, idx })).filter(({ variable, idx }) => {
+  const items = currentPublicVariables().map((variable, idx) => ({ variable, idx })).filter(({ variable }) => {
     if (!q) return true;
 
     const type = normalizeVariableType(variable.type);
@@ -1743,39 +1950,19 @@ function renderPublicVariablesSidebar() {
     ].join(" ").toLowerCase();
 
     return haystack.includes(q);
-  }).filter(({ idx }) => idx !== state.selectedPublicVariableIndex);
+  });
 
   syncPublicVariablesHeader();
   syncSidebarSection("variables", currentPublicVariables().length > 0);
 
-  const currentType = normalizeVariableType(selectedVariable?.type);
-  const currentValue = selectedVariable
-    ? summarizeVariableValue(selectedVariable.current_value ?? selectedVariable.value, currentType)
-    : "";
-  const currentCard = selectedVariable
-    ? `
-    <div class="varCard is-preview varCardCurrent active">
-      <div class="varCardTop">
-        <div class="varCardName">${escapeHtml(flowVariableLabel(selectedVariable.key || `var_${state.selectedPublicVariableIndex + 1}`))}</div>
-      </div>
-      <div class="chipRow">
-        <span class="miniPill">${escapeHtml(currentType)}</span>
-        <span class="miniPill jsPublicVarCurrentPreview">${escapeHtml(currentValue)}</span>
-      </div>
-      <div class="sidebarCardActions">
-        <button class="btn btn-primary btn-compact" id="btnAddPublicVariable" type="button">New</button>
-        <button class="btn btn-compact" id="btnSavePublicVariables" type="button">Save</button>
-        <button class="btn btn-danger btn-compact" id="btnDeletePublicVariable" type="button">Delete</button>
-      </div>
-    </div>`
-    : `
+  const currentCard = !selectedVariable ? `
     <div class="varCard varCardActionsOnly">
       <div class="sidebarCardActions is-standalone">
         <button class="btn btn-primary btn-compact" id="btnAddPublicVariable" type="button">New</button>
         <button class="btn btn-compact" id="btnSavePublicVariables" type="button">Save</button>
         <button class="btn btn-danger btn-compact" id="btnDeletePublicVariable" type="button">Delete</button>
       </div>
-    </div>`;
+    </div>` : "";
 
   box.innerHTML = `
     ${currentCard}
@@ -1786,7 +1973,7 @@ function renderPublicVariablesSidebar() {
     const currentValue = summarizeVariableValue(variable.current_value ?? variable.value, variableType);
 
     return `
-      <button class="varCard is-preview ${isActive ? "active" : ""}" type="button" data-public-variable-index="${idx}" aria-pressed="${isActive ? "true" : "false"}">
+      <${isActive ? "div" : "button"} class="varCard is-preview ${isActive ? "active varCardCurrent" : ""}" ${isActive ? "" : 'type="button"'} data-public-variable-index="${idx}" aria-pressed="${isActive ? "true" : "false"}">
         <div class="varCardTop">
           <div class="varCardName">${escapeHtml(variable.key || `var_${idx + 1}`)}</div>
         </div>
@@ -1794,7 +1981,13 @@ function renderPublicVariablesSidebar() {
           <span class="miniPill">${escapeHtml(variableType)}</span>
           <span class="miniPill jsPublicVarCurrentPreview">${escapeHtml(currentValue)}</span>
         </div>
-      </button>
+        ${isActive ? `
+        <div class="sidebarCardActions">
+          <button class="btn btn-primary btn-compact" id="btnAddPublicVariable" type="button">New</button>
+          <button class="btn btn-compact" id="btnSavePublicVariables" type="button">Save</button>
+          <button class="btn btn-danger btn-compact" id="btnDeletePublicVariable" type="button">Delete</button>
+        </div>` : ""}
+      </${isActive ? "div" : "button"}>
     `;
   }).join("") : ""}
   `;
@@ -1974,6 +2167,14 @@ function bindFlowInspector(flow) {
 
   document.getElementById("btnInspectorDuplicateFlow")?.addEventListener("click", () => {
     duplicateDraft();
+  });
+
+  document.getElementById("btnInspectorExportFlows")?.addEventListener("click", () => {
+    exportFlows();
+  });
+
+  document.getElementById("btnInspectorImportFlows")?.addEventListener("click", async () => {
+    await importFlows();
   });
 
   el("flowNameInput")?.addEventListener("input", () => {
@@ -2894,8 +3095,15 @@ function serializeFlow(flow) {
 }
 
 function validateDraft(flow) {
-  if (!(flow.name || "").trim()) {
+  const name = String(flow.name || "").trim();
+
+  if (!name) {
     throw new Error("Flow name is required.");
+  }
+
+  const duplicate = (state.flows || []).some((item) => item.id !== flow.id && normalizedFlowName(item.name) === normalizedFlowName(name));
+  if (duplicate) {
+    throw new Error("Flow name must be unique.");
   }
 
   if (!(flow.nodes || []).length) {
@@ -2978,7 +3186,7 @@ function duplicateDraft() {
 
   const copy = deepClone(flow);
   copy.id = null;
-  copy.name = `${flow.name || "Flow"} copy`;
+  copy.name = makeUniqueFlowName(`${flow.name || "Flow"} copy`);
 
   state.selectedSavedFlowId = null;
   state.draft = copy;

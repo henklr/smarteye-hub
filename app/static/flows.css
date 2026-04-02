@@ -205,8 +205,8 @@ body.flowsPage {
 }
 
 .flowsPage .flowListActions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   margin-top: 10px;
   padding-top: 10px;
@@ -214,11 +214,13 @@ body.flowsPage {
 }
 
 .flowsPage .flowListActions .btn-compact {
+  width: 100%;
   min-height: 30px;
   padding: 6px 10px;
   font-size: 11px;
   line-height: 1;
   border-radius: 10px;
+  justify-content: center;
 }
 
 .flowsPage .miniPill {
@@ -1185,6 +1187,10 @@ body.flowsPage {
 
   .flowsPage .inspectorActionGrid,
   .flowsPage .inspectorActionGrid--twoUp {
+    grid-template-columns: 1fr;
+  }
+
+  .flowsPage .flowListActions {
     grid-template-columns: 1fr;
   }
 }
