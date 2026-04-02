@@ -190,7 +190,7 @@ function sourceOptionsHtml(selected = "literal", allowPhysicalInput = false) {
   ];
 
   if (allowPhysicalInput) {
-    options.push(["physical_input", "Physical input"]);
+    options.push(["physical_input", "Physical I/O"]);
   }
 
   return options
@@ -249,6 +249,17 @@ function physicalInputKindOptionsHtml(selected = "digital") {
   return [
     ["digital", "Digital input"],
     ["analog", "Analog input"],
+  ]
+    .map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`)
+    .join("");
+}
+
+function physicalValueSourceKindOptionsHtml(selected = "digital") {
+  return [
+    ["digital", "Digital input"],
+    ["analog", "Analog input"],
+    ["output", "Output"],
+    ["relay", "Relay"],
   ]
     .map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`)
     .join("");
@@ -1319,18 +1330,19 @@ function renderSetVariableValueControl(cfg) {
   if (valueSource === "physical_input") {
     const inputKind = String(cfg.value_input_kind || "digital").trim().toLowerCase();
     const channel = normalizePhysicalChannelSelection(inputKind, cfg.value_channel || "1");
+    const currentLabel = inputKind === "analog" ? "Current value" : "Current state";
 
     return `
       <div class="fieldGrid">
         <div>
-          <label>Input type</label>
-          <select id="cfg_value_input_kind">${physicalInputKindOptionsHtml(inputKind)}</select>
+          <label>Physical source</label>
+          <select id="cfg_value_input_kind">${physicalValueSourceKindOptionsHtml(inputKind)}</select>
         </div>
         <div>
-          <label>Input</label>
+          <label>Channel</label>
           <select id="cfg_value_channel">${physicalInputChannelOptionsHtml(inputKind, channel)}</select>
         </div>
-        <div class="full inlineMeta">Current input: ${escapeHtml(physicalLabel(inputKind, channel))} · ${escapeHtml(physicalLiveValueText(inputKind, channel))}</div>
+        ${renderPhysicalLiveField(inputKind, channel, currentLabel)}
       </div>
     `;
   }
@@ -2237,6 +2249,13 @@ function refreshPhysicalInspectorLiveValues() {
       kind = cfg.input_kind || "digital";
       channel = cfg.channel || "1";
       labelText = "Current value";
+      break;
+    case "operator.set_variable":
+      if (cfg.value_source === "physical_input") {
+        kind = cfg.value_input_kind || "digital";
+        channel = cfg.value_channel || "1";
+        labelText = kind === "analog" ? "Current value" : "Current state";
+      }
       break;
     case "trigger.digital_input_changed":
       kind = "digital";

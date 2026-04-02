@@ -330,6 +330,23 @@ def read_physical_input(kind: str, channel: int) -> Dict[str, Any]:
     return entry
 
 
+def read_physical_value(kind: str, channel: int) -> Dict[str, Any]:
+    normalized = str(kind or "").strip().lower()
+    if normalized not in {"digital", "analog", "output", "relay"}:
+        raise ValueError(f"Unsupported physical I/O kind: {kind}")
+
+    snapshot = refresh_physical_io_state()
+    if not snapshot.get("available"):
+        raise RuntimeError(snapshot.get("error") or "Physical I/O is unavailable")
+
+    entry = _find_entry(snapshot, normalized, int(channel))
+    if entry is None:
+        raise ValueError(f"Physical {normalized} channel {channel} is unavailable")
+
+    entry["updated_at"] = snapshot.get("updated_at")
+    return entry
+
+
 def _cancel_output_timer(channel: int) -> None:
     with _output_timer_lock:
         timer = _output_timers.pop(channel, None)

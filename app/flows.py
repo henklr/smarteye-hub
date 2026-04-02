@@ -23,6 +23,7 @@ from physical_io import (
     physical_io_catalog,
     physical_io_state,
     read_physical_input,
+    read_physical_value,
 )
 
 
@@ -875,7 +876,7 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
             allow_physical_input=True,
         )
         cfg["value"] = str(cfg.get("value") or "").strip()
-        cfg["value_input_kind"] = _normalize_physical_input_kind(cfg.get("value_input_kind"))
+        cfg["value_input_kind"] = _normalize_physical_value_kind(cfg.get("value_input_kind"))
         cfg["value_channel"] = str(cfg.get("value_channel") or "1").strip() or "1"
         if not cfg["variable_key"]:
             raise HTTPException(status_code=400, detail="Set variable needs a variable key")
@@ -994,6 +995,11 @@ def _normalize_topic(value: Any) -> str:
 def _normalize_physical_input_kind(value: Any) -> str:
     kind = str(value or "digital").strip().lower()
     return kind if kind in {"digital", "analog"} else "digital"
+
+
+def _normalize_physical_value_kind(value: Any) -> str:
+    kind = str(value or "digital").strip().lower()
+    return kind if kind in {"digital", "analog", "output", "relay"} else "digital"
 
 
 def _normalize_physical_channel(value: Any, kind: str) -> str:
@@ -1483,10 +1489,10 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
             allow_physical_input=True,
         )
         if value_source == "physical_input":
-            input_kind = _normalize_physical_input_kind(cfg.get("value_input_kind"))
+            input_kind = _normalize_physical_value_kind(cfg.get("value_input_kind"))
             channel = _normalize_physical_channel(cfg.get("value_channel"), input_kind)
             try:
-                reading = read_physical_input(input_kind, int(channel))
+                reading = read_physical_value(input_kind, int(channel))
             except Exception as exc:
                 result["ok"] = False
                 result["error"] = str(exc)
