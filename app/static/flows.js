@@ -424,7 +424,7 @@ function displayNodeTitle(node) {
   const raw = String(node.label || "").trim();
 
   if (node.type === "condition.compare" && (!raw || raw === "Compare" || raw === "If")) {
-    return "If";
+    return "Compare";
   }
 
   return raw || "";
@@ -1960,7 +1960,7 @@ function renderNodeInspector(node) {
     case "condition.compare":
       body = `
         <div class="inspectorCard">
-          <div class="inspectorTitle">If condition</div>
+          <div class="inspectorTitle">Compare</div>
           <div class="inspectorHint">Checks a condition, then follows THEN when it passes or ELSE when it fails.</div>
           <div class="fieldGrid">
             <div class="full">
@@ -1968,11 +1968,11 @@ function renderNodeInspector(node) {
               <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
             </div>
             <div>
-              <label>If source</label>
+              <label>Compare source</label>
               <select id="cfg_left_source">${sourceOptionsHtml(cfg.left_source || "variable")}</select>
             </div>
             <div>
-              <label>If value / path</label>
+              <label>Compare value / path</label>
               <input id="cfg_left_value" value="${escapeHtml(cfg.left_value || "")}" placeholder="armed or extra.changed.IsMotion" list="variableKeysList" />
             </div>
             <div>
