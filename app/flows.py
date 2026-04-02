@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from physical_io import (
     activate_physical_output,
+    activate_physical_relay,
     physical_channels,
     physical_io_catalog,
     physical_io_state,
@@ -252,10 +253,10 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "type": "action.activate_physical_output",
         "category": "action",
         "label": "Activate physical output",
-        "description": "Turns an Automation HAT Mini output on, off, or pulses it for a number of seconds.",
+        "description": "Turns an Automation HAT Mini output or relay on, off, or pulses it for a number of seconds.",
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
-        "defaults": {"channel": "1", "mode": "pulse", "pulse_seconds": 2, "name": ""},
+        "defaults": {"target_kind": "output", "channel": "1", "mode": "pulse", "pulse_seconds": 2, "name": ""},
     },
     {
         "type": "action.log_message",
@@ -759,9 +760,10 @@ def _normalize_node_payload(raw: Dict[str, Any], variable_keys: set[str]) -> Dic
     raw_label = str(raw.get("label") or "").strip()
     raw_config = deepcopy(raw.get("config") or {})
 
-    if node_type == "action.activate_output_relay":
+    if node_type in {"action.activate_output_relay", "action.activate_physical_relay"}:
         node_type = "action.activate_physical_output"
-        if raw_label == "Activate output relay":
+        raw_config.setdefault("target_kind", "relay")
+        if raw_label in {"Activate output relay", "Activate physical relay"}:
             raw_label = ""
         if "pulse_seconds" not in raw_config and "activation_seconds" in raw_config:
             raw_config["pulse_seconds"] = raw_config.get("activation_seconds")
@@ -916,16 +918,21 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
         return cfg
 
     if node_type == "action.activate_physical_output":
-        cfg["channel"] = _normalize_physical_channel(cfg.get("channel"), "output")
+        physical_kind = str(cfg.get("target_kind") or "output").strip().lower()
+        if physical_kind not in {"output", "relay"}:
+            physical_kind = "output"
+        cfg["target_kind"] = physical_kind
+        label = "Physical output" if physical_kind == "output" else "Physical relay"
+        cfg["channel"] = _normalize_physical_channel(cfg.get("channel"), physical_kind)
         cfg["mode"] = str(cfg.get("mode") or "pulse").strip().lower()
         if cfg["mode"] not in {"on", "off", "pulse"}:
-            raise HTTPException(status_code=400, detail="Physical output mode must be on, off or pulse")
+            raise HTTPException(status_code=400, detail=f"{label} mode must be on, off or pulse")
         try:
             cfg["pulse_seconds"] = float(cfg.get("pulse_seconds") or 2)
         except Exception:
-            raise HTTPException(status_code=400, detail="Physical output pulse_seconds must be numeric")
+            raise HTTPException(status_code=400, detail=f"{label} pulse_seconds must be numeric")
         if cfg["mode"] == "pulse" and cfg["pulse_seconds"] <= 0:
-            raise HTTPException(status_code=400, detail="Physical output pulse_seconds must be greater than 0")
+            raise HTTPException(status_code=400, detail=f"{label} pulse_seconds must be greater than 0")
         return cfg
 
     if node_type == "action.log_message":
@@ -994,6 +1001,7 @@ def _normalize_physical_channel(value: Any, kind: str) -> str:
         "digital": "digital input",
         "analog": "analog input",
         "output": "output",
+        "relay": "relay",
     }.get(kind, kind)
 
     try:
@@ -1572,16 +1580,24 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         return result
 
     if node_type == "action.activate_physical_output":
-        channel = _normalize_physical_channel(cfg.get("channel"), "output")
+        physical_kind = str(cfg.get("target_kind") or "output").strip().lower()
+        if physical_kind not in {"output", "relay"}:
+            physical_kind = "output"
+        channel = _normalize_physical_channel(cfg.get("channel"), physical_kind)
         mode = str(cfg.get("mode") or "pulse").strip().lower()
         pulse_seconds = float(cfg.get("pulse_seconds") or 2)
         try:
-            output_result = activate_physical_output(int(channel), mode, pulse_seconds)
+            switch_result = (
+                activate_physical_output(int(channel), mode, pulse_seconds)
+                if physical_kind == "output"
+                else activate_physical_relay(int(channel), mode, pulse_seconds)
+            )
             result["channel"] = channel
             result["mode"] = mode
             result["pulse_seconds"] = pulse_seconds
-            result["output"] = output_result
-            result["message"] = output_result.get("message")
+            result["target_kind"] = physical_kind
+            result[physical_kind] = switch_result
+            result["message"] = switch_result.get("message")
         except Exception as exc:
             result["ok"] = False
             result["error"] = str(exc)

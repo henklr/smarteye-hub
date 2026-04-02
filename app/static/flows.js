@@ -43,6 +43,7 @@ const DEFAULT_PHYSICAL_IO = {
   digital_inputs: [1, 2, 3].map((channel) => ({ kind: "digital", channel: String(channel), label: `Digital input ${channel}` })),
   analog_inputs: [1, 2, 3].map((channel) => ({ kind: "analog", channel: String(channel), label: `Analog input ${channel}` })),
   outputs: [1, 2, 3].map((channel) => ({ kind: "output", channel: String(channel), label: `Output ${channel}` })),
+  relays: [1].map((channel) => ({ kind: "relay", channel: String(channel), label: `Relay ${channel}` })),
 };
 
 async function api(path, opts = {}) {
@@ -230,8 +231,16 @@ function physicalCatalog() {
   return state.catalog?.physical_io || DEFAULT_PHYSICAL_IO;
 }
 
+function physicalStateKey(kind) {
+  const normalized = String(kind || "digital").trim().toLowerCase();
+  if (normalized === "analog") return "analog_inputs";
+  if (normalized === "output") return "outputs";
+  if (normalized === "relay") return "relays";
+  return "digital_inputs";
+}
+
 function physicalChannels(kind) {
-  const key = kind === "analog" ? "analog_inputs" : kind === "output" ? "outputs" : "digital_inputs";
+  const key = physicalStateKey(kind);
   const items = physicalCatalog()?.[key];
   return Array.isArray(items) && items.length ? items : DEFAULT_PHYSICAL_IO[key];
 }
@@ -259,6 +268,19 @@ function physicalOutputOptionsHtml(selected = "") {
   return physicalChannelOptionsHtml("output", selected);
 }
 
+function physicalRelayOptionsHtml(selected = "") {
+  return physicalChannelOptionsHtml("relay", selected);
+}
+
+function physicalTargetKindOptionsHtml(selected = "output") {
+  return [
+    ["output", "Output"],
+    ["relay", "Relay"],
+  ]
+    .map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`)
+    .join("");
+}
+
 function normalizePhysicalChannelSelection(kind, value) {
   const options = physicalChannels(kind);
   if (!options.length) return "";
@@ -268,7 +290,7 @@ function normalizePhysicalChannelSelection(kind, value) {
 }
 
 function physicalEntry(kind, channel) {
-  const key = kind === "analog" ? "analog_inputs" : kind === "output" ? "outputs" : "digital_inputs";
+  const key = physicalStateKey(kind);
   const items = state.physicalState?.[key];
   if (!Array.isArray(items)) return null;
   return items.find((item) => String(item.channel) === String(channel)) || null;
@@ -291,7 +313,7 @@ function formatPhysicalValue(kind, value) {
     return Number.isFinite(number) ? `${number.toFixed(2)} V` : String(value);
   }
 
-  if (kind === "output") {
+  if (kind === "output" || kind === "relay") {
     return Number(value) ? "On" : "Off";
   }
 
@@ -482,8 +504,14 @@ function nodePreview(node) {
     case "action.send_http_request":
       return `${cfg.method || "POST"} ${cfg.url || ""}`;
 
-    case "action.activate_physical_output":
-      return `${physicalLabel("output", cfg.channel || "1")} · ${cfg.mode || "pulse"}${cfg.mode === "pulse" ? ` for ${cfg.pulse_seconds || 0}s` : ""} · now ${physicalLiveValueText("output", cfg.channel || "1")}`;
+    case "action.activate_physical_output": {
+      const targetKind = String(cfg.target_kind || "output").trim().toLowerCase() === "relay" ? "relay" : "output";
+      const channel = cfg.channel || "1";
+      return `${physicalLabel(targetKind, channel)} · ${cfg.mode || "pulse"}${cfg.mode === "pulse" ? ` for ${cfg.pulse_seconds || 0}s` : ""} · now ${physicalLiveValueText(targetKind, channel)}`;
+    }
+
+    case "action.activate_physical_relay":
+      return `${physicalLabel("relay", cfg.channel || "1")} · ${cfg.mode || "pulse"}${cfg.mode === "pulse" ? ` for ${cfg.pulse_seconds || 0}s` : ""} · now ${physicalLiveValueText("relay", cfg.channel || "1")}`;
 
     case "action.log_message":
       return cfg.message || "Log message";
@@ -1148,6 +1176,60 @@ function renderPhysicalLiveField(kind, channel, label = "Current value") {
     </div>
     <div class="full inlineMeta" id="physicalCurrentMeta">${escapeHtml(physicalMetaText())}</div>
   `;
+}
+
+function renderPhysicalSwitchActionInspector({
+  title,
+  targetKind = "output",
+  channel,
+  name,
+  mode = "pulse",
+  pulseSeconds = 2,
+} = {}) {
+  const selectedKind = targetKind === "relay" ? "relay" : "output";
+  const selectedChannel = normalizePhysicalChannelSelection(selectedKind, channel || "1");
+  const options = selectedKind === "relay"
+    ? physicalRelayOptionsHtml(selectedChannel)
+    : physicalOutputOptionsHtml(selectedChannel);
+  const selectionLabel = selectedKind === "relay" ? "Relay" : "Output";
+  const currentLabel = selectedKind === "relay" ? "Current relay state" : "Current output state";
+
+  return `
+    <div class="inspectorCard">
+      <div class="inspectorTitle">${escapeHtml(title)}</div>
+      <div class="fieldGrid">
+        <div class="full">
+          <label>Name</label>
+          <input id="cfg_name" value="${escapeHtml(name || "")}" placeholder="Optional label" />
+        </div>
+        <div>
+          <label>Target type</label>
+          <select id="cfg_target_kind">${physicalTargetKindOptionsHtml(selectedKind)}</select>
+        </div>
+        <div>
+          <label>${escapeHtml(selectionLabel)}</label>
+          <select id="cfg_channel">${options}</select>
+        </div>
+        <div>
+          <label>Mode</label>
+          <select id="cfg_mode">
+            <option value="on" ${mode === "on" ? "selected" : ""}>On</option>
+            <option value="off" ${mode === "off" ? "selected" : ""}>Off</option>
+            <option value="pulse" ${mode === "pulse" ? "selected" : ""}>Pulse</option>
+          </select>
+        </div>
+        <div>
+          <label>Pulse seconds</label>
+          <input id="cfg_pulse_seconds" type="number" min="0.1" step="0.1" value="${escapeHtml(cfgValueOrDefault(pulseSeconds, 2))}" />
+        </div>
+        ${renderPhysicalLiveField(selectedKind, selectedChannel, currentLabel)}
+      </div>
+    </div>
+  `;
+}
+
+function cfgValueOrDefault(value, fallback) {
+  return value == null || value === "" ? fallback : value;
 }
 
 function renderFlowInspector(flow) {
@@ -1820,34 +1902,17 @@ function renderNodeInspector(node) {
       break;
 
     case "action.activate_physical_output":
-      body = `
-        <div class="inspectorCard">
-          <div class="inspectorTitle">Physical output</div>
-          <div class="fieldGrid">
-            <div class="full">
-              <label>Name</label>
-              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
-            </div>
-            <div>
-              <label>Output</label>
-              <select id="cfg_channel">${physicalOutputOptionsHtml(cfg.channel || "1")}</select>
-            </div>
-            <div>
-              <label>Mode</label>
-              <select id="cfg_mode">
-                <option value="on" ${cfg.mode === "on" ? "selected" : ""}>On</option>
-                <option value="off" ${cfg.mode === "off" ? "selected" : ""}>Off</option>
-                <option value="pulse" ${cfg.mode === "pulse" ? "selected" : ""}>Pulse</option>
-              </select>
-            </div>
-            <div>
-              <label>Pulse seconds</label>
-              <input id="cfg_pulse_seconds" type="number" min="0.1" step="0.1" value="${escapeHtml(cfg.pulse_seconds ?? 2)}" />
-            </div>
-            ${renderPhysicalLiveField("output", cfg.channel || "1", "Current output state")}
-          </div>
-        </div>
-      `;
+    case "action.activate_physical_relay":
+      body = renderPhysicalSwitchActionInspector({
+        title: "Physical output",
+        targetKind: node.type === "action.activate_physical_relay"
+          ? "relay"
+          : (String(cfg.target_kind || "output").trim().toLowerCase() === "relay" ? "relay" : "output"),
+        channel: cfg.channel || "1",
+        name: cfg.name || "",
+        mode: cfg.mode || "pulse",
+        pulseSeconds: cfg.pulse_seconds ?? 2,
+      });
       break;
 
     case "action.log_message":
@@ -1931,6 +1996,13 @@ function bindNodeInspector(node) {
 
   if (node.type === "operator.physical_input") {
     document.getElementById("cfg_input_kind")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+  }
+
+  if (node.type === "action.activate_physical_output" || node.type === "action.activate_physical_relay") {
+    document.getElementById("cfg_target_kind")?.addEventListener("change", () => {
       applyNodeInspector(node);
       renderInspector();
     });
@@ -2032,7 +2104,9 @@ function applyNodeInspector(node) {
       set("body");
       break;
     case "action.activate_physical_output":
+    case "action.activate_physical_relay":
       set("name");
+      set("target_kind");
       set("channel");
       set("mode");
       set("pulse_seconds");
@@ -2066,7 +2140,13 @@ function applyNodeInspector(node) {
   }
 
   if (node.type === "action.activate_physical_output") {
-    cfg.channel = normalizePhysicalChannelSelection("output", cfg.channel || "1");
+    cfg.target_kind = String(cfg.target_kind || "output").trim().toLowerCase() === "relay" ? "relay" : "output";
+    cfg.channel = normalizePhysicalChannelSelection(cfg.target_kind, cfg.channel || "1");
+  }
+
+  if (node.type === "action.activate_physical_relay") {
+    cfg.target_kind = "relay";
+    cfg.channel = normalizePhysicalChannelSelection("relay", cfg.channel || "1");
   }
 
   markDirty();
@@ -2170,9 +2250,9 @@ function refreshPhysicalInspectorLiveValues() {
       labelText = "Current voltage";
       break;
     case "action.activate_physical_output":
-      kind = "output";
+      kind = String(cfg.target_kind || "output").trim().toLowerCase() === "relay" ? "relay" : "output";
       channel = cfg.channel || "1";
-      labelText = "Current output state";
+      labelText = kind === "relay" ? "Current relay state" : "Current output state";
       break;
     default:
       break;

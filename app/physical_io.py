@@ -20,6 +20,7 @@ PHYSICAL_INPUT_KINDS = {"digital", "analog"}
 PHYSICAL_DIGITAL_CHANNELS: Tuple[int, ...] = (1, 2, 3)
 PHYSICAL_ANALOG_CHANNELS: Tuple[int, ...] = (1, 2, 3)
 PHYSICAL_OUTPUT_CHANNELS: Tuple[int, ...] = (1, 2, 3)
+PHYSICAL_RELAY_CHANNELS: Tuple[int, ...] = (1,)
 
 _PHYSICAL_IO_POLL_SEC = max(0.1, float(os.getenv("PHYSICAL_IO_POLL_SEC", "0.5")))
 _ANALOG_PRECISION = 2
@@ -28,10 +29,12 @@ _GPIO_MODEL_PATH = "/sys/firmware/devicetree/base/model"
 _hardware_lock = threading.RLock()
 _state_lock = threading.RLock()
 _output_timer_lock = threading.RLock()
+_relay_timer_lock = threading.RLock()
 
 _monitor_stop = threading.Event()
 _monitor_thread: Optional[threading.Thread] = None
 _output_timers: Dict[int, threading.Timer] = {}
+_relay_timers: Dict[int, threading.Timer] = {}
 
 
 def _utc_now_iso() -> str:
@@ -50,6 +53,8 @@ def physical_channels(kind: str) -> Tuple[int, ...]:
         return PHYSICAL_ANALOG_CHANNELS
     if normalized == "output":
         return PHYSICAL_OUTPUT_CHANNELS
+    if normalized == "relay":
+        return PHYSICAL_RELAY_CHANNELS
     return ()
 
 
@@ -85,6 +90,7 @@ def _blank_state(error: Optional[str]) -> Dict[str, Any]:
         "digital_inputs": _blank_entries("digital", PHYSICAL_DIGITAL_CHANNELS, "Digital input"),
         "analog_inputs": _blank_entries("analog", PHYSICAL_ANALOG_CHANNELS, "Analog input"),
         "outputs": _blank_entries("output", PHYSICAL_OUTPUT_CHANNELS, "Output"),
+        "relays": _blank_entries("relay", PHYSICAL_RELAY_CHANNELS, "Relay"),
     }
 
 
@@ -146,6 +152,7 @@ def physical_io_catalog() -> Dict[str, Any]:
         "digital_inputs": _catalog_entries("digital", PHYSICAL_DIGITAL_CHANNELS, "Digital input"),
         "analog_inputs": _catalog_entries("analog", PHYSICAL_ANALOG_CHANNELS, "Analog input"),
         "outputs": _catalog_entries("output", PHYSICAL_OUTPUT_CHANNELS, "Output"),
+        "relays": _catalog_entries("relay", PHYSICAL_RELAY_CHANNELS, "Relay"),
     }
 
 
@@ -193,6 +200,20 @@ def _write_output_channel(channel: int, enabled: bool) -> None:
     raise RuntimeError(f"automationhat.output[{channel - 1}] cannot be controlled")
 
 
+def _write_relay_channel(channel: int, enabled: bool) -> None:
+    obj = _group_object("relay", channel)
+    if enabled and hasattr(obj, "on"):
+        obj.on()
+        return
+    if (not enabled) and hasattr(obj, "off"):
+        obj.off()
+        return
+    if hasattr(obj, "write"):
+        obj.write(1 if enabled else 0)
+        return
+    raise RuntimeError(f"automationhat.relay[{channel - 1}] cannot be controlled")
+
+
 def _build_state_snapshot() -> Dict[str, Any]:
     snapshot = _blank_state(_AUTOMATIONHAT_IMPORT_ERROR or None)
     snapshot["updated_at"] = _utc_now_iso()
@@ -234,6 +255,15 @@ def _build_state_snapshot() -> Dict[str, Any]:
                 }
                 for channel in PHYSICAL_OUTPUT_CHANNELS
             ]
+            snapshot["relays"] = [
+                {
+                    "kind": "relay",
+                    "channel": str(channel),
+                    "label": f"Relay {channel}",
+                    "value": _read_bool_channel("relay", channel),
+                }
+                for channel in PHYSICAL_RELAY_CHANNELS
+            ]
         snapshot["available"] = True
         snapshot["error"] = None
     except Exception as exc:
@@ -269,6 +299,8 @@ def _group_key(kind: str) -> str:
         return "analog_inputs"
     if normalized == "output":
         return "outputs"
+    if normalized == "relay":
+        return "relays"
     raise ValueError(f"Unsupported physical I/O kind: {kind}")
 
 
@@ -324,6 +356,32 @@ def _finish_output_pulse(channel: int) -> None:
         pass
 
 
+def _cancel_relay_timer(channel: int) -> None:
+    with _relay_timer_lock:
+        timer = _relay_timers.pop(channel, None)
+    if timer is not None:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+
+
+def _finish_relay_pulse(channel: int) -> None:
+    with _relay_timer_lock:
+        _relay_timers.pop(channel, None)
+
+    try:
+        with _hardware_lock:
+            _write_relay_channel(channel, False)
+    except Exception:
+        pass
+
+    try:
+        refresh_physical_io_state()
+    except Exception:
+        pass
+
+
 def activate_physical_output(channel: int, mode: str, pulse_seconds: float) -> Dict[str, Any]:
     normalized_mode = str(mode or "").strip().lower()
     if normalized_mode not in {"on", "off", "pulse"}:
@@ -360,6 +418,48 @@ def activate_physical_output(channel: int, mode: str, pulse_seconds: float) -> D
         "state": entry,
         "updated_at": snapshot.get("updated_at"),
         "message": f"Output {channel} {normalized_mode}{f' for {float(pulse_seconds):.2f}s' if normalized_mode == 'pulse' else ''}",
+    }
+    if normalized_mode == "pulse":
+        result["scheduled_off_at"] = _future_iso(float(pulse_seconds))
+    return result
+
+
+def activate_physical_relay(channel: int, mode: str, pulse_seconds: float) -> Dict[str, Any]:
+    normalized_mode = str(mode or "").strip().lower()
+    if normalized_mode not in {"on", "off", "pulse"}:
+        raise ValueError("Physical relay mode must be on, off or pulse")
+
+    channel = int(channel)
+    if normalized_mode == "pulse" and float(pulse_seconds) <= 0:
+        raise ValueError("Physical relay pulse_seconds must be greater than 0")
+
+    _cancel_relay_timer(channel)
+
+    with _hardware_lock:
+        if normalized_mode == "on":
+            _write_relay_channel(channel, True)
+        elif normalized_mode == "off":
+            _write_relay_channel(channel, False)
+        else:
+            _write_relay_channel(channel, True)
+
+    if normalized_mode == "pulse":
+        timer = threading.Timer(float(pulse_seconds), _finish_relay_pulse, args=(channel,))
+        timer.daemon = True
+        with _relay_timer_lock:
+            _relay_timers[channel] = timer
+        timer.start()
+
+    snapshot = refresh_physical_io_state()
+    entry = _find_entry(snapshot, "relay", channel)
+
+    result = {
+        "channel": str(channel),
+        "mode": normalized_mode,
+        "pulse_seconds": float(pulse_seconds),
+        "state": entry,
+        "updated_at": snapshot.get("updated_at"),
+        "message": f"Relay {channel} {normalized_mode}{f' for {float(pulse_seconds):.2f}s' if normalized_mode == 'pulse' else ''}",
     }
     if normalized_mode == "pulse":
         result["scheduled_off_at"] = _future_iso(float(pulse_seconds))
@@ -473,6 +573,10 @@ def stop_physical_io_monitor() -> None:
         timers = list(_output_timers.items())
         _output_timers.clear()
 
+    with _relay_timer_lock:
+        relay_timers = list(_relay_timers.items())
+        _relay_timers.clear()
+
     for channel, timer in timers:
         try:
             timer.cancel()
@@ -482,6 +586,18 @@ def stop_physical_io_monitor() -> None:
             if automationhat is not None:
                 with _hardware_lock:
                     _write_output_channel(channel, False)
+        except Exception:
+            pass
+
+    for channel, timer in relay_timers:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+        try:
+            if automationhat is not None:
+                with _hardware_lock:
+                    _write_relay_channel(channel, False)
         except Exception:
             pass
 
