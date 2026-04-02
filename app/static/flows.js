@@ -1509,29 +1509,7 @@ function publicVariablesDefinitionFingerprint(items = []) {
   );
 }
 
-function publicVariablesMetaText() {
-  const count = currentPublicVariables().length;
-  const base = count
-    ? `${count} shared variable${count === 1 ? "" : "s"}`
-    : "No shared variables";
-
-  if (state.publicVariablesDirty) {
-    return `${base} · unsaved changes`;
-  }
-
-  const updated = formatPhysicalUpdatedTime(state.publicVariablesUpdatedAt);
-  if (updated) {
-    return `${base} · updated ${updated}`;
-  }
-
-  return `${base} · available to every flow`;
-}
-
 function syncPublicVariablesHeader() {
-  if (el("publicVariablesMeta")) {
-    el("publicVariablesMeta").textContent = publicVariablesMetaText();
-  }
-
   if (el("btnSavePublicVariables")) {
     el("btnSavePublicVariables").disabled = !state.publicVariablesDirty;
   }
