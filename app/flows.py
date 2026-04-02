@@ -337,7 +337,7 @@ def save_public_variables(req: PublicVariablesIn) -> Dict[str, Any]:
     with _storage_lock:
         _save_public_variable_definitions(items)
 
-    _reconcile_public_variable_runtime_values(items)
+    _reconcile_public_variable_runtime_values(items, prefer_definition_values=True)
     return {"ok": True, **_public_variables_response()}
 
 
@@ -1198,7 +1198,10 @@ def _public_variables_response() -> Dict[str, Any]:
 
 
 
-def _reconcile_public_variable_runtime_values(items: Optional[List[Dict[str, Any]]] = None) -> None:
+def _reconcile_public_variable_runtime_values(
+    items: Optional[List[Dict[str, Any]]] = None,
+    prefer_definition_values: bool = False,
+) -> None:
     definitions = items if items is not None else _load_public_variable_definitions()
 
     with _runtime_lock:
@@ -1211,7 +1214,8 @@ def _reconcile_public_variable_runtime_values(items: Optional[List[Dict[str, Any
         merged: Dict[str, Any] = {}
         for item in definitions:
             key = item["key"]
-            merged[key] = _coerce_runtime_value(saved.get(key, item.get("value")), item["type"])
+            source_value = item.get("value") if prefer_definition_values else saved.get(key, item.get("value"))
+            merged[key] = _coerce_runtime_value(source_value, item["type"])
 
         public_state["values"] = merged
         public_state["updated_at"] = _utc_now_iso()

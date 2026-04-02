@@ -751,6 +751,44 @@ body.flowsPage {
   background: rgba(255, 255, 255, 0.02);
 }
 
+.flowsPage .varCard.is-preview {
+  appearance: none;
+  width: 100%;
+  padding: 12px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.03);
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.flowsPage .varCard.is-preview:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--stroke-2);
+}
+
+.flowsPage .varCard.is-preview:focus-visible {
+  outline: 2px solid rgba(198, 161, 75, 0.38);
+  outline-offset: 2px;
+}
+
+.flowsPage .varCard.is-preview.active {
+  border-color: rgba(198, 161, 75, 0.35);
+  box-shadow: 0 0 0 3px rgba(198, 161, 75, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.flowsPage .varCard.is-preview .varCardTop {
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
 .flowsPage .variableRowHead,
 .flowsPage .varCardTop {
   display: flex;
@@ -766,10 +804,25 @@ body.flowsPage {
   font-weight: 900;
 }
 
-.flowsPage .inlineMeta,
-.flowsPage .varCardType {
+.flowsPage .varCard.is-preview .varCardName {
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.flowsPage .inlineMeta {
   font-size: 11px;
   color: var(--muted);
+}
+
+.flowsPage .varCard.is-preview .chipRow {
+  margin-top: 8px;
+}
+
+.flowsPage .varCard.is-preview .miniPill {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .flowsPage .testResult {
@@ -977,6 +1030,11 @@ body.flowsPage {
 .flowsPage .rowSplit > .btn {
   width: auto;
   flex: 0 0 auto;
+}
+
+.flowsPage .inspectorVariableActions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
 }
 
 .flowsPage .inspectorCard .fieldGrid {

@@ -20,6 +20,7 @@ const state = {
   selectedSavedFlowId: null,
   selectedNodeId: null,
   selectedEdgeId: null,
+  selectedPublicVariableIndex: null,
   dirty: false,
   connecting: null,
   connectionCursor: null,
@@ -131,6 +132,38 @@ function currentPublicVariables() {
   return state.publicVariables || [];
 }
 
+function currentSelectedPublicVariable() {
+  const idx = state.selectedPublicVariableIndex;
+  if (!Number.isInteger(idx) || idx < 0) return null;
+  return currentPublicVariables()[idx] || null;
+}
+
+function clearEditorSelection() {
+  state.selectedNodeId = null;
+  state.selectedEdgeId = null;
+  state.selectedPublicVariableIndex = null;
+}
+
+function selectNode(nodeId) {
+  state.selectedNodeId = nodeId;
+  state.selectedEdgeId = null;
+  state.selectedPublicVariableIndex = null;
+}
+
+function selectEdge(edgeId) {
+  state.selectedEdgeId = edgeId;
+  state.selectedNodeId = null;
+  state.selectedPublicVariableIndex = null;
+}
+
+function selectPublicVariable(index) {
+  state.selectedPublicVariableIndex = Number.isInteger(index) && index >= 0 ? index : null;
+  state.selectedNodeId = null;
+  state.selectedEdgeId = null;
+  state.connecting = null;
+  state.connectionCursor = null;
+}
+
 function normalizeVariableType(value) {
   const type = String(value || "string").trim().toLowerCase();
   return ["string", "number", "boolean", "json"].includes(type) ? type : "string";
@@ -144,6 +177,18 @@ function parseBooleanLike(value) {
 function publicVariableByKey(key) {
   const wanted = String(key || "").trim();
   return currentPublicVariables().find((item) => String(item.key || "").trim() === wanted) || null;
+}
+
+function normalizePublicVariableRecord(item = {}) {
+  const normalized = { ...item };
+  if (Object.prototype.hasOwnProperty.call(normalized, "current_value")) {
+    normalized.value = normalized.current_value;
+  }
+  return normalized;
+}
+
+function normalizePublicVariableRecords(items = []) {
+  return (items || []).map((item) => normalizePublicVariableRecord(item));
 }
 
 function makeId(prefix) {
@@ -705,8 +750,7 @@ function renderFlowList() {
 
       state.selectedSavedFlowId = flow.id;
       state.draft = deepClone(flow);
-      state.selectedNodeId = null;
-      state.selectedEdgeId = null;
+      clearEditorSelection();
       state.connecting = null;
       state.connectionCursor = null;
 
@@ -787,8 +831,7 @@ function addNodeFromPalette(type) {
   };
 
   flow.nodes.push(node);
-  state.selectedNodeId = node.id;
-  state.selectedEdgeId = null;
+  selectNode(node.id);
 
   markDirty();
   renderAll();
@@ -870,8 +913,7 @@ function renderCanvas() {
       if (ev.target.closest(".flowPort")) return;
       if (ev.target.closest(".flowNodeRunBtn")) return;
 
-      state.selectedNodeId = nodeId;
-      state.selectedEdgeId = null;
+      selectNode(nodeId);
       renderInspector();
       renderCanvas();
       drawEdges();
@@ -885,8 +927,7 @@ function renderCanvas() {
       const node = currentFlow().nodes.find((item) => item.id === nodeId);
       if (!node) return;
 
-      state.selectedNodeId = nodeId;
-      state.selectedEdgeId = null;
+      selectNode(nodeId);
       state.drag = {
         nodeId,
         startX: ev.clientX,
@@ -923,8 +964,7 @@ function renderCanvas() {
       if (!state.connecting) {
         state.connecting = { nodeId, handle, kind };
         state.connectionCursor = cursor;
-        state.selectedNodeId = nodeId;
-        state.selectedEdgeId = null;
+        selectNode(nodeId);
         renderAll();
 
         const uiHandle = portUiLabel(nodeId, kind, handle);
@@ -951,8 +991,7 @@ function renderCanvas() {
       if (state.connecting.kind === kind) {
         state.connecting = { nodeId, handle, kind };
         state.connectionCursor = cursor;
-        state.selectedNodeId = nodeId;
-        state.selectedEdgeId = null;
+        selectNode(nodeId);
         renderAll();
 
         const uiHandle = portUiLabel(nodeId, kind, handle);
@@ -1122,6 +1161,8 @@ function renderInspector() {
 
   if (!box) return;
 
+  setPublicVariablesInteracting(false);
+
   if (!flow) {
     box.innerHTML = `<div class="inspectorHint">No flow selected.</div>`;
     return;
@@ -1174,6 +1215,24 @@ function renderInspector() {
 
     box.innerHTML = renderNodeInspector(node);
     bindNodeInspector(node);
+    return;
+  }
+
+  if (state.selectedPublicVariableIndex != null) {
+    const variable = currentSelectedPublicVariable();
+    if (!variable) {
+      state.selectedPublicVariableIndex = null;
+      renderInspector();
+      return;
+    }
+
+    if (el("inspectorSubtext")) {
+      el("inspectorSubtext").textContent = `${flowVariableLabel(variable.key || `var_${state.selectedPublicVariableIndex + 1}`)} settings`;
+    }
+
+    box.innerHTML = renderPublicVariableInspector(variable, state.selectedPublicVariableIndex);
+    bindPublicVariableInspector(state.selectedPublicVariableIndex);
+    refreshPublicVariableRuntimeUi();
     return;
   }
 
@@ -1266,6 +1325,68 @@ function renderFlowInspector(flow) {
         </div>
       </div>
     </div>
+    ${renderPublicVariablesInspector()}
+  `;
+}
+
+function renderPublicVariablesInspector() {
+  const hasVariables = currentPublicVariables().length > 0;
+
+  return `
+    <div class="inspectorCard">
+      <div class="rowSplit">
+        <div>
+          <div class="inspectorTitle" style="margin-bottom:4px;">Shared variables</div>
+          <div class="inspectorHint" id="publicVariablesInspectorMeta">${escapeHtml(publicVariablesMetaText())}</div>
+        </div>
+        <div class="row2 mt-0 inspectorVariableActions">
+          <button class="btn btn-primary" id="btnSavePublicVariables" type="button" ${state.publicVariablesDirty ? "" : "disabled"}>Save</button>
+        </div>
+      </div>
+      <div class="inspectorHint mt-10">
+        ${hasVariables ? "Select a variable from the sidebar preview to edit it here." : "Create a shared variable to use it across flows."}
+      </div>
+    </div>
+  `;
+}
+
+function renderPublicVariableInspector(variable, index) {
+  const variableType = normalizeVariableType(variable.type);
+  const variableValue = variable.current_value ?? variable.value;
+
+  return `
+    <div class="inspectorCard">
+      <div class="rowSplit">
+        <div>
+          <div class="inspectorTitle publicVariableInspectorName" style="margin-bottom:4px;">${escapeHtml(variable.key || `var_${index + 1}`)}</div>
+          <div class="inspectorHint">Shared variable</div>
+        </div>
+        <div class="row2 mt-0 inspectorVariableActions">
+          <button class="btn btn-primary" id="btnSavePublicVariables" type="button" ${state.publicVariablesDirty ? "" : "disabled"}>Save</button>
+          <button class="btn btn-danger" id="btnRemovePublicVariable" type="button">Delete</button>
+        </div>
+      </div>
+      <div id="publicVariableInspectorBody" class="fieldGrid mt-10" data-public-variable-index="${index}">
+        <div>
+          <label>Key</label>
+          <input id="publicVariableKeyInput" value="${escapeHtml(variable.key || "")}" placeholder="var_1" />
+        </div>
+        <div>
+          <label>Type</label>
+          <select id="publicVariableTypeInput">${variableTypeOptionsHtml(variableType)}</select>
+        </div>
+        <div>
+          <label>Value</label>
+          ${renderVariableValueEditor({
+            inputId: "publicVariableValueInput",
+            value: variableValue,
+            type: variableType,
+            placeholder: variableType === "json" ? '{"key":"value"}' : "value",
+            rows: 5,
+          })}
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -1290,6 +1411,12 @@ function formatVariableValue(value, type) {
 
   if (normalizedType === "boolean") return parseBooleanLike(value) ? "true" : "false";
   return value == null ? "" : String(value);
+}
+
+function summarizeVariableValue(value, type) {
+  const compact = formatVariableValue(value, type).replace(/\s+/g, " ").trim();
+  if (!compact) return "Empty";
+  return compact.length > 96 ? `${compact.slice(0, 93)}...` : compact;
 }
 
 function renderVariableValueEditor({ inputId = "", inputClass = "", value = "", type = "string", placeholder = "value", readOnly = false, rows = 4 } = {}) {
@@ -1384,7 +1511,7 @@ function publicVariablesMetaText() {
 
   const updated = formatPhysicalUpdatedTime(state.publicVariablesUpdatedAt);
   if (updated) {
-    return `${base} · live values ${updated}`;
+    return `${base} · updated ${updated}`;
   }
 
   return `${base} · available to every flow`;
@@ -1393,6 +1520,10 @@ function publicVariablesMetaText() {
 function syncPublicVariablesHeader() {
   if (el("publicVariablesMeta")) {
     el("publicVariablesMeta").textContent = publicVariablesMetaText();
+  }
+
+  if (el("publicVariablesInspectorMeta")) {
+    el("publicVariablesInspectorMeta").textContent = publicVariablesMetaText();
   }
 
   if (el("btnSavePublicVariables")) {
@@ -1448,129 +1579,188 @@ function serializePublicVariables() {
   };
 }
 
+function addPublicVariable() {
+  state.publicVariables.push({
+    key: nextPublicVariableKey(),
+    type: "string",
+    value: "",
+    current_value: "",
+  });
+
+  if (el("variableSearch")) {
+    el("variableSearch").value = "";
+  }
+
+  selectPublicVariable(currentPublicVariables().length - 1);
+  setSidebarSectionExpanded("variables", true);
+  markPublicVariablesDirty();
+  renderPublicVariablesSidebar();
+  renderInspector();
+}
+
+function removePublicVariable(index) {
+  if (!currentPublicVariables()[index]) return;
+
+  state.publicVariables.splice(index, 1);
+
+  if (!currentPublicVariables().length) {
+    state.selectedPublicVariableIndex = null;
+  } else {
+    state.selectedPublicVariableIndex = Math.min(index, currentPublicVariables().length - 1);
+  }
+
+  markPublicVariablesDirty();
+  renderPublicVariablesSidebar();
+  renderInspector();
+}
+
+function bindPublicVariableToolbar() {
+  document.getElementById("btnSavePublicVariables")?.addEventListener("click", async () => {
+    try {
+      await savePublicVariables();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+}
+
 function renderPublicVariablesSidebar() {
   const box = el("publicVariableList");
   if (!box) return;
 
+  const q = (el("variableSearch")?.value || "").trim().toLowerCase();
+  const items = currentPublicVariables().map((variable, idx) => ({ variable, idx })).filter(({ variable }) => {
+    if (!q) return true;
+
+    const type = normalizeVariableType(variable.type);
+    const haystack = [
+      variable.key || "",
+      type,
+      formatVariableValue(variable.current_value ?? variable.value, type),
+    ].join(" ").toLowerCase();
+
+    return haystack.includes(q);
+  });
+
   syncPublicVariablesHeader();
-  syncSidebarSection("variables", currentPublicVariables().length > 0);
+  syncSidebarSection("variables", items.length > 0);
 
   if (!currentPublicVariables().length) {
     box.innerHTML = `<div class="emptyState">No shared variables yet.</div>`;
     return;
   }
 
-  box.innerHTML = currentPublicVariables().map((variable, idx) => {
+  if (!items.length) {
+    box.innerHTML = `<div class="emptyState">No variables found.</div>`;
+    return;
+  }
+
+  box.innerHTML = items.map(({ variable, idx }) => {
     const variableType = normalizeVariableType(variable.type);
+    const isActive = idx === state.selectedPublicVariableIndex;
+    const currentValue = summarizeVariableValue(variable.current_value ?? variable.value, variableType);
 
     return `
-      <div class="varCard" data-public-variable-index="${idx}">
+      <button class="varCard is-preview ${isActive ? "active" : ""}" type="button" data-public-variable-index="${idx}" aria-pressed="${isActive ? "true" : "false"}">
         <div class="varCardTop">
-          <div>
-            <div class="varCardName">${escapeHtml(variable.key || `var_${idx + 1}`)}</div>
-            <div class="varCardType">${escapeHtml(variableType)}</div>
-          </div>
-          <button class="btn btn-danger btnRemovePublicVariable" type="button">Remove</button>
+          <div class="varCardName">${escapeHtml(variable.key || `var_${idx + 1}`)}</div>
         </div>
-        <div class="fieldGrid">
-          <div>
-            <label>Key</label>
-            <input class="jsPublicVarKey" value="${escapeHtml(variable.key || "")}" placeholder="var_1" />
-          </div>
-          <div>
-            <label>Type</label>
-            <select class="jsPublicVarType">${variableTypeOptionsHtml(variableType)}</select>
-          </div>
-          <div>
-            <label>Default value</label>
-            ${renderVariableValueEditor({
-              inputClass: "jsPublicVarValue",
-              value: variable.value,
-              type: variableType,
-              placeholder: variableType === "json" ? '{"key":"value"}' : "value",
-              rows: 4,
-            })}
-          </div>
-          <div class="full">
-            <label>Current value</label>
-            ${renderVariableValueEditor({
-              inputClass: "jsPublicVarCurrentValue",
-              value: variable.current_value,
-              type: variableType,
-              readOnly: true,
-              rows: 4,
-            })}
-          </div>
+        <div class="chipRow">
+          <span class="miniPill">${escapeHtml(variableType)}</span>
+          <span class="miniPill jsPublicVarCurrentPreview">${escapeHtml(currentValue)}</span>
         </div>
-      </div>
+      </button>
     `;
   }).join("");
 
-  bindPublicVariableRows();
+  box.querySelectorAll(".varCard.is-preview").forEach((card) => {
+    card.addEventListener("click", () => {
+      const index = Number(card.dataset.publicVariableIndex || -1);
+      if (!currentPublicVariables()[index]) return;
+      selectPublicVariable(index);
+      renderPublicVariablesSidebar();
+      renderInspector();
+      renderCanvas();
+      drawEdges();
+    });
+  });
+
   refreshPublicVariableRuntimeUi();
 }
 
-function bindPublicVariableRows() {
-  document.querySelectorAll("#publicVariableList .varCard").forEach((row) => {
-    const idx = Number(row.dataset.publicVariableIndex || -1);
-    const getVariable = () => currentPublicVariables()[idx];
+function bindPublicVariableInspector(index) {
+  const inspector = document.getElementById("publicVariableInspectorBody");
+  const getVariable = () => currentPublicVariables()[index];
 
-    row.querySelector(".btnRemovePublicVariable")?.addEventListener("click", () => {
-      if (!getVariable()) return;
-      state.publicVariables.splice(idx, 1);
-      markPublicVariablesDirty();
-      renderPublicVariablesSidebar();
-      renderInspector();
-    });
+  bindPublicVariableToolbar();
 
-    row.querySelector(".jsPublicVarKey")?.addEventListener("input", (ev) => {
-      const variable = getVariable();
-      if (!variable) return;
-      variable.key = ev.target.value.trim();
-      markPublicVariablesDirty();
+  document.getElementById("btnRemovePublicVariable")?.addEventListener("click", () => {
+    removePublicVariable(index);
+  });
 
-      const title = row.querySelector(".varCardName");
-      if (title) title.textContent = variable.key || `var_${idx + 1}`;
-    });
+  inspector?.addEventListener("focusin", () => {
+    setPublicVariablesInteracting(true);
+  });
 
-    row.querySelector(".jsPublicVarKey")?.addEventListener("change", () => {
-      renderInspector();
-    });
+  inspector?.addEventListener("focusout", (ev) => {
+    const nextTarget = ev.relatedTarget;
+    const currentTarget = ev.currentTarget;
+    if (nextTarget instanceof Node && currentTarget instanceof Node && currentTarget.contains(nextTarget)) {
+      return;
+    }
+    setPublicVariablesInteracting(false);
+  });
 
-    const syncVariableType = (value) => {
-      const variable = getVariable();
-      if (!variable) return;
+  document.getElementById("publicVariableKeyInput")?.addEventListener("input", (ev) => {
+    const variable = getVariable();
+    if (!variable) return;
+    variable.key = ev.target.value.trim();
+    markPublicVariablesDirty();
+    renderPublicVariablesSidebar();
 
-      const nextType = normalizeVariableType(value);
-      if (normalizeVariableType(variable.type) === nextType) return;
+    const title = document.querySelector(".publicVariableInspectorName");
+    if (title) title.textContent = variable.key || `var_${index + 1}`;
+    if (el("inspectorSubtext")) {
+      el("inspectorSubtext").textContent = `${flowVariableLabel(variable.key || `var_${index + 1}`)} settings`;
+    }
+  });
 
-      variable.type = nextType;
-      markPublicVariablesDirty();
-      renderPublicVariablesSidebar();
-      renderInspector();
-    };
+  const syncVariableType = (value) => {
+    const variable = getVariable();
+    if (!variable) return;
 
-    row.querySelector(".jsPublicVarType")?.addEventListener("input", (ev) => {
-      syncVariableType(ev.target.value);
-    });
+    const nextType = normalizeVariableType(value);
+    if (normalizeVariableType(variable.type) === nextType) return;
 
-    row.querySelector(".jsPublicVarType")?.addEventListener("change", (ev) => {
-      syncVariableType(ev.target.value);
-    });
+    variable.type = nextType;
+    markPublicVariablesDirty();
+    renderPublicVariablesSidebar();
+    renderInspector();
+  };
 
-    row.querySelector(".jsPublicVarValue")?.addEventListener("input", (ev) => {
-      const variable = getVariable();
-      if (!variable) return;
-      variable.value = ev.target.value;
-      markPublicVariablesDirty();
-    });
+  document.getElementById("publicVariableTypeInput")?.addEventListener("input", (ev) => {
+    syncVariableType(ev.target.value);
+  });
 
-    row.querySelector(".jsPublicVarValue")?.addEventListener("change", (ev) => {
-      const variable = getVariable();
-      if (!variable) return;
-      variable.value = ev.target.value;
-      markPublicVariablesDirty();
-    });
+  document.getElementById("publicVariableTypeInput")?.addEventListener("change", (ev) => {
+    syncVariableType(ev.target.value);
+  });
+
+  const applyDefaultValue = (value) => {
+    const variable = getVariable();
+    if (!variable) return;
+    variable.value = value;
+    variable.current_value = value;
+    markPublicVariablesDirty();
+    renderPublicVariablesSidebar();
+  };
+
+  document.getElementById("publicVariableValueInput")?.addEventListener("input", (ev) => {
+    applyDefaultValue(ev.target.value);
+  });
+
+  document.getElementById("publicVariableValueInput")?.addEventListener("change", (ev) => {
+    applyDefaultValue(ev.target.value);
   });
 }
 
@@ -1582,11 +1772,21 @@ function refreshPublicVariableRuntimeUi() {
     const variable = currentPublicVariables()[idx];
     if (!variable) return;
 
-    const currentInput = row.querySelector(".jsPublicVarCurrentValue");
-    if (currentInput) {
-      currentInput.value = formatVariableValue(variable.current_value, variable.type);
+    const currentPreview = row.querySelector(".jsPublicVarCurrentPreview");
+    if (currentPreview) {
+      currentPreview.textContent = summarizeVariableValue(variable.current_value ?? variable.value, variable.type);
     }
   });
+
+  if (state.publicVariablesInteracting) {
+    return;
+  }
+
+  const selectedVariable = currentSelectedPublicVariable();
+  const valueInput = document.getElementById("publicVariableValueInput");
+  if (selectedVariable && valueInput) {
+    valueInput.value = formatVariableValue(selectedVariable.current_value ?? selectedVariable.value, selectedVariable.type);
+  }
 }
 
 function bindFlowInspector(flow) {
@@ -1603,6 +1803,8 @@ function bindFlowInspector(flow) {
     renderFlowList();
     renderInspector();
   });
+
+  bindPublicVariableToolbar();
 }
 
 function renderNodeInspector(node) {
@@ -2354,7 +2556,7 @@ function refreshPhysicalUi() {
 async function refreshPublicVariables(silent = true) {
   try {
     const data = await api("/api/public-variables");
-    const incoming = Array.isArray(data?.items) ? data.items : [];
+    const incoming = normalizePublicVariableRecords(Array.isArray(data?.items) ? data.items : []);
     const incomingFingerprint = publicVariablesDefinitionFingerprint(incoming);
     const currentFingerprint = publicVariablesDefinitionFingerprint(state.publicVariables);
 
@@ -2365,11 +2567,6 @@ async function refreshPublicVariables(silent = true) {
     );
 
     if (state.publicVariablesDirty || state.publicVariablesInteracting) {
-      for (const item of state.publicVariables) {
-        if (liveByKey.has(item.key)) {
-          item.current_value = liveByKey.get(item.key);
-        }
-      }
       refreshPublicVariableRuntimeUi();
       return;
     }
@@ -2385,7 +2582,9 @@ async function refreshPublicVariables(silent = true) {
     // Keeping the same objects avoids stale event-handler references.
     for (const item of state.publicVariables) {
       if (liveByKey.has(item.key)) {
-        item.current_value = liveByKey.get(item.key);
+        const nextValue = liveByKey.get(item.key);
+        item.current_value = nextValue;
+        item.value = nextValue;
       }
     }
 
@@ -2415,7 +2614,7 @@ async function savePublicVariables() {
     body: JSON.stringify(serializePublicVariables()),
   });
 
-  state.publicVariables = Array.isArray(out?.items) ? out.items : [];
+  state.publicVariables = normalizePublicVariableRecords(Array.isArray(out?.items) ? out.items : []);
   state.publicVariablesUpdatedAt = out?.updated_at || null;
   clearPublicVariablesDirty();
   renderPublicVariablesSidebar();
@@ -2593,8 +2792,7 @@ function duplicateDraft() {
 
   state.selectedSavedFlowId = null;
   state.draft = copy;
-  state.selectedNodeId = null;
-  state.selectedEdgeId = null;
+  clearEditorSelection();
   state.connecting = null;
   state.connectionCursor = null;
 
@@ -2613,8 +2811,7 @@ async function deleteDraft() {
 
   state.selectedSavedFlowId = null;
   state.draft = starterFlow();
-  state.selectedNodeId = null;
-  state.selectedEdgeId = null;
+  clearEditorSelection();
   state.connecting = null;
   state.connectionCursor = null;
 
@@ -2635,26 +2832,12 @@ function bindGlobalEvents() {
     });
   });
 
-  el("publicVariableList")?.addEventListener("focusin", () => {
-    setPublicVariablesInteracting(true);
-  });
-
-  el("publicVariableList")?.addEventListener("focusout", (ev) => {
-    const nextTarget = ev.relatedTarget;
-    const currentTarget = ev.currentTarget;
-    if (nextTarget instanceof Node && currentTarget instanceof Node && currentTarget.contains(nextTarget)) {
-      return;
-    }
-    setPublicVariablesInteracting(false);
-  });
-
   el("btnNewFlow")?.addEventListener("click", () => {
     if (!confirmDiscard()) return;
 
     state.selectedSavedFlowId = null;
     state.draft = starterFlow();
-    state.selectedNodeId = null;
-    state.selectedEdgeId = null;
+    clearEditorSelection();
     state.connecting = null;
     state.connectionCursor = null;
 
@@ -2687,27 +2870,11 @@ function bindGlobalEvents() {
   });
 
   el("btnAddPublicVariable")?.addEventListener("click", () => {
-    state.publicVariables.push({
-      key: nextPublicVariableKey(),
-      type: "string",
-      value: "",
-      current_value: "",
-    });
-    setSidebarSectionExpanded("variables", true);
-    markPublicVariablesDirty();
-    renderPublicVariablesSidebar();
-    renderInspector();
-  });
-
-  el("btnSavePublicVariables")?.addEventListener("click", async () => {
-    try {
-      await savePublicVariables();
-    } catch (err) {
-      setStatus(err.message || String(err), true);
-    }
+    addPublicVariable();
   });
 
   el("flowSearch")?.addEventListener("input", renderFlowList);
+  el("variableSearch")?.addEventListener("input", renderPublicVariablesSidebar);
   el("paletteSearch")?.addEventListener("input", renderPalette);
 
   const boardScroller = el("flowBoardScroller");
@@ -2751,8 +2918,7 @@ function bindGlobalEvents() {
       return;
     }
 
-    state.selectedNodeId = null;
-    state.selectedEdgeId = null;
+    clearEditorSelection();
     renderInspector();
     renderCanvas();
     drawEdges();
