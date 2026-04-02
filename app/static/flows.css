@@ -55,6 +55,64 @@ body.flowsPage {
   overflow: hidden;
 }
 
+.flowsPage .flowsSidebarBlock.is-collapsed {
+  flex: 0 0 auto;
+}
+
+.flowsPage .flowsSidebarSectionToggle {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.flowsPage .flowsSidebarSectionToggle:focus-visible {
+  outline: 2px solid rgba(198, 161, 75, 0.4);
+  outline-offset: 4px;
+  border-radius: var(--r-xs);
+}
+
+.flowsPage .flowsSidebarSectionBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.flowsPage .flowsSidebarSectionControls {
+  justify-content: flex-start;
+}
+
+.flowsPage .flowsSidebarBlock.is-collapsed .flowsSidebarSectionBody {
+  display: none;
+}
+
+.flowsPage .flowsSidebarPalette .flowsSidebarSectionBody {
+  flex: 1 1 auto;
+}
+
+.flowsPage .flowsSidebarToggleChevron {
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.12s ease;
+  flex: 0 0 auto;
+}
+
+.flowsPage .flowsSidebarSectionToggle[aria-expanded="true"] .flowsSidebarToggleChevron {
+  transform: rotate(225deg);
+}
+
 /* Saved flows section sizes to content, but list can scroll */
 .flowsPage .flowsSidebarSaved {
   flex: 0 0 auto;

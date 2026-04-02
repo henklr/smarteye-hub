@@ -20,40 +20,52 @@
 
     <div class="flowsShell">
       <aside class="card flowsSidebar">
-        <div class="flowsSidebarBlock flowsSidebarSaved">
-          <div class="listHeader compact">
-            <div>
-              <div class="listTitle">Saved flows</div>
+        <div class="flowsSidebarBlock flowsSidebarSaved" data-sidebar-section="saved">
+          <button class="listHeader compact flowsSidebarSectionToggle" data-sidebar-toggle="saved" aria-controls="flowsSidebarSavedBody" aria-expanded="false" type="button">
+            <span class="listTitle">Saved flows</span>
+            <span class="flowsSidebarToggleChevron" aria-hidden="true"></span>
+          </button>
+
+          <div class="flowsSidebarSectionBody" id="flowsSidebarSavedBody">
+            <div class="row2 mt-0 flowsSidebarSectionControls">
+              <button class="btn btn-primary" id="btnNewFlow" type="button">New flow</button>
             </div>
-            <button class="btn btn-primary" id="btnNewFlow" type="button">New flow</button>
+
+            <input id="flowSearch" placeholder="Search flows" />
+
+            <div id="flowList" class="flowList mt-10"></div>
           </div>
-
-          <input id="flowSearch" placeholder="Search flows" />
-
-          <div id="flowList" class="flowList mt-10"></div>
         </div>
 
-        <div class="flowsSidebarBlock flowsSidebarVariables">
-          <div class="rowSplit">
-            <div>
-              <div class="listTitle small">Variables</div>
-              <div class="listSub" id="publicVariablesMeta">Shared across all flows.</div>
-            </div>
-            <div class="row2 mt-0">
+        <div class="flowsSidebarBlock flowsSidebarVariables" data-sidebar-section="variables">
+          <button class="listHeader compact flowsSidebarSectionToggle" data-sidebar-toggle="variables" aria-controls="flowsSidebarVariablesBody" aria-expanded="false" type="button">
+            <span class="listTitle small">Variables</span>
+            <span class="flowsSidebarToggleChevron" aria-hidden="true"></span>
+          </button>
+
+          <div class="flowsSidebarSectionBody" id="flowsSidebarVariablesBody">
+            <div class="listSub" id="publicVariablesMeta">Shared across all flows.</div>
+
+            <div class="row2 mt-0 flowsSidebarSectionControls">
               <button class="btn" id="btnAddPublicVariable" type="button">Add</button>
               <button class="btn btn-primary" id="btnSavePublicVariables" type="button">Save</button>
             </div>
-          </div>
 
-          <div id="publicVariableList" class="varList publicVariableList"></div>
+            <div id="publicVariableList" class="varList publicVariableList"></div>
+          </div>
         </div>
 
-        <div class="flowsSidebarBlock flowsSidebarPalette">
-          <div class="listTitle small">Palette</div>
+        <div class="flowsSidebarBlock flowsSidebarPalette" data-sidebar-section="palette">
+          <button class="listHeader compact flowsSidebarSectionToggle" data-sidebar-toggle="palette" aria-controls="flowsSidebarPaletteBody" aria-expanded="false" type="button">
+            <span class="listTitle small">Palette</span>
+            <span class="flowsSidebarToggleChevron" aria-hidden="true"></span>
+          </button>
 
-          <input id="paletteSearch" placeholder="Search blocks" />
+          <div class="flowsSidebarSectionBody" id="flowsSidebarPaletteBody">
+            <input id="paletteSearch" placeholder="Search blocks" />
 
-          <div id="paletteGroups" class="paletteGroups mt-10"></div>
+            <div id="paletteGroups" class="paletteGroups mt-10"></div>
+          </div>
         </div>
       </aside>
 

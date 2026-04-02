@@ -5,6 +5,11 @@ const state = {
   devices: [],
   flows: [],
   draft: null,
+  sidebarSections: {
+    saved: { expanded: false, touched: false },
+    variables: { expanded: false, touched: false },
+    palette: { expanded: false, touched: false },
+  },
   publicVariables: [],
   publicVariablesDirty: false,
   publicVariablesInteracting: false,
@@ -561,6 +566,34 @@ function confirmDiscard() {
   return window.confirm("You have unsaved changes. Discard them?");
 }
 
+function sidebarSectionExpanded(sectionId, hasItems = true) {
+  const section = state.sidebarSections[sectionId];
+  if (!section) return true;
+  return section.touched ? !!section.expanded : !hasItems;
+}
+
+function syncSidebarSection(sectionId, hasItems = true) {
+  const block = document.querySelector(`[data-sidebar-section="${sectionId}"]`);
+  if (!block) return;
+
+  const expanded = sidebarSectionExpanded(sectionId, hasItems);
+  block.dataset.hasItems = hasItems ? "true" : "false";
+  block.classList.toggle("is-collapsed", !expanded);
+
+  const toggle = block.querySelector("[data-sidebar-toggle]");
+  if (!toggle) return;
+
+  toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+}
+
+function setSidebarSectionExpanded(sectionId, expanded) {
+  const section = state.sidebarSections[sectionId];
+  if (!section) return;
+  section.expanded = !!expanded;
+  section.touched = true;
+  syncSidebarSection(sectionId, document.querySelector(`[data-sidebar-section="${sectionId}"]`)?.dataset.hasItems !== "false");
+}
+
 function renderFlowList() {
   const q = (el("flowSearch")?.value || "").trim().toLowerCase();
   const items = state.flows.filter((flow) => {
@@ -570,6 +603,8 @@ function renderFlowList() {
 
   const box = el("flowList");
   if (!box) return;
+
+  syncSidebarSection("saved", items.length > 0);
 
   if (!items.length) {
     box.innerHTML = `<div class="emptyState">No flows found.</div>`;
@@ -635,6 +670,8 @@ function renderPalette() {
 
   const box = el("paletteGroups");
   if (!box) return;
+
+  syncSidebarSection("palette", groups.size > 0);
 
   if (!groups.size) {
     box.innerHTML = `<div class="emptyState">No palette blocks found.</div>`;
@@ -1272,6 +1309,7 @@ function renderPublicVariablesSidebar() {
   if (!box) return;
 
   syncPublicVariablesHeader();
+  syncSidebarSection("variables", currentPublicVariables().length > 0);
 
   if (!currentPublicVariables().length) {
     box.innerHTML = `<div class="emptyState">No shared variables yet.</div>`;
@@ -2375,6 +2413,16 @@ async function deleteDraft() {
 }
 
 function bindGlobalEvents() {
+  document.querySelectorAll("[data-sidebar-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const sectionId = button.dataset.sidebarToggle;
+      const block = sectionId ? document.querySelector(`[data-sidebar-section="${sectionId}"]`) : null;
+      const hasItems = block?.dataset.hasItems !== "false";
+      if (!sectionId || !block) return;
+      setSidebarSectionExpanded(sectionId, !sidebarSectionExpanded(sectionId, hasItems));
+    });
+  });
+
   el("publicVariableList")?.addEventListener("focusin", () => {
     setPublicVariablesInteracting(true);
   });
@@ -2433,6 +2481,7 @@ function bindGlobalEvents() {
       value: "",
       current_value: "",
     });
+    setSidebarSectionExpanded("variables", true);
     markPublicVariablesDirty();
     renderPublicVariablesSidebar();
     renderInspector();
