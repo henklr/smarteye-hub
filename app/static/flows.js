@@ -144,18 +144,21 @@ function clearEditorSelection() {
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
   state.selectedPublicVariableIndex = null;
+  renderPublicVariablesSidebar();
 }
 
 function selectNode(nodeId) {
   state.selectedNodeId = nodeId;
   state.selectedEdgeId = null;
   state.selectedPublicVariableIndex = null;
+  renderPublicVariablesSidebar();
 }
 
 function selectEdge(edgeId) {
   state.selectedEdgeId = edgeId;
   state.selectedNodeId = null;
   state.selectedPublicVariableIndex = null;
+  renderPublicVariablesSidebar();
 }
 
 function selectPublicVariable(index) {
@@ -747,22 +750,44 @@ function setSidebarSectionExpanded(sectionId, expanded) {
 
 function renderFlowList() {
   const q = (el("flowSearch")?.value || "").trim().toLowerCase();
+  const activeFlow = currentFlow();
   const items = state.flows.filter((flow) => {
     if (!q) return true;
     return [flow.name, flowSummary(flow)].join(" ").toLowerCase().includes(q);
-  });
+  }).filter((flow) => flow.id !== activeFlow?.id);
 
   const box = el("flowList");
   if (!box) return;
 
-  syncSidebarSection("saved", items.length > 0);
+  syncSidebarSection("saved", Boolean(activeFlow) || items.length > 0);
 
-  if (!items.length) {
-    box.innerHTML = `<div class="emptyState">No flows found.</div>`;
-    return;
-  }
+  const activeSummary = activeFlow ? flowSummary(activeFlow) : "No flow selected.";
+  const activeStatus = activeFlow?.enabled ? "Enabled" : "Disabled";
+  const activeStatusClass = activeFlow?.enabled ? "enabled" : "disabled";
+  const activeName = activeFlow?.name || "New flow";
+  const activeId = activeFlow?.id ? `<div class="flowListItemMeta">${escapeHtml(activeSummary)}</div>` : `<div class="flowListItemMeta">Unsaved draft</div>`;
 
-  box.innerHTML = items.map((flow) => `
+  box.innerHTML = `
+    <div class="flowListItem flowListCurrent active" data-current-flow="true">
+      <div class="flowListItemTop">
+        <div>
+          <div class="flowListItemName">${escapeHtml(activeName)}</div>
+          ${activeId}
+        </div>
+        <div class="miniPill ${activeStatusClass}">${activeStatus}</div>
+      </div>
+      <div class="chipRow">
+        <span class="miniPill">${activeFlow?.nodes?.length || 0} nodes</span>
+        <span class="miniPill">${activeFlow?.edges?.length || 0} links</span>
+      </div>
+      <div class="flowListActions">
+        <button class="btn btn-primary btn-compact" id="btnNewFlow" type="button">New</button>
+        <button class="btn btn-compact" id="btnSaveFlow" type="button">Save</button>
+        <button class="btn btn-danger btn-compact" id="btnDeleteFlow" type="button">Delete</button>
+        <button class="btn btn-compact" id="btnDuplicateFlow" type="button">Duplicate</button>
+      </div>
+    </div>
+    ${items.length ? items.map((flow) => `
     <div class="flowListItem ${flow.id === state.selectedSavedFlowId ? "active" : ""}" data-id="${escapeHtml(flow.id)}">
       <div class="flowListItemTop">
         <div>
@@ -776,9 +801,20 @@ function renderFlowList() {
         <span class="miniPill">${flow.edges.length} links</span>
       </div>
     </div>
-  `).join("");
+  `).join("") : ""}
+  `;
 
-  box.querySelectorAll(".flowListItem").forEach((node) => {
+  bindFlowActionButtons();
+  syncHeader();
+
+  box.querySelector(".flowListCurrent")?.addEventListener("click", () => {
+    clearEditorSelection();
+    renderInspector();
+    renderCanvas();
+    drawEdges();
+  });
+
+  box.querySelectorAll(".flowListItem[data-id]").forEach((node) => {
     node.addEventListener("click", () => {
       const flow = state.flows.find((item) => item.id === node.dataset.id);
       if (!flow) return;
@@ -796,6 +832,63 @@ function renderFlowList() {
       window.requestAnimationFrame(centerBoardViewport);
       setStatus(`Loaded flow "${flow.name}".`);
     });
+  });
+}
+
+function handleNewFlow() {
+  if (!confirmDiscard()) return;
+
+  state.selectedSavedFlowId = null;
+  state.draft = starterFlow();
+  clearEditorSelection();
+  state.connecting = null;
+  state.connectionCursor = null;
+
+  clearDirty();
+  clearTestResult();
+  renderAll();
+  window.requestAnimationFrame(centerBoardViewport);
+  setStatus("Started a new flow.");
+}
+
+async function handleSaveFlow() {
+  try {
+    await saveFlow();
+  } catch (err) {
+    setStatus(err.message || String(err), true);
+  }
+}
+
+async function handleDeleteFlow() {
+  if (!currentFlow()?.id) return;
+  if (!window.confirm("Delete this flow?")) return;
+
+  try {
+    await deleteDraft();
+  } catch (err) {
+    setStatus(err.message || String(err), true);
+  }
+}
+
+function bindFlowActionButtons() {
+  el("btnNewFlow")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    handleNewFlow();
+  });
+
+  el("btnSaveFlow")?.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    await handleSaveFlow();
+  });
+
+  el("btnDuplicateFlow")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    duplicateDraft();
+  });
+
+  el("btnDeleteFlow")?.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    await handleDeleteFlow();
   });
 }
 
@@ -1607,7 +1700,8 @@ function renderPublicVariablesSidebar() {
   if (!box) return;
 
   const q = (el("variableSearch")?.value || "").trim().toLowerCase();
-  const items = currentPublicVariables().map((variable, idx) => ({ variable, idx })).filter(({ variable }) => {
+  const selectedVariable = currentSelectedPublicVariable();
+  const items = currentPublicVariables().map((variable, idx) => ({ variable, idx })).filter(({ variable, idx }) => {
     if (!q) return true;
 
     const type = normalizeVariableType(variable.type);
@@ -1618,22 +1712,44 @@ function renderPublicVariablesSidebar() {
     ].join(" ").toLowerCase();
 
     return haystack.includes(q);
-  });
+  }).filter(({ idx }) => idx !== state.selectedPublicVariableIndex);
 
   syncPublicVariablesHeader();
-  syncSidebarSection("variables", items.length > 0);
+  syncSidebarSection("variables", currentPublicVariables().length > 0);
 
-  if (!currentPublicVariables().length) {
-    box.innerHTML = `<div class="emptyState">No shared variables yet.</div>`;
-    return;
-  }
+  const currentType = normalizeVariableType(selectedVariable?.type);
+  const currentValue = selectedVariable
+    ? summarizeVariableValue(selectedVariable.current_value ?? selectedVariable.value, currentType)
+    : "";
+  const currentCard = selectedVariable
+    ? `
+    <div class="varCard is-preview varCardCurrent active">
+      <div class="varCardTop">
+        <div class="varCardName">${escapeHtml(flowVariableLabel(selectedVariable.key || `var_${state.selectedPublicVariableIndex + 1}`))}</div>
+      </div>
+      <div class="chipRow">
+        <span class="miniPill">${escapeHtml(currentType)}</span>
+        <span class="miniPill jsPublicVarCurrentPreview">${escapeHtml(currentValue)}</span>
+      </div>
+      <div class="sidebarCardActions">
+        <button class="btn btn-primary btn-compact" id="btnAddPublicVariable" type="button">New</button>
+        <button class="btn btn-compact" id="btnSavePublicVariables" type="button">Save</button>
+        <button class="btn btn-danger btn-compact" id="btnDeletePublicVariable" type="button">Delete</button>
+      </div>
+    </div>`
+    : `
+    <div class="varCard varCardActionsOnly">
+      <div class="sidebarCardActions is-standalone">
+        <button class="btn btn-primary btn-compact" id="btnAddPublicVariable" type="button">New</button>
+        <button class="btn btn-compact" id="btnSavePublicVariables" type="button">Save</button>
+        <button class="btn btn-danger btn-compact" id="btnDeletePublicVariable" type="button">Delete</button>
+      </div>
+    </div>`;
 
-  if (!items.length) {
-    box.innerHTML = `<div class="emptyState">No variables found.</div>`;
-    return;
-  }
-
-  box.innerHTML = items.map(({ variable, idx }) => {
+  box.innerHTML = `
+    ${currentCard}
+    ${currentPublicVariables().length ? "" : `<div class="emptyState">No shared variables yet.</div>`}
+    ${items.length ? items.map(({ variable, idx }) => {
     const variableType = normalizeVariableType(variable.type);
     const isActive = idx === state.selectedPublicVariableIndex;
     const currentValue = summarizeVariableValue(variable.current_value ?? variable.value, variableType);
@@ -1649,9 +1765,14 @@ function renderPublicVariablesSidebar() {
         </div>
       </button>
     `;
-  }).join("");
+  }).join("") : ""}
+  `;
+
+  bindPublicVariableActionButtons();
+  syncPublicVariablesHeader();
 
   box.querySelectorAll(".varCard.is-preview").forEach((card) => {
+    if (card.classList.contains("varCardCurrent")) return;
     card.addEventListener("click", () => {
       const index = Number(card.dataset.publicVariableIndex || -1);
       if (!currentPublicVariables()[index]) return;
@@ -1664,6 +1785,40 @@ function renderPublicVariablesSidebar() {
   });
 
   refreshPublicVariableRuntimeUi();
+}
+
+function handleAddPublicVariable() {
+  addPublicVariable();
+}
+
+async function handleSavePublicVariables() {
+  try {
+    await savePublicVariables();
+  } catch (err) {
+    setStatus(err.message || String(err), true);
+  }
+}
+
+function handleDeletePublicVariable() {
+  if (state.selectedPublicVariableIndex == null) return;
+  removePublicVariable(state.selectedPublicVariableIndex);
+}
+
+function bindPublicVariableActionButtons() {
+  el("btnAddPublicVariable")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    handleAddPublicVariable();
+  });
+
+  el("btnSavePublicVariables")?.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    await handleSavePublicVariables();
+  });
+
+  el("btnDeletePublicVariable")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    handleDeletePublicVariable();
+  });
 }
 
 function bindPublicVariableInspector(index) {
@@ -2620,8 +2775,8 @@ function startPhysicalStatePolling() {
 }
 
 function renderAll() {
-  syncHeader();
   renderFlowList();
+  syncHeader();
   renderPublicVariablesSidebar();
   renderCanvas();
   renderInspector();
@@ -2802,60 +2957,6 @@ function bindGlobalEvents() {
     });
   });
 
-  el("btnNewFlow")?.addEventListener("click", () => {
-    if (!confirmDiscard()) return;
-
-    state.selectedSavedFlowId = null;
-    state.draft = starterFlow();
-    clearEditorSelection();
-    state.connecting = null;
-    state.connectionCursor = null;
-
-    clearDirty();
-    clearTestResult();
-    renderAll();
-    window.requestAnimationFrame(centerBoardViewport);
-    setStatus("Started a new flow.");
-  });
-
-  el("btnSaveFlow")?.addEventListener("click", async () => {
-    try {
-      await saveFlow();
-    } catch (err) {
-      setStatus(err.message || String(err), true);
-    }
-  });
-
-  el("btnDuplicateFlow")?.addEventListener("click", duplicateDraft);
-
-  el("btnDeleteFlow")?.addEventListener("click", async () => {
-    if (!currentFlow()?.id) return;
-    if (!window.confirm("Delete this flow?")) return;
-
-    try {
-      await deleteDraft();
-    } catch (err) {
-      setStatus(err.message || String(err), true);
-    }
-  });
-
-  el("btnAddPublicVariable")?.addEventListener("click", () => {
-    addPublicVariable();
-  });
-
-  el("btnSavePublicVariables")?.addEventListener("click", async () => {
-    try {
-      await savePublicVariables();
-    } catch (err) {
-      setStatus(err.message || String(err), true);
-    }
-  });
-
-  el("btnDeletePublicVariable")?.addEventListener("click", () => {
-    if (state.selectedPublicVariableIndex == null) return;
-    removePublicVariable(state.selectedPublicVariableIndex);
-  });
-
   el("flowSearch")?.addEventListener("input", renderFlowList);
   el("variableSearch")?.addEventListener("input", renderPublicVariablesSidebar);
   el("paletteSearch")?.addEventListener("input", renderPalette);
@@ -2902,6 +3003,7 @@ function bindGlobalEvents() {
     }
 
     clearEditorSelection();
+    renderPublicVariablesSidebar();
     renderInspector();
     renderCanvas();
     drawEdges();

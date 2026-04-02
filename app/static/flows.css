@@ -167,6 +167,16 @@ body.flowsPage {
   box-shadow: 0 0 0 3px rgba(198, 161, 75, 0.08);
 }
 
+.flowsPage .flowListCurrent {
+  background: linear-gradient(180deg, rgba(198, 161, 75, 0.08), rgba(255, 255, 255, 0.03));
+  cursor: pointer;
+}
+
+.flowsPage .flowListCurrent:hover {
+  background: linear-gradient(180deg, rgba(198, 161, 75, 0.08), rgba(255, 255, 255, 0.03));
+  border-color: rgba(198, 161, 75, 0.35);
+}
+
 .flowsPage .flowListItemTop {
   display: flex;
   justify-content: space-between;
@@ -192,6 +202,23 @@ body.flowsPage {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
+}
+
+.flowsPage .flowListActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.flowsPage .flowListActions .btn-compact {
+  min-height: 30px;
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 10px;
 }
 
 .flowsPage .miniPill {
@@ -310,7 +337,7 @@ body.flowsPage {
 
 .flowsPage .flowsToolbar {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
   align-items: center;
   flex-wrap: wrap;
@@ -771,6 +798,21 @@ body.flowsPage {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.flowsPage .varCardCurrent {
+  cursor: default;
+  background: linear-gradient(180deg, rgba(198, 161, 75, 0.08), rgba(255, 255, 255, 0.03));
+}
+
+.flowsPage .varCardCurrent:hover {
+  background: linear-gradient(180deg, rgba(198, 161, 75, 0.08), rgba(255, 255, 255, 0.03));
+  border-color: rgba(198, 161, 75, 0.35);
+}
+
+.flowsPage .varCardActionsOnly {
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
 .flowsPage .varCard.is-preview .varCardTop {
   align-items: flex-start;
   margin-bottom: 8px;
@@ -803,6 +845,29 @@ body.flowsPage {
 
 .flowsPage .varCard.is-preview .chipRow {
   margin-top: 8px;
+}
+
+.flowsPage .sidebarCardActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.flowsPage .sidebarCardActions.is-standalone {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.flowsPage .btn-compact {
+  min-height: 30px;
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 10px;
 }
 
 .flowsPage .varCard.is-preview .miniPill {
