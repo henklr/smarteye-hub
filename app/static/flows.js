@@ -1936,10 +1936,7 @@ function renderNodeInspector(node) {
   const cfg = node.config || {};
   const common = `
     <div class="inspectorCard">
-      <div class="rowSplit">
-        <div class="inspectorTitle" style="margin-bottom:0;">${escapeHtml(displayNodeTitle(node) || node.label)}</div>
-        <button class="btn btn-danger" id="btnDeleteNode" type="button">Delete node</button>
-      </div>
+      <div class="inspectorTitle">${escapeHtml(displayNodeTitle(node) || node.label)}</div>
       <div class="fieldGrid mt-10">
         <div class="full">
           <label>Display label</label>
@@ -2317,6 +2314,9 @@ function renderNodeInspector(node) {
       ${currentPublicVariables().map((variable) => `<option value="${escapeHtml(variable.key)}"></option>`).join("")}
     </datalist>
     ${body}
+    <div class="inspectorCard">
+      <button class="btn btn-danger" id="btnDeleteNode" type="button">Delete node</button>
+    </div>
   `;
 }
 
