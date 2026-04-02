@@ -181,12 +181,16 @@ function variableTypeOptionsHtml(selected = "string") {
     .join("");
 }
 
-function sourceOptionsHtml(selected = "literal") {
+function sourceOptionsHtml(selected = "literal", allowPhysicalInput = false) {
   const options = [
     ["literal", "Literal"],
     ["variable", "Variable"],
     ["trigger", "Trigger path"],
   ];
+
+  if (allowPhysicalInput) {
+    options.push(["physical_input", "Physical input"]);
+  }
 
   return options
     .map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`)
@@ -382,6 +386,27 @@ function compareSideLabel(source, value) {
   return `"${raw}"`;
 }
 
+function setVariableSourcePreview(cfg) {
+  const source = String(cfg.value_source || "literal").trim().toLowerCase();
+
+  if (source === "variable") {
+    return flowVariableLabel(cfg.value || "");
+  }
+
+  if (source === "trigger") {
+    return cfg.value ? `trigger ${cfg.value}` : "trigger value";
+  }
+
+  if (source === "physical_input") {
+    const inputKind = String(cfg.value_input_kind || "digital").trim().toLowerCase();
+    const channel = normalizePhysicalChannelSelection(inputKind, cfg.value_channel || "1");
+    return `${physicalLabel(inputKind, channel)} (${physicalLiveValueText(inputKind, channel)})`;
+  }
+
+  const target = publicVariableByKey(cfg.variable_key || "");
+  return compareSideLabel("literal", formatVariableValue(cfg.value, target?.type || "string"));
+}
+
 function displayPortLabel(node, kind, port) {
   if (node?.type === "condition.compare" && kind === "output") {
     if (port === "true") return "THEN";
@@ -446,7 +471,7 @@ function nodePreview(node) {
       return `Wait ${cfg.seconds ?? 0}s`;
 
     case "operator.set_variable":
-      return `${cfg.variable_key || "variable"} ← ${cfg.value_source || "literal"}:${cfg.value || ""}`;
+      return `${cfg.variable_key || "variable"} ← ${setVariableSourcePreview(cfg)}`;
 
     case "operator.template":
       return `${cfg.variable_key || "variable"} ← template`;
@@ -1209,6 +1234,25 @@ function renderSetVariableValueControl(cfg) {
     return `<input id="cfg_value" value="${escapeHtml(cfg.value || "")}" placeholder="trigger.path.to.value" list="variableKeysList" />`;
   }
 
+  if (valueSource === "physical_input") {
+    const inputKind = String(cfg.value_input_kind || "digital").trim().toLowerCase();
+    const channel = normalizePhysicalChannelSelection(inputKind, cfg.value_channel || "1");
+
+    return `
+      <div class="fieldGrid">
+        <div>
+          <label>Input type</label>
+          <select id="cfg_value_input_kind">${physicalInputKindOptionsHtml(inputKind)}</select>
+        </div>
+        <div>
+          <label>Input</label>
+          <select id="cfg_value_channel">${physicalInputChannelOptionsHtml(inputKind, channel)}</select>
+        </div>
+        <div class="full inlineMeta">Current input: ${escapeHtml(physicalLabel(inputKind, channel))} · ${escapeHtml(physicalLiveValueText(inputKind, channel))}</div>
+      </div>
+    `;
+  }
+
   return renderVariableValueEditor({
     inputId: "cfg_value",
     value: cfg.value,
@@ -1684,7 +1728,7 @@ function renderNodeInspector(node) {
             </div>
             <div>
               <label>Value source</label>
-              <select id="cfg_value_source">${sourceOptionsHtml(cfg.value_source || "literal")}</select>
+              <select id="cfg_value_source">${sourceOptionsHtml(cfg.value_source || "literal", true)}</select>
             </div>
             <div class="full">
               <label>Value</label>
@@ -1902,6 +1946,11 @@ function bindNodeInspector(node) {
       applyNodeInspector(node);
       renderInspector();
     });
+
+    document.getElementById("cfg_value_input_kind")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
   }
 }
 
@@ -1961,6 +2010,8 @@ function applyNodeInspector(node) {
       set("variable_key");
       set("value_source");
       set("value");
+      set("value_input_kind");
+      set("value_channel");
       break;
     case "operator.template":
       set("name");
@@ -1999,6 +2050,11 @@ function applyNodeInspector(node) {
   if (node.type === "operator.physical_input") {
     cfg.input_kind = cfg.input_kind || "digital";
     cfg.channel = normalizePhysicalChannelSelection(cfg.input_kind, cfg.channel || "1");
+  }
+
+  if (node.type === "operator.set_variable" && cfg.value_source === "physical_input") {
+    cfg.value_input_kind = cfg.value_input_kind || "digital";
+    cfg.value_channel = normalizePhysicalChannelSelection(cfg.value_input_kind, cfg.value_channel || "1");
   }
 
   if (node.type === "trigger.digital_input_changed") {

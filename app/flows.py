@@ -196,15 +196,17 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
     },
     {
         "type": "operator.set_variable",
-        "category": "operator",
+        "category": "action",
         "label": "Set variable",
-        "description": "Updates a flow variable for later conditions or actions.",
-        "color": "#17b978",
+        "description": "Updates a shared variable for later conditions or actions.",
+        "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
         "defaults": {
             "variable_key": "",
             "value_source": "literal",
             "value": "",
+            "value_input_kind": "digital",
+            "value_channel": "1",
             "name": "",
         },
     },
@@ -865,14 +867,22 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
 
     if node_type == "operator.set_variable":
         cfg["variable_key"] = str(cfg.get("variable_key") or "").strip()
-        cfg["value_source"] = _normalize_source_type(cfg.get("value_source"), allow_trigger=True)
+        cfg["value_source"] = _normalize_source_type(
+            cfg.get("value_source"),
+            allow_trigger=True,
+            allow_physical_input=True,
+        )
         cfg["value"] = str(cfg.get("value") or "").strip()
+        cfg["value_input_kind"] = _normalize_physical_input_kind(cfg.get("value_input_kind"))
+        cfg["value_channel"] = str(cfg.get("value_channel") or "1").strip() or "1"
         if not cfg["variable_key"]:
             raise HTTPException(status_code=400, detail="Set variable needs a variable key")
         if cfg["variable_key"] not in variable_keys:
             raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['variable_key']}")
         if cfg["value_source"] == "variable" and cfg["value"] and cfg["value"] not in variable_keys:
             raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['value']}")
+        if cfg["value_source"] == "physical_input":
+            cfg["value_channel"] = _normalize_physical_channel(cfg.get("value_channel"), cfg["value_input_kind"])
         return cfg
 
     if node_type == "operator.template":
@@ -926,11 +936,13 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
 
 
 
-def _normalize_source_type(value: Any, allow_trigger: bool) -> str:
+def _normalize_source_type(value: Any, allow_trigger: bool, allow_physical_input: bool = False) -> str:
     source = str(value or "literal").strip().lower()
     allowed = {"literal", "variable"}
     if allow_trigger:
         allowed.add("trigger")
+    if allow_physical_input:
+        allowed.add("physical_input")
     if source not in allowed:
         source = "literal"
     return source
@@ -1457,9 +1469,36 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
 
     if node_type == "operator.set_variable":
         key = str(cfg.get("variable_key") or "").strip()
+        value_source = _normalize_source_type(
+            cfg.get("value_source"),
+            allow_trigger=True,
+            allow_physical_input=True,
+        )
+        if value_source == "physical_input":
+            input_kind = _normalize_physical_input_kind(cfg.get("value_input_kind"))
+            channel = _normalize_physical_channel(cfg.get("value_channel"), input_kind)
+            try:
+                reading = read_physical_input(input_kind, int(channel))
+            except Exception as exc:
+                result["ok"] = False
+                result["error"] = str(exc)
+                result["value_source"] = value_source
+                result["value_input_kind"] = input_kind
+                result["value_channel"] = channel
+                result["next_handles"] = ["out"]
+                return result
+            resolved_value = reading.get("value")
+            result["value_source"] = value_source
+            result["value_input_kind"] = input_kind
+            result["value_channel"] = channel
+            result["input_label"] = reading.get("label")
+            result["input_updated_at"] = reading.get("updated_at")
+        else:
+            resolved_value = _resolve_value(value_source, cfg.get("value"), context)
+            result["value_source"] = value_source
         value = _coerce_variable_assignment(
             key,
-            _resolve_value(cfg.get("value_source"), cfg.get("value"), context),
+            resolved_value,
             context,
         )
         context["variables"][key] = value
