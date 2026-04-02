@@ -488,6 +488,12 @@ function nodePreview(node) {
     case "trigger.analog_input_below":
       return `${physicalLabel("analog", cfg.channel || "1")} < ${formatAnalogThreshold(cfg.threshold)} V · now ${physicalLiveValueText("analog", cfg.channel || "1")}`;
 
+    case "trigger.physical_output_changed": {
+      const targetKind = String(cfg.target_kind || "output").trim().toLowerCase() === "relay" ? "relay" : "output";
+      const channel = cfg.channel || "1";
+      return `When ${physicalLabel(targetKind, channel)} changes · now ${physicalLiveValueText(targetKind, channel)}`;
+    }
+
     case "condition.compare": {
       const left = compareSideLabel(cfg.left_source || "variable", cfg.left_value || "");
       const operator = compareOperatorLabel(cfg.operator || "equals");
@@ -1750,6 +1756,35 @@ function renderNodeInspector(node) {
       `;
       break;
 
+    case "trigger.physical_output_changed": {
+      const targetKind = String(cfg.target_kind || "output").trim().toLowerCase() === "relay" ? "relay" : "output";
+      const channel = normalizePhysicalChannelSelection(targetKind, cfg.channel || "1");
+      const channelLabel = targetKind === "relay" ? "Relay" : "Output";
+      const currentLabel = targetKind === "relay" ? "Current relay state" : "Current output state";
+
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Physical output trigger</div>
+          <div class="fieldGrid">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+            <div>
+              <label>Target type</label>
+              <select id="cfg_target_kind">${physicalTargetKindOptionsHtml(targetKind)}</select>
+            </div>
+            <div>
+              <label>${channelLabel}</label>
+              <select id="cfg_channel">${targetKind === "relay" ? physicalRelayOptionsHtml(channel) : physicalOutputOptionsHtml(channel)}</select>
+            </div>
+            ${renderPhysicalLiveField(targetKind, channel, currentLabel)}
+          </div>
+        </div>
+      `;
+      break;
+    }
+
     case "condition.compare":
       body = `
         <div class="inspectorCard">
@@ -2013,6 +2048,13 @@ function bindNodeInspector(node) {
     });
   }
 
+  if (node.type === "trigger.physical_output_changed") {
+    document.getElementById("cfg_target_kind")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+  }
+
   if (node.type === "action.activate_physical_output" || node.type === "action.activate_physical_relay") {
     document.getElementById("cfg_target_kind")?.addEventListener("change", () => {
       applyNodeInspector(node);
@@ -2075,6 +2117,11 @@ function applyNodeInspector(node) {
       set("name");
       set("channel");
       set("threshold");
+      break;
+    case "trigger.physical_output_changed":
+      set("name");
+      set("target_kind");
+      set("channel");
       break;
     case "condition.compare":
       set("name");
@@ -2149,6 +2196,11 @@ function applyNodeInspector(node) {
 
   if (node.type === "trigger.analog_input_above" || node.type === "trigger.analog_input_below") {
     cfg.channel = normalizePhysicalChannelSelection("analog", cfg.channel || "1");
+  }
+
+  if (node.type === "trigger.physical_output_changed") {
+    cfg.target_kind = String(cfg.target_kind || "output").trim().toLowerCase() === "relay" ? "relay" : "output";
+    cfg.channel = normalizePhysicalChannelSelection(cfg.target_kind, cfg.channel || "1");
   }
 
   if (node.type === "action.activate_physical_output") {
@@ -2267,6 +2319,11 @@ function refreshPhysicalInspectorLiveValues() {
       kind = "analog";
       channel = cfg.channel || "1";
       labelText = "Current voltage";
+      break;
+    case "trigger.physical_output_changed":
+      kind = String(cfg.target_kind || "output").trim().toLowerCase() === "relay" ? "relay" : "output";
+      channel = cfg.channel || "1";
+      labelText = kind === "relay" ? "Current relay state" : "Current output state";
       break;
     case "action.activate_physical_output":
       kind = String(cfg.target_kind || "output").trim().toLowerCase() === "relay" ? "relay" : "output";

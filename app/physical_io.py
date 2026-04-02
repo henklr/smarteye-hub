@@ -493,6 +493,14 @@ def _monitor_loop(dispatch_trigger: Callable[[Dict[str, Any]], int]) -> None:
         str(entry.get("channel") or ""): entry.get("value")
         for entry in snapshot.get("analog_inputs", [])
     }
+    previous_outputs = {
+        str(entry.get("channel") or ""): entry.get("value")
+        for entry in snapshot.get("outputs", [])
+    }
+    previous_relays = {
+        str(entry.get("channel") or ""): entry.get("value")
+        for entry in snapshot.get("relays", [])
+    }
 
     while not _monitor_stop.wait(_PHYSICAL_IO_POLL_SEC):
         snapshot = refresh_physical_io_state()
@@ -551,6 +559,58 @@ def _monitor_loop(dispatch_trigger: Callable[[Dict[str, Any]], int]) -> None:
                 )
 
             previous_analog[channel] = current
+
+        for entry in snapshot.get("outputs", []):
+            channel = str(entry.get("channel") or "")
+            current = entry.get("value")
+            previous = previous_outputs.get(channel)
+
+            if previous is not None and current is not None and current != previous:
+                dispatch_trigger(
+                    {
+                        "kind": "physical_output_changed",
+                        "target_kind": "output",
+                        "channel": channel,
+                        "value": current,
+                        "previous_value": previous,
+                        "label": entry.get("label"),
+                        "ts": ts,
+                        "extra": {
+                            "target_kind": "output",
+                            "channel": channel,
+                            "value": current,
+                            "previous_value": previous,
+                        },
+                    }
+                )
+
+            previous_outputs[channel] = current
+
+        for entry in snapshot.get("relays", []):
+            channel = str(entry.get("channel") or "")
+            current = entry.get("value")
+            previous = previous_relays.get(channel)
+
+            if previous is not None and current is not None and current != previous:
+                dispatch_trigger(
+                    {
+                        "kind": "physical_output_changed",
+                        "target_kind": "relay",
+                        "channel": channel,
+                        "value": current,
+                        "previous_value": previous,
+                        "label": entry.get("label"),
+                        "ts": ts,
+                        "extra": {
+                            "target_kind": "relay",
+                            "channel": channel,
+                            "value": current,
+                            "previous_value": previous,
+                        },
+                    }
+                )
+
+            previous_relays[channel] = current
 
 
 def start_physical_io_monitor(dispatch_trigger: Callable[[Dict[str, Any]], int]) -> None:

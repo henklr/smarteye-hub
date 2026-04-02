@@ -171,6 +171,15 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "defaults": {"channel": "1", "threshold": 1.0, "name": ""},
     },
     {
+        "type": "trigger.physical_output_changed",
+        "category": "trigger",
+        "label": "Physical output changed",
+        "description": "Starts when a selected Automation HAT Mini output or relay changes state.",
+        "color": "#4f8cff",
+        "ports": {"inputs": [], "outputs": ["out"]},
+        "defaults": {"target_kind": "output", "channel": "1", "name": ""},
+    },
+    {
         "type": "condition.compare",
         "category": "condition",
         "label": "Compare",
@@ -846,6 +855,11 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
             raise HTTPException(status_code=400, detail="Analog threshold must be numeric")
         return cfg
 
+    if node_type == "trigger.physical_output_changed":
+        cfg["target_kind"] = _normalize_physical_switch_kind(cfg.get("target_kind"))
+        cfg["channel"] = _normalize_physical_channel(cfg.get("channel"), cfg["target_kind"])
+        return cfg
+
     if node_type == "condition.compare":
         cfg["left_source"] = _normalize_source_type(cfg.get("left_source"), allow_trigger=True)
         cfg["right_source"] = _normalize_source_type(cfg.get("right_source"), allow_trigger=True)
@@ -995,6 +1009,11 @@ def _normalize_topic(value: Any) -> str:
 def _normalize_physical_input_kind(value: Any) -> str:
     kind = str(value or "digital").strip().lower()
     return kind if kind in {"digital", "analog"} else "digital"
+
+
+def _normalize_physical_switch_kind(value: Any) -> str:
+    kind = str(value or "output").strip().lower()
+    return kind if kind in {"output", "relay"} else "output"
 
 
 def _normalize_physical_value_kind(value: Any) -> str:
@@ -1332,6 +1351,15 @@ def _trigger_matches_node(node: Dict[str, Any], trigger: Dict[str, Any]) -> bool
             return previous_value <= threshold < current_value
 
         return previous_value >= threshold > current_value
+
+    if node_type == "trigger.physical_output_changed":
+        if kind != "physical_output_changed":
+            return False
+        return (
+            _normalize_physical_switch_kind(cfg.get("target_kind"))
+            == _normalize_physical_switch_kind(trigger.get("target_kind"))
+            and str(cfg.get("channel") or "") == str(trigger.get("channel") or "")
+        )
 
     return False
 
