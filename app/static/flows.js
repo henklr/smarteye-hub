@@ -674,6 +674,10 @@ function syncHeader() {
   if (el("btnDeleteFlow")) {
     el("btnDeleteFlow").disabled = !flow?.id;
   }
+
+  if (el("btnSaveFlow")) {
+    el("btnSaveFlow").disabled = !flow || !state.dirty;
+  }
 }
 
 function confirmDiscard() {
@@ -1339,9 +1343,6 @@ function renderPublicVariablesInspector() {
           <div class="inspectorTitle" style="margin-bottom:4px;">Shared variables</div>
           <div class="inspectorHint" id="publicVariablesInspectorMeta">${escapeHtml(publicVariablesMetaText())}</div>
         </div>
-        <div class="row2 mt-0 inspectorVariableActions">
-          <button class="btn btn-primary" id="btnSavePublicVariables" type="button" ${state.publicVariablesDirty ? "" : "disabled"}>Save</button>
-        </div>
       </div>
       <div class="inspectorHint mt-10">
         ${hasVariables ? "Select a variable from the sidebar preview to edit it here." : "Create a shared variable to use it across flows."}
@@ -1360,10 +1361,6 @@ function renderPublicVariableInspector(variable, index) {
         <div>
           <div class="inspectorTitle publicVariableInspectorName" style="margin-bottom:4px;">${escapeHtml(variable.key || `var_${index + 1}`)}</div>
           <div class="inspectorHint">Shared variable</div>
-        </div>
-        <div class="row2 mt-0 inspectorVariableActions">
-          <button class="btn btn-primary" id="btnSavePublicVariables" type="button" ${state.publicVariablesDirty ? "" : "disabled"}>Save</button>
-          <button class="btn btn-danger" id="btnRemovePublicVariable" type="button">Delete</button>
         </div>
       </div>
       <div id="publicVariableInspectorBody" class="fieldGrid mt-10" data-public-variable-index="${index}">
@@ -1529,6 +1526,10 @@ function syncPublicVariablesHeader() {
   if (el("btnSavePublicVariables")) {
     el("btnSavePublicVariables").disabled = !state.publicVariablesDirty;
   }
+
+  if (el("btnDeletePublicVariable")) {
+    el("btnDeletePublicVariable").disabled = currentSelectedPublicVariable() == null;
+  }
 }
 
 function markPublicVariablesDirty() {
@@ -1614,16 +1615,6 @@ function removePublicVariable(index) {
   renderInspector();
 }
 
-function bindPublicVariableToolbar() {
-  document.getElementById("btnSavePublicVariables")?.addEventListener("click", async () => {
-    try {
-      await savePublicVariables();
-    } catch (err) {
-      setStatus(err.message || String(err), true);
-    }
-  });
-}
-
 function renderPublicVariablesSidebar() {
   const box = el("publicVariableList");
   if (!box) return;
@@ -1691,12 +1682,6 @@ function renderPublicVariablesSidebar() {
 function bindPublicVariableInspector(index) {
   const inspector = document.getElementById("publicVariableInspectorBody");
   const getVariable = () => currentPublicVariables()[index];
-
-  bindPublicVariableToolbar();
-
-  document.getElementById("btnRemovePublicVariable")?.addEventListener("click", () => {
-    removePublicVariable(index);
-  });
 
   inspector?.addEventListener("focusin", () => {
     setPublicVariablesInteracting(true);
@@ -1803,8 +1788,6 @@ function bindFlowInspector(flow) {
     renderFlowList();
     renderInspector();
   });
-
-  bindPublicVariableToolbar();
 }
 
 function renderNodeInspector(node) {
@@ -2871,6 +2854,19 @@ function bindGlobalEvents() {
 
   el("btnAddPublicVariable")?.addEventListener("click", () => {
     addPublicVariable();
+  });
+
+  el("btnSavePublicVariables")?.addEventListener("click", async () => {
+    try {
+      await savePublicVariables();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+
+  el("btnDeletePublicVariable")?.addEventListener("click", () => {
+    if (state.selectedPublicVariableIndex == null) return;
+    removePublicVariable(state.selectedPublicVariableIndex);
   });
 
   el("flowSearch")?.addEventListener("input", renderFlowList);
