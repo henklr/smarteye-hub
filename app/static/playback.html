@@ -20,7 +20,8 @@
     </div>
 
     <div class="playbackShell">
-      <section class="card playbackViewerCard">
+      <div class="playbackViewerRegion">
+        <section class="card playbackViewerCard">
         <div class="listHeader compact playbackHeader">
           <div>
             <div class="listTitle small">Playback</div>
@@ -41,32 +42,64 @@
         </div>
 
         <div class="playbackVideoShell" id="playbackVideoShell">
-          <video id="playbackVideo" class="playbackVideo" controls playsinline preload="metadata"></video>
+          <video id="playbackVideo" class="playbackVideo" playsinline preload="metadata"></video>
           <div class="playbackVideoEmpty" id="playbackVideoEmpty">
             <div class="playbackVideoEmptyTitle">No clip selected</div>
             <div class="playbackVideoEmptyText" id="playbackVideoEmptyText">Choose a colored marker from the timeline below to load a recording.</div>
           </div>
         </div>
 
-        <div class="statusLine compact playbackStatusLine">
-          <strong>Status:</strong> <span id="playbackStatus" class="muted">Loading cameras…</span>
-        </div>
-      </section>
+        </section>
 
-      <section class="card playbackTimelineCard">
-        <div class="listHeader compact">
-          <div>
-            <div class="listTitle small">Recordings timeline</div>
-            <div class="listSub" id="playbackTimelineSub">Colored markers come from the Record node and open event clips.</div>
+        <div class="playbackControlsSection">
+        <div class="playbackTransport" id="playbackTransport">
+          <div class="playbackTransportButtons">
+            <button class="btn btn-compact playbackTransportButton" id="playbackDirectionBackwardBtn" type="button" aria-pressed="false" aria-label="Backward" title="Backward">
+              <span class="playbackTransportGlyph" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M11 7.5V16.5L4.5 12L11 7.5Z"></path>
+                  <path d="M19.5 7.5V16.5L13 12L19.5 7.5Z"></path>
+                </svg>
+              </span>
+            </button>
+            <button class="btn btn-primary btn-compact playbackTransportButton" id="playbackPlayPauseBtn" type="button" aria-label="Play" title="Play">
+              <span class="playbackTransportGlyph" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M8 6.5V17.5L17 12L8 6.5Z"></path>
+                </svg>
+              </span>
+            </button>
+            <button class="btn btn-compact playbackTransportButton" id="playbackStopBtn" type="button" aria-label="Stop" title="Stop">
+              <span class="playbackTransportGlyph" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <rect x="7" y="7" width="10" height="10" rx="1.5"></rect>
+                </svg>
+              </span>
+            </button>
+            <button class="btn btn-compact playbackTransportButton" id="playbackDirectionForwardBtn" type="button" aria-pressed="true" aria-label="Forward" title="Forward">
+              <span class="playbackTransportGlyph" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M5 7.5V16.5L11.5 12L5 7.5Z"></path>
+                  <path d="M13.5 7.5V16.5L20 12L13.5 7.5Z"></path>
+                </svg>
+              </span>
+            </button>
+          </div>
+
+          <div class="playbackSpeedControl">
+            <label for="playbackSpeedInput">Speed</label>
+            <input id="playbackSpeedInput" type="range" min="0.25" max="25" step="0.25" value="1" />
+            <output id="playbackSpeedValue" class="playbackSpeedValue" for="playbackSpeedInput">1x</output>
           </div>
         </div>
+        </div>
+      </div>
 
+      <section class="card playbackTimelineCard">
         <div class="playbackTimelineWrap">
           <div class="playbackTimelineScale" id="playbackTimelineScale"></div>
           <div class="playbackTimelineTrack" id="playbackTimelineTrack"></div>
         </div>
-
-        <div class="playbackMarkerList" id="playbackMarkerList"></div>
       </section>
     </div>
   </div>

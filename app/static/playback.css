@@ -15,14 +15,22 @@ body.playbackPage {
   min-height: 0;
 }
 
+.playbackPage .playbackViewerRegion,
 .playbackPage .playbackViewerCard,
 .playbackPage .playbackTimelineCard {
   min-height: 0;
 }
 
+.playbackPage .playbackViewerRegion {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .playbackPage .playbackViewerCard {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: 14px;
 }
 
@@ -83,8 +91,132 @@ body.playbackPage {
   line-height: 1.5;
 }
 
-.playbackPage .playbackStatusLine {
-  margin-top: 0;
+.playbackPage .playbackControlsSection {
+  display: grid;
+}
+
+.playbackPage .playbackTransport {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.playbackPage .playbackTransportButtons {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02)),
+    rgba(11, 16, 21, 0.88);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.playbackPage .playbackTransportButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  min-width: 52px;
+  min-height: 52px;
+  padding: 0;
+  border-radius: 14px;
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow: none;
+}
+
+.playbackPage .playbackTransportGlyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 16px;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0.06em;
+}
+
+.playbackPage .playbackTransportGlyph svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.playbackPage .playbackTransportButton.is-active {
+  border-color: rgba(198, 161, 75, 0.24);
+  background: rgba(198, 161, 75, 0.1);
+  color: var(--accent-strong);
+}
+
+.playbackPage .playbackTransportButton.btn-primary {
+  border-color: rgba(198, 161, 75, 0.3);
+  background: linear-gradient(180deg, #d8b65f 0%, #caa449 100%);
+  color: #211805;
+  box-shadow: 0 10px 22px rgba(198, 161, 75, 0.2);
+}
+
+.playbackPage .playbackTransportButton:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.playbackPage .playbackTransportButton.btn-primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #dfbe68 0%, #cfaa50 100%);
+}
+
+.playbackPage .playbackTransportButton:disabled {
+  opacity: 0.45;
+}
+
+.playbackPage .playbackSpeedControl {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: center;
+  width: min(100%, 360px);
+  min-width: min(100%, 280px);
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+    rgba(11, 16, 21, 0.88);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.playbackPage .playbackSpeedControl label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.playbackPage .playbackSpeedControl input[type="range"] {
+  flex: 1 1 auto;
+  accent-color: var(--accent);
+}
+
+.playbackPage .playbackSpeedValue {
+  min-width: 56px;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text);
 }
 
 .playbackPage .playbackTimelineCard {
@@ -302,5 +434,23 @@ body.playbackPage {
 
   .playbackPage .playbackVideoShell {
     min-height: 340px;
+  }
+
+  .playbackPage .playbackTransport {
+    align-items: stretch;
+  }
+
+  .playbackPage .playbackTransportButtons,
+  .playbackPage .playbackSpeedControl {
+    width: 100%;
+  }
+
+  .playbackPage .playbackTransportButtons {
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .playbackPage .playbackSpeedControl {
+    min-width: 0;
   }
 }
