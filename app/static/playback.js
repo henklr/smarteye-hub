@@ -140,7 +140,15 @@ function todayString() {
 
 function clockLabel(value) {
   try {
-    return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) {
+      return String(value || "");
+    }
+
+    const hours = String(date.getUTCHours()).padStart(2, "0");
+    const minutes = String(date.getUTCMinutes()).padStart(2, "0");
+    const seconds = String(date.getUTCSeconds()).padStart(2, "0");
+    return `${hours}:${minutes}:${seconds}`;
   } catch {
     return String(value || "");
   }
@@ -622,6 +630,18 @@ function chooseTimelineStep(duration) {
   return steps.find((step) => duration / step <= 8) || DAY_MINUTES;
 }
 
+function timelineTickLayout() {
+  const step = chooseTimelineStep(currentTimelineDuration());
+  const firstTick = Math.ceil(state.timelineView.startMinute / step) * step;
+  const tickMinutes = [];
+
+  for (let minute = firstTick; minute <= state.timelineView.endMinute; minute += step) {
+    tickMinutes.push(minute);
+  }
+
+  return { tickMinutes };
+}
+
 function setTimelineViewport(startMinute, durationMinutes, options = {}) {
   const duration = clamp(durationMinutes, MIN_VISIBLE_MINUTES, DAY_MINUTES);
   const start = clamp(startMinute, 0, DAY_MINUTES - duration);
@@ -738,18 +758,10 @@ function renderDeviceOptions() {
 
 function renderTimelineScale() {
   const scale = el("playbackTimelineScale");
-  const track = el("playbackTimelineTrack");
   if (!scale) return;
 
-  const duration = currentTimelineDuration();
-  const step = chooseTimelineStep(duration);
+  const { tickMinutes } = timelineTickLayout();
   const labels = [];
-  const firstTick = Math.ceil(state.timelineView.startMinute / step) * step;
-  const tickMinutes = [];
-
-  for (let minute = firstTick; minute <= state.timelineView.endMinute; minute += step) {
-    tickMinutes.push(minute);
-  }
 
   if (!tickMinutes.length || Math.abs(tickMinutes[0] - state.timelineView.startMinute) > 0.5) {
     labels.push(`<span class="playbackTimelineTick is-edge" style="left:0%;">${minuteLabel(state.timelineView.startMinute)}</span>`);
@@ -765,10 +777,6 @@ function renderTimelineScale() {
   }
 
   scale.innerHTML = labels.join("");
-
-  if (track) {
-    track.style.setProperty("--timeline-grid-width", `${Math.max((step / duration) * 100, 6)}%`);
-  }
 }
 
 function renderTimeline() {
@@ -777,9 +785,11 @@ function renderTimeline() {
 
   renderTimelineScale();
 
+  const { tickMinutes } = timelineTickLayout();
   const { events } = state.timeline;
 
   track.innerHTML = `
+    ${tickMinutes.map((minute) => `<span class="playbackTimelineGuide" style="left:${visibleTimelinePercent(minute)}%;" aria-hidden="true"></span>`).join("")}
     <div class="playbackTimelineBase" data-playback-track-base></div>
     <div class="playbackTimelineCursor hidden" data-playback-cursor>
       <span class="playbackTimelineCursorLabel" data-playback-cursor-label></span>

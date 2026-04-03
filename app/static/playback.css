@@ -271,10 +271,7 @@ body.playbackPage {
   min-height: 82px;
   border: 1px solid var(--stroke);
   border-radius: 14px;
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.015));
-  background-size: var(--timeline-grid-width, calc(100% / 12)) 100%, cover;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.015));
   overflow: hidden;
   cursor: grab;
   touch-action: none;
@@ -283,6 +280,26 @@ body.playbackPage {
 
 .playbackPage .playbackTimelineTrack.is-dragging {
   cursor: grabbing;
+}
+
+.playbackPage .playbackTimelineGuide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.playbackPage .playbackTimelineGuide::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .playbackPage .playbackTimelineBase {
@@ -294,6 +311,7 @@ body.playbackPage {
   transform: translateY(-50%);
   background: rgba(255, 255, 255, 0.04);
   cursor: pointer;
+  z-index: 1;
 }
 
 .playbackPage .playbackTimelineCursor {
