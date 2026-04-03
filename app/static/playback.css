@@ -290,18 +290,10 @@ body.playbackPage {
   left: 0;
   right: 0;
   top: 50%;
-  height: 8px;
-  transform: translateY(-50%);
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.playbackPage .playbackCoverageBar {
-  position: absolute;
-  top: 50%;
   height: 10px;
   transform: translateY(-50%);
-  border-radius: 999px;
-  background: rgba(198, 161, 75, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
 }
 
 .playbackPage .playbackTimelineCursor {
@@ -344,11 +336,17 @@ body.playbackPage {
 
 .playbackPage .playbackMarker {
   position: absolute;
-  top: 18px;
-  height: 44px;
+  top: 50%;
+  height: 10px;
+  transform: translateY(-50%);
+  min-width: 0;
+  min-inline-size: 0;
+  padding: 0;
   border: 0;
-  border-radius: 999px;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.24);
+  border-radius: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  box-shadow: none;
   opacity: 0.9;
   cursor: pointer;
   z-index: 2;
@@ -357,7 +355,7 @@ body.playbackPage {
 .playbackPage .playbackMarker:hover,
 .playbackPage .playbackMarker.is-active {
   opacity: 1;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.22), 0 8px 18px rgba(0, 0, 0, 0.28);
+  filter: brightness(1.08);
 }
 
 .playbackPage .playbackMarkerList {

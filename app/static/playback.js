@@ -226,6 +226,30 @@ function eventAtTimelineMinute(minute) {
   }) || null;
 }
 
+function nextEventAtTimelineMinute(minute) {
+  return state.timeline.events.find((event) => eventRange(event).startMinute >= minute) || null;
+}
+
+function timelineBaseSelection(minute) {
+  const exactEvent = eventAtTimelineMinute(minute);
+  if (exactEvent) {
+    return {
+      event: exactEvent,
+      seekSeconds: eventSeekSecondsForMinute(exactEvent, minute),
+    };
+  }
+
+  const nextEvent = nextEventAtTimelineMinute(minute);
+  if (nextEvent) {
+    return {
+      event: nextEvent,
+      seekSeconds: 0,
+    };
+  }
+
+  return null;
+}
+
 function nextTimelineEvent(currentEventId) {
   const currentIndex = state.timeline.events.findIndex((event) => event.id === currentEventId);
   if (currentIndex < 0) {
@@ -585,6 +609,10 @@ function visibleTimelinePercent(minute) {
   return clamp(((minute - state.timelineView.startMinute) / duration) * 100, 0, 100);
 }
 
+function visibleTimelineWidth(startMinute, endMinute) {
+  return Math.max(0, visibleTimelinePercent(endMinute) - visibleTimelinePercent(startMinute));
+}
+
 function isVisibleRange(startMinute, endMinute) {
   return endMinute >= state.timelineView.startMinute && startMinute <= state.timelineView.endMinute;
 }
@@ -749,25 +777,13 @@ function renderTimeline() {
 
   renderTimelineScale();
 
-  const { segments, events } = state.timeline;
+  const { events } = state.timeline;
 
   track.innerHTML = `
-    <div class="playbackTimelineBase"></div>
+    <div class="playbackTimelineBase" data-playback-track-base></div>
     <div class="playbackTimelineCursor hidden" data-playback-cursor>
       <span class="playbackTimelineCursorLabel" data-playback-cursor-label></span>
     </div>
-    ${segments.map((segment) => {
-      const range = dayRange(segment.started_at, segment.ended_at);
-      if (!isVisibleRange(range.startMinute, range.endMinute)) {
-        return "";
-      }
-
-      const clippedStart = clamp(range.startMinute, state.timelineView.startMinute, state.timelineView.endMinute);
-      const clippedEnd = clamp(range.endMinute, state.timelineView.startMinute, state.timelineView.endMinute);
-      const left = visibleTimelinePercent(clippedStart);
-      const width = Math.max(0.25, visibleTimelinePercent(clippedEnd) - left);
-      return `<div class="playbackCoverageBar" style="left:${left}%; width:${width}%;"></div>`;
-    }).join("")}
     ${events.map((event) => {
       const range = dayRange(event.clip_start, event.clip_end);
       if (!isVisibleRange(range.startMinute, range.endMinute)) {
@@ -777,7 +793,7 @@ function renderTimeline() {
       const clippedStart = clamp(range.startMinute, state.timelineView.startMinute, state.timelineView.endMinute);
       const clippedEnd = clamp(range.endMinute, state.timelineView.startMinute, state.timelineView.endMinute);
       const left = visibleTimelinePercent(clippedStart);
-      const width = Math.max(0.6, visibleTimelinePercent(clippedEnd) - left);
+      const width = visibleTimelineWidth(clippedStart, clippedEnd);
       const active = event.id === state.selectedEventId ? "is-active" : "";
       return `<button class="playbackMarker ${active}" type="button" data-event-id="${escapeHtml(event.id)}" style="left:${left}%; width:${width}%; background:${escapeHtml(event.color)};" title="${escapeHtml(`${event.title} · ${clockLabel(event.triggered_at)}`)}"></button>`;
     }).join("")}
@@ -1110,6 +1126,11 @@ function bindTimelineInteractions() {
       return;
     }
 
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("[data-event-id]") || target?.closest("[data-playback-track-base]")) {
+      return;
+    }
+
     state.timelineView.pointerId = event.pointerId;
     state.timelineView.dragOriginX = event.clientX;
     state.timelineView.dragOriginStartMinute = state.timelineView.startMinute;
@@ -1166,16 +1187,31 @@ function bindTimelineInteractions() {
       const trackRect = track.getBoundingClientRect();
       const minute = timelineMinuteFromClientX(event.clientX, trackRect);
       const target = event.target instanceof Element ? event.target.closest("[data-event-id]") : null;
-      const targetEvent = target
-        ? state.timeline.events.find((item) => item.id === target.dataset.eventId) || null
-        : eventAtTimelineMinute(minute);
+      const base = event.target instanceof Element ? event.target.closest("[data-playback-track-base]") : null;
 
-      if (!targetEvent) {
+      if (target) {
+        const targetEvent = state.timeline.events.find((item) => item.id === target.dataset.eventId) || null;
+        if (!targetEvent) {
+          return;
+        }
+
+        const seekSeconds = eventSeekSecondsForMinute(targetEvent, minute);
+        await selectEvent(targetEvent.id, { seekSeconds, autoplay: true });
         return;
       }
 
-      const seekSeconds = eventSeekSecondsForMinute(targetEvent, minute);
-      await selectEvent(targetEvent.id, { seekSeconds, autoplay: true });
+      if (!base) {
+        return;
+      }
+
+      const selection = timelineBaseSelection(minute);
+
+      if (!selection?.event) {
+        setStatus("No recording starts at or after this point.");
+        return;
+      }
+
+      await selectEvent(selection.event.id, { seekSeconds: selection.seekSeconds, autoplay: true });
       return;
     }
 
