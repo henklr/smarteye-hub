@@ -22,7 +22,6 @@ from physical_io import (
     physical_channels,
     physical_io_catalog,
     physical_io_state,
-    read_physical_input,
     read_physical_value,
 )
 
@@ -52,6 +51,9 @@ class FlowVariableModel(BaseModel):
     key: str = Field(..., min_length=1)
     type: str = "string"
     value: Any = ""
+    source: str = "manual"
+    input_kind: Optional[str] = None
+    channel: Optional[str] = None
 
 
 class FlowNodeModel(BaseModel):
@@ -198,10 +200,10 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
     },
     {
         "type": "operator.delay",
-        "category": "operator",
+        "category": "action",
         "label": "Delay",
         "description": "Waits for the configured number of seconds.",
-        "color": "#17b978",
+        "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
         "defaults": {"seconds": 2, "name": ""},
     },
@@ -209,7 +211,7 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "type": "operator.set_variable",
         "category": "action",
         "label": "Set variable",
-        "description": "Updates a shared variable for later conditions or actions.",
+        "description": "Updates a shared variable from a literal, template, variable, trigger path, or physical input.",
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
         "defaults": {
@@ -220,28 +222,6 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
             "value_channel": "1",
             "name": "",
         },
-    },
-    {
-        "type": "operator.template",
-        "category": "operator",
-        "label": "Template",
-        "description": "Builds a text value and stores it on a variable.",
-        "color": "#17b978",
-        "ports": {"inputs": ["in"], "outputs": ["out"]},
-        "defaults": {
-            "variable_key": "message",
-            "template": "Triggered by {{trigger.kind}}",
-            "name": "",
-        },
-    },
-    {
-        "type": "operator.physical_input",
-        "category": "operator",
-        "label": "Physical input",
-        "description": "Reads the current value from a selected Automation HAT Mini digital or analog input.",
-        "color": "#17b978",
-        "ports": {"inputs": ["in"], "outputs": ["out"]},
-        "defaults": {"input_kind": "digital", "channel": "1", "name": ""},
     },
     {
         "type": "action.send_http_request",
@@ -770,6 +750,23 @@ def _normalize_node_payload(raw: Dict[str, Any], variable_keys: set[str]) -> Dic
     raw_label = str(raw.get("label") or "").strip()
     raw_config = deepcopy(raw.get("config") or {})
 
+    if node_type == "operator.physical_input":
+        raise HTTPException(
+            status_code=400,
+            detail="Physical input nodes are no longer supported. Bind the physical I/O to a variable instead.",
+        )
+
+    if node_type == "operator.template":
+        node_type = "operator.set_variable"
+        raw_config = {
+            **raw_config,
+            "value_source": "literal",
+            "value": str(raw_config.get("template") or ""),
+        }
+        raw_config.pop("template", None)
+        if raw_label == "Template":
+            raw_label = "Set variable"
+
     if node_type in {"action.activate_output_relay", "action.activate_physical_relay"}:
         node_type = "action.activate_physical_output"
         raw_config.setdefault("target_kind", "relay")
@@ -861,16 +858,26 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
         return cfg
 
     if node_type == "condition.compare":
-        cfg["left_source"] = _normalize_source_type(cfg.get("left_source"), allow_trigger=True)
-        cfg["right_source"] = _normalize_source_type(cfg.get("right_source"), allow_trigger=True)
+        cfg["left_source"] = _normalize_source_type(cfg.get("left_source"), allow_trigger=True, allow_physical_input=True)
+        cfg["right_source"] = _normalize_source_type(cfg.get("right_source"), allow_trigger=True, allow_physical_input=True)
         cfg["operator"] = str(cfg.get("operator") or "equals").strip()
         cfg["cast"] = str(cfg.get("cast") or "auto").strip()
         cfg["left_value"] = str(cfg.get("left_value") or "").strip()
         cfg["right_value"] = str(cfg.get("right_value") or "").strip()
+        cfg["left_input_kind"] = _normalize_physical_value_kind(cfg.get("left_input_kind"))
+        cfg["right_input_kind"] = _normalize_physical_value_kind(cfg.get("right_input_kind"))
+        cfg["left_channel"] = str(cfg.get("left_channel") or "1").strip() or "1"
+        cfg["right_channel"] = str(cfg.get("right_channel") or "1").strip() or "1"
         if cfg["left_source"] == "variable" and cfg["left_value"] and cfg["left_value"] not in variable_keys:
             raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['left_value']}")
         if cfg["right_source"] == "variable" and cfg["right_value"] and cfg["right_value"] not in variable_keys:
             raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['right_value']}")
+        if cfg["left_source"] == "physical_input":
+            cfg["left_channel"] = _normalize_physical_channel(cfg.get("left_channel"), cfg["left_input_kind"])
+            cfg["left_value"] = f"{cfg['left_input_kind']}:{cfg['left_channel']}"
+        if cfg["right_source"] == "physical_input":
+            cfg["right_channel"] = _normalize_physical_channel(cfg.get("right_channel"), cfg["right_input_kind"])
+            cfg["right_value"] = f"{cfg['right_input_kind']}:{cfg['right_channel']}"
         return cfg
 
     if node_type == "operator.delay":
@@ -909,11 +916,6 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
             raise HTTPException(status_code=400, detail="Template node needs a variable key")
         if cfg["variable_key"] not in variable_keys:
             raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['variable_key']}")
-        return cfg
-
-    if node_type == "operator.physical_input":
-        cfg["input_kind"] = _normalize_physical_input_kind(cfg.get("input_kind"))
-        cfg["channel"] = _normalize_physical_channel(cfg.get("channel"), cfg["input_kind"])
         return cfg
 
     if node_type == "action.send_http_request":
@@ -1085,6 +1087,21 @@ def _coerce_runtime_value(value: Any, variable_type: str) -> Any:
     return "" if value is None else str(value)
 
 
+def _normalize_variable_source(value: Any) -> str:
+    source = str(value or "manual").strip().lower()
+    if source not in {"manual", "physical_input"}:
+        source = "manual"
+    return source
+
+
+def _physical_variable_type(kind: str) -> str:
+    return "number" if kind == "analog" else "boolean"
+
+
+def _physical_variable_default(kind: str) -> Any:
+    return 0.0 if kind == "analog" else False
+
+
 def _normalize_variable_items(items: Any) -> List[Dict[str, Any]]:
     variables: List[Dict[str, Any]] = []
     seen_variable_keys: set[str] = set()
@@ -1101,15 +1118,29 @@ def _normalize_variable_items(items: Any) -> List[Dict[str, Any]]:
             raise HTTPException(status_code=400, detail=f"Duplicate variable key: {key}")
 
         seen_variable_keys.add(key)
-        variable_type = str(raw.get("type") or "string").strip().lower()
-        if variable_type not in {"string", "number", "boolean", "json"}:
-            variable_type = "string"
+        source = _normalize_variable_source(raw.get("source"))
+        input_kind = ""
+        channel = ""
+
+        if source == "physical_input":
+            input_kind = _normalize_physical_value_kind(raw.get("input_kind"))
+            channel = _normalize_physical_channel(raw.get("channel"), input_kind)
+            variable_type = _physical_variable_type(input_kind)
+            default_value = _physical_variable_default(input_kind)
+        else:
+            variable_type = str(raw.get("type") or "string").strip().lower()
+            if variable_type not in {"string", "number", "boolean", "json"}:
+                variable_type = "string"
+            default_value = raw.get("value")
 
         variables.append(
             {
                 "key": key,
                 "type": variable_type,
-                "value": _coerce_runtime_value(raw.get("value"), variable_type),
+                "value": _coerce_runtime_value(default_value, variable_type),
+                "source": source,
+                "input_kind": input_kind,
+                "channel": channel,
             }
         )
 
@@ -1171,10 +1202,26 @@ def _public_variable_values(items: Optional[List[Dict[str, Any]]] = None) -> Tup
         updated_at = str(public_state.get("updated_at") or "").strip() or None
 
     merged = dict(defaults)
+    for item in definitions:
+        if item.get("source") != "physical_input":
+            continue
+
+        input_kind = _normalize_physical_value_kind(item.get("input_kind"))
+        channel = _normalize_physical_channel(item.get("channel"), input_kind)
+
+        try:
+            reading = read_physical_value(input_kind, int(channel))
+        except Exception:
+            continue
+
+        merged[item["key"]] = _coerce_runtime_value(reading.get("value"), item["type"])
+
     if isinstance(saved, dict):
         for key, value in saved.items():
             definition = definitions_by_key.get(key)
             if definition is None:
+                continue
+            if definition.get("source") == "physical_input":
                 continue
             merged[key] = _coerce_runtime_value(value, definition["type"])
 
@@ -1214,6 +1261,8 @@ def _reconcile_public_variable_runtime_values(
         merged: Dict[str, Any] = {}
         for item in definitions:
             key = item["key"]
+            if item.get("source") == "physical_input":
+                continue
             source_value = item.get("value") if prefer_definition_values else saved.get(key, item.get("value"))
             merged[key] = _coerce_runtime_value(source_value, item["type"])
 
@@ -1290,6 +1339,8 @@ def _save_runtime_variables(flow: Dict[str, Any], variables: Dict[str, Any], cha
             saved = {}
 
         for key in keys_to_save:
+            if definitions_by_key[key].get("source") == "physical_input":
+                continue
             saved[key] = _coerce_runtime_value(variables.get(key), definitions_by_key[key]["type"])
 
         public_state["values"] = {key: saved[key] for key in definitions_by_key if key in saved}
@@ -1495,8 +1546,27 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         return result
 
     if node_type == "condition.compare":
-        left = _resolve_value(cfg.get("left_source"), cfg.get("left_value"), context)
-        right = _resolve_value(cfg.get("right_source"), cfg.get("right_value"), context)
+        left_source = _normalize_source_type(cfg.get("left_source"), allow_trigger=True, allow_physical_input=True)
+        right_source = _normalize_source_type(cfg.get("right_source"), allow_trigger=True, allow_physical_input=True)
+
+        if left_source == "physical_input":
+            left_input_kind = _normalize_physical_value_kind(cfg.get("left_input_kind"))
+            left_channel = _normalize_physical_channel(cfg.get("left_channel"), left_input_kind)
+            left = read_physical_value(left_input_kind, int(left_channel)).get("value")
+            result["left_input_kind"] = left_input_kind
+            result["left_channel"] = left_channel
+        else:
+            left = _resolve_value(left_source, cfg.get("left_value"), context)
+
+        if right_source == "physical_input":
+            right_input_kind = _normalize_physical_value_kind(cfg.get("right_input_kind"))
+            right_channel = _normalize_physical_channel(cfg.get("right_channel"), right_input_kind)
+            right = read_physical_value(right_input_kind, int(right_channel)).get("value")
+            result["right_input_kind"] = right_input_kind
+            result["right_channel"] = right_channel
+        else:
+            right = _resolve_value(right_source, cfg.get("right_value"), context)
+
         passed = _evaluate_compare(left, cfg.get("operator"), right, cfg.get("cast") or "auto")
         result["left"] = left
         result["right"] = right
@@ -1515,6 +1585,13 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
 
     if node_type == "operator.set_variable":
         key = str(cfg.get("variable_key") or "").strip()
+        definition = (context.get("variable_definitions") or {}).get(key) or {}
+        if definition.get("source") == "physical_input":
+            result["ok"] = False
+            result["error"] = f"Variable '{key}' is bound to physical I/O and cannot be written."
+            result["variable_key"] = key
+            result["next_handles"] = ["out"]
+            return result
         value_source = _normalize_source_type(
             cfg.get("value_source"),
             allow_trigger=True,
@@ -1540,7 +1617,10 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
             result["input_label"] = reading.get("label")
             result["input_updated_at"] = reading.get("updated_at")
         else:
-            resolved_value = _resolve_value(value_source, cfg.get("value"), context)
+            if value_source == "literal":
+                resolved_value = _auto_literal(_render_template(str(cfg.get("value") or ""), context))
+            else:
+                resolved_value = _resolve_value(value_source, cfg.get("value"), context)
             result["value_source"] = value_source
         value = _coerce_variable_assignment(
             key,
@@ -1565,23 +1645,6 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         context.setdefault("changed_variables", set()).add(key)
         result["variable_key"] = key
         result["value"] = value
-        result["next_handles"] = ["out"]
-        return result
-
-    if node_type == "operator.physical_input":
-        input_kind = _normalize_physical_input_kind(cfg.get("input_kind"))
-        channel = _normalize_physical_channel(cfg.get("channel"), input_kind)
-        try:
-            reading = read_physical_input(input_kind, int(channel))
-            result["input_kind"] = input_kind
-            result["channel"] = channel
-            result["input_label"] = reading.get("label")
-            result["value"] = reading.get("value")
-            result["updated_at"] = reading.get("updated_at")
-            result["message"] = f"{reading.get('label') or f'{input_kind} {channel}'} = {_format_physical_value(input_kind, reading.get('value'))}"
-        except Exception as exc:
-            result["ok"] = False
-            result["error"] = str(exc)
         result["next_handles"] = ["out"]
         return result
 

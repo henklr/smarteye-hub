@@ -184,11 +184,36 @@ function publicVariableByKey(key) {
   return currentPublicVariables().find((item) => String(item.key || "").trim() === wanted) || null;
 }
 
+function normalizeVariableSource(value) {
+  const source = String(value || "manual").trim().toLowerCase();
+  return source === "physical_input" ? "physical_input" : "manual";
+}
+
 function normalizePublicVariableRecord(item = {}) {
   const normalized = { ...item };
-  if (Object.prototype.hasOwnProperty.call(normalized, "current_value")) {
+
+  normalized.source = normalizeVariableSource(normalized.source);
+  if (normalized.source === "physical_input") {
+    normalized.input_kind = String(normalized.input_kind || "digital").trim().toLowerCase();
+    if (!["digital", "analog", "output", "relay"].includes(normalized.input_kind)) {
+      normalized.input_kind = "digital";
+    }
+    normalized.channel = normalizePhysicalChannelSelection(normalized.input_kind, normalized.channel || "1");
+    normalized.type = normalized.input_kind === "analog" ? "number" : "boolean";
+  } else {
+    normalized.type = normalizeVariableType(normalized.type);
+    normalized.input_kind = "";
+    normalized.channel = "";
+  }
+
+  normalized.current_value = Object.prototype.hasOwnProperty.call(normalized, "current_value")
+    ? normalized.current_value
+    : normalized.value;
+
+  if (normalized.source !== "physical_input") {
     normalized.value = normalized.current_value;
   }
+
   return normalized;
 }
 
@@ -210,8 +235,8 @@ function deviceOptionsHtml(selected = "") {
   return options.join("");
 }
 
-function variableKeyOptionsHtml(selected = "") {
-  const vars = currentPublicVariables();
+function variableKeyOptionsHtml(selected = "", { includePhysical = true } = {}) {
+  const vars = currentPublicVariables().filter((variable) => includePhysical || normalizeVariableSource(variable.source) !== "physical_input");
   const options = [`<option value="">Select variable</option>`];
   for (const variable of vars) {
     options.push(
@@ -221,20 +246,42 @@ function variableKeyOptionsHtml(selected = "") {
   return options.join("");
 }
 
+function normalizeVariableTypeChoice(value) {
+  const selected = String(value || "string").trim().toLowerCase();
+  return ["string", "number", "boolean", "json", "physical_input"].includes(selected)
+    ? selected
+    : "string";
+}
+
+function physicalKindFromVariableTypeChoice(value) {
+  const selected = normalizeVariableTypeChoice(value);
+  return selected === "physical_input" ? "digital" : "";
+}
+
+function publicVariableTypeChoice(variable = {}) {
+  const source = normalizeVariableSource(variable.source);
+  if (source !== "physical_input") {
+    return normalizeVariableTypeChoice(variable.type);
+  }
+
+  return "physical_input";
+}
+
 function variableTypeOptionsHtml(selected = "string") {
   return [
     ["string", "String"],
     ["number", "Number"],
     ["boolean", "Boolean"],
     ["json", "JSON"],
+    ["physical_input", "Physical I/O"],
   ]
-    .map(([value, label]) => `<option value="${value}" ${value === (selected || "string") ? "selected" : ""}>${label}</option>`)
+    .map(([value, label]) => `<option value="${value}" ${value === normalizeVariableTypeChoice(selected) ? "selected" : ""}>${label}</option>`)
     .join("");
 }
 
-function sourceOptionsHtml(selected = "literal", allowPhysicalInput = false) {
+function sourceOptionsHtml(selected = "literal", allowPhysicalInput = false, literalLabel = "Literal") {
   const options = [
-    ["literal", "Literal"],
+    ["literal", literalLabel],
     ["variable", "Variable"],
     ["trigger", "Trigger path"],
   ];
@@ -462,11 +509,49 @@ function compareSideLabel(source, value) {
     return raw ? `trigger ${raw}` : "trigger value";
   }
 
+   if (src === "physical_input") {
+    const parts = String(value || "digital:1").split(":");
+    const inputKind = (parts[0] || "digital").trim().toLowerCase() || "digital";
+    const channel = normalizePhysicalChannelSelection(inputKind, parts[1] || "1");
+    return `${physicalLabel(inputKind, channel)} (${physicalLiveValueText(inputKind, channel)})`;
+  }
+
   if (!raw) return "empty value";
   if (/^(true|false)$/i.test(raw)) return raw.toLowerCase();
   if (!Number.isNaN(Number(raw))) return raw;
 
   return `"${raw}"`;
+}
+
+function renderCompareSourceValueControl(prefix, source, value) {
+  const sourceType = String(source || "literal").trim().toLowerCase();
+
+  if (sourceType === "physical_input") {
+    const [rawKind = "digital", rawChannel = "1"] = String(value || "digital:1").split(":");
+    const inputKind = String(rawKind || "digital").trim().toLowerCase() || "digital";
+    const channel = normalizePhysicalChannelSelection(inputKind, rawChannel || "1");
+    const currentLabel = inputKind === "analog" ? "Current value" : (inputKind === "output" ? "Current output state" : (inputKind === "relay" ? "Current relay state" : "Current state"));
+
+    return `
+      <div class="fieldGrid comparePhysicalSourceFields">
+        <div>
+          <label>Physical source</label>
+          <select id="cfg_${prefix}_input_kind">${physicalValueSourceKindOptionsHtml(inputKind)}</select>
+        </div>
+        <div>
+          <label>Channel</label>
+          <select id="cfg_${prefix}_channel">${physicalInputChannelOptionsHtml(inputKind, channel)}</select>
+        </div>
+        ${renderPhysicalLiveField(inputKind, channel, currentLabel, `${prefix}PhysicalCurrent`)}
+      </div>
+    `;
+  }
+
+  const placeholder = sourceType === "variable"
+    ? "armed"
+    : (sourceType === "trigger" ? "extra.changed.IsMotion" : "true");
+
+  return `<input id="cfg_${prefix}_value" value="${escapeHtml(value || "")}" placeholder="${escapeHtml(placeholder)}" list="variableKeysList" />`;
 }
 
 function setVariableSourcePreview(cfg) {
@@ -486,8 +571,56 @@ function setVariableSourcePreview(cfg) {
     return `${physicalLabel(inputKind, channel)} (${physicalLiveValueText(inputKind, channel)})`;
   }
 
+  if (/{{\s*[^}]+\s*}}/.test(String(cfg.value || ""))) {
+    return "template";
+  }
+
   const target = publicVariableByKey(cfg.variable_key || "");
   return compareSideLabel("literal", formatVariableValue(cfg.value, target?.type || "string"));
+}
+
+function setVariableTemplateExamples() {
+  const variableExamples = currentPublicVariables()
+    .slice(0, 3)
+    .map((item) => `{{variables.${item.key}}}`);
+
+  return [
+    "{{flow.name}}",
+    "{{flow.id}}",
+    "{{flow.enabled}}",
+    "{{trigger.kind}}",
+    "{{trigger.trigger_node_id}}",
+    "{{trigger.device_id}}",
+    "{{trigger.topic}}",
+    "{{trigger.path}}",
+    "{{trigger.method}}",
+    "{{trigger.extra.some_key}}",
+    ...variableExamples,
+    "{{last.message}}",
+    "{{last.value}}",
+  ];
+}
+
+function renderSetVariableTemplateHelp(cfg) {
+  if (String(cfg.value_source || "literal").trim().toLowerCase() !== "literal") {
+    return "";
+  }
+
+  const target = publicVariableByKey(cfg.variable_key || "");
+  if (normalizeVariableType(target?.type || "") !== "string") {
+    return "";
+  }
+
+  const examples = setVariableTemplateExamples();
+  return `
+    <div class="full setVariableTemplateHelp">
+      <div class="setVariableTemplateHelpTitle">Available placeholders</div>
+      <div class="setVariableTemplateHelpText">String literals can include runtime values and render them before assignment.</div>
+      <div class="setVariableTemplateHelpChips">
+        ${examples.map((item) => `<span class="setVariableTemplateChip">${escapeHtml(item)}</span>`).join("")}
+      </div>
+    </div>
+  `;
 }
 
 function displayPortLabel(node, kind, port) {
@@ -561,12 +694,6 @@ function nodePreview(node) {
 
     case "operator.set_variable":
       return `${cfg.variable_key || "variable"} ← ${setVariableSourcePreview(cfg)}`;
-
-    case "operator.template":
-      return `${cfg.variable_key || "variable"} ← template`;
-
-    case "operator.physical_input":
-      return `${physicalLabel(cfg.input_kind || "digital", cfg.channel || "1")} = ${physicalLiveValueText(cfg.input_kind || "digital", cfg.channel || "1")}`;
 
     case "action.send_http_request":
       return `${cfg.method || "POST"} ${cfg.url || ""}`;
@@ -1582,13 +1709,15 @@ function renderInspector() {
   bindFlowInspector(flow);
 }
 
-function renderPhysicalLiveField(kind, channel, label = "Current value") {
+function renderPhysicalLiveField(kind, channel, label = "Current value", idBase = "physicalCurrent") {
+  const normalizedKind = String(kind || "digital").trim().toLowerCase();
+  const normalizedChannel = normalizePhysicalChannelSelection(normalizedKind, channel || "1");
   return `
     <div class="full">
       <label>${escapeHtml(label)}</label>
-      <input id="physicalCurrentValue" value="${escapeHtml(physicalLiveValueText(kind, channel))}" readonly />
+      <input id="${escapeHtml(`${idBase}Value`)}" data-physical-live-kind="${escapeHtml(normalizedKind)}" data-physical-live-channel="${escapeHtml(normalizedChannel)}" value="${escapeHtml(physicalLiveValueText(normalizedKind, normalizedChannel))}" readonly />
     </div>
-    <div class="full inlineMeta" id="physicalCurrentMeta">${escapeHtml(physicalMetaText())}</div>
+    <div class="full inlineMeta" id="${escapeHtml(`${idBase}Meta`)}" data-physical-live-meta="true">${escapeHtml(physicalMetaText())}</div>
   `;
 }
 
@@ -1681,15 +1810,20 @@ function renderFlowInspector(flow) {
 }
 
 function renderPublicVariableInspector(variable, index) {
+  const selectedType = publicVariableTypeChoice(variable);
   const variableType = normalizeVariableType(variable.type);
   const variableValue = variable.current_value ?? variable.value;
+  const isPhysical = normalizeVariableSource(variable.source) === "physical_input";
+  const inputKind = isPhysical ? String(variable.input_kind || "digital").trim().toLowerCase() : "digital";
+  const channel = isPhysical ? normalizePhysicalChannelSelection(inputKind, variable.channel || "1") : "1";
+  const liveLabel = inputKind === "analog" ? "Current value" : "Current state";
 
   return `
     <div class="inspectorCard">
       <div class="rowSplit">
         <div>
           <div class="inspectorTitle publicVariableInspectorName" style="margin-bottom:4px;">${escapeHtml(variable.key || `var_${index + 1}`)}</div>
-          <div class="inspectorHint">Shared variable</div>
+          <div class="inspectorHint">${isPhysical ? "This variable mirrors live physical I/O and cannot be edited manually." : "Shared variable"}</div>
         </div>
       </div>
       <div id="publicVariableInspectorBody" class="fieldGrid mt-10" data-public-variable-index="${index}">
@@ -1699,8 +1833,22 @@ function renderPublicVariableInspector(variable, index) {
         </div>
         <div>
           <label>Type</label>
-          <select id="publicVariableTypeInput">${variableTypeOptionsHtml(variableType)}</select>
+          <select id="publicVariableTypeInput">${variableTypeOptionsHtml(selectedType)}</select>
         </div>
+        ${isPhysical ? `
+        <div>
+          <label>Physical source</label>
+          <select id="publicVariableInputKind">${physicalValueSourceKindOptionsHtml(inputKind)}</select>
+        </div>
+        <div>
+          <label>Channel</label>
+          <select id="publicVariableChannelInput">${physicalInputChannelOptionsHtml(inputKind, channel)}</select>
+        </div>
+        <div class="full">
+          <label>Live value</label>
+          <input id="publicVariableValueInput" value="${escapeHtml(formatVariableValue(variableValue, variableType))}" readonly />
+          <div class="inlineMeta">${escapeHtml(physicalLabel(inputKind, channel))} · ${escapeHtml(liveLabel)} · ${escapeHtml(physicalMetaText())}</div>
+        </div>` : `
         <div>
           <label>Value</label>
           ${renderVariableValueEditor({
@@ -1710,7 +1858,7 @@ function renderPublicVariableInspector(variable, index) {
             placeholder: variableType === "json" ? '{"key":"value"}' : "value",
             rows: 5,
           })}
-        </div>
+        </div>`}
       </div>
     </div>
     <div class="inspectorCard inspectorActionsCard">
@@ -1830,7 +1978,10 @@ function publicVariablesDefinitionFingerprint(items = []) {
   return JSON.stringify(
     (items || []).map((item) => [
       (item?.key || "").trim(),
+      normalizeVariableSource(item?.source),
       item?.type || "string",
+      item?.input_kind || "",
+      item?.channel || "",
       formatVariableValue(item?.value, item?.type),
     ])
   );
@@ -1893,6 +2044,13 @@ function serializePublicVariables() {
     items: currentPublicVariables().map((variable) => ({
       key: (variable.key || "").trim(),
       type: normalizeVariableType(variable.type),
+      source: normalizeVariableSource(variable.source),
+      input_kind: normalizeVariableSource(variable.source) === "physical_input"
+        ? String(variable.input_kind || "digital").trim().toLowerCase()
+        : null,
+      channel: normalizeVariableSource(variable.source) === "physical_input"
+        ? normalizePhysicalChannelSelection(variable.input_kind || "digital", variable.channel || "1")
+        : null,
       value: variable.value,
     })),
   };
@@ -1901,9 +2059,12 @@ function serializePublicVariables() {
 function addPublicVariable() {
   state.publicVariables.push({
     key: nextPublicVariableKey(),
+    source: "manual",
     type: "string",
     value: "",
     current_value: "",
+    input_kind: "",
+    channel: "",
   });
 
   if (el("variableSearch")) {
@@ -1946,6 +2107,8 @@ function renderPublicVariablesSidebar() {
     const haystack = [
       variable.key || "",
       type,
+      normalizeVariableSource(variable.source),
+      physicalLabel(variable.input_kind || "digital", variable.channel || "1"),
       formatVariableValue(variable.current_value ?? variable.value, type),
     ].join(" ").toLowerCase();
 
@@ -1971,6 +2134,10 @@ function renderPublicVariablesSidebar() {
     const variableType = normalizeVariableType(variable.type);
     const isActive = idx === state.selectedPublicVariableIndex;
     const currentValue = summarizeVariableValue(variable.current_value ?? variable.value, variableType);
+    const source = normalizeVariableSource(variable.source);
+    const sourceLabel = source === "physical_input"
+      ? physicalLabel(variable.input_kind || "digital", variable.channel || "1")
+      : variableType;
 
     return `
       <${isActive ? "div" : "button"} class="varCard is-preview ${isActive ? "active varCardCurrent" : ""}" ${isActive ? "" : 'type="button"'} data-public-variable-index="${idx}" aria-pressed="${isActive ? "true" : "false"}">
@@ -1978,7 +2145,7 @@ function renderPublicVariablesSidebar() {
           <div class="varCardName">${escapeHtml(variable.key || `var_${idx + 1}`)}</div>
         </div>
         <div class="chipRow">
-          <span class="miniPill">${escapeHtml(variableType)}</span>
+          <span class="miniPill">${escapeHtml(sourceLabel)}</span>
           <span class="miniPill jsPublicVarCurrentPreview">${escapeHtml(currentValue)}</span>
         </div>
         ${isActive ? `
@@ -2091,11 +2258,43 @@ function bindPublicVariableInspector(index) {
   const syncVariableType = (value) => {
     const variable = getVariable();
     if (!variable) return;
+    const nextTypeChoice = normalizeVariableTypeChoice(value);
+    const nextPhysicalKind = physicalKindFromVariableTypeChoice(nextTypeChoice);
+    const isPhysical = normalizeVariableSource(variable.source) === "physical_input";
 
-    const nextType = normalizeVariableType(value);
-    if (normalizeVariableType(variable.type) === nextType) return;
+    if (nextPhysicalKind) {
+      const nextPrimitiveType = nextPhysicalKind === "analog" ? "number" : "boolean";
+      const channel = normalizePhysicalChannelSelection(nextPhysicalKind, variable.channel || "1");
+      const nextValue = nextPrimitiveType === "number" ? 0 : false;
+      if (
+        isPhysical &&
+        String(variable.input_kind || "").trim().toLowerCase() === nextPhysicalKind &&
+        variable.channel === channel &&
+        normalizeVariableType(variable.type) === nextPrimitiveType
+      ) {
+        return;
+      }
 
-    variable.type = nextType;
+      variable.source = "physical_input";
+      variable.input_kind = isPhysical ? String(variable.input_kind || "digital").trim().toLowerCase() || "digital" : nextPhysicalKind;
+      variable.channel = isPhysical ? normalizePhysicalChannelSelection(variable.input_kind, variable.channel || "1") : channel;
+      variable.type = variable.input_kind === "analog" ? "number" : "boolean";
+      variable.value = variable.type === "number" ? 0 : false;
+      variable.current_value = variable.value;
+    } else {
+      const nextType = normalizeVariableType(nextTypeChoice);
+      if (!isPhysical && normalizeVariableType(variable.type) === nextType) return;
+
+      variable.source = "manual";
+      variable.input_kind = "";
+      variable.channel = "";
+      variable.type = nextType;
+      if (isPhysical) {
+        variable.value = "";
+        variable.current_value = "";
+      }
+    }
+
     markPublicVariablesDirty();
     renderPublicVariablesSidebar();
     renderInspector();
@@ -2109,9 +2308,30 @@ function bindPublicVariableInspector(index) {
     syncVariableType(ev.target.value);
   });
 
+  const syncPhysicalBinding = () => {
+    const variable = getVariable();
+    if (!variable || normalizeVariableSource(variable.source) !== "physical_input") return;
+
+    variable.input_kind = String(document.getElementById("publicVariableInputKind")?.value || variable.input_kind || "digital").trim().toLowerCase();
+    if (!["digital", "analog", "output", "relay"].includes(variable.input_kind)) {
+      variable.input_kind = "digital";
+    }
+    variable.channel = normalizePhysicalChannelSelection(variable.input_kind, document.getElementById("publicVariableChannelInput")?.value || variable.channel || "1");
+    variable.type = variable.input_kind === "analog" ? "number" : "boolean";
+    variable.value = variable.type === "number" ? 0 : false;
+    variable.current_value = variable.value;
+    markPublicVariablesDirty();
+    renderPublicVariablesSidebar();
+    renderInspector();
+  };
+
+  document.getElementById("publicVariableInputKind")?.addEventListener("change", syncPhysicalBinding);
+  document.getElementById("publicVariableChannelInput")?.addEventListener("change", syncPhysicalBinding);
+
   const applyDefaultValue = (value) => {
     const variable = getVariable();
     if (!variable) return;
+    if (normalizeVariableSource(variable.source) === "physical_input") return;
     variable.value = value;
     variable.current_value = value;
     markPublicVariablesDirty();
@@ -2149,6 +2369,19 @@ function refreshPublicVariableRuntimeUi() {
   const valueInput = document.getElementById("publicVariableValueInput");
   if (selectedVariable && valueInput) {
     valueInput.value = formatVariableValue(selectedVariable.current_value ?? selectedVariable.value, selectedVariable.type);
+  }
+
+  const channelInput = document.getElementById("publicVariableChannelInput");
+  const physicalKindInput = document.getElementById("publicVariableInputKind");
+  if (selectedVariable && physicalKindInput && normalizeVariableSource(selectedVariable.source) === "physical_input") {
+    physicalKindInput.value = String(selectedVariable.input_kind || "digital").trim().toLowerCase() || "digital";
+  }
+
+  if (selectedVariable && channelInput && normalizeVariableSource(selectedVariable.source) === "physical_input") {
+    const inputKind = String(selectedVariable.input_kind || "digital").trim().toLowerCase();
+    const selectedChannel = normalizePhysicalChannelSelection(inputKind, selectedVariable.channel || "1");
+    channelInput.innerHTML = physicalInputChannelOptionsHtml(inputKind, selectedChannel);
+    channelInput.value = selectedChannel;
   }
 }
 
@@ -2370,6 +2603,8 @@ function renderNodeInspector(node) {
     }
 
     case "condition.compare":
+      const leftSource = cfg.left_source || "variable";
+      const rightSource = cfg.right_source || "literal";
       body = `
         <div class="inspectorCard">
           <div class="inspectorTitle">Compare</div>
@@ -2381,11 +2616,11 @@ function renderNodeInspector(node) {
             </div>
             <div>
               <label>Compare source</label>
-              <select id="cfg_left_source">${sourceOptionsHtml(cfg.left_source || "variable")}</select>
+              <select id="cfg_left_source">${sourceOptionsHtml(leftSource, true)}</select>
             </div>
-            <div>
+            <div class="${leftSource === "physical_input" ? "full" : ""}">
               <label>Compare value / path</label>
-              <input id="cfg_left_value" value="${escapeHtml(cfg.left_value || "")}" placeholder="armed or extra.changed.IsMotion" list="variableKeysList" />
+              ${renderCompareSourceValueControl("left", leftSource, cfg.left_value || "")}
             </div>
             <div>
               <label>Operator</label>
@@ -2397,11 +2632,11 @@ function renderNodeInspector(node) {
             </div>
             <div>
               <label>Compare to source</label>
-              <select id="cfg_right_source">${sourceOptionsHtml(cfg.right_source || "literal")}</select>
+              <select id="cfg_right_source">${sourceOptionsHtml(rightSource, true)}</select>
             </div>
-            <div>
+            <div class="${rightSource === "physical_input" ? "full" : ""}">
               <label>Compare to value / path</label>
-              <input id="cfg_right_value" value="${escapeHtml(cfg.right_value || "")}" placeholder="true" list="variableKeysList" />
+              ${renderCompareSourceValueControl("right", rightSource, cfg.right_value || "")}
             </div>
           </div>
         </div>
@@ -2437,62 +2672,17 @@ function renderNodeInspector(node) {
             </div>
             <div>
               <label>Variable</label>
-              <select id="cfg_variable_key">${variableKeyOptionsHtml(cfg.variable_key || "")}</select>
+              <select id="cfg_variable_key">${variableKeyOptionsHtml(cfg.variable_key || "", { includePhysical: false })}</select>
             </div>
             <div>
               <label>Value source</label>
-              <select id="cfg_value_source">${sourceOptionsHtml(cfg.value_source || "literal", true)}</select>
+              <select id="cfg_value_source">${sourceOptionsHtml(cfg.value_source || "literal", true, "Literal")}</select>
             </div>
             <div class="full">
               <label>Value</label>
               ${renderSetVariableValueControl(cfg)}
             </div>
-          </div>
-        </div>
-      `;
-      break;
-
-    case "operator.template":
-      body = `
-        <div class="inspectorCard">
-          <div class="inspectorTitle">Template</div>
-          <div class="fieldGrid">
-            <div class="full">
-              <label>Name</label>
-              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
-            </div>
-            <div class="full">
-              <label>Store result in variable</label>
-              <select id="cfg_variable_key">${variableKeyOptionsHtml(cfg.variable_key || "")}</select>
-            </div>
-            <div class="full">
-              <label>Template</label>
-              <textarea id="cfg_template" rows="6">${escapeHtml(cfg.template || "")}</textarea>
-            </div>
-            <div class="full inlineMeta">Use placeholders like {{flow.name}}, {{trigger.kind}}, {{variables.armed}}, or {{last.message}}.</div>
-          </div>
-        </div>
-      `;
-      break;
-
-    case "operator.physical_input":
-      body = `
-        <div class="inspectorCard">
-          <div class="inspectorTitle">Physical input</div>
-          <div class="fieldGrid">
-            <div class="full">
-              <label>Name</label>
-              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
-            </div>
-            <div>
-              <label>Input type</label>
-              <select id="cfg_input_kind">${physicalInputKindOptionsHtml(cfg.input_kind || "digital")}</select>
-            </div>
-            <div>
-              <label>Input</label>
-              <select id="cfg_channel">${physicalInputChannelOptionsHtml(cfg.input_kind || "digital", cfg.channel || "1")}</select>
-            </div>
-            ${renderPhysicalLiveField(cfg.input_kind || "digital", cfg.channel || "1")}
+            ${renderSetVariableTemplateHelp(cfg)}
           </div>
         </div>
       `;
@@ -2634,13 +2824,6 @@ function bindNodeInspector(node) {
     });
   }
 
-  if (node.type === "operator.physical_input") {
-    document.getElementById("cfg_input_kind")?.addEventListener("change", () => {
-      applyNodeInspector(node);
-      renderInspector();
-    });
-  }
-
   if (node.type === "trigger.physical_output_changed") {
     document.getElementById("cfg_target_kind")?.addEventListener("change", () => {
       applyNodeInspector(node);
@@ -2650,6 +2833,38 @@ function bindNodeInspector(node) {
 
   if (node.type === "action.activate_physical_output" || node.type === "action.activate_physical_relay") {
     document.getElementById("cfg_target_kind")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+  }
+
+  if (node.type === "condition.compare") {
+    document.getElementById("cfg_left_source")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+
+    document.getElementById("cfg_right_source")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+
+    document.getElementById("cfg_left_input_kind")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+
+    document.getElementById("cfg_right_input_kind")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+
+    document.getElementById("cfg_left_channel")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+
+    document.getElementById("cfg_right_channel")?.addEventListener("change", () => {
       applyNodeInspector(node);
       renderInspector();
     });
@@ -2667,6 +2882,18 @@ function bindNodeInspector(node) {
     });
 
     document.getElementById("cfg_value_input_kind")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+
+    document.getElementById("cfg_value_channel")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+  }
+
+  if (["trigger.digital_input_changed", "trigger.analog_input_above", "trigger.analog_input_below", "trigger.physical_output_changed", "action.activate_physical_output", "action.activate_physical_relay"].includes(node.type)) {
+    document.getElementById("cfg_channel")?.addEventListener("change", () => {
       applyNodeInspector(node);
       renderInspector();
     });
@@ -2720,10 +2947,14 @@ function applyNodeInspector(node) {
       set("name");
       set("left_source");
       set("left_value");
+      set("left_input_kind");
+      set("left_channel");
       set("operator");
       set("cast");
       set("right_source");
       set("right_value");
+      set("right_input_kind");
+      set("right_channel");
       break;
     case "operator.delay":
       set("name");
@@ -2736,16 +2967,6 @@ function applyNodeInspector(node) {
       set("value");
       set("value_input_kind");
       set("value_channel");
-      break;
-    case "operator.template":
-      set("name");
-      set("variable_key");
-      set("template");
-      break;
-    case "operator.physical_input":
-      set("name");
-      set("input_kind");
-      set("channel");
       break;
     case "action.send_http_request":
       set("name");
@@ -2773,9 +2994,18 @@ function applyNodeInspector(node) {
     cfg.path = normalizePath(cfg.path || "");
   }
 
-  if (node.type === "operator.physical_input") {
-    cfg.input_kind = cfg.input_kind || "digital";
-    cfg.channel = normalizePhysicalChannelSelection(cfg.input_kind, cfg.channel || "1");
+  if (node.type === "condition.compare") {
+    if (cfg.left_source === "physical_input") {
+      cfg.left_input_kind = String(cfg.left_input_kind || "digital").trim().toLowerCase() || "digital";
+      cfg.left_channel = normalizePhysicalChannelSelection(cfg.left_input_kind, cfg.left_channel || "1");
+      cfg.left_value = `${cfg.left_input_kind}:${cfg.left_channel}`;
+    }
+
+    if (cfg.right_source === "physical_input") {
+      cfg.right_input_kind = String(cfg.right_input_kind || "digital").trim().toLowerCase() || "digital";
+      cfg.right_channel = normalizePhysicalChannelSelection(cfg.right_input_kind, cfg.right_channel || "1");
+      cfg.right_value = `${cfg.right_input_kind}:${cfg.right_channel}`;
+    }
   }
 
   if (node.type === "operator.set_variable" && cfg.value_source === "physical_input") {
@@ -2878,65 +3108,16 @@ function refreshPhysicalNodePreviews() {
 }
 
 function refreshPhysicalInspectorLiveValues() {
-  const flow = currentFlow();
-  if (!flow || !state.selectedNodeId) return;
-
-  const node = flow.nodes.find((item) => item.id === state.selectedNodeId);
-  if (!node) return;
-
-  let kind = null;
-  let channel = null;
-  let labelText = "Current value";
-  const cfg = node.config || {};
-
-  switch (node.type) {
-    case "operator.physical_input":
-      kind = cfg.input_kind || "digital";
-      channel = cfg.channel || "1";
-      labelText = "Current value";
-      break;
-    case "operator.set_variable":
-      if (cfg.value_source === "physical_input") {
-        kind = cfg.value_input_kind || "digital";
-        channel = cfg.value_channel || "1";
-        labelText = kind === "analog" ? "Current value" : "Current state";
-      }
-      break;
-    case "trigger.digital_input_changed":
-      kind = "digital";
-      channel = cfg.channel || "1";
-      labelText = "Current state";
-      break;
-    case "trigger.analog_input_above":
-    case "trigger.analog_input_below":
-      kind = "analog";
-      channel = cfg.channel || "1";
-      labelText = "Current voltage";
-      break;
-    case "trigger.physical_output_changed":
-      kind = String(cfg.target_kind || "output").trim().toLowerCase() === "relay" ? "relay" : "output";
-      channel = cfg.channel || "1";
-      labelText = kind === "relay" ? "Current relay state" : "Current output state";
-      break;
-    case "action.activate_physical_output":
-      kind = String(cfg.target_kind || "output").trim().toLowerCase() === "relay" ? "relay" : "output";
-      channel = cfg.channel || "1";
-      labelText = kind === "relay" ? "Current relay state" : "Current output state";
-      break;
-    default:
-      break;
-  }
-
-  const input = document.getElementById("physicalCurrentValue");
-  if (input && kind && channel) {
+  document.querySelectorAll("#inspectorBody [data-physical-live-kind]").forEach((input) => {
+    const kind = String(input.dataset.physicalLiveKind || "digital").trim().toLowerCase() || "digital";
+    const channel = normalizePhysicalChannelSelection(kind, input.dataset.physicalLiveChannel || "1");
+    input.dataset.physicalLiveChannel = channel;
     input.value = physicalLiveValueText(kind, channel);
-    input.setAttribute("aria-label", labelText);
-  }
+  });
 
-  const meta = document.getElementById("physicalCurrentMeta");
-  if (meta) {
+  document.querySelectorAll("#inspectorBody [data-physical-live-meta]").forEach((meta) => {
     meta.textContent = physicalMetaText();
-  }
+  });
 }
 
 function refreshPhysicalUi() {
