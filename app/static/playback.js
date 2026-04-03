@@ -4,6 +4,7 @@ const DAY_MINUTES = 24 * 60;
 const MIN_VISIBLE_MINUTES = 5;
 const CLICK_SUPPRESSION_MS = 250;
 const PAN_DRAG_THRESHOLD_PX = 6;
+const MAX_NATIVE_PLAYBACK_RATE = 16;
 
 const state = {
   devices: [],
@@ -13,6 +14,13 @@ const state = {
   transport: {
     speed: 1,
     direction: "forward",
+    advancingToNextClip: false,
+    forwardBoundaryTimer: 0,
+    forwardPlayback: {
+      active: false,
+      rafId: 0,
+      lastTs: 0,
+    },
     reversePlayback: {
       active: false,
       rafId: 0,
@@ -91,12 +99,24 @@ function reversePlaybackState() {
   return state.transport.reversePlayback;
 }
 
+function forwardPlaybackState() {
+  return state.transport.forwardPlayback;
+}
+
 function isReverseDirection() {
   return playbackDirectionLabel() === "backward";
 }
 
 function isReversePlaybackActive() {
   return !!reversePlaybackState().active;
+}
+
+function shouldSimulateForwardPlayback(speed = state.transport.speed, direction = state.transport.direction) {
+  return normalizePlaybackDirection(direction) !== "backward" && normalizePlaybackSpeed(speed) > MAX_NATIVE_PLAYBACK_RATE;
+}
+
+function isSimulatedForwardPlaybackActive() {
+  return !!forwardPlaybackState().active;
 }
 
 function playbackTransportIcon(icon) {
@@ -115,6 +135,7 @@ function showVideoEmpty(title, text) {
   const titleNode = empty?.querySelector(".playbackVideoEmptyTitle");
 
   stopPlaybackCursorLoop();
+  stopSimulatedForwardPlayback();
   stopReversePlayback();
 
   if (video) {
@@ -325,6 +346,10 @@ function isPlaybackRunning(video = el("playbackVideo")) {
     return isReversePlaybackActive();
   }
 
+  if (isSimulatedForwardPlaybackActive()) {
+    return true;
+  }
+
   return !!(video && video.currentSrc && !video.paused && !video.ended);
 }
 
@@ -379,8 +404,22 @@ function syncPlaybackTransport() {
 
   if (video) {
     const speed = normalizePlaybackSpeed(state.transport.speed);
-    video.playbackRate = speed;
-    video.defaultPlaybackRate = speed;
+    const nativeSpeed = shouldSimulateForwardPlayback(speed, state.transport.direction)
+      ? MAX_NATIVE_PLAYBACK_RATE
+      : speed;
+    video.playbackRate = nativeSpeed;
+    video.defaultPlaybackRate = nativeSpeed;
+  }
+}
+
+function stopSimulatedForwardPlayback() {
+  const forward = forwardPlaybackState();
+  forward.active = false;
+  forward.lastTs = 0;
+
+  if (forward.rafId) {
+    cancelAnimationFrame(forward.rafId);
+    forward.rafId = 0;
   }
 }
 
@@ -397,8 +436,11 @@ function stopReversePlayback() {
 
 function pauseCurrentPlayback() {
   const video = el("playbackVideo");
+  clearForwardPlaybackBoundarySchedule();
+  stopSimulatedForwardPlayback();
   stopReversePlayback();
   stopPlaybackCursorLoop();
+  state.transport.advancingToNextClip = false;
 
   if (video && !video.paused) {
     video.pause();
@@ -433,12 +475,84 @@ async function handleReversePlaybackBoundary(event) {
   });
 }
 
+function clearForwardPlaybackBoundarySchedule() {
+  if (state.transport.forwardBoundaryTimer) {
+    window.clearTimeout(state.transport.forwardBoundaryTimer);
+    state.transport.forwardBoundaryTimer = 0;
+  }
+}
+
+async function handleForwardPlaybackBoundary(event) {
+  clearForwardPlaybackBoundarySchedule();
+
+  if (!event || state.selectedEventId !== event.id || state.transport.advancingToNextClip) {
+    syncPlaybackTransport();
+    return;
+  }
+
+  state.transport.advancingToNextClip = true;
+
+  try {
+    const video = el("playbackVideo");
+    stopPlaybackCursorLoop();
+    stopSimulatedForwardPlayback();
+    stopReversePlayback();
+    if (video && !video.paused) {
+      video.pause();
+    }
+    syncPlaybackTransport();
+
+    const nextEvent = nextTimelineEvent(event.id);
+    if (!nextEvent) {
+      setStatus(`Finished ${event.title}.`);
+      return;
+    }
+
+    setStatus(`Finished ${event.title}. Loading ${nextEvent.title}…`);
+    await selectEvent(nextEvent.id, { autoplay: true });
+  } finally {
+    state.transport.advancingToNextClip = false;
+  }
+}
+
+function playbackReachedEnd(video, event) {
+  if (!video || !event || isReverseDirection() || state.transport.advancingToNextClip) {
+    return false;
+  }
+
+  const duration = playbackDurationSeconds(video, event);
+  if (!(Number.isFinite(duration) && duration > 0)) {
+    return false;
+  }
+
+  return (Number(video.currentTime) || 0) >= Math.max(0, duration - 0.05);
+}
+
+function queueForwardPlaybackBoundaryCheck(event = selectedEvent()) {
+  const video = el("playbackVideo");
+  if (!playbackReachedEnd(video, event)) {
+    return;
+  }
+
+  if (state.transport.forwardBoundaryTimer) {
+    return;
+  }
+
+  state.transport.forwardBoundaryTimer = window.setTimeout(() => {
+    state.transport.forwardBoundaryTimer = 0;
+    handleForwardPlaybackBoundary(event).catch((error) => {
+      setStatus(error.message || String(error));
+    });
+  }, 0);
+}
+
 async function startReversePlayback(video, event) {
   if (!video || !event) {
     return false;
   }
 
   stopPlaybackCursorLoop();
+  stopSimulatedForwardPlayback();
   stopReversePlayback();
   video.pause();
 
@@ -484,6 +598,64 @@ async function startReversePlayback(video, event) {
   return true;
 }
 
+async function startSimulatedForwardPlayback(video, event) {
+  if (!video || !event) {
+    return false;
+  }
+
+  clearForwardPlaybackBoundarySchedule();
+  stopPlaybackCursorLoop();
+  stopSimulatedForwardPlayback();
+  stopReversePlayback();
+  video.pause();
+
+  const forward = forwardPlaybackState();
+  forward.active = true;
+  forward.lastTs = 0;
+  syncPlaybackTransport();
+
+  const tick = (timestamp) => {
+    if (!forward.active || state.selectedEventId !== event.id) {
+      forward.rafId = 0;
+      return;
+    }
+
+    if (!forward.lastTs) {
+      forward.lastTs = timestamp;
+    }
+
+    const duration = playbackDurationSeconds(video, event);
+    if (!(Number.isFinite(duration) && duration > 0)) {
+      stopSimulatedForwardPlayback();
+      syncPlaybackTransport();
+      return;
+    }
+
+    const elapsedSeconds = clamp((timestamp - forward.lastTs) / 1000, 0, 0.25);
+    forward.lastTs = timestamp;
+
+    const nextTime = Math.min(
+      duration,
+      (Number(video.currentTime) || 0) + (elapsedSeconds * normalizePlaybackSpeed(state.transport.speed))
+    );
+
+    video.currentTime = nextTime;
+    updatePlaybackCursorFromVideo();
+
+    if (nextTime >= Math.max(0, duration - 0.001)) {
+      stopSimulatedForwardPlayback();
+      syncPlaybackTransport();
+      queueForwardPlaybackBoundaryCheck(event);
+      return;
+    }
+
+    forward.rafId = requestAnimationFrame(tick);
+  };
+
+  forward.rafId = requestAnimationFrame(tick);
+  return true;
+}
+
 async function startConfiguredPlayback(video, event) {
   if (!video || !event) {
     return false;
@@ -493,6 +665,13 @@ async function startConfiguredPlayback(video, event) {
     return await startReversePlayback(video, event);
   }
 
+  if (shouldSimulateForwardPlayback()) {
+    const started = await startSimulatedForwardPlayback(video, event);
+    syncPlaybackTransport();
+    return started;
+  }
+
+  stopSimulatedForwardPlayback();
   stopReversePlayback();
   video.playbackRate = normalizePlaybackSpeed(state.transport.speed);
   video.defaultPlaybackRate = normalizePlaybackSpeed(state.transport.speed);
@@ -514,11 +693,29 @@ function playbackStatusText(event, started) {
 }
 
 function setPlaybackSpeed(value) {
+  const video = el("playbackVideo");
+  const event = selectedEvent();
+  const previousSpeed = state.transport.speed;
+  const wasRunning = isPlaybackRunning(video);
+
   state.transport.speed = normalizePlaybackSpeed(value);
   syncPlaybackTransport();
 
-  const event = selectedEvent();
-  if (event && isPlaybackRunning()) {
+  const crossedNativeLimit = !isReverseDirection()
+    && shouldSimulateForwardPlayback(previousSpeed) !== shouldSimulateForwardPlayback(state.transport.speed);
+
+  if (event && video && wasRunning && crossedNativeLimit) {
+    startConfiguredPlayback(video, event)
+      .then((started) => {
+        setStatus(playbackStatusText(event, started));
+      })
+      .catch((error) => {
+        setStatus(error.message || String(error));
+      });
+    return;
+  }
+
+  if (event && wasRunning) {
     setStatus(`Playing ${event.title} ${playbackDirectionLabel()} at ${formatPlaybackSpeed(state.transport.speed)}.`);
   }
 }
@@ -731,6 +928,7 @@ function startPlaybackCursorLoop() {
 
   const tick = () => {
     updatePlaybackCursorFromVideo();
+    queueForwardPlaybackBoundaryCheck();
 
     const video = el("playbackVideo");
     if (video && !video.paused && !video.ended) {
@@ -839,6 +1037,7 @@ async function selectEvent(eventId, options = {}) {
   const event = state.timeline.events.find((item) => item.id === eventId);
   if (!event) return;
 
+  clearForwardPlaybackBoundarySchedule();
   const range = dayRange(event.clip_start, event.clip_end);
   ensureTimelineRangeVisible(range.startMinute, range.endMinute);
 
@@ -857,6 +1056,7 @@ async function selectEvent(eventId, options = {}) {
   syncPlaybackTransport();
   stopPlaybackCursorLoop();
   stopReversePlayback();
+  stopSimulatedForwardPlayback();
   setPlaybackCursor({ minute: range.startMinute + (seekSeconds / 60), label: clockLabel(Date.parse(event.clip_start) + (seekSeconds * 1000)) });
 
   if (isSameEvent) {
@@ -895,11 +1095,14 @@ async function selectEvent(eventId, options = {}) {
 }
 
 async function loadTimeline() {
+  clearForwardPlaybackBoundarySchedule();
+
   if (!state.selectedDeviceId) {
     state.timeline = { segments: [], events: [] };
     state.selectedEventId = null;
     stopPlaybackCursorLoop();
     stopReversePlayback();
+    stopSimulatedForwardPlayback();
     setPlaybackCursor(null);
     renderTimeline();
     syncPlaybackTransport();
@@ -926,6 +1129,7 @@ async function loadTimeline() {
   } else {
     stopPlaybackCursorLoop();
     stopReversePlayback();
+    stopSimulatedForwardPlayback();
     setPlaybackCursor(null);
     updatePlaybackHeader(null);
     showVideoEmpty("No clip selected", "Choose a colored marker from the timeline below to load a recording.");
@@ -959,8 +1163,10 @@ async function clearAllRecordings() {
   if (button) button.disabled = true;
 
   try {
+    clearForwardPlaybackBoundarySchedule();
     stopPlaybackCursorLoop();
     stopReversePlayback();
+    stopSimulatedForwardPlayback();
     setPlaybackCursor(null);
     showVideoEmpty("No clip selected", "Choose a colored marker from the timeline below to load a recording.");
     updatePlaybackHeader(null);
@@ -1012,12 +1218,14 @@ function bindUi() {
     stopPlaybackCursorLoop();
     if (!isReversePlaybackActive()) {
       updatePlaybackCursorFromVideo();
+      queueForwardPlaybackBoundaryCheck();
     }
     syncPlaybackTransport();
   });
 
   video?.addEventListener("timeupdate", () => {
     updatePlaybackCursorFromVideo();
+    queueForwardPlaybackBoundaryCheck();
   });
 
   video?.addEventListener("seeking", () => {
@@ -1026,34 +1234,38 @@ function bindUi() {
 
   video?.addEventListener("seeked", () => {
     updatePlaybackCursorFromVideo();
+    queueForwardPlaybackBoundaryCheck();
   });
 
   video?.addEventListener("ended", async () => {
-    stopPlaybackCursorLoop();
-    stopReversePlayback();
     updatePlaybackCursorFromVideo();
-    syncPlaybackTransport();
 
     const currentEvent = selectedEvent();
-    const nextEvent = currentEvent ? nextTimelineEvent(currentEvent.id) : null;
-    if (!currentEvent || !nextEvent) {
-      setStatus(currentEvent ? `Finished ${currentEvent.title}.` : "Playback ended.");
+    if (!currentEvent) {
+      stopPlaybackCursorLoop();
+      stopReversePlayback();
+      stopSimulatedForwardPlayback();
+      syncPlaybackTransport();
+      setStatus("Playback ended.");
       return;
     }
 
-    setStatus(`Finished ${currentEvent.title}. Loading ${nextEvent.title}…`);
-    await selectEvent(nextEvent.id, { autoplay: true });
+    await handleForwardPlaybackBoundary(currentEvent);
   });
 
   video?.addEventListener("emptied", () => {
+    clearForwardPlaybackBoundarySchedule();
     stopPlaybackCursorLoop();
     stopReversePlayback();
+    stopSimulatedForwardPlayback();
     syncPlaybackTransport();
   });
 
   video?.addEventListener("error", () => {
+    clearForwardPlaybackBoundarySchedule();
     stopPlaybackCursorLoop();
     stopReversePlayback();
+    stopSimulatedForwardPlayback();
     setPlaybackCursor(null);
     const event = state.timeline.events.find((item) => item.id === state.selectedEventId);
     showVideoEmpty(
