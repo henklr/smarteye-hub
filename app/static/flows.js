@@ -717,7 +717,13 @@ function nodePreview(node) {
     case "action.record": {
       const device = state.devices.find((item) => item.id === cfg.device_id);
       const label = device?.name || cfg.device_id || "camera";
-      return `${label} · -${formatSecondsLabel(cfg.before_seconds ?? 0)} / +${formatSecondsLabel(cfg.after_seconds ?? 0)}`;
+      return `${label} · start · -${formatSecondsLabel(cfg.before_seconds ?? 0)}`;
+    }
+
+    case "action.stop_recording": {
+      const device = state.devices.find((item) => item.id === cfg.device_id);
+      const label = device?.name || cfg.device_id || "camera";
+      return `${label} · stop`;
     }
 
     case "action.log_message":
@@ -2811,8 +2817,8 @@ function renderNodeInspector(node) {
     case "action.record":
       body = `
         <div class="inspectorCard">
-          <div class="inspectorTitle">Record</div>
-          <div class="inspectorHint">Adds a colored playback marker around this moment for the selected camera.</div>
+          <div class="inspectorTitle">Start recording</div>
+          <div class="inspectorHint">Starts a colored playback marker for the selected camera. Use a Stop recording node later in the flow to end it.</div>
           <div class="fieldGrid mt-10">
             <div class="full">
               <label>Name</label>
@@ -2826,13 +2832,24 @@ function renderNodeInspector(node) {
               <label>Seconds before</label>
               <input id="cfg_before_seconds" type="number" min="0" step="1" value="${escapeHtml(cfg.before_seconds ?? 10)}" />
             </div>
-            <div>
-              <label>Seconds after</label>
-              <input id="cfg_after_seconds" type="number" min="0" step="1" value="${escapeHtml(cfg.after_seconds ?? 20)}" />
-            </div>
             <div class="full">
               <label>Timeline color</label>
               <input id="cfg_color" type="color" value="${escapeHtml(cfg.color || "#c6a14b")}" />
+            </div>
+          </div>
+        </div>
+      `;
+      break;
+
+    case "action.stop_recording":
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Stop recording</div>
+          <div class="inspectorHint">Stops the most recent in-progress recording marker for the selected camera.</div>
+          <div class="fieldGrid mt-10">
+            <div class="full">
+              <label>Camera</label>
+              <select id="cfg_device_id">${deviceOptionsHtml(cfg.device_id || "")}</select>
             </div>
           </div>
         </div>
@@ -3099,8 +3116,10 @@ function applyNodeInspector(node) {
       set("name");
       set("device_id");
       set("before_seconds");
-      set("after_seconds");
       set("color");
+      break;
+    case "action.stop_recording":
+      set("device_id");
       break;
     case "action.log_message":
       set("name");
@@ -3156,7 +3175,7 @@ function applyNodeInspector(node) {
 
   if (node.type === "action.record") {
     cfg.before_seconds = Math.max(0, Number(cfg.before_seconds || 0));
-    cfg.after_seconds = Math.max(0, Number(cfg.after_seconds || 0));
+    delete cfg.after_seconds;
     const color = String(cfg.color || "#c6a14b").trim().toLowerCase();
     cfg.color = /^#[0-9a-f]{6}$/.test(color) ? color : "#c6a14b";
   }

@@ -113,6 +113,27 @@ def _save_events(items: List[Dict[str, Any]]) -> None:
     RECORDING_EVENTS_JSON.write_text(json.dumps(items, indent=2), encoding="utf-8")
 
 
+def _clip_end_after(started_at: datetime, ended_at: datetime) -> datetime:
+    minimum_end = started_at + timedelta(milliseconds=100)
+    return ended_at if ended_at > minimum_end else minimum_end
+
+
+def _event_is_open(event: Dict[str, Any]) -> bool:
+    try:
+        _parse_iso(event.get("clip_end"))
+    except Exception:
+        return True
+    return False
+
+
+def _event_clip_bounds(event: Dict[str, Any]) -> Tuple[datetime, datetime]:
+    started_at = _parse_iso(event.get("clip_start"))
+    ended_at = _parse_iso(event.get("clip_end"))
+    if ended_at <= started_at:
+        raise ValueError("Recording event has an invalid time range")
+    return started_at, ended_at
+
+
 def _load_flows() -> List[Dict[str, Any]]:
     try:
         payload = json.loads(FLOWS_JSON.read_text(encoding="utf-8"))
@@ -400,7 +421,7 @@ def create_recording_marker(
     *,
     device_id: str,
     before_seconds: float,
-    after_seconds: float,
+    after_seconds: Optional[float],
     color: str,
     title: str,
     flow_id: Optional[str] = None,
@@ -408,19 +429,23 @@ def create_recording_marker(
     node_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     trigger_at = _utc_now()
-    clip_start = trigger_at - timedelta(seconds=max(0.0, float(before_seconds or 0)))
-    clip_end = trigger_at + timedelta(seconds=max(0.0, float(after_seconds or 0)))
+    normalized_before = max(0.0, float(before_seconds or 0))
+    normalized_after = None if after_seconds is None else max(0.0, float(after_seconds or 0))
+    clip_start = trigger_at - timedelta(seconds=normalized_before)
+    clip_end = None
+    if normalized_after is not None:
+        clip_end = _clip_end_after(clip_start, trigger_at + timedelta(seconds=normalized_after))
 
     event = {
         "id": uuid.uuid4().hex[:12],
         "device_id": str(device_id or "").strip(),
         "title": str(title or "Recording").strip() or "Recording",
         "color": _clamp_color(color),
-        "before_seconds": max(0.0, float(before_seconds or 0)),
-        "after_seconds": max(0.0, float(after_seconds or 0)),
+        "before_seconds": normalized_before,
+        "after_seconds": normalized_after,
         "triggered_at": trigger_at.isoformat(),
         "clip_start": clip_start.isoformat(),
-        "clip_end": clip_end.isoformat(),
+        "clip_end": clip_end.isoformat() if clip_end is not None else None,
         "flow_id": str(flow_id or "").strip() or None,
         "flow_name": str(flow_name or "").strip() or None,
         "node_id": str(node_id or "").strip() or None,
@@ -433,6 +458,34 @@ def create_recording_marker(
         _save_events(items)
 
     return event
+
+
+def stop_recording_marker(*, device_id: str) -> Dict[str, Any]:
+    normalized_device_id = str(device_id or "").strip()
+    if not normalized_device_id:
+        raise ValueError("Recording stop action needs a device")
+
+    stop_at = _utc_now()
+
+    with _events_lock:
+        items = _load_events()
+        for index in range(len(items) - 1, -1, -1):
+            event = items[index]
+            if str(event.get("device_id") or "").strip() != normalized_device_id:
+                continue
+            if not _event_is_open(event):
+                continue
+
+            trigger_at = _parse_iso(event.get("triggered_at"))
+            clip_start = _parse_iso(event.get("clip_start"))
+            clip_end = _clip_end_after(clip_start, max(stop_at, trigger_at))
+            event["clip_end"] = clip_end.isoformat()
+            event["after_seconds"] = max(0.0, (clip_end - trigger_at).total_seconds())
+            items[index] = event
+            _save_events(items)
+            return event
+
+    raise LookupError(f"No active recording found for device {normalized_device_id}")
 
 
 def _serialize_segment(segment: RecordingSegment) -> Dict[str, Any]:
@@ -483,9 +536,9 @@ def _build_event_clip(event: Dict[str, Any]) -> Path:
         return clip_path
 
     device_id = str(event.get("device_id") or "").strip()
-    started_at = _parse_iso(event.get("clip_start"))
-    ended_at = _parse_iso(event.get("clip_end"))
-    if ended_at <= started_at:
+    try:
+        started_at, ended_at = _event_clip_bounds(event)
+    except ValueError:
         raise HTTPException(status_code=400, detail="Recording event has an invalid time range")
 
     segments = _segments_for_range(device_id, started_at, ended_at)
@@ -639,13 +692,16 @@ def playback_timeline(device_id: str = Query(..., min_length=1), day: Optional[s
     segments = _segments_for_range(device_id, started_at, ended_at)
 
     with _events_lock:
-        events = [
-            _serialize_event(item)
-            for item in _load_events()
-            if str(item.get("device_id") or "").strip() == device_id
-            and _parse_iso(item.get("clip_start")) < ended_at
-            and _parse_iso(item.get("clip_end")) > started_at
-        ]
+        events = []
+        for item in _load_events():
+            if str(item.get("device_id") or "").strip() != device_id:
+                continue
+            try:
+                event_started_at, event_ended_at = _event_clip_bounds(item)
+            except Exception:
+                continue
+            if event_started_at < ended_at and event_ended_at > started_at:
+                events.append(_serialize_event(item))
 
     events.sort(key=lambda item: str(item.get("triggered_at") or ""))
     return {
