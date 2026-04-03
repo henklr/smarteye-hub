@@ -100,12 +100,38 @@ body.playbackPage {
 }
 
 .playbackPage .playbackTimelineScale {
-  display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: 8px;
+  position: relative;
+  min-height: 22px;
+  padding-bottom: 8px;
   color: var(--muted);
   font-size: 11px;
   font-weight: 700;
+  overflow: hidden;
+}
+
+.playbackPage .playbackTimelineTick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.playbackPage .playbackTimelineTick::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 4px);
+  width: 1px;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.playbackPage .playbackTimelineTick.is-edge {
+  transform: none;
+}
+
+.playbackPage .playbackTimelineTick.is-end {
+  transform: translateX(-100%);
 }
 
 .playbackPage .playbackTimelineTrack {
@@ -116,8 +142,15 @@ body.playbackPage {
   background:
     linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.015));
-  background-size: calc(100% / 12) 100%, cover;
+  background-size: var(--timeline-grid-width, calc(100% / 12)) 100%, cover;
   overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.playbackPage .playbackTimelineTrack.is-dragging {
+  cursor: grabbing;
 }
 
 .playbackPage .playbackTimelineBase {
@@ -139,6 +172,44 @@ body.playbackPage {
   background: rgba(198, 161, 75, 0.18);
 }
 
+.playbackPage .playbackTimelineCursor {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  width: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.playbackPage .playbackTimelineCursor::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0 0 1px rgba(8, 12, 16, 0.42), 0 0 18px rgba(198, 161, 75, 0.22);
+}
+
+.playbackPage .playbackTimelineCursorLabel {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translate(-50%, 0);
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(8, 12, 16, 0.88);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
 .playbackPage .playbackMarker {
   position: absolute;
   top: 18px;
@@ -148,6 +219,7 @@ body.playbackPage {
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.24);
   opacity: 0.9;
   cursor: pointer;
+  z-index: 2;
 }
 
 .playbackPage .playbackMarker:hover,
