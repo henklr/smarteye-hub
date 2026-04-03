@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Playback</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/playback.css" />
+</head>
+
+<body class="playbackPage">
+  <div class="wrap full">
+    <div class="topbar">
+      <div class="tabs">
+        <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
+        <a class="tab active" href="/playback"><span class="tabDot"></span>Playback</a>
+        <a class="tab" href="/flows"><span class="tabDot"></span>Flows</a>
+      </div>
+    </div>
+
+    <div class="playbackShell">
+      <section class="card playbackViewerCard">
+        <div class="listHeader compact playbackHeader">
+          <div>
+            <div class="listTitle small">Playback</div>
+            <div class="listSub" id="playbackHeaderSub">Select a camera and marker to load a recorded clip.</div>
+          </div>
+          <div class="playbackHeaderActions">
+            <div>
+              <label for="playbackDeviceSelect">Camera</label>
+              <select id="playbackDeviceSelect"></select>
+            </div>
+            <div>
+              <label for="playbackDayInput">Day</label>
+              <input id="playbackDayInput" type="date" />
+            </div>
+            <button class="btn" id="playbackRefreshBtn" type="button">Refresh</button>
+            <button class="btn btn-danger" id="playbackClearBtn" type="button">Clear all recordings</button>
+          </div>
+        </div>
+
+        <div class="playbackVideoShell" id="playbackVideoShell">
+          <video id="playbackVideo" class="playbackVideo" controls playsinline preload="metadata"></video>
+          <div class="playbackVideoEmpty" id="playbackVideoEmpty">
+            <div class="playbackVideoEmptyTitle">No clip selected</div>
+            <div class="playbackVideoEmptyText" id="playbackVideoEmptyText">Choose a colored marker from the timeline below to load a recording.</div>
+          </div>
+        </div>
+
+        <div class="statusLine compact playbackStatusLine">
+          <strong>Status:</strong> <span id="playbackStatus" class="muted">Loading cameras…</span>
+        </div>
+      </section>
+
+      <section class="card playbackTimelineCard">
+        <div class="listHeader compact">
+          <div>
+            <div class="listTitle small">Recordings timeline</div>
+            <div class="listSub" id="playbackTimelineSub">Colored markers come from the Record node and open event clips.</div>
+          </div>
+        </div>
+
+        <div class="playbackTimelineWrap">
+          <div class="playbackTimelineScale" id="playbackTimelineScale"></div>
+          <div class="playbackTimelineTrack" id="playbackTimelineTrack"></div>
+        </div>
+
+        <div class="playbackMarkerList" id="playbackMarkerList"></div>
+      </section>
+    </div>
+  </div>
+
+  <script src="/static/playback.js"></script>
+</body>
+
+</html>

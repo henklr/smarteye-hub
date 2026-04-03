@@ -1836,6 +1836,11 @@ body.tileMaximizedMode #videoGrid {
     mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 3l2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2L12 3Z'/></svg>");
   }
 
+  .tab[href="/playback"] .tabDot::before {
+    -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M5 5h14v11H5V5Zm2 2v7h10V7H7Zm2 10h6v2H9v-2Z'/></svg>");
+    mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M5 5h14v11H5V5Zm2 2v7h10V7H7Zm2 10h6v2H9v-2Z'/></svg>");
+  }
+
   .tab:hover {
     background: rgba(255, 255, 255, 0.03);
     color: rgba(255, 255, 255, 0.82);

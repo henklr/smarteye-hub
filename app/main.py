@@ -27,6 +27,13 @@ from flows import (
     dispatch_flow_trigger,
     get_flow_topics_for_device,
 )
+from playback import (
+    router as playback_router,
+    request_recorders_refresh,
+    set_recording_path_refresher,
+    start_recording_service,
+    stop_recording_service,
+)
 from physical_io import start_physical_io_monitor, stop_physical_io_monitor
 
 app = FastAPI()
@@ -35,6 +42,7 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(flows_router)
+app.include_router(playback_router)
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1642,6 +1650,7 @@ async def refresh_device_stream(device_id: str):
 
     try:
         out = await asyncio.to_thread(_refresh_device_stream, device_id)
+        request_recorders_refresh()
         return {"ok": True, "device_id": device_id, "result": out}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Refresh stream failed: {e}")
@@ -1676,6 +1685,8 @@ def create_device(dev: DeviceIn):
         except Exception:
             pass
 
+    request_recorders_refresh()
+
     return {"ok": True, "device": _dump(new)}
 
 
@@ -1686,6 +1697,7 @@ def update_device(device_id: str, dev_in: DeviceIn):
         raise HTTPException(status_code=400, detail="Missing device_id")
 
     dev = _update_device(device_id, dev_in)
+    request_recorders_refresh()
     return {"ok": True, "device": _dump(dev)}
 
 
@@ -1711,6 +1723,8 @@ def delete_device(device_id: str):
         _mediamtx_delete_path(device_id)
     except Exception:
         pass
+
+    request_recorders_refresh()
 
     return {"ok": True}
 
@@ -1818,6 +1832,7 @@ async def start(req: StartRequest):
             source_rtsp,
             bool(device.preload_stream) if device else False,
         )
+        request_recorders_refresh()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"MediaMTX path setup failed: {e}")
 
@@ -1914,6 +1929,9 @@ def _on_startup():
     try:
         devs = _load_devices()
 
+        set_recording_path_refresher(_refresh_device_stream)
+        start_recording_service()
+
         global _flow_monitor_thread
         _flow_monitor_stop.clear()
         _flow_monitor_thread = threading.Thread(
@@ -1940,6 +1958,8 @@ def _on_startup():
                 _preload_stream_for_device(d)
             except Exception:
                 pass
+
+        request_recorders_refresh()
     except Exception:
         pass
 
@@ -1958,6 +1978,7 @@ def _on_shutdown():
 
     _flow_monitor_stop.set()
     stop_physical_io_monitor()
+    stop_recording_service()
 
     with _ptz_watchdog_lock:
         timers = list(_ptz_watchdogs.values())

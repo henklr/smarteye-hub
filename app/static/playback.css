@@ -1,0 +1,234 @@
+body.playbackPage {
+  overflow: hidden;
+}
+
+.playbackPage .wrap.full {
+  max-width: 100%;
+  padding-bottom: 22px;
+}
+
+.playbackPage .playbackShell {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 14px;
+  height: calc(100vh - 108px);
+  min-height: 0;
+}
+
+.playbackPage .playbackViewerCard,
+.playbackPage .playbackTimelineCard {
+  min-height: 0;
+}
+
+.playbackPage .playbackViewerCard {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.playbackPage .playbackHeader {
+  margin-bottom: 0;
+}
+
+.playbackPage .playbackHeaderActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+
+.playbackPage .playbackHeaderActions > div {
+  min-width: 180px;
+}
+
+.playbackPage .playbackVideoShell {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid var(--stroke);
+  border-radius: 18px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top left, rgba(198, 161, 75, 0.08), transparent 30%),
+    linear-gradient(180deg, rgba(12, 16, 20, 0.96), rgba(8, 12, 16, 0.98));
+}
+
+.playbackPage .playbackVideo {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #05070a;
+}
+
+.playbackPage .playbackVideoEmpty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+}
+
+.playbackPage .playbackVideoEmptyTitle {
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.playbackPage .playbackVideoEmptyText {
+  max-width: 480px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.playbackPage .playbackStatusLine {
+  margin-top: 0;
+}
+
+.playbackPage .playbackTimelineCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.playbackPage .playbackTimelineWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.playbackPage .playbackTimelineScale {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.playbackPage .playbackTimelineTrack {
+  position: relative;
+  min-height: 82px;
+  border: 1px solid var(--stroke);
+  border-radius: 14px;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.015));
+  background-size: calc(100% / 12) 100%, cover;
+  overflow: hidden;
+}
+
+.playbackPage .playbackTimelineBase {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 8px;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.playbackPage .playbackCoverageBar {
+  position: absolute;
+  top: 50%;
+  height: 10px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: rgba(198, 161, 75, 0.18);
+}
+
+.playbackPage .playbackMarker {
+  position: absolute;
+  top: 18px;
+  height: 44px;
+  border: 0;
+  border-radius: 999px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.24);
+  opacity: 0.9;
+  cursor: pointer;
+}
+
+.playbackPage .playbackMarker:hover,
+.playbackPage .playbackMarker.is-active {
+  opacity: 1;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.22), 0 8px 18px rgba(0, 0, 0, 0.28);
+}
+
+.playbackPage .playbackMarkerList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.playbackPage .playbackMarkerRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 220px;
+  padding: 10px 12px;
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.playbackPage .playbackMarkerRow:hover,
+.playbackPage .playbackMarkerRow.is-active {
+  border-color: rgba(198, 161, 75, 0.26);
+  background: rgba(198, 161, 75, 0.08);
+}
+
+.playbackPage .playbackMarkerSwatch {
+  width: 12px;
+  height: 38px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.playbackPage .playbackMarkerMeta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.playbackPage .playbackMarkerTitle {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.playbackPage .playbackMarkerSub {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.playbackPage .hidden {
+  display: none !important;
+}
+
+@media (max-width: 980px) {
+  body.playbackPage {
+    overflow: auto;
+  }
+
+  .playbackPage .playbackShell {
+    height: auto;
+  }
+
+  .playbackPage .playbackHeaderActions {
+    width: 100%;
+  }
+
+  .playbackPage .playbackHeaderActions > div {
+    min-width: 0;
+    flex: 1 1 180px;
+  }
+
+  .playbackPage .playbackVideoShell {
+    min-height: 340px;
+  }
+}

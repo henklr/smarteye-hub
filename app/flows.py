@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
+from playback import create_recording_marker
 
 from physical_io import (
     activate_physical_output,
@@ -247,6 +248,21 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
         "defaults": {"target_kind": "output", "channel": "1", "mode": "pulse", "pulse_seconds": 2, "name": ""},
+    },
+    {
+        "type": "action.record",
+        "category": "action",
+        "label": "Record",
+        "description": "Creates a colored playback marker around the current moment for the selected camera.",
+        "color": "#ff8c42",
+        "ports": {"inputs": ["in"], "outputs": ["out"]},
+        "defaults": {
+            "device_id": "",
+            "before_seconds": 10,
+            "after_seconds": 20,
+            "color": "#c6a14b",
+            "name": "",
+        },
     },
     {
         "type": "action.log_message",
@@ -950,6 +966,29 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
             raise HTTPException(status_code=400, detail=f"{label} pulse_seconds must be numeric")
         if cfg["mode"] == "pulse" and cfg["pulse_seconds"] <= 0:
             raise HTTPException(status_code=400, detail=f"{label} pulse_seconds must be greater than 0")
+        return cfg
+
+    if node_type == "action.record":
+        cfg["device_id"] = str(cfg.get("device_id") or "").strip()
+        if not cfg["device_id"]:
+            raise HTTPException(status_code=400, detail="Record action needs a device")
+        if cfg["device_id"] not in {item["id"] for item in _load_devices()}:
+            raise HTTPException(status_code=400, detail=f"Unknown device id: {cfg['device_id']}")
+        try:
+            cfg["before_seconds"] = float(cfg.get("before_seconds") or 0)
+            cfg["after_seconds"] = float(cfg.get("after_seconds") or 0)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Record before/after values must be numeric")
+        if cfg["before_seconds"] < 0 or cfg["after_seconds"] < 0:
+            raise HTTPException(status_code=400, detail="Record before/after values cannot be negative")
+        color = str(cfg.get("color") or "#c6a14b").strip().lower()
+        if len(color) != 7 or not color.startswith("#"):
+            raise HTTPException(status_code=400, detail="Record color must be a hex value like #c6a14b")
+        try:
+            int(color[1:], 16)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Record color must be a hex value like #c6a14b")
+        cfg["color"] = color
         return cfg
 
     if node_type == "action.log_message":
@@ -1707,6 +1746,31 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
 
     if node_type == "action.log_message":
         result["message"] = _render_template(str(cfg.get("message") or ""), context)
+        result["next_handles"] = ["out"]
+        return result
+
+    if node_type == "action.record":
+        title = _render_template(str(cfg.get("name") or ""), context).strip() or "Recording"
+        try:
+            event = create_recording_marker(
+                device_id=str(cfg.get("device_id") or "").strip(),
+                before_seconds=float(cfg.get("before_seconds") or 0),
+                after_seconds=float(cfg.get("after_seconds") or 0),
+                color=str(cfg.get("color") or "#c6a14b"),
+                title=title,
+                flow_id=str((context.get("flow") or {}).get("id") or "").strip() or None,
+                flow_name=str((context.get("flow") or {}).get("name") or "").strip() or None,
+                node_id=str(node.get("id") or "").strip() or None,
+            )
+            result["message"] = f"Created playback marker for {title}"
+            result["event_id"] = event.get("id")
+            result["device_id"] = event.get("device_id")
+            result["clip_start"] = event.get("clip_start")
+            result["clip_end"] = event.get("clip_end")
+            result["color"] = event.get("color")
+        except Exception as exc:
+            result["ok"] = False
+            result["error"] = str(exc)
         result["next_handles"] = ["out"]
         return result
 

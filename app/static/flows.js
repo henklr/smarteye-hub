@@ -455,6 +455,13 @@ function formatAnalogThreshold(value) {
   return Number.isFinite(number) ? number.toFixed(2) : "0.00";
 }
 
+function formatSecondsLabel(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) return "0s";
+  if (Math.abs(seconds - Math.round(seconds)) < 0.001) return `${Math.round(seconds)}s`;
+  return `${seconds.toFixed(1)}s`;
+}
+
 function flowSummary(flow) {
   const nodes = flow.nodes || [];
   const triggers = nodes.filter((node) => node.category === "trigger").length;
@@ -706,6 +713,12 @@ function nodePreview(node) {
 
     case "action.activate_physical_relay":
       return `${physicalLabel("relay", cfg.channel || "1")} · ${cfg.mode || "pulse"}${cfg.mode === "pulse" ? ` for ${cfg.pulse_seconds || 0}s` : ""} · now ${physicalLiveValueText("relay", cfg.channel || "1")}`;
+
+    case "action.record": {
+      const device = state.devices.find((item) => item.id === cfg.device_id);
+      const label = device?.name || cfg.device_id || "camera";
+      return `${label} · -${formatSecondsLabel(cfg.before_seconds ?? 0)} / +${formatSecondsLabel(cfg.after_seconds ?? 0)}`;
+    }
 
     case "action.log_message":
       return cfg.message || "Log message";
@@ -1623,6 +1636,7 @@ function drawEdges() {
 function renderInspector() {
   const box = el("inspectorBody");
   const flow = currentFlow();
+  const focusState = captureInspectorFocusState();
 
   if (!box) return;
 
@@ -1630,6 +1644,7 @@ function renderInspector() {
 
   if (!flow) {
     box.innerHTML = `<div class="inspectorHint">No flow selected.</div>`;
+    restoreInspectorFocusState(focusState);
     return;
   }
 
@@ -1663,6 +1678,7 @@ function renderInspector() {
       setStatus("Connection deleted.");
     });
 
+    restoreInspectorFocusState(focusState);
     return;
   }
 
@@ -1680,6 +1696,7 @@ function renderInspector() {
 
     box.innerHTML = renderNodeInspector(node);
     bindNodeInspector(node);
+    restoreInspectorFocusState(focusState);
     return;
   }
 
@@ -1698,6 +1715,7 @@ function renderInspector() {
     box.innerHTML = renderPublicVariableInspector(variable, state.selectedPublicVariableIndex);
     bindPublicVariableInspector(state.selectedPublicVariableIndex);
     refreshPublicVariableRuntimeUi();
+    restoreInspectorFocusState(focusState);
     return;
   }
 
@@ -1707,6 +1725,7 @@ function renderInspector() {
 
   box.innerHTML = renderFlowInspector(flow);
   bindFlowInspector(flow);
+  restoreInspectorFocusState(focusState);
 }
 
 function renderPhysicalLiveField(kind, channel, label = "Current value", idBase = "physicalCurrent") {
@@ -1982,9 +2001,62 @@ function publicVariablesDefinitionFingerprint(items = []) {
       item?.type || "string",
       item?.input_kind || "",
       item?.channel || "",
-      formatVariableValue(item?.value, item?.type),
     ])
   );
+}
+
+function inspectorHasFocus() {
+  const inspector = document.getElementById("inspectorBody");
+  return !!(inspector && document.activeElement instanceof Node && inspector.contains(document.activeElement));
+}
+
+function captureInspectorFocusState() {
+  const inspector = document.getElementById("inspectorBody");
+  const active = document.activeElement;
+
+  if (!(inspector && active instanceof HTMLElement && inspector.contains(active) && active.id)) {
+    return null;
+  }
+
+  const focusState = {
+    id: active.id,
+    scrollLeft: typeof active.scrollLeft === "number" ? active.scrollLeft : null,
+    scrollTop: typeof active.scrollTop === "number" ? active.scrollTop : null,
+  };
+
+  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+    focusState.selectionStart = typeof active.selectionStart === "number" ? active.selectionStart : null;
+    focusState.selectionEnd = typeof active.selectionEnd === "number" ? active.selectionEnd : null;
+    focusState.selectionDirection = active.selectionDirection || "none";
+  }
+
+  return focusState;
+}
+
+function restoreInspectorFocusState(focusState) {
+  if (!focusState?.id) return;
+
+  const target = document.getElementById(focusState.id);
+  if (!(target instanceof HTMLElement)) return;
+
+  target.focus({ preventScroll: true });
+
+  if ((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)
+    && typeof focusState.selectionStart === "number"
+    && typeof focusState.selectionEnd === "number") {
+    const length = target.value?.length ?? 0;
+    const start = Math.max(0, Math.min(focusState.selectionStart, length));
+    const end = Math.max(0, Math.min(focusState.selectionEnd, length));
+    target.setSelectionRange(start, end, focusState.selectionDirection || "none");
+  }
+
+  if (typeof focusState.scrollLeft === "number") {
+    target.scrollLeft = focusState.scrollLeft;
+  }
+
+  if (typeof focusState.scrollTop === "number") {
+    target.scrollTop = focusState.scrollTop;
+  }
 }
 
 function syncPublicVariablesHeader() {
@@ -2736,6 +2808,37 @@ function renderNodeInspector(node) {
       });
       break;
 
+    case "action.record":
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Record</div>
+          <div class="inspectorHint">Adds a colored playback marker around this moment for the selected camera.</div>
+          <div class="fieldGrid mt-10">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Driveway event" />
+            </div>
+            <div class="full">
+              <label>Camera</label>
+              <select id="cfg_device_id">${deviceOptionsHtml(cfg.device_id || "")}</select>
+            </div>
+            <div>
+              <label>Seconds before</label>
+              <input id="cfg_before_seconds" type="number" min="0" step="1" value="${escapeHtml(cfg.before_seconds ?? 10)}" />
+            </div>
+            <div>
+              <label>Seconds after</label>
+              <input id="cfg_after_seconds" type="number" min="0" step="1" value="${escapeHtml(cfg.after_seconds ?? 20)}" />
+            </div>
+            <div class="full">
+              <label>Timeline color</label>
+              <input id="cfg_color" type="color" value="${escapeHtml(cfg.color || "#c6a14b")}" />
+            </div>
+          </div>
+        </div>
+      `;
+      break;
+
     case "action.log_message":
       body = `
         <div class="inspectorCard">
@@ -2791,7 +2894,15 @@ function bindNodeInspector(node) {
     node.label = ev.target.value;
     markDirty();
     renderCanvas();
-    renderInspector();
+
+    const title = document.querySelector("#inspectorBody .inspectorCard .inspectorTitle");
+    if (title) {
+      title.textContent = displayNodeTitle(node) || node.label;
+    }
+
+    if (el("inspectorSubtext")) {
+      el("inspectorSubtext").textContent = `${displayNodeTitle(node) || node.label} settings`;
+    }
   });
 
   for (const element of document.querySelectorAll("#inspectorBody input, #inspectorBody select, #inspectorBody textarea")) {
@@ -2984,6 +3095,13 @@ function applyNodeInspector(node) {
       set("mode");
       set("pulse_seconds");
       break;
+    case "action.record":
+      set("name");
+      set("device_id");
+      set("before_seconds");
+      set("after_seconds");
+      set("color");
+      break;
     case "action.log_message":
       set("name");
       set("message");
@@ -3034,6 +3152,13 @@ function applyNodeInspector(node) {
   if (node.type === "action.activate_physical_relay") {
     cfg.target_kind = "relay";
     cfg.channel = normalizePhysicalChannelSelection("relay", cfg.channel || "1");
+  }
+
+  if (node.type === "action.record") {
+    cfg.before_seconds = Math.max(0, Number(cfg.before_seconds || 0));
+    cfg.after_seconds = Math.max(0, Number(cfg.after_seconds || 0));
+    const color = String(cfg.color || "#c6a14b").trim().toLowerCase();
+    cfg.color = /^#[0-9a-f]{6}$/.test(color) ? color : "#c6a14b";
   }
 
   markDirty();
@@ -3146,7 +3271,9 @@ async function refreshPublicVariables(silent = true) {
     if (incomingFingerprint !== currentFingerprint) {
       state.publicVariables = incoming;
       renderPublicVariablesSidebar();
-      renderInspector();
+      if (!inspectorHasFocus()) {
+        renderInspector();
+      }
       return;
     }
 

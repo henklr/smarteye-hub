@@ -10,6 +10,11 @@ services:
       - MEDIAMTX_API_URL=http://mediamtx:9997
       - MEDIAMTX_API_USER=apiuser
       - MEDIAMTX_API_PASS=apipass
+      - PLAYBACK_RECORDING_SCOPE=flow_cameras
+      - PLAYBACK_CLIP_MODE=copy-first
+      - PLAYBACK_CLIP_PRESET=ultrafast
+      - PLAYBACK_CLIP_THREADS=1
+      - PLAYBACK_CLIP_CACHE_LIMIT=8
     ports:
       - "8000:8000"
     volumes:
