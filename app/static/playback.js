@@ -382,20 +382,66 @@ function eventPresetKey(event) {
   return eventPresetName(event).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "recording";
 }
 
+function eventTagSegments(event) {
+  const raw = Array.isArray(event?.tag_segments) ? event.tag_segments : [];
+  const normalized = raw.map((segment) => {
+    const clipStart = segment?.clip_start || event?.clip_start || null;
+    const clipEnd = segment?.clip_end || event?.clip_end || null;
+    if (!clipStart || !clipEnd) {
+      return null;
+    }
+    return {
+      eventId: String(event?.id || "").trim(),
+      title: String(segment?.title || event?.title || eventPresetName(event)).trim() || eventPresetName(event),
+      color: normalizeEventPresetColor(segment?.color || event?.color),
+      presetName: String(segment?.preset_name || eventPresetName(event)).trim() || eventPresetName(event),
+      presetKey: String(segment?.preset_key || eventPresetKey(event)).trim() || eventPresetKey(event),
+      triggeredAt: segment?.triggered_at || event?.triggered_at || clipStart,
+      clip_start: clipStart,
+      clip_end: clipEnd,
+      state: eventState(event),
+      ready: eventIsReady(event),
+    };
+  }).filter(Boolean);
+
+  if (normalized.length) {
+    return normalized;
+  }
+
+  if (!event?.clip_start || !event?.clip_end) {
+    return [];
+  }
+
+  return [{
+    eventId: String(event?.id || "").trim(),
+    title: String(event?.title || eventPresetName(event)).trim() || eventPresetName(event),
+    color: normalizeEventPresetColor(event?.color),
+    presetName: eventPresetName(event),
+    presetKey: eventPresetKey(event),
+    triggeredAt: event?.triggered_at || event?.clip_start,
+    clip_start: event.clip_start,
+    clip_end: event.clip_end,
+    state: eventState(event),
+    ready: eventIsReady(event),
+  }];
+}
+
 function timelinePresetRows() {
   const rows = new Map();
 
   for (const event of (state.timeline?.events || [])) {
-    const key = eventPresetKey(event);
-    if (!rows.has(key)) {
-      rows.set(key, {
-        key,
-        name: eventPresetName(event),
-        color: normalizeEventPresetColor(event?.color),
-        events: [],
-      });
+    for (const segment of eventTagSegments(event)) {
+      const key = segment.presetKey;
+      if (!rows.has(key)) {
+        rows.set(key, {
+          key,
+          name: segment.presetName,
+          color: segment.color,
+          events: [],
+        });
+      }
+      rows.get(key).events.push(segment);
     }
-    rows.get(key).events.push(event);
   }
 
   return [...rows.values()].sort((left, right) => {
@@ -1179,8 +1225,8 @@ function renderTimeline() {
             <span class="playbackTimelineLaneLabel">${escapeHtml(row.name)}</span>
           </div>
           <div class="playbackTimelineBase" data-playback-track-base></div>
-          ${row.events.map((event) => {
-            const range = dayRange(event.clip_start, event.clip_end);
+          ${row.events.map((segment) => {
+            const range = dayRange(segment.clip_start, segment.clip_end);
             if (!isVisibleRange(range.startMinute, range.endMinute)) {
               return "";
             }
@@ -1189,10 +1235,10 @@ function renderTimeline() {
             const clippedEnd = clamp(range.endMinute, state.timelineView.startMinute, state.timelineView.endMinute);
             const left = visibleTimelinePercent(clippedStart);
             const width = visibleTimelineWidth(clippedStart, clippedEnd);
-            const active = event.id === state.selectedEventId ? "is-active" : "";
-            const pending = eventIsPending(event) ? `is-pending is-${escapeHtml(eventState(event))}` : "";
-            const readiness = eventIsPending(event) ? ` · ${eventStateLabel(event)}` : "";
-            return `<button class="playbackMarker ${active} ${pending}" type="button" data-event-id="${escapeHtml(event.id)}" aria-disabled="${eventIsReady(event) ? "false" : "true"}" style="left:${left}%; width:${width}%; background:${escapeHtml(event.color)};" title="${escapeHtml(`${event.title} · ${clockLabel(event.triggered_at)}${readiness}`)}"></button>`;
+            const active = segment.eventId === state.selectedEventId ? "is-active" : "";
+            const pending = !segment.ready ? `is-pending is-${escapeHtml(segment.state)}` : "";
+            const readiness = !segment.ready ? ` · ${eventStateLabel(segment)}` : "";
+            return `<button class="playbackMarker ${active} ${pending}" type="button" data-event-id="${escapeHtml(segment.eventId)}" aria-disabled="${segment.ready ? "false" : "true"}" style="left:${left}%; width:${width}%; background:${escapeHtml(segment.color)};" title="${escapeHtml(`${segment.presetName} · ${clockLabel(segment.triggeredAt)}${readiness}`)}"></button>`;
           }).join("")}
         </div>
       `).join("") : `<div class="playbackTimelineEmpty">No recordings in this range.</div>`}

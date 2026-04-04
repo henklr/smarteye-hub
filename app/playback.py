@@ -195,6 +195,106 @@ def _merge_color(primary: Any, secondary: Any) -> str:
     return primary_color
 
 
+def _normalize_tag_segment(segment: Dict[str, Any], event: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    if not isinstance(segment, dict):
+        return None
+
+    source = event if isinstance(event, dict) else {}
+    preset_name = str(segment.get("preset_name") or source.get("preset_name") or source.get("title") or "Recording").strip() or "Recording"
+    title = str(segment.get("title") or source.get("title") or preset_name).strip() or preset_name
+    clip_start = segment.get("clip_start") or source.get("clip_start")
+    clip_end = segment.get("clip_end") or source.get("clip_end")
+    triggered_at = segment.get("triggered_at") or source.get("triggered_at") or clip_start
+
+    if not clip_start or not clip_end:
+        return None
+
+    try:
+        started_at = _parse_iso(clip_start)
+        ended_at = _parse_iso(clip_end)
+        triggered = _parse_iso(triggered_at)
+    except Exception:
+        return None
+
+    if ended_at <= started_at:
+        return None
+
+    preset_key = str(segment.get("preset_key") or source.get("preset_key") or "").strip() or _recording_preset_key(preset_name)
+    return {
+        "preset_name": preset_name,
+        "preset_key": preset_key,
+        "title": title,
+        "color": _clamp_color(segment.get("color") or source.get("color")),
+        "clip_start": started_at.isoformat(),
+        "clip_end": ended_at.isoformat(),
+        "triggered_at": triggered.isoformat(),
+    }
+
+
+def _merge_tag_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for segment in segments:
+        item = _normalize_tag_segment(segment)
+        if item is not None:
+            normalized.append(item)
+
+    normalized.sort(
+        key=lambda item: (
+            str(item.get("preset_key") or ""),
+            str(item.get("color") or ""),
+            str(item.get("clip_start") or ""),
+            str(item.get("clip_end") or ""),
+            str(item.get("triggered_at") or ""),
+        )
+    )
+
+    merged: List[Dict[str, Any]] = []
+    for item in normalized:
+        if not merged:
+            merged.append(dict(item))
+            continue
+
+        previous = merged[-1]
+        if (
+            str(previous.get("preset_key") or "") != str(item.get("preset_key") or "")
+            or str(previous.get("color") or "") != str(item.get("color") or "")
+        ):
+            merged.append(dict(item))
+            continue
+
+        previous_start = _parse_iso(previous.get("clip_start"))
+        previous_end = _parse_iso(previous.get("clip_end"))
+        item_start = _parse_iso(item.get("clip_start"))
+        item_end = _parse_iso(item.get("clip_end"))
+
+        if item_start > previous_end:
+            merged.append(dict(item))
+            continue
+
+        previous["clip_start"] = min(previous_start, item_start).isoformat()
+        previous["clip_end"] = max(previous_end, item_end).isoformat()
+        previous["triggered_at"] = min(_parse_iso(previous.get("triggered_at")), _parse_iso(item.get("triggered_at"))).isoformat()
+        if not str(previous.get("title") or "").strip():
+            previous["title"] = item.get("title") or item.get("preset_name") or "Recording"
+        if not str(previous.get("preset_name") or "").strip():
+            previous["preset_name"] = item.get("preset_name") or "Recording"
+
+    return merged
+
+
+def _event_tag_segments(event: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_segments = event.get("tag_segments") if isinstance(event.get("tag_segments"), list) else None
+    if raw_segments:
+        return _merge_tag_segments([
+            item
+            for item in (_normalize_tag_segment(segment, event) for segment in raw_segments)
+            if item is not None
+        ])
+
+    fallback = _normalize_tag_segment({}, event)
+    return [fallback] if fallback is not None else []
+
+
 def _merge_event_records(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[str, Any]:
     primary_started_at, primary_ended_at = _event_compare_bounds(primary)
     secondary_started_at, secondary_ended_at = _event_compare_bounds(secondary)
@@ -221,6 +321,7 @@ def _merge_event_records(primary: Dict[str, Any], secondary: Dict[str, Any]) -> 
     merged["color"] = _merge_color(primary.get("color"), secondary.get("color"))
     merged["preset_name"] = _merge_title(_event_preset_name(primary), _event_preset_name(secondary))
     merged["preset_key"] = _recording_preset_key(merged["preset_name"])
+    merged["tag_segments"] = _merge_tag_segments([*_event_tag_segments(primary), *_event_tag_segments(secondary)])
     merged["flow_id"] = primary.get("flow_id") or secondary.get("flow_id") or None
     merged["flow_name"] = primary.get("flow_name") or secondary.get("flow_name") or None
     merged["node_id"] = primary.get("node_id") or secondary.get("node_id") or None
@@ -259,7 +360,11 @@ def _merge_overlapping_events(items: List[Dict[str, Any]]) -> Tuple[List[Dict[st
         for item in group[1:]:
             current_started_at, current_ended_at = _event_compare_bounds(current)
             item_started_at, item_ended_at = _event_compare_bounds(item)
-            if _ranges_overlap(current_started_at, current_ended_at, item_started_at, item_ended_at):
+            if (
+                current_ended_at is not None
+                and item_ended_at is not None
+                and _ranges_overlap(current_started_at, current_ended_at, item_started_at, item_ended_at)
+            ):
                 current_id = str(current.get("id") or "").strip()
                 item_id = str(item.get("id") or "").strip()
                 if current_id:
@@ -734,6 +839,7 @@ def create_recording_marker(
         "flow_name": str(flow_name or "").strip() or None,
         "node_id": str(node_id or "").strip() or None,
     }
+    event["tag_segments"] = _event_tag_segments(event)
 
     with _events_lock:
         items = _load_events_normalized()
@@ -803,6 +909,7 @@ def _serialize_event(event: Dict[str, Any]) -> Dict[str, Any]:
         "flow_id": event.get("flow_id"),
         "flow_name": event.get("flow_name"),
         "node_id": event.get("node_id"),
+        "tag_segments": _event_tag_segments(event),
         "state": state,
         "ready": state == "ready",
     }
