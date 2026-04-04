@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "checkJs": false,
+    "maxNodeModuleJsDepth": 0
+  },
+  "include": [
+    "app/**/*.js"
+  ],
+  "exclude": [
+    "data/**",
+    "secrets/**",
+    ".git/**",
+    ".vscode/**"
+  ]
+}
