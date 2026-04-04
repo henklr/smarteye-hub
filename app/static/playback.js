@@ -5,6 +5,10 @@ const MIN_VISIBLE_MINUTES = 5;
 const CLICK_SUPPRESSION_MS = 250;
 const PAN_DRAG_THRESHOLD_PX = 6;
 const MAX_NATIVE_PLAYBACK_RATE = 16;
+const PLAYBACK_STORAGE_KEY = "sei.playback.timelineState";
+const PLAYBACK_STATE_VERSION = 1;
+const PLAYBACK_STATE_SAVE_DELAY_MS = 400;
+const PENDING_TIMELINE_POLL_MS = 5000;
 
 const state = {
   devices: [],
@@ -43,6 +47,10 @@ const state = {
     suppressClickUntil: 0,
   },
   selectedEventId: null,
+  persistence: {
+    saveTimer: 0,
+    pendingRefreshTimer: 0,
+  },
 };
 
 async function api(url, opts = {}) {
@@ -159,6 +167,88 @@ function todayString() {
   return `${year}-${month}-${day}`;
 }
 
+function normalizeStoredDay(value) {
+  const raw = String(value || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : todayString();
+}
+
+function loadStoredPlaybackState() {
+  try {
+    const raw = window.localStorage.getItem(PLAYBACK_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    if (Number(parsed.version || 0) !== PLAYBACK_STATE_VERSION) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function snapshotPlaybackState() {
+  const event = selectedEvent();
+  const video = el("playbackVideo");
+  const seekSeconds = event
+    ? clamp(Number.isFinite(video?.currentTime) ? video.currentTime : 0, 0, eventDurationSeconds(event))
+    : 0;
+
+  return {
+    version: PLAYBACK_STATE_VERSION,
+    selectedDeviceId: String(state.selectedDeviceId || "").trim(),
+    selectedDay: normalizeStoredDay(state.selectedDay),
+    selectedEventId: typeof state.selectedEventId === "string" && state.selectedEventId ? state.selectedEventId : null,
+    seekSeconds,
+    timelineView: {
+      startMinute: Number(state.timelineView.startMinute) || 0,
+      durationMinutes: currentTimelineDuration(),
+    },
+    savedAt: new Date().toISOString(),
+  };
+}
+
+function savePlaybackStateNow() {
+  if (state.persistence.saveTimer) {
+    window.clearTimeout(state.persistence.saveTimer);
+    state.persistence.saveTimer = 0;
+  }
+
+  try {
+    window.localStorage.setItem(PLAYBACK_STORAGE_KEY, JSON.stringify(snapshotPlaybackState()));
+  } catch {
+    // Ignore storage failures; playback should continue working without persistence.
+  }
+}
+
+function schedulePlaybackStateSave(delay = PLAYBACK_STATE_SAVE_DELAY_MS) {
+  if (state.persistence.saveTimer) {
+    return;
+  }
+
+  state.persistence.saveTimer = window.setTimeout(() => {
+    state.persistence.saveTimer = 0;
+    savePlaybackStateNow();
+  }, delay);
+}
+
+function playbackRestoreState() {
+  const saved = loadStoredPlaybackState();
+  if (!saved) {
+    return null;
+  }
+
+  const savedDeviceId = String(saved.selectedDeviceId || "").trim();
+  const savedDay = normalizeStoredDay(saved.selectedDay);
+  if (savedDeviceId !== String(state.selectedDeviceId || "").trim() || savedDay !== normalizeStoredDay(state.selectedDay)) {
+    return null;
+  }
+
+  return saved;
+}
+
 function clockLabel(value) {
   try {
     const date = new Date(value);
@@ -177,6 +267,50 @@ function clockLabel(value) {
 
 function deviceName(deviceId) {
   return state.devices.find((item) => item.id === deviceId)?.name || deviceId || "camera";
+}
+
+function eventState(event) {
+  return String(event?.state || "ready").trim().toLowerCase() || "ready";
+}
+
+function eventIsReady(event) {
+  return eventState(event) === "ready";
+}
+
+function eventIsPending(event) {
+  return !eventIsReady(event);
+}
+
+function pendingEventCount() {
+  return state.timeline.events.filter((event) => eventIsPending(event)).length;
+}
+
+function eventStateLabel(event) {
+  const value = eventState(event);
+  if (value === "recording") return "Recording";
+  if (value === "finalizing") return "Saving";
+  return "Ready";
+}
+
+function clearPendingTimelineRefresh() {
+  if (state.persistence.pendingRefreshTimer) {
+    window.clearTimeout(state.persistence.pendingRefreshTimer);
+    state.persistence.pendingRefreshTimer = 0;
+  }
+}
+
+function schedulePendingTimelineRefresh() {
+  clearPendingTimelineRefresh();
+  if (!pendingEventCount()) {
+    return;
+  }
+
+  state.persistence.pendingRefreshTimer = window.setTimeout(() => {
+    state.persistence.pendingRefreshTimer = 0;
+    loadTimeline().catch((error) => {
+      setStatus(error.message || String(error));
+    });
+  }, PENDING_TIMELINE_POLL_MS);
 }
 
 function minutesIntoDay(value) {
@@ -242,7 +376,7 @@ function timelineMinuteFromClientX(clientX, rect) {
 
 function eventAtTimelineMinute(minute) {
   const selected = selectedEvent();
-  if (selected) {
+  if (selected && eventIsReady(selected)) {
     const range = eventRange(selected);
     if (minute >= range.startMinute && minute <= range.endMinute) {
       return selected;
@@ -250,13 +384,16 @@ function eventAtTimelineMinute(minute) {
   }
 
   return state.timeline.events.find((event) => {
+    if (!eventIsReady(event)) {
+      return false;
+    }
     const range = eventRange(event);
     return minute >= range.startMinute && minute <= range.endMinute;
   }) || null;
 }
 
 function nextEventAtTimelineMinute(minute) {
-  return state.timeline.events.find((event) => eventRange(event).startMinute >= minute) || null;
+  return state.timeline.events.find((event) => eventIsReady(event) && eventRange(event).startMinute >= minute) || null;
 }
 
 function timelineBaseSelection(minute) {
@@ -285,7 +422,7 @@ function nextTimelineEvent(currentEventId) {
     return null;
   }
 
-  return state.timeline.events[currentIndex + 1] || null;
+  return state.timeline.events.slice(currentIndex + 1).find((event) => eventIsReady(event)) || null;
 }
 
 function previousTimelineEvent(currentEventId) {
@@ -294,7 +431,7 @@ function previousTimelineEvent(currentEventId) {
     return null;
   }
 
-  return state.timeline.events[currentIndex - 1] || null;
+  return [...state.timeline.events.slice(0, currentIndex)].reverse().find((event) => eventIsReady(event)) || null;
 }
 
 function eventSeekSecondsForMinute(event, minute) {
@@ -850,6 +987,10 @@ function setTimelineViewport(startMinute, durationMinutes, options = {}) {
   if (changed && options.render !== false) {
     renderTimeline();
   }
+
+  if (changed && options.persist !== false) {
+    schedulePlaybackStateSave();
+  }
 }
 
 function ensureTimelineRangeVisible(startMinute, endMinute) {
@@ -1003,7 +1144,9 @@ function renderTimeline() {
       const left = visibleTimelinePercent(clippedStart);
       const width = visibleTimelineWidth(clippedStart, clippedEnd);
       const active = event.id === state.selectedEventId ? "is-active" : "";
-      return `<button class="playbackMarker ${active}" type="button" data-event-id="${escapeHtml(event.id)}" style="left:${left}%; width:${width}%; background:${escapeHtml(event.color)};" title="${escapeHtml(`${event.title} · ${clockLabel(event.triggered_at)}`)}"></button>`;
+      const pending = eventIsPending(event) ? `is-pending is-${escapeHtml(eventState(event))}` : "";
+      const readiness = eventIsPending(event) ? ` · ${eventStateLabel(event)}` : "";
+      return `<button class="playbackMarker ${active} ${pending}" type="button" data-event-id="${escapeHtml(event.id)}" aria-disabled="${eventIsReady(event) ? "false" : "true"}" style="left:${left}%; width:${width}%; background:${escapeHtml(event.color)};" title="${escapeHtml(`${event.title} · ${clockLabel(event.triggered_at)}${readiness}`)}"></button>`;
     }).join("")}
   `;
 
@@ -1036,10 +1179,15 @@ async function startVideoPlayback(video) {
 async function selectEvent(eventId, options = {}) {
   const event = state.timeline.events.find((item) => item.id === eventId);
   if (!event) return;
+  if (!eventIsReady(event) && options.allowPending !== true) {
+    return;
+  }
 
   clearForwardPlaybackBoundarySchedule();
   const range = dayRange(event.clip_start, event.clip_end);
-  ensureTimelineRangeVisible(range.startMinute, range.endMinute);
+  if (options.ensureVisible !== false) {
+    ensureTimelineRangeVisible(range.startMinute, range.endMinute);
+  }
 
   const seekSeconds = clamp(Number(options.seekSeconds) || 0, 0, eventDurationSeconds(event));
   const shouldAutoplay = options.autoplay !== false;
@@ -1058,6 +1206,7 @@ async function selectEvent(eventId, options = {}) {
   stopReversePlayback();
   stopSimulatedForwardPlayback();
   setPlaybackCursor({ minute: range.startMinute + (seekSeconds / 60), label: clockLabel(Date.parse(event.clip_start) + (seekSeconds * 1000)) });
+  schedulePlaybackStateSave();
 
   if (isSameEvent) {
     await seekVideoToSeconds(video, seekSeconds);
@@ -1096,6 +1245,7 @@ async function selectEvent(eventId, options = {}) {
 
 async function loadTimeline() {
   clearForwardPlaybackBoundarySchedule();
+  clearPendingTimelineRefresh();
 
   if (!state.selectedDeviceId) {
     state.timeline = { segments: [], events: [] };
@@ -1107,35 +1257,69 @@ async function loadTimeline() {
     renderTimeline();
     syncPlaybackTransport();
     setStatus("Select a configured camera to see recordings.");
+    savePlaybackStateNow();
     return;
   }
 
   setStatus("Loading timeline…");
   const query = new URLSearchParams({ device_id: state.selectedDeviceId, day: state.selectedDay || todayString() });
   const data = await api(`/api/playback/timeline?${query.toString()}`);
+  const restore = playbackRestoreState();
   state.timeline = {
     segments: Array.isArray(data?.segments) ? data.segments : [],
     events: Array.isArray(data?.events) ? data.events : [],
   };
 
-  if (!state.timeline.events.some((item) => item.id === state.selectedEventId)) {
-    state.selectedEventId = state.timeline.events.at(-1)?.id || null;
+  const restoreStartMinute = Number(restore?.timelineView?.startMinute);
+  const restoreDurationMinutes = Number(restore?.timelineView?.durationMinutes);
+  if (Number.isFinite(restoreStartMinute) && Number.isFinite(restoreDurationMinutes)) {
+    setTimelineViewport(restoreStartMinute, restoreDurationMinutes, { render: false, persist: false });
+  }
+
+  const restoreEventId = typeof restore?.selectedEventId === "string" && restore.selectedEventId ? restore.selectedEventId : null;
+  const restoreSeekSeconds = Number(restore?.seekSeconds);
+  if (restoreEventId && state.timeline.events.some((item) => item.id === restoreEventId && eventIsReady(item))) {
+    state.selectedEventId = restoreEventId;
+  }
+
+  if (!state.timeline.events.some((item) => item.id === state.selectedEventId && eventIsReady(item))) {
+    state.selectedEventId = [...state.timeline.events].reverse().find((item) => eventIsReady(item))?.id || null;
   }
 
   renderTimeline();
 
   if (state.selectedEventId) {
-    await selectEvent(state.selectedEventId);
+    const shouldRestoreSeek = restoreEventId === state.selectedEventId && Number.isFinite(restoreSeekSeconds) && restoreSeekSeconds >= 0;
+    await selectEvent(
+      state.selectedEventId,
+      shouldRestoreSeek
+        ? { seekSeconds: restoreSeekSeconds, autoplay: false, ensureVisible: false }
+        : undefined,
+    );
   } else {
     stopPlaybackCursorLoop();
     stopReversePlayback();
     stopSimulatedForwardPlayback();
     setPlaybackCursor(null);
     updatePlaybackHeader(null);
-    showVideoEmpty("No clip selected", "Choose a colored marker from the timeline below to load a recording.");
+    showVideoEmpty(
+      pendingEventCount()
+        ? "Recording still saving"
+        : "No clip selected",
+      pendingEventCount()
+        ? "Grayed markers are still being finalized and will become playable automatically once recording is safely saved."
+        : "Choose a colored marker from the timeline below to load a recording."
+    );
     syncPlaybackTransport();
-    setStatus(state.timeline.segments.length ? "No markers for this day yet, but recorded video is available." : "No recorded video available for this day.");
+    setStatus(
+      pendingEventCount()
+        ? `Waiting for ${pendingEventCount()} recording${pendingEventCount() === 1 ? "" : "s"} to finish saving.`
+        : (state.timeline.segments.length ? "No markers for this day yet, but recorded video is available." : "No recorded video available for this day.")
+    );
   }
+
+  schedulePlaybackStateSave();
+  schedulePendingTimelineRefresh();
 }
 
 async function loadDevices() {
@@ -1192,9 +1376,18 @@ async function clearAllRecordings() {
 
 function bindUi() {
   const video = el("playbackVideo");
+  const saved = loadStoredPlaybackState();
 
-  el("playbackDayInput").value = todayString();
-  state.selectedDay = el("playbackDayInput").value;
+  state.selectedDeviceId = String(saved?.selectedDeviceId || "").trim();
+  state.selectedDay = normalizeStoredDay(saved?.selectedDay);
+  state.selectedEventId = typeof saved?.selectedEventId === "string" && saved.selectedEventId ? saved.selectedEventId : null;
+  el("playbackDayInput").value = state.selectedDay;
+
+  const savedStartMinute = Number(saved?.timelineView?.startMinute);
+  const savedDurationMinutes = Number(saved?.timelineView?.durationMinutes);
+  if (Number.isFinite(savedStartMinute) && Number.isFinite(savedDurationMinutes)) {
+    setTimelineViewport(savedStartMinute, savedDurationMinutes, { render: false, persist: false });
+  }
 
   bindTimelineInteractions();
   renderTimeline();
@@ -1202,6 +1395,7 @@ function bindUi() {
   video?.addEventListener("loadedmetadata", () => {
     syncPlaybackTransport();
     updatePlaybackCursorFromVideo();
+    schedulePlaybackStateSave();
   });
 
   video?.addEventListener("play", () => {
@@ -1221,20 +1415,24 @@ function bindUi() {
       queueForwardPlaybackBoundaryCheck();
     }
     syncPlaybackTransport();
+    schedulePlaybackStateSave();
   });
 
   video?.addEventListener("timeupdate", () => {
     updatePlaybackCursorFromVideo();
     queueForwardPlaybackBoundaryCheck();
+    schedulePlaybackStateSave();
   });
 
   video?.addEventListener("seeking", () => {
     updatePlaybackCursorFromVideo();
+    schedulePlaybackStateSave();
   });
 
   video?.addEventListener("seeked", () => {
     updatePlaybackCursorFromVideo();
     queueForwardPlaybackBoundaryCheck();
+    schedulePlaybackStateSave();
   });
 
   video?.addEventListener("ended", async () => {
@@ -1247,10 +1445,12 @@ function bindUi() {
       stopSimulatedForwardPlayback();
       syncPlaybackTransport();
       setStatus("Playback ended.");
+      schedulePlaybackStateSave();
       return;
     }
 
     await handleForwardPlaybackBoundary(currentEvent);
+    schedulePlaybackStateSave();
   });
 
   video?.addEventListener("emptied", () => {
@@ -1276,17 +1476,20 @@ function bindUi() {
     );
     syncPlaybackTransport();
     setStatus("Clip could not be loaded.");
+    schedulePendingTimelineRefresh();
   });
 
   el("playbackDeviceSelect")?.addEventListener("change", async (event) => {
     state.selectedDeviceId = event.target.value;
     state.selectedEventId = null;
+    savePlaybackStateNow();
     await loadTimeline();
   });
 
   el("playbackDayInput")?.addEventListener("change", async (event) => {
     state.selectedDay = event.target.value || todayString();
     state.selectedEventId = null;
+    savePlaybackStateNow();
     await loadTimeline();
   });
 
@@ -1312,6 +1515,11 @@ function bindUi() {
   });
   el("playbackSpeedInput")?.addEventListener("pointerup", () => {
     resetPlaybackSpeed();
+  });
+
+  window.addEventListener("pagehide", () => {
+    clearPendingTimelineRefresh();
+    savePlaybackStateNow();
   });
 
   syncPlaybackTransport();
@@ -1414,6 +1622,10 @@ function bindTimelineInteractions() {
       if (target) {
         const targetEvent = state.timeline.events.find((item) => item.id === target.dataset.eventId) || null;
         if (!targetEvent) {
+          return;
+        }
+        if (!eventIsReady(targetEvent)) {
+          setStatus(`${targetEvent.title} is still being finalized.`);
           return;
         }
 

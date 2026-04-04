@@ -36,6 +36,8 @@ PLAYBACK_CLIP_MODE = str(os.getenv("PLAYBACK_CLIP_MODE", "copy-first") or "copy-
 CLIP_ENCODING_PRESET = os.getenv("PLAYBACK_CLIP_PRESET", "ultrafast")
 CLIP_ENCODING_THREADS = max(1, int(os.getenv("PLAYBACK_CLIP_THREADS", "1") or "1"))
 PLAYBACK_CLIP_CACHE_LIMIT = max(0, int(os.getenv("PLAYBACK_CLIP_CACHE_LIMIT", "8") or "8"))
+SEGMENT_FINALIZE_GRACE_SECONDS = max(2.0, RECORDER_POLL_SECONDS)
+READINESS_GAP_TOLERANCE_SECONDS = 0.25
 
 router = APIRouter(tags=["playback"])
 
@@ -54,6 +56,7 @@ class RecordingSegment:
     path: Path
     started_at: datetime
     ended_at: datetime
+    finalized: bool
 
 
 def _utc_now() -> datetime:
@@ -113,6 +116,14 @@ def _save_events(items: List[Dict[str, Any]]) -> None:
     RECORDING_EVENTS_JSON.write_text(json.dumps(items, indent=2), encoding="utf-8")
 
 
+def _delete_clip_cache(event_ids: set[str]) -> None:
+    for event_id in sorted({str(item or "").strip() for item in event_ids if str(item or "").strip()}):
+        try:
+            _clip_path_for_event(event_id).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def _clip_end_after(started_at: datetime, ended_at: datetime) -> datetime:
     minimum_end = started_at + timedelta(milliseconds=100)
     return ended_at if ended_at > minimum_end else minimum_end
@@ -132,6 +143,175 @@ def _event_clip_bounds(event: Dict[str, Any]) -> Tuple[datetime, datetime]:
     if ended_at <= started_at:
         raise ValueError("Recording event has an invalid time range")
     return started_at, ended_at
+
+
+def _event_compare_bounds(event: Dict[str, Any]) -> Tuple[datetime, Optional[datetime]]:
+    started_at = _parse_iso(event.get("clip_start"))
+    try:
+        ended_at = _parse_iso(event.get("clip_end"))
+    except Exception:
+        ended_at = None
+    return started_at, ended_at
+
+
+def _event_trigger_at(event: Dict[str, Any], fallback_started_at: datetime) -> datetime:
+    try:
+        return _parse_iso(event.get("triggered_at"))
+    except Exception:
+        return fallback_started_at
+
+
+def _ranges_overlap(
+    started_at: datetime,
+    ended_at: Optional[datetime],
+    other_started_at: datetime,
+    other_ended_at: Optional[datetime],
+) -> bool:
+    if ended_at is None:
+        return other_ended_at is None or other_ended_at > started_at
+    if other_ended_at is None:
+        return ended_at > other_started_at
+    return started_at < other_ended_at and other_started_at < ended_at
+
+
+def _merge_title(primary: Any, secondary: Any) -> str:
+    primary_text = str(primary or "").strip()
+    secondary_text = str(secondary or "").strip()
+    if primary_text and primary_text.lower() != "recording":
+        return primary_text
+    if secondary_text and secondary_text.lower() != "recording":
+        return secondary_text
+    return primary_text or secondary_text or "Recording"
+
+
+def _merge_color(primary: Any, secondary: Any) -> str:
+    primary_color = _clamp_color(primary)
+    secondary_color = _clamp_color(secondary)
+    if primary_color != "#c6a14b":
+        return primary_color
+    if secondary_color != "#c6a14b":
+        return secondary_color
+    return primary_color
+
+
+def _merge_event_records(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[str, Any]:
+    primary_started_at, primary_ended_at = _event_compare_bounds(primary)
+    secondary_started_at, secondary_ended_at = _event_compare_bounds(secondary)
+    primary_trigger_at = _event_trigger_at(primary, primary_started_at)
+    secondary_trigger_at = _event_trigger_at(secondary, secondary_started_at)
+
+    merged_started_at = min(primary_started_at, secondary_started_at)
+    merged_trigger_at = min(primary_trigger_at, secondary_trigger_at)
+    merged_ended_at = None
+    if primary_ended_at is not None and secondary_ended_at is not None:
+        merged_ended_at = max(primary_ended_at, secondary_ended_at)
+
+    merged = dict(primary)
+    merged["clip_start"] = merged_started_at.isoformat()
+    merged["triggered_at"] = merged_trigger_at.isoformat()
+    merged["clip_end"] = merged_ended_at.isoformat() if merged_ended_at is not None else None
+    merged["before_seconds"] = max(0.0, (merged_trigger_at - merged_started_at).total_seconds())
+    merged["after_seconds"] = (
+        None
+        if merged_ended_at is None
+        else max(0.0, (merged_ended_at - merged_trigger_at).total_seconds())
+    )
+    merged["title"] = _merge_title(primary.get("title"), secondary.get("title"))
+    merged["color"] = _merge_color(primary.get("color"), secondary.get("color"))
+    merged["flow_id"] = primary.get("flow_id") or secondary.get("flow_id") or None
+    merged["flow_name"] = primary.get("flow_name") or secondary.get("flow_name") or None
+    merged["node_id"] = primary.get("node_id") or secondary.get("node_id") or None
+    return merged
+
+
+def _merge_overlapping_events(items: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], set[str], bool]:
+    passthrough: List[Dict[str, Any]] = []
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    changed = False
+    invalidated_clip_ids: set[str] = set()
+
+    for item in items:
+        device_id = str(item.get("device_id") or "").strip()
+        if not device_id:
+            passthrough.append(dict(item))
+            continue
+        try:
+            _event_compare_bounds(item)
+        except Exception:
+            passthrough.append(dict(item))
+            continue
+        grouped.setdefault(device_id, []).append(dict(item))
+
+    merged_items: List[Dict[str, Any]] = []
+    for device_id, group in grouped.items():
+        group.sort(
+            key=lambda item: (
+                _event_compare_bounds(item)[0],
+                _event_trigger_at(item, _event_compare_bounds(item)[0]),
+                str(item.get("id") or ""),
+            )
+        )
+        current = group[0]
+
+        for item in group[1:]:
+            current_started_at, current_ended_at = _event_compare_bounds(current)
+            item_started_at, item_ended_at = _event_compare_bounds(item)
+            if _ranges_overlap(current_started_at, current_ended_at, item_started_at, item_ended_at):
+                current_id = str(current.get("id") or "").strip()
+                item_id = str(item.get("id") or "").strip()
+                if current_id:
+                    invalidated_clip_ids.add(current_id)
+                if item_id:
+                    invalidated_clip_ids.add(item_id)
+                current = _merge_event_records(current, item)
+                changed = True
+                continue
+            merged_items.append(current)
+            current = item
+
+        merged_items.append(current)
+
+    out = [*passthrough, *merged_items]
+    out.sort(key=lambda item: (str(item.get("device_id") or ""), str(item.get("triggered_at") or item.get("clip_start") or ""), str(item.get("id") or "")))
+
+    if len(out) != len(items) or any(left != right for left, right in zip(out, items)):
+        changed = True
+
+    return out, invalidated_clip_ids, changed
+
+
+def _load_events_normalized() -> List[Dict[str, Any]]:
+    items = _load_events()
+    merged_items, invalidated_clip_ids, changed = _merge_overlapping_events(items)
+    if changed:
+        _save_events(merged_items)
+        _delete_clip_cache(invalidated_clip_ids)
+    return merged_items
+
+
+def _find_matching_event(items: List[Dict[str, Any]], probe: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    probe_id = str(probe.get("id") or "").strip()
+    if probe_id:
+        exact = next((item for item in items if str(item.get("id") or "").strip() == probe_id), None)
+        if exact is not None:
+            return exact
+
+    device_id = str(probe.get("device_id") or "").strip()
+    if not device_id:
+        return None
+
+    try:
+        probe_started_at, probe_ended_at = _event_compare_bounds(probe)
+    except Exception:
+        return None
+
+    for item in items:
+        if str(item.get("device_id") or "").strip() != device_id:
+            continue
+        item_started_at, item_ended_at = _event_compare_bounds(item)
+        if _ranges_overlap(item_started_at, item_ended_at, probe_started_at, probe_ended_at):
+            return item
+    return None
 
 
 def _load_flows() -> List[Dict[str, Any]]:
@@ -165,6 +345,20 @@ def _segment_end_time(path: Path, started_at: datetime, next_started_at: Optiona
         modified_at = fallback_end
 
     return max(fallback_end, modified_at)
+
+
+def _segment_is_finalized(path: Path, started_at: datetime, next_started_at: Optional[datetime]) -> bool:
+    if next_started_at is not None and next_started_at > started_at:
+        return True
+
+    now = _utc_now()
+    finalize_at = started_at + timedelta(seconds=RECORDING_SEGMENT_SECONDS + SEGMENT_FINALIZE_GRACE_SECONDS)
+    try:
+        modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except Exception:
+        modified_at = now
+
+    return now >= finalize_at and modified_at <= now - timedelta(seconds=max(1.0, RECORDER_POLL_SECONDS / 2))
 
 
 def _recording_device_ids_from_flows() -> set[str]:
@@ -217,6 +411,7 @@ def _list_segments(device_id: str) -> List[RecordingSegment]:
                 path=path,
                 started_at=started_at,
                 ended_at=ended_at,
+                finalized=_segment_is_finalized(path, started_at, next_started_at),
             )
         )
     return out
@@ -230,9 +425,53 @@ def _segments_for_range(device_id: str, started_at: datetime, ended_at: datetime
     ]
 
 
+def _segments_cover_range(segments: List[RecordingSegment], started_at: datetime, ended_at: datetime) -> bool:
+    if ended_at <= started_at:
+        return False
+
+    cursor = started_at
+    tolerance = timedelta(seconds=READINESS_GAP_TOLERANCE_SECONDS)
+    for segment in sorted(segments, key=lambda item: item.started_at):
+        overlap_start = max(segment.started_at, started_at)
+        overlap_end = min(segment.ended_at, ended_at)
+        if overlap_end <= overlap_start:
+            continue
+        if overlap_start > cursor + tolerance:
+            return False
+        if overlap_end > cursor:
+            cursor = overlap_end
+        if cursor >= ended_at - tolerance:
+            return True
+
+    return cursor >= ended_at - tolerance
+
+
+def _event_state(event: Dict[str, Any]) -> str:
+    if _event_is_open(event):
+        return "recording"
+
+    try:
+        started_at, ended_at = _event_clip_bounds(event)
+    except Exception:
+        return "finalizing"
+
+    if ended_at > _utc_now():
+        return "recording"
+
+    finalized_segments = [segment for segment in _segments_for_range(str(event.get("device_id") or "").strip(), started_at, ended_at) if segment.finalized]
+    if _segments_cover_range(finalized_segments, started_at, ended_at):
+        return "ready"
+
+    return "finalizing"
+
+
+def _event_is_ready(event: Dict[str, Any]) -> bool:
+    return _event_state(event) == "ready"
+
+
 def _event_by_id(event_id: str) -> Dict[str, Any]:
     with _events_lock:
-        items = _load_events()
+        items = _load_events_normalized()
     event = next((item for item in items if str(item.get("id")) == event_id), None)
     if event is None:
         raise HTTPException(status_code=404, detail="Recording event not found")
@@ -332,7 +571,25 @@ def _start_recorder(device_id: str) -> None:
 
 
 def _prune_cached_clips() -> None:
-    if PLAYBACK_CLIP_CACHE_LIMIT <= 0 or not PLAYBACK_CLIPS_DIR.exists():
+    if not PLAYBACK_CLIPS_DIR.exists():
+        return
+
+    with _events_lock:
+        active_event_ids = {
+            str(item.get("id") or "").strip()
+            for item in _load_events_normalized()
+            if str(item.get("id") or "").strip()
+        }
+
+    for path in PLAYBACK_CLIPS_DIR.glob("*.mp4"):
+        if not path.is_file() or path.stem in active_event_ids:
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    if PLAYBACK_CLIP_CACHE_LIMIT <= 0:
         return
 
     clips = [path for path in PLAYBACK_CLIPS_DIR.glob("*.mp4") if path.is_file()]
@@ -452,12 +709,14 @@ def create_recording_marker(
     }
 
     with _events_lock:
-        items = _load_events()
+        items = _load_events_normalized()
         items.append(event)
-        items.sort(key=lambda item: str(item.get("triggered_at") or ""))
+        items, invalidated_clip_ids, _ = _merge_overlapping_events(items)
         _save_events(items)
+        _delete_clip_cache(invalidated_clip_ids)
+        merged_event = _find_matching_event(items, event)
 
-    return event
+    return merged_event or event
 
 
 def stop_recording_marker(*, device_id: str) -> Dict[str, Any]:
@@ -468,7 +727,7 @@ def stop_recording_marker(*, device_id: str) -> Dict[str, Any]:
     stop_at = _utc_now()
 
     with _events_lock:
-        items = _load_events()
+        items = _load_events_normalized()
         for index in range(len(items) - 1, -1, -1):
             event = items[index]
             if str(event.get("device_id") or "").strip() != normalized_device_id:
@@ -482,8 +741,11 @@ def stop_recording_marker(*, device_id: str) -> Dict[str, Any]:
             event["clip_end"] = clip_end.isoformat()
             event["after_seconds"] = max(0.0, (clip_end - trigger_at).total_seconds())
             items[index] = event
+            items, invalidated_clip_ids, _ = _merge_overlapping_events(items)
+            invalidated_clip_ids.add(str(event.get("id") or "").strip())
             _save_events(items)
-            return event
+            _delete_clip_cache(invalidated_clip_ids)
+            return _find_matching_event(items, event) or event
 
     raise LookupError(f"No active recording found for device {normalized_device_id}")
 
@@ -493,10 +755,12 @@ def _serialize_segment(segment: RecordingSegment) -> Dict[str, Any]:
         "path": segment.path.name,
         "started_at": segment.started_at.isoformat(),
         "ended_at": segment.ended_at.isoformat(),
+        "finalized": bool(segment.finalized),
     }
 
 
 def _serialize_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    state = _event_state(event)
     return {
         "id": event.get("id"),
         "device_id": event.get("device_id"),
@@ -510,6 +774,8 @@ def _serialize_event(event: Dict[str, Any]) -> Dict[str, Any]:
         "flow_id": event.get("flow_id"),
         "flow_name": event.get("flow_name"),
         "node_id": event.get("node_id"),
+        "state": state,
+        "ready": state == "ready",
     }
 
 
@@ -663,7 +929,7 @@ def clear_all_recordings() -> Dict[str, int]:
 
     try:
         with _events_lock:
-            items = _load_events()
+            items = _load_events_normalized()
             cleared_events = len(items)
             _save_events([])
 
@@ -693,7 +959,7 @@ def playback_timeline(device_id: str = Query(..., min_length=1), day: Optional[s
 
     with _events_lock:
         events = []
-        for item in _load_events():
+        for item in _load_events_normalized():
             if str(item.get("device_id") or "").strip() != device_id:
                 continue
             try:
@@ -720,6 +986,8 @@ def playback_event(event_id: str) -> Dict[str, Any]:
 @router.get("/api/playback/events/{event_id}/clip")
 def playback_event_clip(event_id: str):
     event = _event_by_id(event_id)
+    if not _event_is_ready(event):
+        raise HTTPException(status_code=409, detail="Recording clip is still being finalized")
     clip_path = _build_event_clip(event)
     return FileResponse(clip_path, media_type="video/mp4", filename=clip_path.name)
 
