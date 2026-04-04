@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -218,6 +219,8 @@ def _merge_event_records(primary: Dict[str, Any], secondary: Dict[str, Any]) -> 
     )
     merged["title"] = _merge_title(primary.get("title"), secondary.get("title"))
     merged["color"] = _merge_color(primary.get("color"), secondary.get("color"))
+    merged["preset_name"] = _merge_title(_event_preset_name(primary), _event_preset_name(secondary))
+    merged["preset_key"] = _recording_preset_key(merged["preset_name"])
     merged["flow_id"] = primary.get("flow_id") or secondary.get("flow_id") or None
     merged["flow_name"] = primary.get("flow_name") or secondary.get("flow_name") or None
     merged["node_id"] = primary.get("node_id") or secondary.get("node_id") or None
@@ -489,6 +492,26 @@ def _clamp_color(value: Any) -> str:
     return "#c6a14b"
 
 
+def _slugify_preset_name(value: Any) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    return slug or "recording"
+
+
+def _recording_preset_key(name: Any) -> str:
+    return _slugify_preset_name(name)
+
+
+def _event_preset_name(event: Dict[str, Any]) -> str:
+    return str(event.get("preset_name") or event.get("title") or "Recording").strip() or "Recording"
+
+
+def _event_preset_key(event: Dict[str, Any]) -> str:
+    preset_key = str(event.get("preset_key") or "").strip()
+    if preset_key:
+        return preset_key
+    return _recording_preset_key(_event_preset_name(event))
+
+
 def _recording_ffmpeg_command(device_id: str) -> List[str]:
     source = f"{MEDIAMTX_RTSP_BASE}/{_path_for(device_id)}"
     pattern = str(_recordings_dir_for_device(device_id) / "%Y%m%dT%H%M%S.ts")
@@ -681,6 +704,8 @@ def create_recording_marker(
     after_seconds: Optional[float],
     color: str,
     title: str,
+    preset_key: Optional[str] = None,
+    preset_name: Optional[str] = None,
     flow_id: Optional[str] = None,
     flow_name: Optional[str] = None,
     node_id: Optional[str] = None,
@@ -698,6 +723,8 @@ def create_recording_marker(
         "device_id": str(device_id or "").strip(),
         "title": str(title or "Recording").strip() or "Recording",
         "color": _clamp_color(color),
+        "preset_name": str(preset_name or title or "Recording").strip() or "Recording",
+        "preset_key": str(preset_key or "").strip() or _recording_preset_key(preset_name or title),
         "before_seconds": normalized_before,
         "after_seconds": normalized_after,
         "triggered_at": trigger_at.isoformat(),
@@ -766,6 +793,8 @@ def _serialize_event(event: Dict[str, Any]) -> Dict[str, Any]:
         "device_id": event.get("device_id"),
         "title": event.get("title") or "Recording",
         "color": _clamp_color(event.get("color")),
+        "preset_key": _event_preset_key(event),
+        "preset_name": _event_preset_name(event),
         "triggered_at": event.get("triggered_at"),
         "clip_start": event.get("clip_start"),
         "clip_end": event.get("clip_end"),

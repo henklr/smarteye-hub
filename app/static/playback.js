@@ -331,8 +331,9 @@ function minuteLabel(totalMinutes) {
 }
 
 function dayRange(startedAt, endedAt = startedAt) {
+  const safeEnd = endedAt || startedAt;
   const startMinute = clamp(minutesIntoDay(startedAt), 0, DAY_MINUTES);
-  const endCandidate = clamp(minutesIntoDay(endedAt), 0, DAY_MINUTES);
+  const endCandidate = clamp(minutesIntoDay(safeEnd), 0, DAY_MINUTES);
   const endMinute = endCandidate < startMinute ? DAY_MINUTES : endCandidate;
 
   return {
@@ -362,6 +363,47 @@ function eventDurationSeconds(event) {
 
   const range = eventRange(event);
   return Math.max(0, (range.endMinute - range.startMinute) * 60);
+}
+
+function normalizeEventPresetColor(value) {
+  const raw = String(value || "#c6a14b").trim().toLowerCase();
+  return /^#[0-9a-f]{6}$/.test(raw) ? raw : "#c6a14b";
+}
+
+function eventPresetName(event) {
+  return String(event?.preset_name || event?.title || "Recording").trim() || "Recording";
+}
+
+function eventPresetKey(event) {
+  const explicit = String(event?.preset_key || "").trim();
+  if (explicit) {
+    return explicit;
+  }
+  return eventPresetName(event).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "recording";
+}
+
+function timelinePresetRows() {
+  const rows = new Map();
+
+  for (const event of (state.timeline?.events || [])) {
+    const key = eventPresetKey(event);
+    if (!rows.has(key)) {
+      rows.set(key, {
+        key,
+        name: eventPresetName(event),
+        color: normalizeEventPresetColor(event?.color),
+        events: [],
+      });
+    }
+    rows.get(key).events.push(event);
+  }
+
+  return [...rows.values()].sort((left, right) => {
+    const leftName = String(left.name || "").toLowerCase();
+    const rightName = String(right.name || "").toLowerCase();
+    if (leftName !== rightName) return leftName.localeCompare(rightName);
+    return String(left.key || "").localeCompare(String(right.key || ""));
+  });
 }
 
 function timelineMinuteFromClientX(clientX, rect) {
@@ -1125,29 +1167,39 @@ function renderTimeline() {
   renderTimelineScale();
 
   const { tickMinutes } = timelineTickLayout();
-  const { events } = state.timeline;
+  const rows = timelinePresetRows();
 
   track.innerHTML = `
     ${tickMinutes.map((minute) => `<span class="playbackTimelineGuide" style="left:${visibleTimelinePercent(minute)}%;" aria-hidden="true"></span>`).join("")}
-    <div class="playbackTimelineBase" data-playback-track-base></div>
+    <div class="playbackTimelineRows">
+      ${rows.length ? rows.map((row) => `
+        <div class="playbackTimelineLane" data-preset-key="${escapeHtml(row.key)}">
+          <div class="playbackTimelineLaneHeader">
+            <span class="playbackTimelineLaneSwatch" style="background:${escapeHtml(row.color)};"></span>
+            <span class="playbackTimelineLaneLabel">${escapeHtml(row.name)}</span>
+          </div>
+          <div class="playbackTimelineBase" data-playback-track-base></div>
+          ${row.events.map((event) => {
+            const range = dayRange(event.clip_start, event.clip_end);
+            if (!isVisibleRange(range.startMinute, range.endMinute)) {
+              return "";
+            }
+
+            const clippedStart = clamp(range.startMinute, state.timelineView.startMinute, state.timelineView.endMinute);
+            const clippedEnd = clamp(range.endMinute, state.timelineView.startMinute, state.timelineView.endMinute);
+            const left = visibleTimelinePercent(clippedStart);
+            const width = visibleTimelineWidth(clippedStart, clippedEnd);
+            const active = event.id === state.selectedEventId ? "is-active" : "";
+            const pending = eventIsPending(event) ? `is-pending is-${escapeHtml(eventState(event))}` : "";
+            const readiness = eventIsPending(event) ? ` · ${eventStateLabel(event)}` : "";
+            return `<button class="playbackMarker ${active} ${pending}" type="button" data-event-id="${escapeHtml(event.id)}" aria-disabled="${eventIsReady(event) ? "false" : "true"}" style="left:${left}%; width:${width}%; background:${escapeHtml(event.color)};" title="${escapeHtml(`${event.title} · ${clockLabel(event.triggered_at)}${readiness}`)}"></button>`;
+          }).join("")}
+        </div>
+      `).join("") : `<div class="playbackTimelineEmpty">No recordings in this range.</div>`}
+    </div>
     <div class="playbackTimelineCursor hidden" data-playback-cursor>
       <span class="playbackTimelineCursorLabel" data-playback-cursor-label></span>
     </div>
-    ${events.map((event) => {
-      const range = dayRange(event.clip_start, event.clip_end);
-      if (!isVisibleRange(range.startMinute, range.endMinute)) {
-        return "";
-      }
-
-      const clippedStart = clamp(range.startMinute, state.timelineView.startMinute, state.timelineView.endMinute);
-      const clippedEnd = clamp(range.endMinute, state.timelineView.startMinute, state.timelineView.endMinute);
-      const left = visibleTimelinePercent(clippedStart);
-      const width = visibleTimelineWidth(clippedStart, clippedEnd);
-      const active = event.id === state.selectedEventId ? "is-active" : "";
-      const pending = eventIsPending(event) ? `is-pending is-${escapeHtml(eventState(event))}` : "";
-      const readiness = eventIsPending(event) ? ` · ${eventStateLabel(event)}` : "";
-      return `<button class="playbackMarker ${active} ${pending}" type="button" data-event-id="${escapeHtml(event.id)}" aria-disabled="${eventIsReady(event) ? "false" : "true"}" style="left:${left}%; width:${width}%; background:${escapeHtml(event.color)};" title="${escapeHtml(`${event.title} · ${clockLabel(event.triggered_at)}${readiness}`)}"></button>`;
-    }).join("")}
   `;
 
   syncPlaybackCursor();

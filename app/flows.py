@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -33,6 +34,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DEVICES_JSON = DATA_DIR / "devices.json"
 FLOWS_JSON = DATA_DIR / "flows.json"
 PUBLIC_VARIABLES_JSON = DATA_DIR / "public_variables.json"
+RECORDING_PRESETS_JSON = DATA_DIR / "recording_presets.json"
 FLOW_STATE_JSON = DATA_DIR / "flow_state.json"
 FLOW_LOG_FILE = Path(os.getenv("FLOW_LOG_FILE", str(DATA_DIR / "flows.log")))
 FLOW_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -98,6 +100,11 @@ class FlowTestRequest(BaseModel):
 
 class PublicVariablesIn(BaseModel):
     items: List[FlowVariableModel] = Field(default_factory=list)
+
+
+class RecordingPresetIn(BaseModel):
+    name: str = Field(..., min_length=1)
+    color: str = "#c6a14b"
     
 
 NODE_LIBRARY: List[Dict[str, Any]] = [
@@ -295,9 +302,11 @@ def flows_page() -> HTMLResponse:
 
 @router.get("/api/flows/catalog")
 def flows_catalog() -> Dict[str, Any]:
+    recording_presets = _merge_recording_presets(_collect_recording_presets_from_flows(_load_flows()))
     return {
         "nodes": NODE_LIBRARY,
         "devices": _load_devices(),
+        "recording_presets": recording_presets,
         "physical_io": physical_io_catalog(),
         "http_methods": sorted(_VALID_HTTP_METHODS),
         "operators": [
@@ -347,6 +356,81 @@ def save_public_variables(req: PublicVariablesIn) -> Dict[str, Any]:
     return {"ok": True, **_public_variables_response()}
 
 
+@router.get("/api/recording-presets")
+def list_recording_presets() -> Dict[str, Any]:
+    return {"items": _merge_recording_presets(_collect_recording_presets_from_flows(_load_flows()))}
+
+
+@router.post("/api/recording-presets")
+def create_recording_preset(req: RecordingPresetIn) -> Dict[str, Any]:
+    preset = _normalize_recording_preset_item(_dump(req))
+    if preset is None:
+        raise HTTPException(status_code=400, detail="Recording tag is invalid")
+
+    with _storage_lock:
+        items = _load_recording_presets()
+        if _find_recording_preset(preset["name"], items) is not None:
+            raise HTTPException(status_code=400, detail=f"Recording tag already exists: {preset['name']}")
+        items.append(preset)
+        items = _sort_recording_presets(items)
+        _save_recording_presets(items)
+
+    return {"ok": True, "item": preset, "items": items}
+
+
+@router.put("/api/recording-presets/{preset_name}")
+def update_recording_preset(preset_name: str, req: RecordingPresetIn) -> Dict[str, Any]:
+    preset = _normalize_recording_preset_item(_dump(req))
+    if preset is None:
+        raise HTTPException(status_code=400, detail="Recording tag is invalid")
+
+    with _storage_lock:
+        items = _load_recording_presets()
+        existing = _find_recording_preset(preset_name, items)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Recording tag not found")
+
+        duplicate = _find_recording_preset(preset["name"], items)
+        if duplicate is not None and _recording_preset_identity(duplicate.get("name")) != _recording_preset_identity(existing.get("name")):
+            raise HTTPException(status_code=400, detail=f"Recording tag already exists: {preset['name']}")
+
+        updated_items = [
+            preset if _recording_preset_identity(item.get("name")) == _recording_preset_identity(existing.get("name")) else item
+            for item in items
+        ]
+        updated_items = _sort_recording_presets(updated_items)
+        _save_recording_presets(updated_items)
+
+        flows = _load_flows()
+        synced_flows, changed_nodes = _rewrite_recording_preset_references(flows, existing, preset)
+        if changed_nodes:
+            _save_flows(synced_flows)
+
+    return {"ok": True, "item": preset, "items": updated_items, "updated_nodes": changed_nodes}
+
+
+@router.delete("/api/recording-presets/{preset_name}")
+def delete_recording_preset(preset_name: str) -> Dict[str, Any]:
+    with _storage_lock:
+        items = _load_recording_presets()
+        existing = _find_recording_preset(preset_name, items)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Recording tag not found")
+
+        updated_items = [
+            item for item in items
+            if _recording_preset_identity(item.get("name")) != _recording_preset_identity(existing.get("name"))
+        ]
+        _save_recording_presets(_sort_recording_presets(updated_items))
+
+        flows = _load_flows()
+        synced_flows, changed_nodes = _rewrite_recording_preset_references(flows, existing, None)
+        if changed_nodes:
+            _save_flows(synced_flows)
+
+    return {"ok": True, "items": _sort_recording_presets(updated_items), "removed": existing, "updated_nodes": changed_nodes}
+
+
 @router.get("/api/flows")
 def list_flows() -> Dict[str, Any]:
     return {"items": _load_flows()}
@@ -367,6 +451,7 @@ def create_flow(req: FlowIn) -> Dict[str, Any]:
         item = _normalize_flow_payload(_dump(req))
         items.append(item)
         _save_flows(items)
+        _merge_recording_presets(_collect_recording_presets_from_flows(items))
     return {"ok": True, "item": item}
 
 
@@ -382,6 +467,7 @@ def update_flow(flow_id: str, req: FlowIn) -> Dict[str, Any]:
                     created_at=item["created_at"],
                 )
                 _save_flows(items)
+                _merge_recording_presets(_collect_recording_presets_from_flows(items))
                 return {"ok": True, "item": items[idx]}
     raise HTTPException(status_code=404, detail="Flow not found")
 
@@ -394,6 +480,7 @@ def delete_flow(flow_id: str) -> Dict[str, Any]:
         if len(new_items) == len(items):
             raise HTTPException(status_code=404, detail="Flow not found")
         _save_flows(new_items)
+        _merge_recording_presets(_collect_recording_presets_from_flows(new_items))
         _delete_runtime_state_for_flow(flow_id)
     return {"ok": True}
 
@@ -570,6 +657,176 @@ def _load_public_variable_definitions() -> List[Dict[str, Any]]:
 
 def _save_public_variable_definitions(items: List[Dict[str, Any]]) -> None:
     _atomic_save_json(PUBLIC_VARIABLES_JSON, {"items": items})
+
+
+def _slugify_recording_preset_name(value: Any) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    return slug or "recording"
+
+
+def _recording_preset_identity(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_record_color(value: Any) -> str:
+    raw = str(value or "#c6a14b").strip().lower()
+    if len(raw) == 7 and raw.startswith("#"):
+        try:
+            int(raw[1:], 16)
+            return raw
+        except Exception:
+            pass
+    return "#c6a14b"
+
+
+def _recording_preset_key(name: Any) -> str:
+    return _slugify_recording_preset_name(name)
+
+
+def _normalize_recording_preset_item(item: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(item, dict):
+        return None
+    name = str(item.get("name") or "").strip() or "Recording"
+    color = _normalize_record_color(item.get("color"))
+    return {
+        "key": _recording_preset_key(name),
+        "name": name,
+        "color": color,
+    }
+
+
+def _recording_preset_from_fields(name: Any, color: Any) -> Dict[str, Any]:
+    return _normalize_recording_preset_item({"name": name, "color": color}) or {
+        "key": _recording_preset_key("Recording"),
+        "name": "Recording",
+        "color": "#c6a14b",
+    }
+
+
+def _load_recording_presets() -> List[Dict[str, Any]]:
+    payload = _load_json(RECORDING_PRESETS_JSON, {"items": []})
+    items = payload.get("items") if isinstance(payload, dict) else []
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in items or []:
+        preset = _normalize_recording_preset_item(raw)
+        identity = _recording_preset_identity((preset or {}).get("name")) if preset is not None else ""
+        if preset is None or not identity or identity in seen:
+            continue
+        seen.add(identity)
+        out.append(preset)
+    return out
+
+
+def _save_recording_presets(items: List[Dict[str, Any]]) -> None:
+    _atomic_save_json(RECORDING_PRESETS_JSON, {"items": items})
+
+
+def _collect_recording_presets_from_flows(flows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for flow in flows:
+        for node in flow.get("nodes") or []:
+            if str(node.get("type") or "") != "action.record":
+                continue
+            cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+            preset_name = str(cfg.get("preset_name") or cfg.get("name") or "").strip() or "Recording"
+            preset = _recording_preset_from_fields(preset_name, cfg.get("color"))
+            identity = _recording_preset_identity(preset["name"])
+            if identity in seen:
+                continue
+            seen.add(identity)
+            out.append(preset)
+    return out
+
+
+def _sort_recording_presets(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in items:
+        preset = _normalize_recording_preset_item(raw)
+        identity = _recording_preset_identity((preset or {}).get("name")) if preset is not None else ""
+        if preset is None or not identity or identity in seen:
+            continue
+        seen.add(identity)
+        normalized.append(preset)
+    return sorted(normalized, key=lambda item: (str(item.get("name") or "").lower(), item["key"]))
+
+
+def _find_recording_preset(name: Any, items: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
+    identity = _recording_preset_identity(name)
+    if not identity:
+        return None
+    for item in items if items is not None else _load_recording_presets():
+        if _recording_preset_identity(item.get("name")) == identity:
+            return dict(item)
+    return None
+
+
+def _rewrite_recording_preset_references(
+    flows: List[Dict[str, Any]],
+    previous_preset: Dict[str, Any],
+    next_preset: Optional[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], int]:
+    previous_name = str(previous_preset.get("name") or "").strip()
+    previous_identity = _recording_preset_identity(previous_name)
+    changed_nodes = 0
+    updated_flows: List[Dict[str, Any]] = []
+
+    for flow in flows:
+        flow_copy = deepcopy(flow)
+        flow_changed = False
+        for node in flow_copy.get("nodes") or []:
+            if str(node.get("type") or "") != "action.record":
+                continue
+            cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+            current_identity = _recording_preset_identity(cfg.get("preset_name") or cfg.get("name"))
+            if current_identity != previous_identity:
+                continue
+            if next_preset is None:
+                cfg.pop("preset_name", None)
+                cfg["name"] = str(cfg.get("name") or previous_name).strip() or previous_name or "Recording"
+                cfg["color"] = _normalize_record_color(cfg.get("color") or previous_preset.get("color"))
+                cfg["preset_key"] = _recording_preset_key(cfg["name"])
+            else:
+                cfg["preset_name"] = next_preset["name"]
+                cfg["name"] = next_preset["name"]
+                cfg["color"] = next_preset["color"]
+                cfg["preset_key"] = next_preset["key"]
+            node["config"] = cfg
+            flow_changed = True
+            changed_nodes += 1
+        if flow_changed:
+            flow_copy["updated_at"] = _utc_now_iso()
+        updated_flows.append(flow_copy)
+
+    return updated_flows, changed_nodes
+
+
+def _merge_recording_presets(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    current = _load_recording_presets()
+    by_identity = {_recording_preset_identity(item.get("name")): item for item in current}
+    changed = False
+
+    for raw in items:
+        preset = _normalize_recording_preset_item(raw)
+        if preset is None:
+            continue
+        identity = _recording_preset_identity(preset.get("name"))
+        if not identity:
+            continue
+        existing = by_identity.get(identity)
+        if existing == preset:
+            continue
+        if existing is not None:
+            continue
+        by_identity[identity] = preset
+        changed = True
+
+    merged = _sort_recording_presets(list(by_identity.values()))
+    if changed or len(merged) != len(current):
+        _save_recording_presets(merged)
+    return merged
 
 
 
@@ -984,6 +1241,8 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
             raise HTTPException(status_code=400, detail="Record action needs a device")
         if cfg["device_id"] not in {item["id"] for item in _load_devices()}:
             raise HTTPException(status_code=400, detail=f"Unknown device id: {cfg['device_id']}")
+        cfg["preset_name"] = str(cfg.get("preset_name") or "").strip()
+        cfg["name"] = str(cfg.get("name") or cfg.get("preset_name") or "").strip()
         try:
             cfg["before_seconds"] = float(cfg.get("before_seconds") or 0)
         except Exception:
@@ -999,14 +1258,28 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
                 raise HTTPException(status_code=400, detail="Record seconds after must be numeric")
             if cfg["after_seconds"] < 0:
                 raise HTTPException(status_code=400, detail="Record seconds after cannot be negative")
-        color = str(cfg.get("color") or "#c6a14b").strip().lower()
-        if len(color) != 7 or not color.startswith("#"):
+        color = _normalize_record_color(cfg.get("color"))
+        if str(cfg.get("color") or "").strip() and color != str(cfg.get("color") or "").strip().lower():
+            raw_color = str(cfg.get("color") or "").strip().lower()
+            if len(raw_color) != 7 or not raw_color.startswith("#"):
+                raise HTTPException(status_code=400, detail="Record color must be a hex value like #c6a14b")
+            try:
+                int(raw_color[1:], 16)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Record color must be a hex value like #c6a14b")
+        elif len(color) != 7 or not color.startswith("#"):
             raise HTTPException(status_code=400, detail="Record color must be a hex value like #c6a14b")
-        try:
-            int(color[1:], 16)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Record color must be a hex value like #c6a14b")
-        cfg["color"] = color
+        preset = _find_recording_preset(cfg.get("preset_name") or cfg.get("name"))
+        if preset is not None:
+            cfg["preset_name"] = preset["name"]
+            cfg["name"] = preset["name"]
+            cfg["color"] = preset["color"]
+            cfg["preset_key"] = preset["key"]
+        else:
+            cfg["color"] = color
+            cfg["preset_name"] = str(cfg.get("preset_name") or "").strip() or None
+            cfg["name"] = cfg["name"] or cfg["preset_name"] or "Recording"
+            cfg["preset_key"] = _recording_preset_key(cfg["preset_name"] or cfg["name"])
         return cfg
 
     if node_type == "action.stop_recording":
@@ -1776,7 +2049,11 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         return result
 
     if node_type == "action.record":
-        title = _render_template(str(cfg.get("name") or ""), context).strip() or "Recording"
+        preset = _find_recording_preset(cfg.get("preset_name") or cfg.get("name"))
+        preset_name = str((preset or {}).get("name") or cfg.get("preset_name") or cfg.get("name") or "").strip() or "Recording"
+        title = preset_name
+        color = str((preset or {}).get("color") or _normalize_record_color(cfg.get("color")))
+        preset_key = str((preset or {}).get("key") or cfg.get("preset_key") or _recording_preset_key(preset_name)).strip()
         try:
             event = create_recording_marker(
                 device_id=str(cfg.get("device_id") or "").strip(),
@@ -1786,8 +2063,10 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
                     if cfg.get("after_seconds") not in {None, ""}
                     else None
                 ),
-                color=str(cfg.get("color") or "#c6a14b"),
+                color=color,
                 title=title,
+                preset_key=preset_key,
+                preset_name=preset_name,
                 flow_id=str((context.get("flow") or {}).get("id") or "").strip() or None,
                 flow_name=str((context.get("flow") or {}).get("name") or "").strip() or None,
                 node_id=str(node.get("id") or "").strip() or None,
@@ -1798,6 +2077,7 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
             result["clip_start"] = event.get("clip_start")
             result["clip_end"] = event.get("clip_end")
             result["color"] = event.get("color")
+            result["preset_key"] = event.get("preset_key")
         except Exception as exc:
             result["ok"] = False
             result["error"] = str(exc)

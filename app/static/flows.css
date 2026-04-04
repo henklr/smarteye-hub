@@ -124,6 +124,10 @@ body.flowsPage {
   flex: 0 0 auto;
 }
 
+.flowsPage .flowsSidebarPresets {
+  flex: 0 0 auto;
+}
+
 .flowsPage .flowsSidebarPalette {
   flex: 0 0 auto;
   min-height: 0;
@@ -257,6 +261,13 @@ body.flowsPage {
 }
 
 .flowsPage .publicVariableList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.flowsPage .recordingPresetList {
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -497,6 +508,39 @@ body.flowsPage {
   line-height: 1.4;
   word-break: break-word;
   max-width: 100%;
+}
+
+.flowsPage .flowNodeTagRow {
+  margin-top: 8px;
+}
+
+.flowsPage .flowNodeTagChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.flowsPage .flowNodeTagSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  flex: 0 0 auto;
+}
+
+.flowsPage .flowNodeTagText {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text);
 }
 
 .flowsPage .nodeBadge {
@@ -871,6 +915,77 @@ body.flowsPage {
   font-size: 12px;
   font-weight: 900;
 }
+
+.flowsPage .recordingPresetSwatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  flex: 0 0 auto;
+}
+
+.flowsPage .recordingPresetColorRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.flowsPage .recordingPresetColorRow input[type="color"] {
+  flex: 0 0 auto;
+}
+
+.flowsPage .recordingTagColorPreview {
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.flowsPage .recordingTagColorPreview.is-readonly {
+  justify-content: flex-start;
+}
+
+.flowsPage .recordingTagColorPreview.is-editable {
+  justify-content: flex-start;
+}
+
+.flowsPage .recordingTagColorSwatchButton {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  margin: 0;
+  cursor: pointer;
+}
+
+.flowsPage .recordingTagColorInput {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.flowsPage .recordingTagColorSwatch {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06);
+  flex: 0 0 auto;
+}
+
+.flowsPage .recordingTagColorSwatch.is-large {
+  width: 24px;
+  height: 24px;
+}
+
 
 .flowsPage .varCard.is-preview .varCardName {
   font-size: 13px;

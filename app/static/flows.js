@@ -7,9 +7,11 @@ const state = {
   draft: null,
   sidebarSections: {
     saved: { expanded: true, touched: false },
+    presets: { expanded: true, touched: false },
     variables: { expanded: true, touched: false },
     palette: { expanded: true, touched: false },
   },
+  recordingPresets: [],
   publicVariables: [],
   publicVariablesDirty: false,
   publicVariablesInteracting: false,
@@ -20,6 +22,7 @@ const state = {
   selectedSavedFlowId: null,
   selectedNodeId: null,
   selectedEdgeId: null,
+  selectedRecordingPresetIndex: null,
   selectedPublicVariableIndex: null,
   dirty: false,
   connecting: null,
@@ -134,6 +137,16 @@ function currentPublicVariables() {
   return state.publicVariables || [];
 }
 
+function currentRecordingPresets() {
+  return state.recordingPresets || [];
+}
+
+function currentSelectedRecordingPreset() {
+  const idx = state.selectedRecordingPresetIndex;
+  if (!Number.isInteger(idx) || idx < 0) return null;
+  return currentRecordingPresets()[idx] || null;
+}
+
 function currentSelectedPublicVariable() {
   const idx = state.selectedPublicVariableIndex;
   if (!Number.isInteger(idx) || idx < 0) return null;
@@ -143,28 +156,44 @@ function currentSelectedPublicVariable() {
 function clearEditorSelection() {
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
+  state.selectedRecordingPresetIndex = null;
   state.selectedPublicVariableIndex = null;
+  renderRecordingPresetSidebar();
   renderPublicVariablesSidebar();
 }
 
 function selectNode(nodeId) {
   state.selectedNodeId = nodeId;
   state.selectedEdgeId = null;
+  state.selectedRecordingPresetIndex = null;
   state.selectedPublicVariableIndex = null;
+  renderRecordingPresetSidebar();
   renderPublicVariablesSidebar();
 }
 
 function selectEdge(edgeId) {
   state.selectedEdgeId = edgeId;
   state.selectedNodeId = null;
+  state.selectedRecordingPresetIndex = null;
   state.selectedPublicVariableIndex = null;
+  renderRecordingPresetSidebar();
   renderPublicVariablesSidebar();
+}
+
+function selectRecordingPreset(index) {
+  state.selectedRecordingPresetIndex = Number.isInteger(index) && index >= 0 ? index : null;
+  state.selectedNodeId = null;
+  state.selectedEdgeId = null;
+  state.selectedPublicVariableIndex = null;
+  state.connecting = null;
+  state.connectionCursor = null;
 }
 
 function selectPublicVariable(index) {
   state.selectedPublicVariableIndex = Number.isInteger(index) && index >= 0 ? index : null;
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
+  state.selectedRecordingPresetIndex = null;
   state.connecting = null;
   state.connectionCursor = null;
 }
@@ -219,6 +248,104 @@ function normalizePublicVariableRecord(item = {}) {
 
 function normalizePublicVariableRecords(items = []) {
   return (items || []).map((item) => normalizePublicVariableRecord(item));
+}
+
+function normalizeRecordingPresetColor(value) {
+  const raw = String(value || "#c6a14b").trim().toLowerCase();
+  if (/^#[0-9a-f]{6}$/.test(raw)) {
+    return raw;
+  }
+  return "#c6a14b";
+}
+
+function normalizeRecordingPresetName(value) {
+  return String(value || "").trim() || "Recording";
+}
+
+function slugifyRecordingPresetName(value) {
+  return normalizeRecordingPresetName(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "recording";
+}
+
+function recordingPresetIdentity(name) {
+  return normalizeRecordingPresetName(name).toLowerCase();
+}
+
+function recordingPresetKey(name) {
+  return slugifyRecordingPresetName(name);
+}
+
+function normalizeRecordingPresetRecord(item = {}) {
+  const name = normalizeRecordingPresetName(item.name);
+  const color = normalizeRecordingPresetColor(item.color);
+  return {
+    key: String(item.key || "").trim() || recordingPresetKey(name),
+    name,
+    color,
+    _original_name: String(item._original_name ?? item.name ?? "").trim(),
+  };
+}
+
+function recordingPresetByName(name) {
+  const wanted = recordingPresetIdentity(name);
+  return currentRecordingPresets().find((item) => recordingPresetIdentity(item.name) === wanted) || null;
+}
+
+function recordingPresetOptionsHtml(selected = "") {
+  const options = [`<option value="">Select tag</option>`];
+  for (const preset of currentRecordingPresets()) {
+    options.push(
+      `<option value="${escapeHtml(preset.name)}" ${recordingPresetIdentity(preset.name) === recordingPresetIdentity(selected) ? "selected" : ""}>${escapeHtml(preset.name)}</option>`
+    );
+  }
+  if (selected && !recordingPresetByName(selected)) {
+    options.push(`<option value="${escapeHtml(selected)}" selected>[Missing tag] ${escapeHtml(selected)}</option>`);
+  }
+  return options.join("");
+}
+
+function nextRecordingPresetName() {
+  const existing = new Set(currentRecordingPresets().map((item) => recordingPresetIdentity(item.name)));
+  let idx = currentRecordingPresets().length + 1;
+  while (existing.has(recordingPresetIdentity(`Tag ${idx}`))) {
+    idx += 1;
+  }
+  return `Tag ${idx}`;
+}
+
+function applyRecordingPresetToDraft(previousName, nextPreset) {
+  const flow = currentFlow();
+  if (!flow) return;
+  const previousIdentity = recordingPresetIdentity(previousName);
+
+  for (const node of (flow.nodes || [])) {
+    if (node?.type !== "action.record") continue;
+    const cfg = node.config || {};
+    const currentIdentity = recordingPresetIdentity(cfg.preset_name || cfg.name);
+    if (currentIdentity !== previousIdentity) continue;
+
+    if (nextPreset) {
+      cfg.preset_name = nextPreset.name;
+      cfg.preset_key = nextPreset.key;
+      cfg.name = nextPreset.name;
+      cfg.color = nextPreset.color;
+    } else {
+      delete cfg.preset_name;
+      cfg.preset_key = recordingPresetKey(cfg.name || previousName || "Recording");
+    }
+  }
+}
+
+function recordNodeTag(node) {
+  if (node?.type !== "action.record") return null;
+  const cfg = node.config || {};
+  const preset = recordingPresetByName(cfg.preset_name || cfg.name);
+  const name = String(preset?.name || cfg.preset_name || cfg.name || "").trim();
+  const color = normalizeRecordingPresetColor(preset?.color || cfg.color || "#c6a14b");
+  if (!name) return null;
+  return { name, color };
 }
 
 function makeId(prefix) {
@@ -1341,6 +1468,7 @@ function renderCanvas() {
     const def = nodeDef(node.type);
     const ports = def?.ports || { inputs: [], outputs: [] };
     const meta = CATEGORY_META[node.category] || CATEGORY_META.action;
+    const tag = recordNodeTag(node);
 
     return `
       <div class="flowNode ${node.category} ${node.id === state.selectedNodeId ? "selected" : ""}" data-node-id="${escapeHtml(node.id)}" style="left:${Number(node.x) || 0}px; top:${Number(node.y) || 0}px;">
@@ -1351,6 +1479,15 @@ function renderCanvas() {
           </div>
           <span class="nodeBadge">${escapeHtml(meta.label)}</span>
         </div>
+
+        ${tag ? `
+          <div class="flowNodeTagRow">
+            <span class="flowNodeTagChip">
+              <span class="flowNodeTagSwatch" style="background:${escapeHtml(tag.color)};"></span>
+              <span class="flowNodeTagText">${escapeHtml(tag.name)}</span>
+            </span>
+          </div>
+        ` : ""}
 
         <div class="flowNodePreview" data-node-preview-id="${escapeHtml(node.id)}">${escapeHtml(nodePreview(node))}</div>
 
@@ -1702,6 +1839,24 @@ function renderInspector() {
 
     box.innerHTML = renderNodeInspector(node);
     bindNodeInspector(node);
+    restoreInspectorFocusState(focusState);
+    return;
+  }
+
+  if (state.selectedRecordingPresetIndex != null) {
+    const preset = currentSelectedRecordingPreset();
+    if (!preset) {
+      state.selectedRecordingPresetIndex = null;
+      renderInspector();
+      return;
+    }
+
+    if (el("inspectorSubtext")) {
+      el("inspectorSubtext").textContent = `${preset.name} tag`;
+    }
+
+    box.innerHTML = renderRecordingPresetInspector(preset, state.selectedRecordingPresetIndex);
+    bindRecordingPresetInspector(state.selectedRecordingPresetIndex);
     restoreInspectorFocusState(focusState);
     return;
   }
@@ -2100,6 +2255,331 @@ function nextPublicVariableKey() {
     idx += 1;
   }
   return `var_${idx}`;
+}
+
+function syncRecordingPresetsHeader() {
+  for (const buttonId of ["btnSaveRecordingPreset", "btnInspectorSaveRecordingPreset"]) {
+    if (el(buttonId)) {
+      el(buttonId).disabled = currentSelectedRecordingPreset() == null;
+    }
+  }
+
+  for (const buttonId of ["btnDeleteRecordingPreset", "btnInspectorDeleteRecordingPreset"]) {
+    if (el(buttonId)) {
+      el(buttonId).disabled = currentSelectedRecordingPreset() == null;
+    }
+  }
+}
+
+function addRecordingPreset() {
+  state.recordingPresets.push(normalizeRecordingPresetRecord({
+    name: nextRecordingPresetName(),
+    color: "#c6a14b",
+    _original_name: "",
+  }));
+  if (el("presetSearch")) {
+    el("presetSearch").value = "";
+  }
+  selectRecordingPreset(currentRecordingPresets().length - 1);
+  setSidebarSectionExpanded("presets", true);
+  renderRecordingPresetSidebar();
+  renderInspector();
+}
+
+function removeLocalRecordingPreset(index) {
+  if (!currentRecordingPresets()[index]) return;
+  state.recordingPresets.splice(index, 1);
+  if (!currentRecordingPresets().length) {
+    state.selectedRecordingPresetIndex = null;
+  } else {
+    state.selectedRecordingPresetIndex = Math.min(index, currentRecordingPresets().length - 1);
+  }
+  renderRecordingPresetSidebar();
+  renderInspector();
+}
+
+function renderRecordingPresetSidebar() {
+  const box = el("recordingPresetList");
+  if (!box) return;
+
+  const q = (el("presetSearch")?.value || "").trim().toLowerCase();
+  const selectedPreset = currentSelectedRecordingPreset();
+  const items = currentRecordingPresets().map((preset, idx) => ({ preset, idx })).filter(({ preset }) => {
+    if (!q) return true;
+    return [preset.name, preset.color].join(" ").toLowerCase().includes(q);
+  });
+
+  syncSidebarSection("presets", currentRecordingPresets().length > 0);
+  syncRecordingPresetsHeader();
+
+  const currentCard = !selectedPreset ? `
+    <div class="varCard varCardActionsOnly">
+      <div class="sidebarCardActions is-standalone">
+        <button class="btn btn-primary btn-compact" id="btnAddRecordingPreset" type="button">New</button>
+        <button class="btn btn-compact" id="btnSaveRecordingPreset" type="button">Save</button>
+        <button class="btn btn-danger btn-compact" id="btnDeleteRecordingPreset" type="button">Delete</button>
+      </div>
+    </div>` : "";
+
+  box.innerHTML = `
+    ${currentCard}
+    ${currentRecordingPresets().length ? "" : `<div class="emptyState">No recording tags yet.</div>`}
+    ${items.length ? items.map(({ preset, idx }) => {
+      const isActive = idx === state.selectedRecordingPresetIndex;
+      return `
+        <${isActive ? "div" : "button"} class="varCard is-preview ${isActive ? "active varCardCurrent" : ""}" ${isActive ? "" : 'type="button"'} data-recording-preset-index="${idx}" aria-pressed="${isActive ? "true" : "false"}">
+          <div class="varCardTop">
+            <div class="varCardName">${escapeHtml(preset.name)}</div>
+            <span class="recordingPresetSwatch" style="background:${escapeHtml(preset.color)};"></span>
+          </div>
+          ${isActive ? `
+          <div class="sidebarCardActions">
+            <button class="btn btn-primary btn-compact" id="btnAddRecordingPreset" type="button">New</button>
+            <button class="btn btn-compact" id="btnSaveRecordingPreset" type="button">Save</button>
+            <button class="btn btn-danger btn-compact" id="btnDeleteRecordingPreset" type="button">Delete</button>
+          </div>` : ""}
+        </${isActive ? "div" : "button"}>
+      `;
+    }).join("") : ""}
+  `;
+
+  bindRecordingPresetActionButtons();
+  syncRecordingPresetsHeader();
+
+  box.querySelectorAll("[data-recording-preset-index]").forEach((card) => {
+    if (card.classList.contains("varCardCurrent")) return;
+    card.addEventListener("click", () => {
+      const index = Number(card.dataset.recordingPresetIndex || -1);
+      if (!currentRecordingPresets()[index]) return;
+      selectRecordingPreset(index);
+      renderRecordingPresetSidebar();
+      renderInspector();
+      renderCanvas();
+      drawEdges();
+    });
+  });
+}
+
+function renderRecordingPresetInspector(preset, index) {
+  return `
+    <div class="inspectorCard">
+      <div class="rowSplit">
+        <div>
+          <div class="inspectorTitle" style="margin-bottom:4px;">${escapeHtml(preset.name)}</div>
+          <div class="inspectorHint">Shared recording tag</div>
+        </div>
+      </div>
+      <div id="recordingPresetInspectorBody" class="fieldGrid mt-10" data-recording-preset-index="${index}">
+        <div class="full">
+          <label>Name</label>
+          <input id="recordingPresetNameInput" value="${escapeHtml(preset.name)}" placeholder="Driveway event" />
+        </div>
+        <div class="full">
+          <label>Tag color</label>
+          <div class="recordingPresetColorRow recordingTagColorPreview is-editable">
+            <label class="recordingTagColorSwatchButton" for="recordingPresetColorInput">
+              <span id="recordingPresetColorSwatch" class="recordingTagColorSwatch is-large" style="background:${escapeHtml(preset.color)};"></span>
+              <input id="recordingPresetColorInput" class="recordingTagColorInput" type="color" value="${escapeHtml(preset.color)}" aria-label="Tag color" />
+            </label>
+            <span id="recordingPresetColorValue" class="miniPill">${escapeHtml(preset.color)}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="inspectorCard inspectorActionsCard">
+      <div class="inspectorActionHeader">
+        <div class="inspectorTitle">Tag actions</div>
+        <div class="inspectorHint">Create, save, or remove the selected recording tag.</div>
+      </div>
+      <div class="inspectorActionGrid">
+        <button class="btn btn-primary" id="btnInspectorAddRecordingPreset" type="button">New</button>
+        <button class="btn" id="btnInspectorSaveRecordingPreset" type="button">Save</button>
+        <button class="btn btn-danger" id="btnInspectorDeleteRecordingPreset" type="button">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
+async function refreshRecordingPresets(silent = true) {
+  try {
+    const data = await api("/api/recording-presets");
+    const selected = currentSelectedRecordingPreset();
+    const selectedName = selected?.name || "";
+    state.recordingPresets = (Array.isArray(data?.items) ? data.items : []).map((item) => normalizeRecordingPresetRecord({
+      ...item,
+      _original_name: item?.name || "",
+    }));
+
+    if (selectedName) {
+      const nextIndex = state.recordingPresets.findIndex((item) => recordingPresetIdentity(item.name) === recordingPresetIdentity(selectedName));
+      state.selectedRecordingPresetIndex = nextIndex >= 0 ? nextIndex : null;
+    } else if (!state.recordingPresets.length) {
+      state.selectedRecordingPresetIndex = null;
+    }
+
+    renderRecordingPresetSidebar();
+    if (!inspectorHasFocus()) {
+      renderInspector();
+    }
+  } catch (err) {
+    if (!silent) {
+      setStatus(err.message || String(err), true);
+    }
+  }
+}
+
+async function saveRecordingPreset() {
+  const preset = currentSelectedRecordingPreset();
+  if (!preset) return;
+
+  preset.name = normalizeRecordingPresetName(preset.name);
+  preset.color = normalizeRecordingPresetColor(preset.color);
+
+  const duplicate = currentRecordingPresets().find((item, index) => {
+    if (index === state.selectedRecordingPresetIndex) return false;
+    return recordingPresetIdentity(item.name) === recordingPresetIdentity(preset.name);
+  });
+  if (duplicate) {
+    throw new Error(`Duplicate tag name: ${preset.name}`);
+  }
+
+  const previousName = preset._original_name || preset.name;
+  const method = preset._original_name ? "PUT" : "POST";
+  const path = preset._original_name
+    ? `/api/recording-presets/${encodeURIComponent(preset._original_name)}`
+    : "/api/recording-presets";
+
+  const out = await api(path, {
+    method,
+    body: JSON.stringify({ name: preset.name, color: preset.color }),
+  });
+
+  const saved = normalizeRecordingPresetRecord({
+    ...(out?.item || preset),
+    _original_name: (out?.item || preset).name,
+  });
+  applyRecordingPresetToDraft(previousName, saved);
+  await refreshFlows();
+  state.recordingPresets = (Array.isArray(out?.items) ? out.items : []).map((item) => normalizeRecordingPresetRecord({
+    ...item,
+    _original_name: item?.name || "",
+  }));
+  state.selectedRecordingPresetIndex = state.recordingPresets.findIndex((item) => recordingPresetIdentity(item.name) === recordingPresetIdentity(saved.name));
+
+  const catalog = await api("/api/flows/catalog");
+  state.catalog = catalog;
+  state.devices = Array.isArray(catalog?.devices) ? catalog.devices : [];
+  renderRecordingPresetSidebar();
+  renderCanvas();
+  renderInspector();
+  setStatus(`Recording tag saved: ${saved.name}.`);
+}
+
+async function deleteRecordingPreset() {
+  const preset = currentSelectedRecordingPreset();
+  if (!preset) return;
+
+  if (preset._original_name) {
+    const out = await api(`/api/recording-presets/${encodeURIComponent(preset._original_name)}`, {
+      method: "DELETE",
+    });
+    applyRecordingPresetToDraft(preset._original_name, null);
+    await refreshFlows();
+    state.recordingPresets = (Array.isArray(out?.items) ? out.items : []).map((item) => normalizeRecordingPresetRecord({
+      ...item,
+      _original_name: item?.name || "",
+    }));
+  } else {
+    removeLocalRecordingPreset(state.selectedRecordingPresetIndex);
+    return;
+  }
+
+  if (!state.recordingPresets.length) {
+    state.selectedRecordingPresetIndex = null;
+  } else {
+    state.selectedRecordingPresetIndex = Math.min(state.selectedRecordingPresetIndex ?? 0, state.recordingPresets.length - 1);
+  }
+
+  const catalog = await api("/api/flows/catalog");
+  state.catalog = catalog;
+  state.devices = Array.isArray(catalog?.devices) ? catalog.devices : [];
+  renderRecordingPresetSidebar();
+  renderCanvas();
+  renderInspector();
+  setStatus(`Recording tag deleted: ${preset.name}.`);
+}
+
+function bindRecordingPresetActionButtons() {
+  el("btnAddRecordingPreset")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    addRecordingPreset();
+  });
+
+  el("btnSaveRecordingPreset")?.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    try {
+      await saveRecordingPreset();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+
+  el("btnDeleteRecordingPreset")?.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    try {
+      await deleteRecordingPreset();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+}
+
+function bindRecordingPresetInspector(index) {
+  const getPreset = () => currentRecordingPresets()[index];
+
+  document.getElementById("btnInspectorAddRecordingPreset")?.addEventListener("click", () => {
+    addRecordingPreset();
+  });
+
+  document.getElementById("btnInspectorSaveRecordingPreset")?.addEventListener("click", async () => {
+    try {
+      await saveRecordingPreset();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+
+  document.getElementById("btnInspectorDeleteRecordingPreset")?.addEventListener("click", async () => {
+    try {
+      await deleteRecordingPreset();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+
+  document.getElementById("recordingPresetNameInput")?.addEventListener("input", (ev) => {
+    const preset = getPreset();
+    if (!preset) return;
+    preset.name = normalizeRecordingPresetName(ev.target.value);
+    renderRecordingPresetSidebar();
+
+    const title = document.querySelector("#inspectorBody .inspectorCard .inspectorTitle");
+    if (title) title.textContent = preset.name;
+    if (el("inspectorSubtext")) {
+      el("inspectorSubtext").textContent = `${preset.name} tag`;
+    }
+  });
+
+  document.getElementById("recordingPresetColorInput")?.addEventListener("input", (ev) => {
+    const preset = getPreset();
+    if (!preset) return;
+    preset.color = normalizeRecordingPresetColor(ev.target.value);
+    const swatch = document.getElementById("recordingPresetColorSwatch");
+    if (swatch) swatch.style.background = preset.color;
+    const colorValue = document.getElementById("recordingPresetColorValue");
+    if (colorValue) colorValue.textContent = preset.color;
+    renderRecordingPresetSidebar();
+  });
 }
 
 function validatePublicVariables() {
@@ -2815,14 +3295,17 @@ function renderNodeInspector(node) {
       break;
 
     case "action.record":
+      {
+        const selectedPreset = recordingPresetByName(cfg.preset_name || cfg.name);
+        const tagColor = selectedPreset?.color || cfg.color || "#c6a14b";
       body = `
         <div class="inspectorCard">
           <div class="inspectorTitle">Start recording</div>
-          <div class="inspectorHint">Starts a colored playback marker for the selected camera. Use a Stop recording node later in the flow to end it.</div>
+          <div class="inspectorHint">Starts a colored playback marker for the selected camera using a shared recording tag. Use a Stop recording node later in the flow to end it.</div>
           <div class="fieldGrid mt-10">
             <div class="full">
-              <label>Name</label>
-              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Driveway event" />
+              <label>Tag</label>
+              <select id="cfg_preset_name">${recordingPresetOptionsHtml(cfg.preset_name || cfg.name || "")}</select>
             </div>
             <div class="full">
               <label>Camera</label>
@@ -2833,12 +3316,16 @@ function renderNodeInspector(node) {
               <input id="cfg_before_seconds" type="number" min="0" step="1" value="${escapeHtml(cfg.before_seconds ?? 10)}" />
             </div>
             <div class="full">
-              <label>Timeline color</label>
-              <input id="cfg_color" type="color" value="${escapeHtml(cfg.color || "#c6a14b")}" />
+              <label>Tag color</label>
+              <div class="recordingPresetColorRow recordingTagColorPreview is-readonly">
+                <span class="recordingTagColorSwatch is-large" style="background:${escapeHtml(tagColor)};"></span>
+                <span class="miniPill">${escapeHtml(tagColor)}</span>
+              </div>
             </div>
           </div>
         </div>
       `;
+      }
       break;
 
     case "action.stop_recording":
@@ -3026,6 +3513,28 @@ function bindNodeInspector(node) {
       renderInspector();
     });
   }
+
+  if (node.type === "action.record") {
+    document.getElementById("cfg_preset_name")?.addEventListener("change", (event) => {
+      const selectedName = String(event.target?.value || "").trim();
+      const preset = recordingPresetByName(selectedName);
+      if (preset) {
+        node.config.preset_name = preset.name;
+        node.config.name = preset.name;
+        node.config.color = preset.color;
+        node.config.preset_key = preset.key;
+        if (document.getElementById("cfg_color")) {
+          document.getElementById("cfg_color").value = preset.color;
+        }
+      } else {
+        delete node.config.preset_name;
+        node.config.preset_key = recordingPresetKey(node.config.name || "Recording");
+      }
+      markDirty();
+      renderCanvas();
+      renderInspector();
+    });
+  }
 }
 
 function applyNodeInspector(node) {
@@ -3113,10 +3622,26 @@ function applyNodeInspector(node) {
       set("pulse_seconds");
       break;
     case "action.record":
-      set("name");
+      set("preset_name");
       set("device_id");
       set("before_seconds");
-      set("color");
+      {
+        const preset = recordingPresetByName(cfg.preset_name);
+        if (preset) {
+          cfg.preset_name = preset.name;
+          cfg.name = preset.name;
+          cfg.color = preset.color;
+          cfg.preset_key = preset.key;
+        } else {
+          delete cfg.preset_name;
+          cfg.name = normalizeRecordingPresetName(cfg.name || "Recording");
+          cfg.color = normalizeRecordingPresetColor(cfg.color);
+          cfg.preset_key = recordingPresetKey(cfg.name || "Recording");
+        }
+      }
+      if (document.getElementById("cfg_preset_name")) {
+        document.getElementById("cfg_preset_name").value = cfg.preset_name || "";
+      }
       break;
     case "action.stop_recording":
       set("device_id");
@@ -3370,6 +3895,7 @@ function startPhysicalStatePolling() {
 function renderAll() {
   renderFlowList();
   syncHeader();
+  renderRecordingPresetSidebar();
   renderPublicVariablesSidebar();
   renderCanvas();
   renderInspector();
@@ -3399,6 +3925,10 @@ async function saveFlow() {
   state.draft = deepClone(saved);
 
   await refreshFlows();
+  await refreshRecordingPresets(true);
+  const catalog = await api("/api/flows/catalog");
+  state.catalog = catalog;
+  state.devices = Array.isArray(catalog?.devices) ? catalog.devices : [];
   clearDirty();
   setStatus("Flow saved.");
   renderAll();
@@ -3558,6 +4088,7 @@ function bindGlobalEvents() {
   });
 
   el("flowSearch")?.addEventListener("input", renderFlowList);
+  el("presetSearch")?.addEventListener("input", renderRecordingPresetSidebar);
   el("variableSearch")?.addEventListener("input", renderPublicVariablesSidebar);
   el("paletteSearch")?.addEventListener("input", renderPalette);
 
@@ -3699,6 +4230,7 @@ async function init() {
     state.devices = Array.isArray(catalog?.devices) ? catalog.devices : [];
 
     await refreshFlows();
+    await refreshRecordingPresets(true);
     await refreshPublicVariables(true);
     await refreshPhysicalState(true);
     startPublicVariablesPolling();
