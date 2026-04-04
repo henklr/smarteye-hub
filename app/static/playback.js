@@ -289,6 +289,7 @@ function eventStateLabel(event) {
   const value = eventState(event);
   if (value === "recording") return "Recording";
   if (value === "finalizing") return "Saving";
+  if (value === "missing") return "Unavailable";
   return "Ready";
 }
 
@@ -1723,7 +1724,11 @@ function bindTimelineInteractions() {
           return;
         }
         if (!eventIsReady(targetEvent)) {
-          setStatus(`${targetEvent.title} is still being finalized.`);
+          setStatus(
+            eventState(targetEvent) === "missing"
+              ? `${targetEvent.title} is unavailable because recorded video does not cover that time range.`
+              : `${targetEvent.title} is still being finalized.`
+          );
           return;
         }
 

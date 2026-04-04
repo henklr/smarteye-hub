@@ -295,6 +295,81 @@ def _event_tag_segments(event: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [fallback] if fallback is not None else []
 
 
+def _continuous_segment_coverage(
+    segments: List[RecordingSegment],
+    started_at: datetime,
+    ended_at: datetime,
+) -> Optional[Tuple[datetime, datetime]]:
+    overlaps: List[Tuple[datetime, datetime]] = []
+    for segment in sorted(segments, key=lambda item: item.started_at):
+        overlap_start = max(segment.started_at, started_at)
+        overlap_end = min(segment.ended_at, ended_at)
+        if overlap_end <= overlap_start:
+            continue
+        overlaps.append((overlap_start, overlap_end))
+
+    if not overlaps:
+        return None
+
+    tolerance = timedelta(seconds=READINESS_GAP_TOLERANCE_SECONDS)
+    coverage_start, coverage_end = overlaps[0]
+    for overlap_start, overlap_end in overlaps[1:]:
+        if overlap_start > coverage_end + tolerance:
+            break
+        if overlap_end > coverage_end:
+            coverage_end = overlap_end
+        if coverage_end >= ended_at - tolerance:
+            break
+
+    return coverage_start, min(coverage_end, ended_at)
+
+
+def _trim_event_to_available_coverage(event: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    if _event_is_open(event):
+        return dict(event), False
+
+    try:
+        started_at, ended_at = _event_clip_bounds(event)
+    except Exception:
+        return dict(event), False
+
+    device_id = str(event.get("device_id") or "").strip()
+    if not device_id:
+        return dict(event), False
+
+    coverage = _continuous_segment_coverage(_segments_for_range(device_id, started_at, ended_at), started_at, ended_at)
+    if coverage is None:
+        return dict(event), False
+
+    available_start, available_end = coverage
+    tolerance = timedelta(seconds=READINESS_GAP_TOLERANCE_SECONDS)
+    if available_start <= started_at + tolerance and available_end >= ended_at - tolerance:
+        return dict(event), False
+
+    updated = dict(event)
+    updated["clip_start"] = available_start.isoformat()
+    updated["clip_end"] = available_end.isoformat()
+
+    trigger_at = _event_trigger_at(event, available_start)
+    updated["before_seconds"] = max(0.0, (trigger_at - available_start).total_seconds())
+    updated["after_seconds"] = max(0.0, (available_end - trigger_at).total_seconds())
+
+    trimmed_segments: List[Dict[str, Any]] = []
+    for segment in _event_tag_segments(event):
+        segment_start = _parse_iso(segment.get("clip_start"))
+        segment_end = _parse_iso(segment.get("clip_end"))
+        trimmed_start = max(segment_start, available_start)
+        trimmed_end = min(segment_end, available_end)
+        if trimmed_end <= trimmed_start:
+            continue
+        trimmed = dict(segment)
+        trimmed["clip_start"] = trimmed_start.isoformat()
+        trimmed["clip_end"] = trimmed_end.isoformat()
+        trimmed_segments.append(trimmed)
+    updated["tag_segments"] = _merge_tag_segments(trimmed_segments)
+    return updated, True
+
+
 def _merge_event_records(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[str, Any]:
     primary_started_at, primary_ended_at = _event_compare_bounds(primary)
     secondary_started_at, secondary_ended_at = _event_compare_bounds(secondary)
@@ -389,9 +464,15 @@ def _merge_overlapping_events(items: List[Dict[str, Any]]) -> Tuple[List[Dict[st
 
 
 def _load_events_normalized() -> List[Dict[str, Any]]:
-    items = _load_events()
-    merged_items, invalidated_clip_ids, changed = _merge_overlapping_events(items)
-    if changed:
+    items = []
+    changed = False
+    for item in _load_events():
+        normalized_item, item_changed = _trim_event_to_available_coverage(item)
+        items.append(normalized_item)
+        if item_changed:
+            changed = True
+    merged_items, invalidated_clip_ids, merge_changed = _merge_overlapping_events(items)
+    if changed or merge_changed:
         _save_events(merged_items)
         _delete_clip_cache(invalidated_clip_ids)
     return merged_items
@@ -566,7 +647,14 @@ def _event_state(event: Dict[str, Any]) -> str:
     if ended_at > _utc_now():
         return "recording"
 
-    finalized_segments = [segment for segment in _segments_for_range(str(event.get("device_id") or "").strip(), started_at, ended_at) if segment.finalized]
+    segments = _segments_for_range(str(event.get("device_id") or "").strip(), started_at, ended_at)
+    if not _segments_cover_range(segments, started_at, ended_at):
+        missing_grace = timedelta(seconds=max(SEGMENT_FINALIZE_GRACE_SECONDS, RECORDER_POLL_SECONDS))
+        if _utc_now() >= ended_at + missing_grace:
+            return "missing"
+        return "finalizing"
+
+    finalized_segments = [segment for segment in segments if segment.finalized]
     if _segments_cover_range(finalized_segments, started_at, ended_at):
         return "ready"
 
@@ -840,6 +928,8 @@ def create_recording_marker(
         "node_id": str(node_id or "").strip() or None,
     }
     event["tag_segments"] = _event_tag_segments(event)
+    if normalized_after is not None:
+        event, _ = _trim_event_to_available_coverage(event)
 
     with _events_lock:
         items = _load_events_normalized()
@@ -873,6 +963,7 @@ def stop_recording_marker(*, device_id: str) -> Dict[str, Any]:
             clip_end = _clip_end_after(clip_start, max(stop_at, trigger_at))
             event["clip_end"] = clip_end.isoformat()
             event["after_seconds"] = max(0.0, (clip_end - trigger_at).total_seconds())
+            event, _ = _trim_event_to_available_coverage(event)
             items[index] = event
             items, invalidated_clip_ids, _ = _merge_overlapping_events(items)
             invalidated_clip_ids.add(str(event.get("id") or "").strip())
@@ -1122,7 +1213,10 @@ def playback_event(event_id: str) -> Dict[str, Any]:
 @router.get("/api/playback/events/{event_id}/clip")
 def playback_event_clip(event_id: str):
     event = _event_by_id(event_id)
-    if not _event_is_ready(event):
+    state = _event_state(event)
+    if state == "missing":
+        raise HTTPException(status_code=404, detail="Recording clip is unavailable because recorded video does not cover the requested time range")
+    if state != "ready":
         raise HTTPException(status_code=409, detail="Recording clip is still being finalized")
     clip_path = _build_event_clip(event)
     return FileResponse(clip_path, media_type="video/mp4", filename=clip_path.name)

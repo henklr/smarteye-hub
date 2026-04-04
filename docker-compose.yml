@@ -15,6 +15,8 @@ services:
       - PLAYBACK_CLIP_PRESET=ultrafast
       - PLAYBACK_CLIP_THREADS=1
       - PLAYBACK_CLIP_CACHE_LIMIT=8
+      - RECORDING_SEGMENT_SECONDS=15
+      - RECORDER_POLL_SECONDS=2
     ports:
       - "8000:8000"
     volumes:
