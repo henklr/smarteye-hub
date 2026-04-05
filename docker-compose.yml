@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
     privileged: true
     environment:
-      - PORT=8000
+      - PORT=80
       - MEDIAMTX_API_URL=http://mediamtx:9997
       - MEDIAMTX_API_USER=apiuser
       - MEDIAMTX_API_PASS=apipass
@@ -18,7 +18,7 @@ services:
       - RECORDING_SEGMENT_SECONDS=15
       - RECORDER_POLL_SECONDS=2
     ports:
-      - "8000:8000"
+      - "80:80"
     volumes:
       - ./data:/app/data
       - /sys/firmware/devicetree/base:/sys/firmware/devicetree/base:ro

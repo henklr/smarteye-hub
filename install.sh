@@ -11,7 +11,7 @@ APP_DIR="$HOME/sei-raspi"
 REPO_URL="https://github.com/henklr/sei-raspi.git"
 IMAGE_NAME="sei-raspi"
 CONTAINER_NAME="sei-raspi"
-PORT="${PORT:-8000}"   # Allow override: PORT=1234 ./install.sh
+PORT="${PORT:-80}"   # Allow override: PORT=1234 ./install.sh
 
 # Determine if we should use sudo for docker
 DOCKER="docker"
