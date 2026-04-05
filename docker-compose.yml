@@ -2,7 +2,7 @@
 services:
   api:
     build: .
-    container_name: sei-raspi
+    container_name: smarteye-hub
     restart: unless-stopped
     privileged: true
     environment:

@@ -7,10 +7,10 @@ log()  { echo -e "\033[1;32m[setup]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[warn]\033[0m  $*"; }
 err()  { echo -e "\033[1;31m[error]\033[0m $*" >&2; }
 
-APP_DIR="$HOME/sei-raspi"
-REPO_URL="https://github.com/henklr/sei-raspi.git"
-IMAGE_NAME="sei-raspi"
-CONTAINER_NAME="sei-raspi"
+APP_DIR="$HOME/smarteye-hub"
+REPO_URL="https://github.com/henklr/smarteye-hub.git"
+IMAGE_NAME="smarteye-hub"
+CONTAINER_NAME="smarteye-hub"
 PORT="${PORT:-80}"   # Allow override: PORT=1234 ./install.sh
 
 # Determine if we should use sudo for docker
