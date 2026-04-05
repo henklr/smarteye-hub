@@ -18,7 +18,7 @@ services:
       - RECORDING_SEGMENT_SECONDS=15
       - RECORDER_POLL_SECONDS=2
     ports:
-      - "80:80"
+      - "${PORT:-80}:80"
     volumes:
       - ./data:/app/data
       - /sys/firmware/devicetree/base:/sys/firmware/devicetree/base:ro
