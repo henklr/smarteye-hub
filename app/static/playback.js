@@ -15,6 +15,9 @@ const state = {
   selectedDeviceId: "",
   selectedDay: "",
   timeline: { segments: [], events: [] },
+  timelineFilters: {
+    hiddenPresetKeys: [],
+  },
   transport: {
     speed: 1,
     direction: "forward",
@@ -201,6 +204,7 @@ function snapshotPlaybackState() {
     selectedDeviceId: String(state.selectedDeviceId || "").trim(),
     selectedDay: normalizeStoredDay(state.selectedDay),
     selectedEventId: typeof state.selectedEventId === "string" && state.selectedEventId ? state.selectedEventId : null,
+    hiddenPresetKeys: [...new Set((state.timelineFilters.hiddenPresetKeys || []).map((value) => String(value || "").trim()).filter(Boolean))],
     seekSeconds,
     timelineView: {
       startMinute: Number(state.timelineView.startMinute) || 0,
@@ -351,6 +355,58 @@ function selectedEvent() {
   return state.timeline.events.find((item) => item.id === state.selectedEventId) || null;
 }
 
+function hiddenTimelinePresetKeys() {
+  return new Set((state.timelineFilters.hiddenPresetKeys || []).map((value) => String(value || "").trim()).filter(Boolean));
+}
+
+function timelineVisibleRows() {
+  const hidden = hiddenTimelinePresetKeys();
+  return timelinePresetRows().filter((row) => !hidden.has(row.key));
+}
+
+function visibleTimelineSegments() {
+  return timelineVisibleRows().flatMap((row) => row.events || []);
+}
+
+function visibleTimelineSegmentsOrdered() {
+  return [...visibleTimelineSegments()].sort((left, right) => {
+    const leftStart = Date.parse(left?.clip_start || "");
+    const rightStart = Date.parse(right?.clip_start || "");
+    if (Number.isFinite(leftStart) && Number.isFinite(rightStart) && leftStart !== rightStart) {
+      return leftStart - rightStart;
+    }
+    const leftTrigger = Date.parse(left?.triggeredAt || left?.clip_start || "");
+    const rightTrigger = Date.parse(right?.triggeredAt || right?.clip_start || "");
+    if (Number.isFinite(leftTrigger) && Number.isFinite(rightTrigger) && leftTrigger !== rightTrigger) {
+      return leftTrigger - rightTrigger;
+    }
+    return String(left?.eventId || "").localeCompare(String(right?.eventId || ""));
+  });
+}
+
+function setHiddenTimelinePresetKeys(keys, options = {}) {
+  state.timelineFilters.hiddenPresetKeys = [...new Set((Array.isArray(keys) ? keys : []).map((value) => String(value || "").trim()).filter(Boolean))];
+  renderTimelineFilters();
+  renderTimeline();
+  if (options.persist !== false) {
+    schedulePlaybackStateSave();
+  }
+}
+
+function toggleTimelinePresetKey(key) {
+  const normalized = String(key || "").trim();
+  if (!normalized) {
+    return;
+  }
+  const hidden = hiddenTimelinePresetKeys();
+  if (hidden.has(normalized)) {
+    hidden.delete(normalized);
+  } else {
+    hidden.add(normalized);
+  }
+  setHiddenTimelinePresetKeys([...hidden]);
+}
+
 function eventRange(event) {
   return dayRange(event?.clip_start, event?.clip_end);
 }
@@ -453,6 +509,34 @@ function timelinePresetRows() {
   });
 }
 
+function renderTimelineFilters() {
+  const host = el("playbackTimelineFilters");
+  if (!host) {
+    return;
+  }
+
+  const rows = timelinePresetRows();
+  const hidden = hiddenTimelinePresetKeys();
+  if (!rows.length) {
+    host.innerHTML = "";
+    host.classList.add("hidden");
+    return;
+  }
+
+  host.classList.remove("hidden");
+  host.innerHTML = `
+    <div class="playbackTimelineFilterBar">
+      <div class="playbackTimelineFilterLabel">Tags</div>
+      <div class="playbackTimelineFilterChips">
+        ${rows.map((row) => {
+          const selected = !hidden.has(row.key);
+          return `<button class="playbackTimelineFilterChip ${selected ? "is-selected" : ""}" type="button" data-preset-key="${escapeHtml(row.key)}" aria-pressed="${selected ? "true" : "false"}"><span class="playbackTimelineFilterSwatch" style="background:${escapeHtml(row.color)};"></span><span>${escapeHtml(row.name)}</span></button>`;
+        }).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function timelineMinuteFromClientX(clientX, rect) {
   const width = rect?.width || 0;
   if (!width) {
@@ -466,23 +550,36 @@ function timelineMinuteFromClientX(clientX, rect) {
 function eventAtTimelineMinute(minute) {
   const selected = selectedEvent();
   if (selected && eventIsReady(selected)) {
-    const range = eventRange(selected);
-    if (minute >= range.startMinute && minute <= range.endMinute) {
-      return selected;
+    const visibleSelectedSegment = visibleTimelineSegments().find((segment) => segment.eventId === selected.id);
+    if (visibleSelectedSegment) {
+      const range = dayRange(visibleSelectedSegment.clip_start, visibleSelectedSegment.clip_end);
+      if (minute >= range.startMinute && minute <= range.endMinute) {
+        return selected;
+      }
     }
   }
 
-  return state.timeline.events.find((event) => {
-    if (!eventIsReady(event)) {
+  const matchingSegment = visibleTimelineSegmentsOrdered().find((segment) => {
+    if (!segment.ready) {
       return false;
     }
-    const range = eventRange(event);
+    const range = dayRange(segment.clip_start, segment.clip_end);
     return minute >= range.startMinute && minute <= range.endMinute;
   }) || null;
+
+  if (!matchingSegment) {
+    return null;
+  }
+
+  return state.timeline.events.find((event) => event.id === matchingSegment.eventId) || null;
 }
 
 function nextEventAtTimelineMinute(minute) {
-  return state.timeline.events.find((event) => eventIsReady(event) && eventRange(event).startMinute >= minute) || null;
+  const nextSegment = visibleTimelineSegmentsOrdered().find((segment) => segment.ready && dayRange(segment.clip_start, segment.clip_end).startMinute >= minute) || null;
+  if (!nextSegment) {
+    return null;
+  }
+  return state.timeline.events.find((event) => event.id === nextSegment.eventId) || null;
 }
 
 function timelineBaseSelection(minute) {
@@ -1211,10 +1308,11 @@ function renderTimeline() {
   const track = el("playbackTimelineTrack");
   if (!track) return;
 
+  renderTimelineFilters();
   renderTimelineScale();
 
   const { tickMinutes } = timelineTickLayout();
-  const rows = timelinePresetRows();
+  const rows = timelineVisibleRows();
 
   track.innerHTML = `
     ${tickMinutes.map((minute) => `<span class="playbackTimelineGuide" style="left:${visibleTimelinePercent(minute)}%;" aria-hidden="true"></span>`).join("")}
@@ -1242,7 +1340,7 @@ function renderTimeline() {
             return `<button class="playbackMarker ${active} ${pending}" type="button" data-event-id="${escapeHtml(segment.eventId)}" aria-disabled="${segment.ready ? "false" : "true"}" style="left:${left}%; width:${width}%; background:${escapeHtml(segment.color)};" title="${escapeHtml(`${segment.presetName} · ${clockLabel(segment.triggeredAt)}${readiness}`)}"></button>`;
           }).join("")}
         </div>
-      `).join("") : `<div class="playbackTimelineEmpty">No recordings in this range.</div>`}
+      `).join("") : `<div class="playbackTimelineEmpty">${timelinePresetRows().length ? "No tags selected." : "No recordings in this range."}</div>`}
     </div>
     <div class="playbackTimelineCursor hidden" data-playback-cursor>
       <span class="playbackTimelineCursorLabel" data-playback-cursor-label></span>
@@ -1368,6 +1466,9 @@ async function loadTimeline() {
     segments: Array.isArray(data?.segments) ? data.segments : [],
     events: Array.isArray(data?.events) ? data.events : [],
   };
+  const availablePresetKeys = new Set(timelinePresetRows().map((row) => row.key));
+  const restoredHiddenPresetKeys = Array.isArray(restore?.hiddenPresetKeys) ? restore.hiddenPresetKeys : state.timelineFilters.hiddenPresetKeys;
+  state.timelineFilters.hiddenPresetKeys = [...new Set((restoredHiddenPresetKeys || []).map((value) => String(value || "").trim()).filter((value) => availablePresetKeys.has(value)))];
 
   const restoreStartMinute = Number(restore?.timelineView?.startMinute);
   const restoreDurationMinutes = Number(restore?.timelineView?.durationMinutes);
@@ -1480,6 +1581,7 @@ function bindUi() {
   state.selectedDeviceId = String(saved?.selectedDeviceId || "").trim();
   state.selectedDay = normalizeStoredDay(saved?.selectedDay);
   state.selectedEventId = typeof saved?.selectedEventId === "string" && saved.selectedEventId ? saved.selectedEventId : null;
+  state.timelineFilters.hiddenPresetKeys = Array.isArray(saved?.hiddenPresetKeys) ? saved.hiddenPresetKeys.map((value) => String(value || "").trim()).filter(Boolean) : [];
   el("playbackDayInput").value = state.selectedDay;
 
   const savedStartMinute = Number(saved?.timelineView?.startMinute);
@@ -1614,6 +1716,16 @@ function bindUi() {
   });
   el("playbackSpeedInput")?.addEventListener("pointerup", () => {
     resetPlaybackSpeed();
+  });
+  el("playbackTimelineFilters")?.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("[data-preset-key], [data-filter-action]") : null;
+    if (!target) {
+      return;
+    }
+    const key = target.getAttribute("data-preset-key");
+    if (key) {
+      toggleTimelinePresetKey(key);
+    }
   });
 
   window.addEventListener("pagehide", () => {
