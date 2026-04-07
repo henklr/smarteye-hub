@@ -570,14 +570,6 @@ function renderScheduleHourLabels() {
   }).join("");
 }
 
-function renderScheduleDaySummary(schedule, dayKey) {
-  const periods = schedule?.days?.[dayKey] || [];
-  if (!periods.length) return `<span class="scheduleDaySummaryEmpty">Inactive</span>`;
-  return periods.map((period) => `
-    <span class="scheduleDaySummaryLine">${escapeHtml(normalizeScheduleTime(period.start, "00:00"))} - ${escapeHtml(normalizeScheduleTime(period.end, "00:00"))}</span>
-  `).join("");
-}
-
 function schedulePeriodCount(schedule) {
   return WEEKDAY_META.reduce((total, [dayKey]) => total + ((schedule?.days?.[dayKey] || []).length), 0);
 }
@@ -598,35 +590,34 @@ function renderScheduleDayLane(schedule, scheduleIndex, dayKey, label) {
           ${segments.map((segment) => {
             const left = scheduleMinuteToPercent(segment.startMinutes);
             const width = Math.max(1.4, scheduleMinuteToPercent(segment.endMinutes) - scheduleMinuteToPercent(segment.startMinutes));
-        const startLabel = scheduleMinutesToTime(segment.startMinutes);
+            const startLabel = scheduleMinutesToTime(segment.startMinutes);
             const endLabel = scheduleMinutesToTime(segment.endMinutes);
-        const meta = segment.continuation
-          ? `Continues until ${endLabel}`
-          : (segment.overnight ? `Overnight from ${startLabel}` : `${startLabel} to ${endLabel}`);
+            const meta = segment.continuation
+              ? `Continues until ${endLabel}`
+              : (segment.overnight ? `Overnight from ${startLabel}` : `${startLabel} to ${endLabel}`);
 
-        return `
-          <button
-            class="scheduleBlock ${segment.draft ? "is-draft" : ""} ${segment.overnight ? "is-overnight" : ""} ${segment.continuation ? "is-continuation" : ""}"
-            type="button"
-            style="left:${left}%;width:${width}%"
-            data-schedule-block="true"
-            data-schedule-day="${dayKey}"
-            data-schedule-period-index="${segment.sourcePeriodIndex}"
-            data-schedule-editable="${segment.editable ? "true" : "false"}"
-            title="${escapeHtml(meta)}"
-          >
-            <span class="scheduleBlockTime">${escapeHtml(startLabel)} - ${escapeHtml(endLabel)}</span>
-            ${segment.editable ? `<span class="scheduleBlockDelete" data-schedule-delete="true" aria-label="Delete period">&times;</span>` : ``}
-            ${segment.editable ? `
-              <span class="scheduleBlockHandle is-start" data-schedule-resize="start"></span>
-              <span class="scheduleBlockHandle is-end" data-schedule-resize="end"></span>
-            ` : `<span class="scheduleBlockBadge">${segment.continuation ? "Carry-over" : "Overnight"}</span>`}
-          </button>
-        `;
+            return `
+              <button
+                class="scheduleBlock ${segment.draft ? "is-draft" : ""} ${segment.overnight ? "is-overnight" : ""} ${segment.continuation ? "is-continuation" : ""}"
+                type="button"
+                style="left:${left}%;width:${width}%"
+                data-schedule-block="true"
+                data-schedule-day="${dayKey}"
+                data-schedule-period-index="${segment.sourcePeriodIndex}"
+                data-schedule-editable="${segment.editable ? "true" : "false"}"
+                title="${escapeHtml(meta)}"
+              >
+                ${segment.editable ? `
+                  <span class="scheduleBlockTime">${escapeHtml(startLabel)} - ${escapeHtml(endLabel)}</span>
+                  <span class="scheduleBlockDelete" data-schedule-delete="true" data-schedule-source-day="${segment.sourceDayKey}" data-schedule-period-index="${segment.sourcePeriodIndex}" aria-label="Delete period">&times;</span>
+                  <span class="scheduleBlockHandle is-start" data-schedule-resize="start"></span>
+                  <span class="scheduleBlockHandle is-end" data-schedule-resize="end"></span>
+                ` : `<span class="scheduleBlockBadge">${segment.continuation ? `Carry-over until ${escapeHtml(endLabel)}` : `Overnight until ${escapeHtml(endLabel)}`}</span>`}
+              </button>
+            `;
           }).join("")}
         </div>
       </div>
-      <div class="scheduleDaySummary">${renderScheduleDaySummary(schedule, dayKey)}</div>
     </div>
   `;
 }
@@ -2570,7 +2561,7 @@ function renderSchedulePlannerWorkspace(schedule, index) {
           <div>
             <div class="scheduleWorkspaceEyebrow">Schedule Editor</div>
             <div class="scheduleWorkspaceTitle">${escapeHtml(schedule.name || schedule.key || `schedule_${index + 1}`)}</div>
-            <div class="scheduleWorkspaceHint">Drag across a row to create time blocks. Drag blocks to move them across time or day, use the side handles to resize, and use x to remove a block.</div>
+            <div class="scheduleWorkspaceHint">Click a day row to add a time block, then edit the start and end times directly inside the block. Use x to remove a block.</div>
           </div>
           <span class="miniPill scheduleStatusPill ${schedule.is_active ? "is-active" : "is-inactive"}">${escapeHtml(scheduleStatusLabel(schedule))}</span>
         </div>
@@ -2585,7 +2576,6 @@ function renderSchedulePlannerWorkspace(schedule, index) {
         <div class="schedulePlannerHeader">
           <div class="schedulePlannerCorner">Day</div>
           <div class="scheduleTimeHeader">${renderScheduleHourLabels()}</div>
-          <div class="schedulePlannerCorner is-summary">Summary</div>
         </div>
         <div class="schedulePlannerRows">
           ${WEEKDAY_META.map(([dayKey, label]) => renderScheduleDayLane(schedule, index, dayKey, label)).join("")}
@@ -3572,9 +3562,37 @@ function bindScheduleWorkspace(index) {
     });
   });
 
+  workspace?.querySelectorAll("[data-schedule-delete]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      const schedule = getSchedule();
+      if (!schedule) return;
+
+      const dayKey = button.dataset.scheduleSourceDay;
+      const periodIndex = Number(button.dataset.schedulePeriodIndex || -1);
+      if (!dayKey || periodIndex < 0) return;
+      if (!window.confirm("Delete this schedule period?")) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
+      schedule.days[dayKey].splice(periodIndex, 1);
+      schedule.days[dayKey] = normalizeScheduleDayPeriods(schedule.days[dayKey]);
+      markSchedulesDirty();
+      renderScheduleSidebar();
+      renderCanvas();
+      renderInspector();
+      event.preventDefault();
+      event.stopPropagation();
+    });
+  });
+
   workspace?.querySelectorAll("[data-schedule-block]").forEach((block) => {
     block.addEventListener("mousedown", (event) => {
       if (event.button !== 0) return;
+      if (!(event.target instanceof Element)) return;
+      if (event.target.closest("[data-schedule-delete]")) return;
+
       const schedule = getSchedule();
       if (!schedule) return;
 
@@ -3583,22 +3601,6 @@ function bindScheduleWorkspace(index) {
       const editable = block.dataset.scheduleEditable === "true";
       if (!dayKey || periodIndex < 0 || !editable) return;
 
-      if (event.target instanceof Element && event.target.closest("[data-schedule-delete]")) {
-        if (!window.confirm("Delete this schedule period?")) {
-          event.preventDefault();
-          event.stopPropagation();
-          return;
-        }
-        schedule.days[dayKey].splice(periodIndex, 1);
-        schedule.days[dayKey] = normalizeScheduleDayPeriods(schedule.days[dayKey]);
-        markSchedulesDirty();
-        renderScheduleSidebar();
-        renderInspector();
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
-
       const period = schedule.days?.[dayKey]?.[periodIndex];
       if (!period) return;
 
@@ -3606,7 +3608,7 @@ function bindScheduleWorkspace(index) {
       const endMinutes = scheduleTimeToMinutes(period.end);
       if (endMinutes <= startMinutes) return;
 
-      const resizeHandle = event.target instanceof Element ? event.target.closest("[data-schedule-resize]") : null;
+      const resizeHandle = event.target.closest("[data-schedule-resize]");
       if (resizeHandle) {
         startScheduleDrag({
           mode: resizeHandle.dataset.scheduleResize === "start" ? "resize-start" : "resize-end",

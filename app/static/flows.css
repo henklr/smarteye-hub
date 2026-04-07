@@ -419,10 +419,10 @@ body.flowsPage {
 .flowsPage .schedulePlannerHeader,
 .flowsPage .scheduleDayRow {
   display: grid;
-  grid-template-columns: 110px minmax(880px, 1fr) 220px;
+  grid-template-columns: 110px minmax(980px, 1fr);
   gap: 12px;
   align-items: center;
-  min-width: 1240px;
+  min-width: 1120px;
   padding: 8px 10px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 16px;
@@ -445,11 +445,6 @@ body.flowsPage {
   font-weight: 900;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-}
-
-.flowsPage .schedulePlannerCorner.is-summary {
-  justify-content: flex-start;
-  padding: 0 12px;
 }
 
 .flowsPage .schedulePlannerHeader {
@@ -527,7 +522,6 @@ body.flowsPage {
 }
 
 .flowsPage .scheduleBlock {
-  appearance: none;
   position: absolute;
   top: 4px;
   bottom: 4px;
@@ -536,19 +530,23 @@ body.flowsPage {
   justify-content: center;
   gap: 8px;
   min-width: 20px;
-  padding: 0 22px 0 10px;
+  padding: 0 32px 0 10px;
   border: 1px solid rgba(198, 161, 75, 0.35);
   border-radius: 10px;
   background: linear-gradient(90deg, rgba(198, 161, 75, 0.9), rgba(222, 191, 108, 0.78));
   color: rgba(255, 249, 235, 0.96);
   text-align: left;
   box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
-  cursor: grab;
   overflow: hidden;
+  cursor: grab;
 }
 
 .flowsPage .scheduleBlock:hover {
   filter: brightness(1.04);
+}
+
+.flowsPage .scheduleBlock:active {
+  cursor: grabbing;
 }
 
 .flowsPage .scheduleBlock.is-draft {
@@ -564,7 +562,6 @@ body.flowsPage {
 .flowsPage .scheduleBlock.is-continuation {
   border-color: rgba(79, 140, 255, 0.28);
   background: linear-gradient(90deg, rgba(79, 140, 255, 0.72), rgba(79, 140, 255, 0.44));
-  cursor: default;
 }
 
 .flowsPage .scheduleBlockTime {
@@ -634,25 +631,6 @@ body.flowsPage {
   background: rgba(255, 255, 255, 0.5);
 }
 
-.flowsPage .scheduleDaySummary {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px 0;
-  font-size: 11px;
-  font-family: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  color: rgba(255, 255, 255, 0.74);
-}
-
-.flowsPage .scheduleDaySummaryEmpty {
-  color: rgba(255, 255, 255, 0.42);
-  font-style: italic;
-}
-
-.flowsPage .scheduleDaySummaryLine {
-  white-space: nowrap;
-}
-
 .flowsPage .schedulePlannerViewport::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -681,14 +659,13 @@ body.flowsPage {
     grid-template-columns: 100px minmax(720px, 1fr);
   }
 
-  .flowsPage .schedulePlannerCorner.is-summary,
-  .flowsPage .scheduleDaySummary {
-    display: none;
-  }
-
   .flowsPage .scheduleWorkspaceTitleRow {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .flowsPage .scheduleBlock {
+    min-width: 152px;
   }
 }
 
