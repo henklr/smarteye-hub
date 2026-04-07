@@ -28,14 +28,6 @@
             <div class="listSub" id="playbackHeaderSub">Select a camera and marker to load a recorded clip.</div>
           </div>
           <div class="playbackHeaderActions">
-            <div>
-              <label for="playbackDeviceSelect">Camera</label>
-              <select id="playbackDeviceSelect"></select>
-            </div>
-            <div>
-              <label for="playbackDayInput">Day</label>
-              <input id="playbackDayInput" type="date" />
-            </div>
             <button class="btn btn-danger" id="playbackClearBtn" type="button">Clear all recordings</button>
           </div>
         </div>
@@ -96,7 +88,19 @@
 
       <section class="card playbackTimelineCard">
         <div class="playbackTimelineWrap">
-          <div class="playbackTimelineFilters" id="playbackTimelineFilters"></div>
+          <div class="playbackTimelineToolbar">
+            <div class="playbackTimelineFilters" id="playbackTimelineFilters"></div>
+            <div class="playbackTimelineSelectors">
+              <div class="playbackTimelineSelector">
+                <label for="playbackDeviceSelect">Camera</label>
+                <select id="playbackDeviceSelect"></select>
+              </div>
+              <div class="playbackTimelineSelector">
+                <label for="playbackDayInput">Day</label>
+                <input id="playbackDayInput" type="date" />
+              </div>
+            </div>
+          </div>
           <div class="playbackTimelineScale" id="playbackTimelineScale"></div>
           <div class="playbackTimelineTrack" id="playbackTimelineTrack"></div>
         </div>
