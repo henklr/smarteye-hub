@@ -89,6 +89,9 @@ _event_last_lock = threading.RLock()
 _ptz_watchdogs: Dict[str, threading.Timer] = {}
 _ptz_watchdog_lock = threading.RLock()
 
+_ptz_manual_control_state: Dict[str, bool] = {}
+_ptz_manual_control_lock = threading.RLock()
+
 
 @dataclass
 class PTZContextCache:
@@ -127,6 +130,56 @@ def _ptz_device_lock(device_id: str) -> threading.Lock:
 def _invalidate_ptz_cache(device_id: str) -> None:
     with _ptz_context_cache_lock:
         _ptz_context_cache.pop(device_id, None)
+
+
+def _clear_ptz_watchdog(device_id: str) -> None:
+    with _ptz_watchdog_lock:
+        timer = _ptz_watchdogs.pop(device_id, None)
+    if timer is not None:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+
+
+def _dispatch_ptz_manual_control_trigger(
+    device_id: str,
+    active: bool,
+    *,
+    reason: str,
+    pan: Optional[float] = None,
+    tilt: Optional[float] = None,
+    zoom: Optional[float] = None,
+) -> None:
+    with _ptz_manual_control_lock:
+        previous = bool(_ptz_manual_control_state.get(device_id))
+        if previous == active:
+            return
+        if active:
+            _ptz_manual_control_state[device_id] = True
+        else:
+            _ptz_manual_control_state.pop(device_id, None)
+
+    trigger = {
+        "kind": "ptz_manual_control_started" if active else "ptz_manual_control_stopped",
+        "device_id": device_id,
+        "message": "PTZ manual control started" if active else "PTZ manual control stopped",
+        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "extra": {"reason": reason},
+    }
+    if pan is not None:
+        trigger["pan"] = float(pan)
+    if tilt is not None:
+        trigger["tilt"] = float(tilt)
+    if zoom is not None:
+        trigger["zoom"] = float(zoom)
+    dispatch_flow_trigger(trigger)
+
+
+def _ptz_watchdog_stop(device_id: str) -> None:
+    with _ptz_watchdog_lock:
+        _ptz_watchdogs.pop(device_id, None)
+    _ptz_stop(device_id, reason="watchdog")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1814,6 +1867,13 @@ def _get_ptz_context(req: OnvifBase, profile_token: Optional[str]) -> PTZContext
 
 
 def _ptz_continuous_move(device_id: str, pan: float, tilt: float, zoom: float) -> dict:
+    pan = float(pan)
+    tilt = float(tilt)
+    zoom = float(zoom)
+    if abs(pan) < 0.001 and abs(tilt) < 0.001 and abs(zoom) < 0.001:
+        _clear_ptz_watchdog(device_id)
+        return _ptz_stop(device_id, reason="zero_velocity")
+
     d = _get_device(device_id)
     req = _device_req(d)
     ctx = _get_ptz_context(req, d.profile_token)
@@ -1822,11 +1882,11 @@ def _ptz_continuous_move(device_id: str, pan: float, tilt: float, zoom: float) -
 
     velocity = {}
     if ctx.has_pan_tilt:
-        velocity["PanTilt"] = {"x": float(pan), "y": float(tilt)}
+        velocity["PanTilt"] = {"x": pan, "y": tilt}
         if ctx.pan_tilt_space:
             velocity["PanTilt"]["space"] = ctx.pan_tilt_space
     if ctx.has_zoom:
-        velocity["Zoom"] = {"x": float(zoom)}
+        velocity["Zoom"] = {"x": zoom}
         if ctx.zoom_space:
             velocity["Zoom"]["space"] = ctx.zoom_space
 
@@ -1835,14 +1895,24 @@ def _ptz_continuous_move(device_id: str, pan: float, tilt: float, zoom: float) -
         req_move = {"ProfileToken": ctx.profile_token, "Velocity": velocity}
         ctx.ptz.ContinuousMove(req_move)
 
+    _dispatch_ptz_manual_control_trigger(
+        device_id,
+        True,
+        reason="move",
+        pan=pan,
+        tilt=tilt,
+        zoom=zoom,
+    )
+
     return {"ok": True, "device_id": device_id}
 
 
-def _ptz_stop(device_id: str) -> dict:
+def _ptz_stop(device_id: str, reason: str = "stop") -> dict:
     d = _get_device(device_id)
     req = _device_req(d)
     ctx = _get_ptz_context(req, d.profile_token)
     if not ctx.has_ptz:
+        _dispatch_ptz_manual_control_trigger(device_id, False, reason=reason)
         return {"ok": True, "device_id": device_id}
 
     lock = _ptz_device_lock(device_id)
@@ -1851,19 +1921,15 @@ def _ptz_stop(device_id: str) -> dict:
             ctx.ptz.Stop({"ProfileToken": ctx.profile_token, "PanTilt": True, "Zoom": True})
         except Exception:
             pass
+    _dispatch_ptz_manual_control_trigger(device_id, False, reason=reason)
     return {"ok": True, "device_id": device_id}
 
 
 def _schedule_ptz_watchdog_stop(device_id: str) -> None:
-    with _ptz_watchdog_lock:
-        old = _ptz_watchdogs.pop(device_id, None)
-        if old:
-            try:
-                old.cancel()
-            except Exception:
-                pass
+    _clear_ptz_watchdog(device_id)
 
-        t = threading.Timer(PTZ_WATCHDOG_SEC, lambda: _ptz_stop(device_id))
+    with _ptz_watchdog_lock:
+        t = threading.Timer(PTZ_WATCHDOG_SEC, lambda: _ptz_watchdog_stop(device_id))
         t.daemon = True
         _ptz_watchdogs[device_id] = t
         t.start()
@@ -2220,7 +2286,8 @@ async def ptz_stop(device_id: str):
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
     try:
-        return await asyncio.to_thread(_ptz_stop, device_id)
+        _clear_ptz_watchdog(device_id)
+        return await asyncio.to_thread(_ptz_stop, device_id, "api_stop")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"PTZ stop failed: {e}")
 

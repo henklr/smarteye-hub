@@ -136,6 +136,24 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "defaults": {"device_id": "", "name": ""},
     },
     {
+        "type": "trigger.ptz_manual_control_started",
+        "category": "trigger",
+        "label": "PTZ manual control started",
+        "description": "Starts when manual PTZ control begins for a selected device.",
+        "color": "#4f8cff",
+        "ports": {"inputs": [], "outputs": ["out"]},
+        "defaults": {"device_id": "", "name": ""},
+    },
+    {
+        "type": "trigger.ptz_manual_control_stopped",
+        "category": "trigger",
+        "label": "PTZ manual control stopped",
+        "description": "Starts when manual PTZ control stops for a selected device.",
+        "color": "#4f8cff",
+        "ports": {"inputs": [], "outputs": ["out"]},
+        "defaults": {"device_id": "", "name": ""},
+    },
+    {
         "type": "trigger.incoming_http_request",
         "category": "trigger",
         "label": "Incoming webhook",
@@ -1107,7 +1125,12 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
             raise HTTPException(status_code=400, detail="ONVIF trigger needs a topic")
         return cfg
 
-    if node_type in {"trigger.device_offline", "trigger.device_back_online"}:
+    if node_type in {
+        "trigger.device_offline",
+        "trigger.device_back_online",
+        "trigger.ptz_manual_control_started",
+        "trigger.ptz_manual_control_stopped",
+    }:
         cfg["device_id"] = str(cfg.get("device_id") or "").strip()
         if not cfg["device_id"]:
             raise HTTPException(status_code=400, detail="Device trigger needs a device")
@@ -1714,6 +1737,12 @@ def _trigger_matches_node(node: Dict[str, Any], trigger: Dict[str, Any]) -> bool
 
     if node_type == "trigger.device_back_online":
         return kind == "device_back_online" and str(cfg.get("device_id") or "") == str(trigger.get("device_id") or "")
+
+    if node_type == "trigger.ptz_manual_control_started":
+        return kind == "ptz_manual_control_started" and str(cfg.get("device_id") or "") == str(trigger.get("device_id") or "")
+
+    if node_type == "trigger.ptz_manual_control_stopped":
+        return kind == "ptz_manual_control_stopped" and str(cfg.get("device_id") or "") == str(trigger.get("device_id") or "")
 
     if node_type == "trigger.incoming_http_request":
         if kind != "incoming_http_request":

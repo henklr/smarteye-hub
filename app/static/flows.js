@@ -790,6 +790,16 @@ function nodePreview(node) {
       return `When ${device?.name || cfg.device_id || "device"} comes back online`;
     }
 
+    case "trigger.ptz_manual_control_started": {
+      const device = state.devices.find((item) => item.id === cfg.device_id);
+      return `When manual PTZ starts on ${device?.name || cfg.device_id || "device"}`;
+    }
+
+    case "trigger.ptz_manual_control_stopped": {
+      const device = state.devices.find((item) => item.id === cfg.device_id);
+      return `When manual PTZ stops on ${device?.name || cfg.device_id || "device"}`;
+    }
+
     case "trigger.incoming_http_request":
       return `${cfg.method || "ANY"} ${cfg.path || "/"}`;
 
@@ -3030,6 +3040,8 @@ function renderNodeInspector(node) {
 
     case "trigger.device_offline":
     case "trigger.device_back_online":
+    case "trigger.ptz_manual_control_started":
+    case "trigger.ptz_manual_control_stopped":
       body = `
         <div class="inspectorCard">
           <div class="inspectorTitle">Trigger details</div>
@@ -3564,6 +3576,8 @@ function applyNodeInspector(node) {
       break;
     case "trigger.device_offline":
     case "trigger.device_back_online":
+    case "trigger.ptz_manual_control_started":
+    case "trigger.ptz_manual_control_stopped":
       set("name");
       set("device_id");
       break;
