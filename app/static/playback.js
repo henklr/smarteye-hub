@@ -141,11 +141,28 @@ function playbackTransportIcon(icon) {
   return icons[icon] || icons.play;
 }
 
-function showVideoEmpty(title, text) {
+function normalizePlaybackEmptyDisplayState(value) {
+  const normalized = String(value || "empty").trim().toLowerCase();
+  if (normalized === "loading" || normalized === "waiting" || normalized === "error") {
+    return normalized;
+  }
+  return "empty";
+}
+
+function playbackEmptyBadgeLabel(value) {
+  if (value === "loading") return "Loading";
+  if (value === "waiting") return "Saving";
+  if (value === "error") return "Unavailable";
+  return "Ready";
+}
+
+function showVideoEmpty(title, text, options = {}) {
   const video = el("playbackVideo");
   const empty = el("playbackVideoEmpty");
+  const emptyBadge = el("playbackVideoEmptyBadge");
   const emptyText = el("playbackVideoEmptyText");
   const titleNode = empty?.querySelector(".playbackVideoEmptyTitle");
+  const emptyState = normalizePlaybackEmptyDisplayState(options.state);
 
   stopPlaybackCursorLoop();
   stopSimulatedForwardPlayback();
@@ -158,6 +175,11 @@ function showVideoEmpty(title, text) {
     video.classList.add("hidden");
   }
 
+  if (empty) {
+    empty.dataset.state = emptyState;
+    empty.setAttribute("aria-busy", emptyState === "loading" ? "true" : "false");
+  }
+  if (emptyBadge) emptyBadge.textContent = options.badge || playbackEmptyBadgeLabel(emptyState);
   if (titleNode) titleNode.textContent = title || "No clip selected";
   if (emptyText) emptyText.textContent = text || "Choose a colored marker from the timeline below to load a recording.";
   empty?.classList.remove("hidden");
@@ -372,6 +394,28 @@ function currentTimelineDuration() {
 
 function selectedEvent() {
   return state.timeline.events.find((item) => item.id === state.selectedEventId) || null;
+}
+
+function upsertTimelineEvent(event) {
+  if (!event?.id) return null;
+  const index = state.timeline.events.findIndex((item) => item.id === event.id);
+  if (index === -1) {
+    state.timeline.events.push(event);
+    state.timeline.events.sort((left, right) => String(left?.triggered_at || "").localeCompare(String(right?.triggered_at || "")));
+    return event;
+  }
+
+  state.timeline.events[index] = {
+    ...state.timeline.events[index],
+    ...event,
+  };
+  return state.timeline.events[index];
+}
+
+async function refreshEventFromServer(eventId) {
+  const payload = await api(`/api/playback/events/${encodeURIComponent(eventId)}`);
+  const event = payload?.event;
+  return event ? upsertTimelineEvent(event) : null;
 }
 
 function hiddenTimelinePresetKeys() {
@@ -1422,6 +1466,7 @@ function timelineEmptyState() {
   const pending = pendingEventCount();
   if (pending) {
     return {
+      state: "waiting",
       title: "Recording still saving",
       text: "Grayed markers are still being finalized and will become playable automatically once recording is safely saved.",
       status: `Waiting for ${pending} recording${pending === 1 ? "" : "s"} to finish saving.`,
@@ -1430,6 +1475,7 @@ function timelineEmptyState() {
 
   if (state.timeline.segments.length) {
     return {
+      state: "empty",
       title: "No clip selected",
       text: "Choose a colored marker from the timeline below to load a recording.",
       status: "No markers for this day yet, but recorded video is available.",
@@ -1437,6 +1483,7 @@ function timelineEmptyState() {
   }
 
   return {
+    state: "empty",
     title: "No clip selected",
     text: "Choose a colored marker from the timeline below to load a recording.",
     status: "No recorded video available for this day.",
@@ -1450,7 +1497,7 @@ function renderPlaybackEmptyState() {
   stopSimulatedForwardPlayback();
   setPlaybackCursor(null);
   updatePlaybackHeader(null);
-  showVideoEmpty(emptyState.title, emptyState.text);
+  showVideoEmpty(emptyState.title, emptyState.text, { state: emptyState.state });
   syncPlaybackTransport();
   setStatus(emptyState.status);
 }
@@ -1469,9 +1516,20 @@ async function startVideoPlayback(video) {
 }
 
 async function selectEvent(eventId, options = {}) {
-  const event = state.timeline.events.find((item) => item.id === eventId);
+  let event = state.timeline.events.find((item) => item.id === eventId);
   if (!event) return;
+
+  try {
+    const refreshedEvent = await refreshEventFromServer(eventId);
+    if (refreshedEvent) {
+      event = refreshedEvent;
+    }
+  } catch {}
+
   if (!eventIsReady(event) && options.allowPending !== true) {
+    renderTimeline();
+    renderPlaybackEmptyState();
+    scheduleTimelineAutoRefresh();
     return;
   }
 
@@ -1550,6 +1608,8 @@ async function loadTimeline(options = {}) {
     stopReversePlayback();
     stopSimulatedForwardPlayback();
     setPlaybackCursor(null);
+    updatePlaybackHeader(null);
+    showVideoEmpty("Select a camera", "Choose a configured camera to load its timeline and recorded clips.", { state: "empty", badge: "Camera" });
     renderTimeline();
     syncPlaybackTransport();
     setStatus("Select a configured camera to see recordings.");
@@ -1562,6 +1622,9 @@ async function loadTimeline(options = {}) {
   const preserveCurrentPlayback = background && preservePlayback && !!(video?.currentSrc && currentSelectedEventId);
 
   if (!background) {
+    setPlaybackCursor(null);
+    updatePlaybackHeader(null);
+    showVideoEmpty("Loading playback...", "Fetching recorded clips for the selected camera and day.", { state: "loading" });
     setStatus("Loading timeline…");
   }
 
@@ -1630,6 +1693,7 @@ async function refreshAll() {
     await loadDevices();
     await loadTimeline();
   } catch (error) {
+    showVideoEmpty("Playback unavailable", "Playback data could not be loaded right now. Try again in a moment.", { state: "error" });
     setStatus(error.message || String(error));
   }
 }
@@ -1763,16 +1827,63 @@ function bindUi() {
     stopReversePlayback();
     stopSimulatedForwardPlayback();
     setPlaybackCursor(null);
-    const event = state.timeline.events.find((item) => item.id === state.selectedEventId);
-    showVideoEmpty(
-      "Clip unavailable",
-      event
-        ? `The clip for ${event.title} could not be loaded. This usually means there was no recorded video yet for that marker.`
-        : "The selected clip could not be loaded."
-    );
-    syncPlaybackTransport();
-    setStatus("Clip could not be loaded.");
-    scheduleTimelineAutoRefresh();
+    const currentEventId = state.selectedEventId;
+
+    const showClipError = (event) => {
+      showVideoEmpty(
+        "Clip unavailable",
+        event
+          ? `The clip for ${event.title} could not be loaded. This usually means there was no recorded video for that marker or the clip cache is being rebuilt.`
+          : "The selected clip could not be loaded.",
+        { state: "error" }
+      );
+      syncPlaybackTransport();
+      setStatus("Clip could not be loaded.");
+      scheduleTimelineAutoRefresh();
+    };
+
+    if (!currentEventId) {
+      showClipError(null);
+      return;
+    }
+
+    refreshEventFromServer(currentEventId)
+      .then((event) => {
+        if (!event) {
+          showClipError(null);
+          return;
+        }
+
+        if (eventState(event) === "finalizing") {
+          showVideoEmpty(
+            "Recording still saving",
+            "This clip is still being finalized. Try again in a few seconds; playback will become available automatically once the segment is safely written.",
+            { state: "waiting" }
+          );
+          syncPlaybackTransport();
+          setStatus("Recording is still saving.");
+          scheduleTimelineAutoRefresh();
+          return;
+        }
+
+        if (eventState(event) === "missing") {
+          showVideoEmpty(
+            "Clip unavailable",
+            "Recorded video for this marker is no longer available. This can happen after a restart if the underlying transport clip was interrupted before it finished saving.",
+            { state: "error" }
+          );
+          syncPlaybackTransport();
+          setStatus("Recorded video is unavailable for this marker.");
+          scheduleTimelineAutoRefresh();
+          return;
+        }
+
+        showClipError(event);
+      })
+      .catch(() => {
+        const event = state.timeline.events.find((item) => item.id === currentEventId) || null;
+        showClipError(event);
+      });
   });
 
   el("playbackDeviceSelect")?.addEventListener("change", async (event) => {

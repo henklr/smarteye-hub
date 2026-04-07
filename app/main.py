@@ -633,6 +633,7 @@ def _poll_device_state_changes() -> None:
     while not _flow_monitor_stop.wait(PATH_PROGRESS_POLL_SEC):
         try:
             devs = _load_devices()
+            _ensure_event_workers(devs)
             snapshot = _mediamtx_paths_snapshot()
 
             for d in devs:
@@ -1003,194 +1004,232 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, stop_flag: threading.Eve
     max_messages = 20
 
     try:
-        cam = _cam(req)
-        events = cam.create_events_service()
+        def connect_pullpoint(*, reconnect: bool = False):
+            cam = _cam(req)
+            events = cam.create_events_service()
 
-        try:
-            events.CreatePullPointSubscription({})
-        except Exception:
-            events.CreatePullPointSubscription({"InitialTerminationTime": "PT5M"})
-
-        pullpoint = cam.create_pullpoint_service()
-
-        _emit_event(device_id, "ok", "Subscribed to ONVIF events (flow-aware filtering enabled).")
-
-        while not stop_flag.is_set():
-            now = time.time()
-            if (now - last_allow_refresh) >= ALLOW_REFRESH_S:
-                allow_set = _get_effective_event_allowlist(device_id)
-                last_allow_refresh = now
-                if EVENT_DEBUG:
+            last_error: Optional[Exception] = None
+            for payload in ({}, {"InitialTerminationTime": "PT5M"}):
+                try:
+                    events.CreatePullPointSubscription(payload)
+                    pullpoint = cam.create_pullpoint_service()
                     _emit_event(
                         device_id,
-                        "debug",
-                        "Allowlist refreshed",
-                        {
-                            "allow_count": len(allow_set),
-                            "allow_topics": sorted(list(allow_set)),
-                        },
+                        "ok",
+                        "Re-subscribed to ONVIF events after pull-point reset."
+                        if reconnect
+                        else "Subscribed to ONVIF events (flow-aware filtering enabled).",
                     )
+                    return pullpoint
+                except Exception as exc:
+                    last_error = exc
 
+            raise last_error or RuntimeError("CreatePullPointSubscription failed")
+
+        connected_once = False
+        retry_delay = 1.0
+
+        while not stop_flag.is_set():
             try:
-                resp = pullpoint.PullMessages({"Timeout": "PT2S", "MessageLimit": max_messages})
-                msgs = getattr(resp, "NotificationMessage", None)
-                if not msgs:
-                    continue
-                if not isinstance(msgs, list):
-                    msgs = [msgs]
+                pullpoint = connect_pullpoint(reconnect=connected_once)
+                connected_once = True
+                retry_delay = 1.0
 
-                for m in msgs:
-                    topic_obj = getattr(m, "Topic", None)
-                    topic_text = _topic_obj_to_text(topic_obj)
-                    topic_path = _normalize_topic_for_match(topic_text)
-
-                    msg_elem = None
-                    try:
-                        msg_elem = getattr(getattr(m, "Message", None), "_value_1", None)
-                    except Exception:
-                        msg_elem = None
-
-                    items = _extract_simple_items(msg_elem)
-
-                    op = None
-                    utc = None
-                    try:
-                        msg_attrib = getattr(msg_elem, "attrib", {}) or {}
-                        op = msg_attrib.get("PropertyOperation")
-                        utc = msg_attrib.get("UtcTime")
-                    except Exception:
-                        pass
-
-                    fallback_key = _topic_fallback_key(items)
-                    guessed_topic = _guess_topic_from_items(items)
-
-                    match_candidates: List[str] = []
-                    if topic_path:
-                        match_candidates.append(topic_path)
-                    if guessed_topic and guessed_topic not in match_candidates:
-                        match_candidates.append(guessed_topic)
-                    if fallback_key and fallback_key not in match_candidates:
-                        match_candidates.append(fallback_key)
-
-                    matched = False
-                    matched_by = None
-                    matched_allow_topic = None
-
-                    if not allow_set:
-                        matched = False
-                    else:
-                        for candidate in match_candidates:
-                            allow_topic = _matching_allow_topic(candidate, allow_set)
-                            if allow_topic:
-                                matched = True
-                                matched_by = candidate
-                                matched_allow_topic = allow_topic
-                                break
-
-                    if EVENT_DEBUG:
-                        _emit_event(
-                            device_id,
-                            "debug",
-                            "Camera emitted event",
-                            {
-                                "topic_text": topic_text,
-                                "topic_path": topic_path,
-                                "guessed_topic": guessed_topic,
-                                "fallback_key": fallback_key,
-                                "match_candidates": match_candidates,
-                                "match_key": matched_by,
-                                "matched_allowlist": matched,
-                                "matched_by": matched_by,
-                                "matched_allow_topic": matched_allow_topic,
-                                "allow_count": len(allow_set),
-                                "op": op,
-                                "utc": utc,
-                                "source": items.get("source", {}),
-                                "data": items.get("data", {}),
-                            },
-                        )
-
-                    if not matched:
+                while not stop_flag.is_set():
+                    now = time.time()
+                    if (now - last_allow_refresh) >= ALLOW_REFRESH_S:
+                        allow_set = _get_effective_event_allowlist(device_id)
+                        last_allow_refresh = now
                         if EVENT_DEBUG:
                             _emit_event(
                                 device_id,
-                                "warn",
-                                "Dropped event because it did not match flow topics",
+                                "debug",
+                                "Allowlist refreshed",
                                 {
+                                    "allow_count": len(allow_set),
+                                    "allow_topics": sorted(list(allow_set)),
+                                },
+                            )
+
+                    try:
+                        resp = pullpoint.PullMessages({"Timeout": "PT2S", "MessageLimit": max_messages})
+                        msgs = getattr(resp, "NotificationMessage", None)
+                        if not msgs:
+                            continue
+                        if not isinstance(msgs, list):
+                            msgs = [msgs]
+
+                        for m in msgs:
+                            topic_obj = getattr(m, "Topic", None)
+                            topic_text = _topic_obj_to_text(topic_obj)
+                            topic_path = _normalize_topic_for_match(topic_text)
+
+                            msg_elem = None
+                            try:
+                                msg_elem = getattr(getattr(m, "Message", None), "_value_1", None)
+                            except Exception:
+                                msg_elem = None
+
+                            items = _extract_simple_items(msg_elem)
+
+                            op = None
+                            utc = None
+                            try:
+                                msg_attrib = getattr(msg_elem, "attrib", {}) or {}
+                                op = msg_attrib.get("PropertyOperation")
+                                utc = msg_attrib.get("UtcTime")
+                            except Exception:
+                                pass
+
+                            fallback_key = _topic_fallback_key(items)
+                            guessed_topic = _guess_topic_from_items(items)
+
+                            match_candidates: List[str] = []
+                            if topic_path:
+                                match_candidates.append(topic_path)
+                            if guessed_topic and guessed_topic not in match_candidates:
+                                match_candidates.append(guessed_topic)
+                            if fallback_key and fallback_key not in match_candidates:
+                                match_candidates.append(fallback_key)
+
+                            matched = False
+                            matched_by = None
+                            matched_allow_topic = None
+
+                            if not allow_set:
+                                matched = False
+                            else:
+                                for candidate in match_candidates:
+                                    allow_topic = _matching_allow_topic(candidate, allow_set)
+                                    if allow_topic:
+                                        matched = True
+                                        matched_by = candidate
+                                        matched_allow_topic = allow_topic
+                                        break
+
+                            if EVENT_DEBUG:
+                                _emit_event(
+                                    device_id,
+                                    "debug",
+                                    "Camera emitted event",
+                                    {
+                                        "topic_text": topic_text,
+                                        "topic_path": topic_path,
+                                        "guessed_topic": guessed_topic,
+                                        "fallback_key": fallback_key,
+                                        "match_candidates": match_candidates,
+                                        "match_key": matched_by,
+                                        "matched_allowlist": matched,
+                                        "matched_by": matched_by,
+                                        "matched_allow_topic": matched_allow_topic,
+                                        "allow_count": len(allow_set),
+                                        "op": op,
+                                        "utc": utc,
+                                        "source": items.get("source", {}),
+                                        "data": items.get("data", {}),
+                                    },
+                                )
+
+                            if not matched:
+                                if EVENT_DEBUG:
+                                    _emit_event(
+                                        device_id,
+                                        "warn",
+                                        "Dropped event because it did not match flow topics",
+                                        {
+                                            "topic_text": topic_text,
+                                            "topic_path": topic_path,
+                                            "guessed_topic": guessed_topic,
+                                            "fallback_key": fallback_key,
+                                            "match_candidates": match_candidates,
+                                            "allow_topics": sorted(list(allow_set)),
+                                            "expanded_allow_topics": sorted(list(_expanded_allow_topics(allow_set))),
+                                        },
+                                    )
+                                continue
+
+                            data = items.get("data", {})
+                            src = items.get("source", {})
+                            src_id = (
+                                src.get("InputToken")
+                                or src.get("RelayToken")
+                                or src.get("Source")
+                                or src.get("Token")
+                                or src.get("VideoSource")
+                                or ""
+                            )
+
+                            def kk(k: str) -> str:
+                                base = matched_by or (match_candidates[0] if match_candidates else "event")
+                                return f"{base}::{k}::{src_id}" if src_id else f"{base}::{k}"
+
+                            changed: Dict[str, str] = {}
+                            with _event_last_lock:
+                                last = _event_last.setdefault(device_id, {})
+                                for k, v0 in data.items():
+                                    v = str(v0)
+                                    kfull = kk(k)
+                                    if last.get(kfull) != v:
+                                        changed[k] = v
+                                        last[kfull] = v
+
+                            if op == "Initialized" and not changed:
+                                if EVENT_DEBUG:
+                                    _emit_event(
+                                        device_id,
+                                        "debug",
+                                        "Skipped initialized event with no changes",
+                                        {
+                                            "topic_text": topic_text,
+                                            "topic_path": topic_path,
+                                            "guessed_topic": guessed_topic,
+                                            "matched_by": matched_by,
+                                            "items": items,
+                                        },
+                                    )
+                                continue
+
+                            _emit_event(
+                                device_id,
+                                "event",
+                                "ONVIF event",
+                                {
+                                    "op": op,
+                                    "utc": utc,
                                     "topic_text": topic_text,
                                     "topic_path": topic_path,
                                     "guessed_topic": guessed_topic,
                                     "fallback_key": fallback_key,
                                     "match_candidates": match_candidates,
-                                    "allow_topics": sorted(list(allow_set)),
-                                    "expanded_allow_topics": sorted(list(_expanded_allow_topics(allow_set))),
-                                },
-                            )
-                        continue
-
-                    data = items.get("data", {})
-                    src = items.get("source", {})
-                    src_id = (
-                        src.get("InputToken")
-                        or src.get("RelayToken")
-                        or src.get("Source")
-                        or src.get("Token")
-                        or src.get("VideoSource")
-                        or ""
-                    )
-
-                    def kk(k: str) -> str:
-                        base = matched_by or (match_candidates[0] if match_candidates else "event")
-                        return f"{base}::{k}::{src_id}" if src_id else f"{base}::{k}"
-
-                    changed: Dict[str, str] = {}
-                    with _event_last_lock:
-                        last = _event_last.setdefault(device_id, {})
-                        for k, v0 in data.items():
-                            v = str(v0)
-                            kfull = kk(k)
-                            if last.get(kfull) != v:
-                                changed[k] = v
-                                last[kfull] = v
-
-                    if op == "Initialized" and not changed:
-                        if EVENT_DEBUG:
-                            _emit_event(
-                                device_id,
-                                "debug",
-                                "Skipped initialized event with no changes",
-                                {
-                                    "topic_text": topic_text,
-                                    "topic_path": topic_path,
-                                    "guessed_topic": guessed_topic,
                                     "matched_by": matched_by,
+                                    "matched_allow_topic": matched_allow_topic,
+                                    "changed": changed,
                                     "items": items,
                                 },
                             )
-                        continue
 
-                    _emit_event(
-                        device_id,
-                        "event",
-                        "ONVIF event",
-                        {
-                            "op": op,
-                            "utc": utc,
-                            "topic_text": topic_text,
-                            "topic_path": topic_path,
-                            "guessed_topic": guessed_topic,
-                            "fallback_key": fallback_key,
-                            "match_candidates": match_candidates,
-                            "matched_by": matched_by,
-                            "matched_allow_topic": matched_allow_topic,
-                            "changed": changed,
-                            "items": items,
-                        },
-                    )
+                    except Exception as e:
+                        error_text = str(e)
+                        normalized_error = error_text.strip().lower()
+                        should_resubscribe = (
+                            "resource unknown" in normalized_error
+                            or "unknown resource" in normalized_error
+                            or "subscription" in normalized_error and "unknown" in normalized_error
+                        )
+
+                        if should_resubscribe:
+                            _emit_event(device_id, "warn", f"PullMessages lost pull-point subscription: {e}")
+                            break
+
+                        _emit_event(device_id, "warn", f"PullMessages error: {e}")
+                        time.sleep(0.5)
 
             except Exception as e:
-                _emit_event(device_id, "warn", f"PullMessages error: {e}")
-                time.sleep(0.5)
+                _emit_event(device_id, "bad", f"Event subscription failed: {e}")
+
+            if stop_flag.wait(retry_delay):
+                break
+            retry_delay = min(retry_delay * 1.5, 10.0)
 
     except Exception as e:
         _emit_event(device_id, "bad", f"Event subscription failed: {e}")
@@ -1233,6 +1272,27 @@ def _start_event_worker(device_id: str, req: OnvifBase) -> None:
 
     if old_worker:
         _emit_event(device_id, "warn", "Restarted event worker due to device settings change.")
+
+
+def _ensure_event_workers(devs: Optional[List[Device]] = None) -> None:
+    devices = devs if devs is not None else _load_devices()
+
+    for device in devices:
+        if not str(device.ip or "").strip():
+            continue
+        if not str(device.username or "").strip():
+            continue
+        if not str(device.password or "").strip():
+            continue
+
+        req = EventsStartRequest(
+            device_id=device.id,
+            ip=device.ip,
+            onvif_port=device.onvif_port,
+            username=device.username,
+            password=device.password,
+        )
+        _start_event_worker(device.id, req)
 
 
 def _stop_event_worker(device_id: str) -> None:
@@ -2167,12 +2227,15 @@ async def ptz_stop(device_id: str):
 
 @app.on_event("startup")
 def _on_startup():
-    try:
-        devs = _load_devices()
+    devs = _load_devices()
 
+    try:
         set_recording_path_refresher(_refresh_device_stream)
         start_recording_service()
+    except Exception:
+        pass
 
+    try:
         global _flow_monitor_thread
         _flow_monitor_stop.clear()
         _flow_monitor_thread = threading.Thread(
@@ -2181,28 +2244,26 @@ def _on_startup():
             name="flow-monitor",
         )
         _flow_monitor_thread.start()
-
-        start_physical_io_monitor(dispatch_flow_trigger)
-        
-        for d in devs:
-            req = EventsStartRequest(
-                device_id=d.id,
-                ip=d.ip,
-                onvif_port=d.onvif_port,
-                username=d.username,
-                password=d.password,
-            )
-            _start_event_worker(d.id, req)
-
-        for d in devs:
-            try:
-                _preload_stream_for_device(d)
-            except Exception:
-                pass
-
-        request_recorders_refresh()
     except Exception:
         pass
+
+    try:
+        start_physical_io_monitor(dispatch_flow_trigger)
+    except Exception:
+        pass
+
+    try:
+        _ensure_event_workers(devs)
+    except Exception:
+        pass
+
+    for d in devs:
+        try:
+            _preload_stream_for_device(d)
+        except Exception:
+            pass
+
+    request_recorders_refresh()
 
 
 @app.on_event("shutdown")

@@ -47,6 +47,7 @@ _recorders_lock = threading.RLock()
 _recorders: Dict[str, subprocess.Popen] = {}
 _recorder_stop = threading.Event()
 _recorder_kick = threading.Event()
+_recorder_pause = threading.Event()
 _recorder_thread: Optional[threading.Thread] = None
 _path_refresher: Optional[Callable[[str], Any]] = None
 _prune_counter = 0
@@ -87,6 +88,19 @@ def _recordings_dir_for_device(device_id: str) -> Path:
 
 def _clip_path_for_event(event_id: str) -> Path:
     return PLAYBACK_CLIPS_DIR / f"{event_id}.mp4"
+
+
+def _clip_probe_command(path: Path) -> List[str]:
+    return [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration,size",
+        "-of",
+        "json",
+        str(path),
+    ]
 
 
 def _load_devices() -> List[Dict[str, Any]]:
@@ -771,12 +785,6 @@ def _start_recorder(device_id: str) -> None:
         if existing is not None:
             _recorders.pop(device_id, None)
 
-    if _path_refresher is not None:
-        try:
-            _path_refresher(device_id)
-        except Exception:
-            return
-
     proc = subprocess.Popen(
         _recording_ffmpeg_command(device_id),
         stdout=subprocess.DEVNULL,
@@ -839,6 +847,11 @@ def _prune_old_recordings() -> None:
 def _recorders_loop() -> None:
     global _prune_counter
     while not _recorder_stop.is_set():
+        if _recorder_pause.is_set():
+            _recorder_kick.wait(timeout=RECORDER_POLL_SECONDS)
+            _recorder_kick.clear()
+            continue
+
         devices = _load_devices()
         desired_ids = _desired_recorder_ids(devices)
 
@@ -1026,7 +1039,26 @@ def _build_event_clip(event: Dict[str, Any]) -> Path:
 
     clip_path = _clip_path_for_event(event_id)
     if clip_path.exists():
-        return clip_path
+        try:
+            probe = subprocess.run(
+                _clip_probe_command(clip_path),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            payload = json.loads(probe.stdout or "{}")
+            fmt = payload.get("format") if isinstance(payload, dict) else {}
+            duration = float((fmt or {}).get("duration") or 0)
+            size = int(float((fmt or {}).get("size") or 0))
+            if duration > 0.05 and size > 1024:
+                return clip_path
+        except Exception:
+            pass
+
+        try:
+            clip_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     device_id = str(event.get("device_id") or "").strip()
     try:
@@ -1046,6 +1078,8 @@ def _build_event_clip(event: Dict[str, Any]) -> Path:
         manifest_path = Path(manifest.name)
         for segment in segments:
             manifest.write(f"file '{segment.path.as_posix()}'\n")
+
+    temp_clip_path = clip_path.with_suffix(f".{uuid.uuid4().hex}.tmp.mp4")
 
     try:
         base_cmd = [
@@ -1078,7 +1112,7 @@ def _build_event_clip(event: Dict[str, Any]) -> Path:
             "+faststart",
             "-avoid_negative_ts",
             "make_zero",
-            str(clip_path),
+            str(temp_clip_path),
         ]
 
         transcode_cmd = [
@@ -1097,7 +1131,7 @@ def _build_event_clip(event: Dict[str, Any]) -> Path:
             "aac",
             "-movflags",
             "+faststart",
-            str(clip_path),
+            str(temp_clip_path),
         ]
 
         last_error: Optional[subprocess.CalledProcessError] = None
@@ -1105,12 +1139,13 @@ def _build_event_clip(event: Dict[str, Any]) -> Path:
         if PLAYBACK_CLIP_MODE != "transcode-only":
             try:
                 subprocess.run(copy_cmd, check=True)
+                temp_clip_path.replace(clip_path)
                 _prune_cached_clips()
                 return clip_path
             except subprocess.CalledProcessError as exc:
                 last_error = exc
                 try:
-                    clip_path.unlink(missing_ok=True)
+                    temp_clip_path.unlink(missing_ok=True)
                 except Exception:
                     pass
                 if PLAYBACK_CLIP_MODE == "copy-only":
@@ -1118,12 +1153,17 @@ def _build_event_clip(event: Dict[str, Any]) -> Path:
 
         try:
             subprocess.run(transcode_cmd, check=True)
+            temp_clip_path.replace(clip_path)
             _prune_cached_clips()
         except subprocess.CalledProcessError as exc:
             raise HTTPException(status_code=500, detail=f"Clip generation failed: {exc if exc else last_error}")
     finally:
         try:
             manifest_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            temp_clip_path.unlink(missing_ok=True)
         except Exception:
             pass
 
@@ -1149,12 +1189,17 @@ def _clear_directory_contents(root: Path) -> int:
 
 
 def clear_all_recordings() -> Dict[str, int]:
-    stop_recording_service()
     deleted_recording_files = 0
     deleted_clip_files = 0
     cleared_events = 0
+    _recorder_pause.set()
 
     try:
+        with _recorders_lock:
+            active_ids = list(_recorders.keys())
+        for device_id in active_ids:
+            _stop_recorder(device_id)
+
         with _events_lock:
             items = _load_events_normalized()
             cleared_events = len(items)
@@ -1163,6 +1208,7 @@ def clear_all_recordings() -> Dict[str, int]:
         deleted_recording_files = _clear_directory_contents(RECORDINGS_DIR)
         deleted_clip_files = _clear_directory_contents(PLAYBACK_CLIPS_DIR)
     finally:
+        _recorder_pause.clear()
         start_recording_service()
         request_recorders_refresh()
 

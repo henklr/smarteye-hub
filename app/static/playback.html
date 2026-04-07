@@ -34,9 +34,13 @@
 
         <div class="playbackVideoShell" id="playbackVideoShell">
           <video id="playbackVideo" class="playbackVideo" playsinline preload="metadata"></video>
-          <div class="playbackVideoEmpty" id="playbackVideoEmpty">
-            <div class="playbackVideoEmptyTitle">No clip selected</div>
-            <div class="playbackVideoEmptyText" id="playbackVideoEmptyText">Choose a colored marker from the timeline below to load a recording.</div>
+          <div class="playbackVideoEmpty" id="playbackVideoEmpty" data-state="loading" aria-live="polite" aria-busy="true">
+            <div class="playbackVideoEmptyPanel">
+              <div class="playbackVideoEmptyBadge" id="playbackVideoEmptyBadge">Loading</div>
+              <div class="playbackVideoEmptySpinner" aria-hidden="true"></div>
+              <div class="playbackVideoEmptyTitle">Loading playback...</div>
+              <div class="playbackVideoEmptyText" id="playbackVideoEmptyText">Fetching cameras and timeline markers for the selected day.</div>
+            </div>
           </div>
         </div>
 
