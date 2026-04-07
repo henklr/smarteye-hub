@@ -8,7 +8,8 @@ const MAX_NATIVE_PLAYBACK_RATE = 16;
 const PLAYBACK_STORAGE_KEY = "sei.playback.timelineState";
 const PLAYBACK_STATE_VERSION = 1;
 const PLAYBACK_STATE_SAVE_DELAY_MS = 400;
-const PENDING_TIMELINE_POLL_MS = 5000;
+const ACTIVE_TIMELINE_REFRESH_MS = 5000;
+const IDLE_TIMELINE_REFRESH_MS = 30000;
 
 const state = {
   devices: [],
@@ -52,7 +53,8 @@ const state = {
   selectedEventId: null,
   persistence: {
     saveTimer: 0,
-    pendingRefreshTimer: 0,
+    timelineRefreshTimer: 0,
+    timelineRequestId: 0,
   },
 };
 
@@ -289,6 +291,10 @@ function pendingEventCount() {
   return state.timeline.events.filter((event) => eventIsPending(event)).length;
 }
 
+function selectedDayIsToday() {
+  return normalizeStoredDay(state.selectedDay) === todayString();
+}
+
 function eventStateLabel(event) {
   const value = eventState(event);
   if (value === "recording") return "Recording";
@@ -297,25 +303,38 @@ function eventStateLabel(event) {
   return "Ready";
 }
 
-function clearPendingTimelineRefresh() {
-  if (state.persistence.pendingRefreshTimer) {
-    window.clearTimeout(state.persistence.pendingRefreshTimer);
-    state.persistence.pendingRefreshTimer = 0;
+function clearTimelineAutoRefresh() {
+  if (state.persistence.timelineRefreshTimer) {
+    window.clearTimeout(state.persistence.timelineRefreshTimer);
+    state.persistence.timelineRefreshTimer = 0;
   }
 }
 
-function schedulePendingTimelineRefresh() {
-  clearPendingTimelineRefresh();
-  if (!pendingEventCount()) {
+function nextTimelineAutoRefreshDelay() {
+  if (pendingEventCount()) {
+    return ACTIVE_TIMELINE_REFRESH_MS;
+  }
+
+  return selectedDayIsToday() ? ACTIVE_TIMELINE_REFRESH_MS : IDLE_TIMELINE_REFRESH_MS;
+}
+
+function scheduleTimelineAutoRefresh() {
+  clearTimelineAutoRefresh();
+  if (!state.selectedDeviceId) {
     return;
   }
 
-  state.persistence.pendingRefreshTimer = window.setTimeout(() => {
-    state.persistence.pendingRefreshTimer = 0;
-    loadTimeline().catch((error) => {
+  const delay = document.visibilityState === "visible"
+    ? nextTimelineAutoRefreshDelay()
+    : Math.max(IDLE_TIMELINE_REFRESH_MS, nextTimelineAutoRefreshDelay());
+
+  state.persistence.timelineRefreshTimer = window.setTimeout(() => {
+    state.persistence.timelineRefreshTimer = 0;
+    loadTimeline({ background: true, preservePlayback: true, autoSelectLatest: false }).catch((error) => {
       setStatus(error.message || String(error));
+      scheduleTimelineAutoRefresh();
     });
-  }, PENDING_TIMELINE_POLL_MS);
+  }, delay);
 }
 
 function minutesIntoDay(value) {
@@ -1360,6 +1379,82 @@ function updatePlaybackHeader(event = null) {
   sub.textContent = `${event.title} · ${clockLabel(event.triggered_at)} · ${deviceName(event.device_id)}`;
 }
 
+function applyTimelineData(data, options = {}) {
+  state.timeline = {
+    segments: Array.isArray(data?.segments) ? data.segments : [],
+    events: Array.isArray(data?.events) ? data.events : [],
+  };
+
+  const hiddenPresetKeys = Array.isArray(options.hiddenPresetKeys)
+    ? options.hiddenPresetKeys
+    : state.timelineFilters.hiddenPresetKeys;
+  const availablePresetKeys = new Set(timelinePresetRows().map((row) => row.key));
+
+  state.timelineFilters.hiddenPresetKeys = [...new Set((hiddenPresetKeys || [])
+    .map((value) => String(value || "").trim())
+    .filter((value) => availablePresetKeys.has(value)))];
+}
+
+function syncTimelineSelection(options = {}) {
+  const preferredEventId = typeof options.preferredEventId === "string" ? options.preferredEventId : "";
+  const preferredEvent = state.timeline.events.find((item) => item.id === preferredEventId && eventIsReady(item)) || null;
+  if (preferredEvent) {
+    state.selectedEventId = preferredEvent.id;
+    return preferredEvent;
+  }
+
+  const currentSelected = state.timeline.events.find((item) => item.id === state.selectedEventId) || null;
+  if (currentSelected && eventIsReady(currentSelected)) {
+    return currentSelected;
+  }
+
+  if (options.autoSelectLatest) {
+    const latestReady = [...state.timeline.events].reverse().find((item) => eventIsReady(item)) || null;
+    state.selectedEventId = latestReady?.id || null;
+    return latestReady;
+  }
+
+  state.selectedEventId = null;
+  return null;
+}
+
+function timelineEmptyState() {
+  const pending = pendingEventCount();
+  if (pending) {
+    return {
+      title: "Recording still saving",
+      text: "Grayed markers are still being finalized and will become playable automatically once recording is safely saved.",
+      status: `Waiting for ${pending} recording${pending === 1 ? "" : "s"} to finish saving.`,
+    };
+  }
+
+  if (state.timeline.segments.length) {
+    return {
+      title: "No clip selected",
+      text: "Choose a colored marker from the timeline below to load a recording.",
+      status: "No markers for this day yet, but recorded video is available.",
+    };
+  }
+
+  return {
+    title: "No clip selected",
+    text: "Choose a colored marker from the timeline below to load a recording.",
+    status: "No recorded video available for this day.",
+  };
+}
+
+function renderPlaybackEmptyState() {
+  const emptyState = timelineEmptyState();
+  stopPlaybackCursorLoop();
+  stopReversePlayback();
+  stopSimulatedForwardPlayback();
+  setPlaybackCursor(null);
+  updatePlaybackHeader(null);
+  showVideoEmpty(emptyState.title, emptyState.text);
+  syncPlaybackTransport();
+  setStatus(emptyState.status);
+}
+
 async function startVideoPlayback(video) {
   if (!video) return false;
   try {
@@ -1440,9 +1535,13 @@ async function selectEvent(eventId, options = {}) {
   setStatus(started ? playbackStatusText(event, true) : `Loaded ${event.title}. Click play if playback does not start automatically.`);
 }
 
-async function loadTimeline() {
+async function loadTimeline(options = {}) {
+  const background = options.background === true;
+  const preservePlayback = options.preservePlayback === true;
+  const autoSelectLatest = options.autoSelectLatest !== false;
+
   clearForwardPlaybackBoundarySchedule();
-  clearPendingTimelineRefresh();
+  clearTimelineAutoRefresh();
 
   if (!state.selectedDeviceId) {
     state.timeline = { segments: [], events: [] };
@@ -1458,68 +1557,64 @@ async function loadTimeline() {
     return;
   }
 
-  setStatus("Loading timeline…");
+  const currentSelectedEventId = state.selectedEventId;
+  const video = el("playbackVideo");
+  const preserveCurrentPlayback = background && preservePlayback && !!(video?.currentSrc && currentSelectedEventId);
+
+  if (!background) {
+    setStatus("Loading timeline…");
+  }
+
+  const requestId = ++state.persistence.timelineRequestId;
   const query = new URLSearchParams({ device_id: state.selectedDeviceId, day: state.selectedDay || todayString() });
-  const data = await api(`/api/playback/timeline?${query.toString()}`);
-  const restore = playbackRestoreState();
-  state.timeline = {
-    segments: Array.isArray(data?.segments) ? data.segments : [],
-    events: Array.isArray(data?.events) ? data.events : [],
-  };
-  const availablePresetKeys = new Set(timelinePresetRows().map((row) => row.key));
-  const restoredHiddenPresetKeys = Array.isArray(restore?.hiddenPresetKeys) ? restore.hiddenPresetKeys : state.timelineFilters.hiddenPresetKeys;
-  state.timelineFilters.hiddenPresetKeys = [...new Set((restoredHiddenPresetKeys || []).map((value) => String(value || "").trim()).filter((value) => availablePresetKeys.has(value)))];
-
-  const restoreStartMinute = Number(restore?.timelineView?.startMinute);
-  const restoreDurationMinutes = Number(restore?.timelineView?.durationMinutes);
-  if (Number.isFinite(restoreStartMinute) && Number.isFinite(restoreDurationMinutes)) {
-    setTimelineViewport(restoreStartMinute, restoreDurationMinutes, { render: false, persist: false });
+  query.set("ts", String(Date.now()));
+  const data = await api(`/api/playback/timeline?${query.toString()}`, { cache: "no-store" });
+  if (requestId !== state.persistence.timelineRequestId) {
+    return;
   }
 
-  const restoreEventId = typeof restore?.selectedEventId === "string" && restore.selectedEventId ? restore.selectedEventId : null;
-  const restoreSeekSeconds = Number(restore?.seekSeconds);
-  if (restoreEventId && state.timeline.events.some((item) => item.id === restoreEventId && eventIsReady(item))) {
-    state.selectedEventId = restoreEventId;
+  const restore = background ? null : playbackRestoreState();
+  applyTimelineData(data, {
+    hiddenPresetKeys: Array.isArray(restore?.hiddenPresetKeys) ? restore.hiddenPresetKeys : state.timelineFilters.hiddenPresetKeys,
+  });
+
+  if (!background) {
+    const restoreStartMinute = Number(restore?.timelineView?.startMinute);
+    const restoreDurationMinutes = Number(restore?.timelineView?.durationMinutes);
+    if (Number.isFinite(restoreStartMinute) && Number.isFinite(restoreDurationMinutes)) {
+      setTimelineViewport(restoreStartMinute, restoreDurationMinutes, { render: false, persist: false });
+    }
   }
 
-  if (!state.timeline.events.some((item) => item.id === state.selectedEventId && eventIsReady(item))) {
-    state.selectedEventId = [...state.timeline.events].reverse().find((item) => eventIsReady(item))?.id || null;
-  }
+  const restoreEventId = !background && typeof restore?.selectedEventId === "string" && restore.selectedEventId
+    ? restore.selectedEventId
+    : null;
+  const restoreSeekSeconds = !background ? Number(restore?.seekSeconds) : Number.NaN;
+  const nextSelectedEvent = syncTimelineSelection({
+    preferredEventId: restoreEventId || currentSelectedEventId,
+    autoSelectLatest,
+  });
 
   renderTimeline();
 
-  if (state.selectedEventId) {
-    const shouldRestoreSeek = restoreEventId === state.selectedEventId && Number.isFinite(restoreSeekSeconds) && restoreSeekSeconds >= 0;
+  if (preserveCurrentPlayback && nextSelectedEvent && nextSelectedEvent.id === currentSelectedEventId) {
+    updatePlaybackHeader(nextSelectedEvent);
+    syncPlaybackTransport();
+    updatePlaybackCursorFromVideo();
+  } else if (nextSelectedEvent) {
+    const shouldRestoreSeek = restoreEventId === nextSelectedEvent.id && Number.isFinite(restoreSeekSeconds) && restoreSeekSeconds >= 0;
     await selectEvent(
-      state.selectedEventId,
+      nextSelectedEvent.id,
       shouldRestoreSeek
         ? { seekSeconds: restoreSeekSeconds, autoplay: false, ensureVisible: false }
         : undefined,
     );
   } else {
-    stopPlaybackCursorLoop();
-    stopReversePlayback();
-    stopSimulatedForwardPlayback();
-    setPlaybackCursor(null);
-    updatePlaybackHeader(null);
-    showVideoEmpty(
-      pendingEventCount()
-        ? "Recording still saving"
-        : "No clip selected",
-      pendingEventCount()
-        ? "Grayed markers are still being finalized and will become playable automatically once recording is safely saved."
-        : "Choose a colored marker from the timeline below to load a recording."
-    );
-    syncPlaybackTransport();
-    setStatus(
-      pendingEventCount()
-        ? `Waiting for ${pendingEventCount()} recording${pendingEventCount() === 1 ? "" : "s"} to finish saving.`
-        : (state.timeline.segments.length ? "No markers for this day yet, but recorded video is available." : "No recorded video available for this day.")
-    );
+    renderPlaybackEmptyState();
   }
 
   schedulePlaybackStateSave();
-  schedulePendingTimelineRefresh();
+  scheduleTimelineAutoRefresh();
 }
 
 async function loadDevices() {
@@ -1677,7 +1772,7 @@ function bindUi() {
     );
     syncPlaybackTransport();
     setStatus("Clip could not be loaded.");
-    schedulePendingTimelineRefresh();
+    scheduleTimelineAutoRefresh();
   });
 
   el("playbackDeviceSelect")?.addEventListener("change", async (event) => {
@@ -1694,7 +1789,6 @@ function bindUi() {
     await loadTimeline();
   });
 
-  el("playbackRefreshBtn")?.addEventListener("click", refreshAll);
   el("playbackClearBtn")?.addEventListener("click", clearAllRecordings);
   el("playbackPlayPauseBtn")?.addEventListener("click", async () => {
     await togglePlayback();
@@ -1729,8 +1823,19 @@ function bindUi() {
   });
 
   window.addEventListener("pagehide", () => {
-    clearPendingTimelineRefresh();
+    clearTimelineAutoRefresh();
     savePlaybackStateNow();
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      loadTimeline({ background: true, preservePlayback: true, autoSelectLatest: false }).catch((error) => {
+        setStatus(error.message || String(error));
+      });
+      return;
+    }
+
+    scheduleTimelineAutoRefresh();
   });
 
   syncPlaybackTransport();
