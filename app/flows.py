@@ -34,6 +34,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DEVICES_JSON = DATA_DIR / "devices.json"
 FLOWS_JSON = DATA_DIR / "flows.json"
 PUBLIC_VARIABLES_JSON = DATA_DIR / "public_variables.json"
+SCHEDULES_JSON = DATA_DIR / "schedules.json"
 RECORDING_PRESETS_JSON = DATA_DIR / "recording_presets.json"
 FLOW_STATE_JSON = DATA_DIR / "flow_state.json"
 FLOW_LOG_FILE = Path(os.getenv("FLOW_LOG_FILE", str(DATA_DIR / "flows.log")))
@@ -43,9 +44,23 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 _VALID_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 _MAX_RUN_STEPS = 200
+_SCHEDULE_POLL_SEC = max(5.0, float(os.getenv("SCHEDULE_POLL_SEC", "30") or "30"))
+_WEEKDAY_KEYS: Tuple[str, ...] = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
 
 _storage_lock = threading.RLock()
 _runtime_lock = threading.RLock()
+_schedule_monitor_lock = threading.RLock()
+_schedule_monitor_stop = threading.Event()
+_schedule_monitor_thread: Optional[threading.Thread] = None
+_schedule_monitor_state: Dict[str, bool] = {}
 
 router = APIRouter(tags=["flows"])
 
@@ -100,6 +115,21 @@ class FlowTestRequest(BaseModel):
 
 class PublicVariablesIn(BaseModel):
     items: List[FlowVariableModel] = Field(default_factory=list)
+
+
+class SchedulePeriodModel(BaseModel):
+    start: str = "09:00"
+    end: str = "17:00"
+
+
+class ScheduleModel(BaseModel):
+    key: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)
+    days: Dict[str, List[SchedulePeriodModel]] = Field(default_factory=dict)
+
+
+class SchedulesIn(BaseModel):
+    items: List[ScheduleModel] = Field(default_factory=list)
 
 
 class RecordingPresetIn(BaseModel):
@@ -172,6 +202,24 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "defaults": {"name": ""},
     },
     {
+        "type": "trigger.schedule_active",
+        "category": "trigger",
+        "label": "Schedule becomes active",
+        "description": "Starts when a schedule enters its active hours.",
+        "color": "#4f8cff",
+        "ports": {"inputs": [], "outputs": ["out"]},
+        "defaults": {"schedule_key": "", "name": ""},
+    },
+    {
+        "type": "trigger.schedule_inactive",
+        "category": "trigger",
+        "label": "Schedule becomes inactive",
+        "description": "Starts when a schedule leaves its active hours.",
+        "color": "#4f8cff",
+        "ports": {"inputs": [], "outputs": ["out"]},
+        "defaults": {"schedule_key": "", "name": ""},
+    },
+    {
         "type": "trigger.digital_input_changed",
         "category": "trigger",
         "label": "Digital input changed",
@@ -223,6 +271,15 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
             "cast": "auto",
             "name": "",
         },
+    },
+    {
+        "type": "condition.schedule_active",
+        "category": "condition",
+        "label": "Schedule active",
+        "description": "Checks whether a selected schedule is currently inside its active hours.",
+        "color": "#9c6bff",
+        "ports": {"inputs": ["in"], "outputs": ["true", "false"]},
+        "defaults": {"schedule_key": "", "name": ""},
     },
     {
         "type": "operator.delay",
@@ -358,6 +415,7 @@ def save_public_variables(req: PublicVariablesIn) -> Dict[str, Any]:
     _migrate_legacy_flow_variables()
 
     items = _normalize_variable_items((_dump(req) or {}).get("items") or [])
+    _validate_schedule_variable_values(items)
     existing_keys = {item["key"] for item in _load_public_variable_definitions()}
     next_keys = {item["key"] for item in items}
     usages = _describe_public_variable_usages(existing_keys - next_keys)
@@ -372,6 +430,29 @@ def save_public_variables(req: PublicVariablesIn) -> Dict[str, Any]:
 
     _reconcile_public_variable_runtime_values(items, prefer_definition_values=True)
     return {"ok": True, **_public_variables_response()}
+
+
+@router.get("/api/schedules")
+def list_schedules() -> Dict[str, Any]:
+    return _schedules_response()
+
+
+@router.put("/api/schedules")
+def save_schedules(req: SchedulesIn) -> Dict[str, Any]:
+    items = _normalize_schedule_items((_dump(req) or {}).get("items") or [])
+    existing_keys = {item["key"] for item in _load_schedule_definitions()}
+    next_keys = {item["key"] for item in items}
+    usages = _describe_schedule_usages(existing_keys - next_keys)
+    if usages:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot remove schedules still used by saved flows or variables: " + "; ".join(usages),
+        )
+
+    with _storage_lock:
+        _save_schedule_definitions(items)
+
+    return {"ok": True, **_schedules_response()}
 
 
 @router.get("/api/recording-presets")
@@ -677,6 +758,16 @@ def _save_public_variable_definitions(items: List[Dict[str, Any]]) -> None:
     _atomic_save_json(PUBLIC_VARIABLES_JSON, {"items": items})
 
 
+def _load_schedule_definitions() -> List[Dict[str, Any]]:
+    payload = _load_json(SCHEDULES_JSON, {"items": []})
+    items = payload.get("items") if isinstance(payload, dict) else []
+    return _normalize_schedule_items(items)
+
+
+def _save_schedule_definitions(items: List[Dict[str, Any]]) -> None:
+    _atomic_save_json(SCHEDULES_JSON, {"items": items})
+
+
 def _slugify_recording_preset_name(value: Any) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
     return slug or "recording"
@@ -847,6 +938,136 @@ def _merge_recording_presets(items: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return merged
 
 
+def _schedule_days_template() -> Dict[str, List[Dict[str, str]]]:
+    return {day: [] for day in _WEEKDAY_KEYS}
+
+
+def _normalize_schedule_time(value: Any, label: str) -> str:
+    raw = str(value or "").strip()
+    matched = re.fullmatch(r"(\d{1,2}):(\d{2})", raw)
+    if matched is None:
+        raise HTTPException(status_code=400, detail=f"{label} must use HH:MM time")
+
+    hour = int(matched.group(1))
+    minute = int(matched.group(2))
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise HTTPException(status_code=400, detail=f"{label} must use a valid 24-hour time")
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _schedule_time_to_minutes(value: Any) -> int:
+    normalized = _normalize_schedule_time(value, "Schedule time")
+    hour, minute = normalized.split(":", 1)
+    return int(hour) * 60 + int(minute)
+
+
+def _normalize_schedule_items(items: Any) -> List[Dict[str, Any]]:
+    schedules: List[Dict[str, Any]] = []
+    seen_keys: set[str] = set()
+
+    for raw in list(items or []):
+        if not isinstance(raw, dict):
+            continue
+
+        key = str(raw.get("key") or "").strip()
+        name = str(raw.get("name") or "").strip()
+        if not key:
+            continue
+        if not name:
+            raise HTTPException(status_code=400, detail=f"Schedule '{key}' needs a name")
+        if key in seen_keys:
+            raise HTTPException(status_code=400, detail=f"Duplicate schedule key: {key}")
+        seen_keys.add(key)
+
+        raw_days = raw.get("days") if isinstance(raw.get("days"), dict) else {}
+        days = _schedule_days_template()
+
+        for day in _WEEKDAY_KEYS:
+            periods: List[Dict[str, str]] = []
+            seen_periods: set[Tuple[str, str]] = set()
+            for period in list(raw_days.get(day) or []):
+                if not isinstance(period, dict):
+                    continue
+                start = _normalize_schedule_time(period.get("start"), f"{day.title()} start time")
+                end = _normalize_schedule_time(period.get("end"), f"{day.title()} end time")
+                if start == end:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{day.title()} active hours cannot start and end at the same time",
+                    )
+                pair = (start, end)
+                if pair in seen_periods:
+                    continue
+                seen_periods.add(pair)
+                periods.append({"start": start, "end": end})
+
+            periods.sort(key=lambda item: (_schedule_time_to_minutes(item["start"]), _schedule_time_to_minutes(item["end"])))
+            days[day] = periods
+
+        schedules.append(
+            {
+                "key": key,
+                "name": name,
+                "days": days,
+            }
+        )
+
+    return schedules
+
+
+def _schedule_by_key(key: Any, items: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
+    wanted = str(key or "").strip()
+    if not wanted:
+        return None
+    for item in items if items is not None else _load_schedule_definitions():
+        if str(item.get("key") or "").strip() == wanted:
+            return deepcopy(item)
+    return None
+
+
+def _is_schedule_active_at(schedule: Dict[str, Any], when: Optional[datetime] = None) -> bool:
+    now = when or datetime.now()
+    current_day = _WEEKDAY_KEYS[now.weekday()]
+    previous_day = _WEEKDAY_KEYS[(now.weekday() - 1) % len(_WEEKDAY_KEYS)]
+    minute_of_day = now.hour * 60 + now.minute
+    days = schedule.get("days") if isinstance(schedule.get("days"), dict) else {}
+
+    for period in list(days.get(current_day) or []):
+        if not isinstance(period, dict):
+            continue
+        start = _schedule_time_to_minutes(period.get("start"))
+        end = _schedule_time_to_minutes(period.get("end"))
+        if start < end and start <= minute_of_day < end:
+            return True
+        if start > end and minute_of_day >= start:
+            return True
+
+    for period in list(days.get(previous_day) or []):
+        if not isinstance(period, dict):
+            continue
+        start = _schedule_time_to_minutes(period.get("start"))
+        end = _schedule_time_to_minutes(period.get("end"))
+        if start > end and minute_of_day < end:
+            return True
+
+    return False
+
+
+def _schedules_response() -> Dict[str, Any]:
+    items = _load_schedule_definitions()
+    now = datetime.now()
+    return {
+        "items": [
+            {
+                **item,
+                "is_active": _is_schedule_active_at(item, now),
+            }
+            for item in items
+        ],
+        "evaluated_at": _utc_now_iso(),
+    }
+
+
 
 def _load_runtime_state() -> Dict[str, Any]:
     payload = _load_json(FLOW_STATE_JSON, {"flows": {}, "public_variables": {"values": {}, "updated_at": None}})
@@ -995,15 +1216,17 @@ def _normalize_flow_payload(
         raise HTTPException(status_code=400, detail="Flow name is required")
 
     legacy_variables = _normalize_variable_items(data.get("variables") or [])
+    _validate_schedule_variable_values(legacy_variables)
     public_variables = _merge_public_variable_definitions(legacy_variables) if legacy_variables else _load_public_variable_definitions()
-    public_variable_keys = {item["key"] for item in public_variables}
+    public_variable_definitions = {item["key"]: item for item in public_variables}
+    schedule_keys = {item["key"] for item in _load_schedule_definitions()}
 
     nodes: List[Dict[str, Any]] = []
     node_ids: set[str] = set()
     for raw in list(data.get("nodes") or []):
         if not isinstance(raw, dict):
             continue
-        node = _normalize_node_payload(raw, public_variable_keys)
+        node = _normalize_node_payload(raw, public_variable_definitions, schedule_keys)
         if node["id"] in node_ids:
             raise HTTPException(status_code=400, detail=f"Duplicate node id: {node['id']}")
         node_ids.add(node["id"])
@@ -1044,7 +1267,11 @@ def _normalize_flow_payload(
 
 
 
-def _normalize_node_payload(raw: Dict[str, Any], variable_keys: set[str]) -> Dict[str, Any]:
+def _normalize_node_payload(
+    raw: Dict[str, Any],
+    variable_definitions: Dict[str, Dict[str, Any]],
+    schedule_keys: set[str],
+) -> Dict[str, Any]:
     source_node_type = str(raw.get("type") or "").strip()
     node_type = source_node_type
     node_id = str(raw.get("id") or "").strip() or uuid.uuid4().hex[:10]
@@ -1084,7 +1311,7 @@ def _normalize_node_payload(raw: Dict[str, Any], variable_keys: set[str]) -> Dic
     label = raw_label or definition["label"]
     config = deepcopy(definition.get("defaults") or {})
     config.update(raw_config)
-    config = _normalize_node_config(node_type, config, variable_keys)
+    config = _normalize_node_config(node_type, config, variable_definitions, schedule_keys)
 
     return {
         "id": node_id,
@@ -1113,8 +1340,14 @@ def _normalize_edge_payload(raw: Dict[str, Any], node_ids: set[str]) -> Dict[str
 
 
 
-def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys: set[str]) -> Dict[str, Any]:
+def _normalize_node_config(
+    node_type: str,
+    config: Dict[str, Any],
+    variable_definitions: Dict[str, Dict[str, Any]],
+    schedule_keys: set[str],
+) -> Dict[str, Any]:
     cfg = dict(config)
+    variable_keys = set(variable_definitions)
 
     if node_type == "trigger.onvif_event":
         cfg["device_id"] = str(cfg.get("device_id") or "").strip()
@@ -1144,6 +1377,14 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
         return cfg
 
     if node_type == "trigger.manual":
+        return cfg
+
+    if node_type in {"trigger.schedule_active", "trigger.schedule_inactive"}:
+        cfg["schedule_key"] = str(cfg.get("schedule_key") or "").strip()
+        if not cfg["schedule_key"]:
+            raise HTTPException(status_code=400, detail="Schedule trigger needs a schedule")
+        if cfg["schedule_key"] not in schedule_keys:
+            raise HTTPException(status_code=400, detail=f"Unknown schedule key: {cfg['schedule_key']}")
         return cfg
 
     if node_type == "trigger.digital_input_changed":
@@ -1184,6 +1425,22 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
         if cfg["right_source"] == "physical_input":
             cfg["right_channel"] = _normalize_physical_channel(cfg.get("right_channel"), cfg["right_input_kind"])
             cfg["right_value"] = f"{cfg['right_input_kind']}:{cfg['right_channel']}"
+        if cfg["left_source"] == "variable" and cfg["right_source"] == "literal":
+            variable_definition = variable_definitions.get(cfg["left_value"]) or {}
+            if variable_definition.get("type") == "schedule" and cfg["right_value"] and cfg["right_value"] not in schedule_keys:
+                raise HTTPException(status_code=400, detail=f"Unknown schedule key: {cfg['right_value']}")
+        if cfg["right_source"] == "variable" and cfg["left_source"] == "literal":
+            variable_definition = variable_definitions.get(cfg["right_value"]) or {}
+            if variable_definition.get("type") == "schedule" and cfg["left_value"] and cfg["left_value"] not in schedule_keys:
+                raise HTTPException(status_code=400, detail=f"Unknown schedule key: {cfg['left_value']}")
+        return cfg
+
+    if node_type == "condition.schedule_active":
+        cfg["schedule_key"] = str(cfg.get("schedule_key") or "").strip()
+        if not cfg["schedule_key"]:
+            raise HTTPException(status_code=400, detail="Schedule condition needs a schedule")
+        if cfg["schedule_key"] not in schedule_keys:
+            raise HTTPException(status_code=400, detail=f"Unknown schedule key: {cfg['schedule_key']}")
         return cfg
 
     if node_type == "operator.delay":
@@ -1213,6 +1470,11 @@ def _normalize_node_config(node_type: str, config: Dict[str, Any], variable_keys
             raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['value']}")
         if cfg["value_source"] == "physical_input":
             cfg["value_channel"] = _normalize_physical_channel(cfg.get("value_channel"), cfg["value_input_kind"])
+        target_definition = variable_definitions.get(cfg["variable_key"]) or {}
+        if target_definition.get("type") == "schedule" and cfg["value_source"] == "literal":
+            literal_value = str(cfg.get("value") or "").strip()
+            if literal_value and literal_value not in schedule_keys:
+                raise HTTPException(status_code=400, detail=f"Unknown schedule key: {literal_value}")
         return cfg
 
     if node_type == "operator.template":
@@ -1445,6 +1707,8 @@ def _coerce_runtime_value(value: Any, variable_type: str) -> Any:
             return json.loads(value) if value not in (None, "") else {}
         except Exception:
             return {}
+    if variable_type == "schedule":
+        return "" if value is None else str(value).strip()
     return "" if value is None else str(value)
 
 
@@ -1490,7 +1754,7 @@ def _normalize_variable_items(items: Any) -> List[Dict[str, Any]]:
             default_value = _physical_variable_default(input_kind)
         else:
             variable_type = str(raw.get("type") or "string").strip().lower()
-            if variable_type not in {"string", "number", "boolean", "json"}:
+            if variable_type not in {"string", "number", "boolean", "json", "schedule"}:
                 variable_type = "string"
             default_value = raw.get("value")
 
@@ -1506,6 +1770,18 @@ def _normalize_variable_items(items: Any) -> List[Dict[str, Any]]:
         )
 
     return variables
+
+
+def _validate_schedule_variable_values(items: List[Dict[str, Any]]) -> None:
+    schedule_keys = {item["key"] for item in _load_schedule_definitions()}
+    for item in items:
+        if item.get("source") != "manual":
+            continue
+        if str(item.get("type") or "") != "schedule":
+            continue
+        value = str(item.get("value") or "").strip()
+        if value and value not in schedule_keys:
+            raise HTTPException(status_code=400, detail=f"Unknown schedule key: {value}")
 
 
 
@@ -1664,6 +1940,62 @@ def _flow_variable_references(flow: Dict[str, Any]) -> set[str]:
     return references
 
 
+def _schedule_references_in_variable_definitions(items: List[Dict[str, Any]]) -> set[str]:
+    references: set[str] = set()
+    for item in items:
+        if item.get("source") == "physical_input":
+            continue
+        if str(item.get("type") or "") != "schedule":
+            continue
+        key = str(item.get("value") or "").strip()
+        if key:
+            references.add(key)
+    return references
+
+
+def _flow_schedule_references(flow: Dict[str, Any]) -> set[str]:
+    references: set[str] = set()
+    variable_definitions = _public_variable_definitions_by_key()
+
+    for node in flow.get("nodes", []):
+        cfg = node.get("config") or {}
+        node_type = node.get("type")
+
+        if node_type in {"trigger.schedule_active", "trigger.schedule_inactive"}:
+            key = str(cfg.get("schedule_key") or "").strip()
+            if key:
+                references.add(key)
+
+        if node_type == "operator.set_variable":
+            target_key = str(cfg.get("variable_key") or "").strip()
+            target_definition = variable_definitions.get(target_key) or {}
+            if target_definition.get("type") == "schedule" and str(cfg.get("value_source") or "").strip() == "literal":
+                value = str(cfg.get("value") or "").strip()
+                if value:
+                    references.add(value)
+
+        if node_type == "condition.compare":
+            left_source = str(cfg.get("left_source") or "").strip()
+            right_source = str(cfg.get("right_source") or "").strip()
+            if left_source == "variable" and right_source == "literal":
+                left_definition = variable_definitions.get(str(cfg.get("left_value") or "").strip()) or {}
+                value = str(cfg.get("right_value") or "").strip()
+                if left_definition.get("type") == "schedule" and value:
+                    references.add(value)
+            if right_source == "variable" and left_source == "literal":
+                right_definition = variable_definitions.get(str(cfg.get("right_value") or "").strip()) or {}
+                value = str(cfg.get("left_value") or "").strip()
+                if right_definition.get("type") == "schedule" and value:
+                    references.add(value)
+
+        if node_type == "condition.schedule_active":
+            key = str(cfg.get("schedule_key") or "").strip()
+            if key:
+                references.add(key)
+
+    return references
+
+
 
 def _describe_public_variable_usages(variable_keys: set[str]) -> List[str]:
     if not variable_keys:
@@ -1672,6 +2004,23 @@ def _describe_public_variable_usages(variable_keys: set[str]) -> List[str]:
     usages: List[str] = []
     for flow in _load_flows():
         hits = sorted(_flow_variable_references(flow) & variable_keys)
+        if hits:
+            usages.append(f"{flow['name']}: {', '.join(hits)}")
+
+    return usages
+
+
+def _describe_schedule_usages(schedule_keys: set[str]) -> List[str]:
+    if not schedule_keys:
+        return []
+
+    usages: List[str] = []
+    variable_hits = sorted(_schedule_references_in_variable_definitions(_load_public_variable_definitions()) & schedule_keys)
+    if variable_hits:
+        usages.append(f"Variables: {', '.join(variable_hits)}")
+
+    for flow in _load_flows():
+        hits = sorted(_flow_schedule_references(flow) & schedule_keys)
         if hits:
             usages.append(f"{flow['name']}: {', '.join(hits)}")
 
@@ -1717,6 +2066,20 @@ def _trigger_matches_node(node: Dict[str, Any], trigger: Dict[str, Any]) -> bool
 
     if node_type == "trigger.manual":
         return kind == "manual"
+
+    if node_type == "trigger.schedule_active":
+        return (
+            kind == "schedule_active_changed"
+            and bool(trigger.get("active")) is True
+            and str(cfg.get("schedule_key") or "") == str(trigger.get("schedule_key") or "")
+        )
+
+    if node_type == "trigger.schedule_inactive":
+        return (
+            kind == "schedule_active_changed"
+            and bool(trigger.get("active")) is False
+            and str(cfg.get("schedule_key") or "") == str(trigger.get("schedule_key") or "")
+        )
 
     if node_type == "trigger.onvif_event":
         if kind != "onvif_event":
@@ -1804,6 +2167,84 @@ def dispatch_flow_trigger(trigger: Dict[str, Any]) -> int:
         if flow_matched:
             continue
     return matched
+
+
+def _scan_schedule_state_changes(emit_transitions: bool) -> None:
+    schedules = _load_schedule_definitions()
+    now = datetime.now()
+    next_state: Dict[str, bool] = {}
+
+    with _schedule_monitor_lock:
+        previous_state = dict(_schedule_monitor_state)
+
+    for schedule in schedules:
+        key = str(schedule.get("key") or "").strip()
+        if not key:
+            continue
+
+        active = _is_schedule_active_at(schedule, now)
+        next_state[key] = active
+
+        if not emit_transitions:
+            continue
+
+        previous = previous_state.get(key)
+        if previous is None or previous == active:
+            continue
+
+        dispatch_flow_trigger(
+            {
+                "kind": "schedule_active_changed",
+                "schedule_key": key,
+                "schedule_name": str(schedule.get("name") or key).strip() or key,
+                "active": active,
+                "previous_active": previous,
+                "message": "Schedule became active" if active else "Schedule became inactive",
+                "weekday": _WEEKDAY_KEYS[now.weekday()],
+                "local_time": f"{now.hour:02d}:{now.minute:02d}",
+                "ts": _utc_now_iso(),
+            }
+        )
+
+    with _schedule_monitor_lock:
+        _schedule_monitor_state.clear()
+        _schedule_monitor_state.update(next_state)
+
+
+def _poll_schedule_state_changes() -> None:
+    _scan_schedule_state_changes(emit_transitions=False)
+    while not _schedule_monitor_stop.wait(_SCHEDULE_POLL_SEC):
+        try:
+            _scan_schedule_state_changes(emit_transitions=True)
+        except Exception:
+            continue
+
+
+def start_schedule_monitor() -> None:
+    global _schedule_monitor_thread
+    with _schedule_monitor_lock:
+        if _schedule_monitor_thread is not None and _schedule_monitor_thread.is_alive():
+            return
+        _schedule_monitor_state.clear()
+        _schedule_monitor_stop.clear()
+        _schedule_monitor_thread = threading.Thread(
+            target=_poll_schedule_state_changes,
+            daemon=True,
+            name="schedule-monitor",
+        )
+        _schedule_monitor_thread.start()
+
+
+def stop_schedule_monitor() -> None:
+    global _schedule_monitor_thread
+    _schedule_monitor_stop.set()
+    thread = _schedule_monitor_thread
+    _schedule_monitor_thread = None
+    if thread is not None and thread.is_alive():
+        try:
+            thread.join(timeout=1.0)
+        except Exception:
+            pass
 
 
 
@@ -1939,6 +2380,15 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         result["right"] = right
         result["passed"] = passed
         result["next_handles"] = ["true" if passed else "false"]
+        return result
+
+    if node_type == "condition.schedule_active":
+        schedule_key = str(cfg.get("schedule_key") or "").strip()
+        schedule = _schedule_by_key(schedule_key)
+        active = _is_schedule_active_at(schedule) if schedule else False
+        result["schedule_key"] = schedule_key
+        result["passed"] = active
+        result["next_handles"] = ["true" if active else "false"]
         return result
 
     if node_type == "operator.delay":

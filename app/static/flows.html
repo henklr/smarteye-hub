@@ -47,6 +47,19 @@
           </div>
         </div>
 
+        <div class="flowsSidebarBlock flowsSidebarSchedules" data-sidebar-section="schedules">
+          <button class="listHeader compact flowsSidebarSectionToggle" data-sidebar-toggle="schedules" aria-controls="flowsSidebarSchedulesBody" aria-expanded="false" type="button">
+            <span class="listTitle small">Schedules</span>
+            <span class="flowsSidebarToggleChevron" aria-hidden="true"></span>
+          </button>
+
+          <div class="flowsSidebarSectionBody" id="flowsSidebarSchedulesBody">
+            <input id="scheduleSearch" placeholder="Search schedules" />
+
+            <div id="scheduleList" class="varList scheduleList"></div>
+          </div>
+        </div>
+
         <div class="flowsSidebarBlock flowsSidebarPresets" data-sidebar-section="presets">
           <button class="listHeader compact flowsSidebarSectionToggle" data-sidebar-toggle="presets" aria-controls="flowsSidebarPresetsBody" aria-expanded="false" type="button">
             <span class="listTitle small">Recording Tags</span>
@@ -86,7 +99,9 @@
           </div>
         </div>
 
-        <div class="statusLine mt-12">
+        <div id="scheduleWorkspace" class="scheduleWorkspace hidden"></div>
+
+        <div id="boardStatusLine" class="statusLine mt-12">
           <strong>Status:</strong> <span id="boardStatus" class="muted">Ready.</span>
         </div>
       </section>

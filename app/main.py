@@ -26,6 +26,8 @@ from flows import (
     router as flows_router,
     dispatch_flow_trigger,
     get_flow_topics_for_device,
+    start_schedule_monitor,
+    stop_schedule_monitor,
 )
 from playback import (
     router as playback_router,
@@ -2315,6 +2317,11 @@ def _on_startup():
         pass
 
     try:
+        start_schedule_monitor()
+    except Exception:
+        pass
+
+    try:
         start_physical_io_monitor(dispatch_flow_trigger)
     except Exception:
         pass
@@ -2346,6 +2353,7 @@ def _on_shutdown():
             pass
 
     _flow_monitor_stop.set()
+    stop_schedule_monitor()
     stop_physical_io_monitor()
     stop_recording_service()
 

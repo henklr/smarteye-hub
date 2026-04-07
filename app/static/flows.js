@@ -8,10 +8,19 @@ const state = {
   sidebarSections: {
     saved: { expanded: true, touched: false },
     presets: { expanded: true, touched: false },
+    schedules: { expanded: true, touched: false },
     variables: { expanded: true, touched: false },
     palette: { expanded: true, touched: false },
   },
   recordingPresets: [],
+  schedules: [],
+  schedulesDirty: false,
+  schedulesInteracting: false,
+  schedulesUpdatedAt: null,
+  schedulesTimer: null,
+  scheduleDrag: null,
+  scheduleViewportScrollTop: null,
+  scheduleViewportScrollLeft: null,
   publicVariables: [],
   publicVariablesDirty: false,
   publicVariablesInteracting: false,
@@ -23,6 +32,7 @@ const state = {
   selectedNodeId: null,
   selectedEdgeId: null,
   selectedRecordingPresetIndex: null,
+  selectedScheduleIndex: null,
   selectedPublicVariableIndex: null,
   dirty: false,
   connecting: null,
@@ -51,6 +61,23 @@ const DEFAULT_PHYSICAL_IO = {
   outputs: [1, 2, 3].map((channel) => ({ kind: "output", channel: String(channel), label: `Output ${channel}` })),
   relays: [1].map((channel) => ({ kind: "relay", channel: String(channel), label: `Relay ${channel}` })),
 };
+
+const WEEKDAY_META = [
+  ["monday", "Monday"],
+  ["tuesday", "Tuesday"],
+  ["wednesday", "Wednesday"],
+  ["thursday", "Thursday"],
+  ["friday", "Friday"],
+  ["saturday", "Saturday"],
+  ["sunday", "Sunday"],
+];
+
+const SCHEDULE_SNAP_MINUTES = 15;
+const SCHEDULE_MIN_DURATION_MINUTES = 15;
+const SCHEDULE_MAX_MINUTE = 23 * 60 + 59;
+const SCHEDULE_DAY_MINUTES = 24 * 60;
+const SCHEDULE_HOUR_WIDTH = 96;
+const SCHEDULE_INITIAL_SCROLL_HOUR = 7;
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -133,6 +160,10 @@ function currentFlow() {
   return state.draft;
 }
 
+function currentSchedules() {
+  return state.schedules || [];
+}
+
 function currentPublicVariables() {
   return state.publicVariables || [];
 }
@@ -147,6 +178,12 @@ function currentSelectedRecordingPreset() {
   return currentRecordingPresets()[idx] || null;
 }
 
+function currentSelectedSchedule() {
+  const idx = state.selectedScheduleIndex;
+  if (!Number.isInteger(idx) || idx < 0) return null;
+  return currentSchedules()[idx] || null;
+}
+
 function currentSelectedPublicVariable() {
   const idx = state.selectedPublicVariableIndex;
   if (!Number.isInteger(idx) || idx < 0) return null;
@@ -157,8 +194,10 @@ function clearEditorSelection() {
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
   state.selectedRecordingPresetIndex = null;
+  state.selectedScheduleIndex = null;
   state.selectedPublicVariableIndex = null;
   renderRecordingPresetSidebar();
+  renderScheduleSidebar();
   renderPublicVariablesSidebar();
 }
 
@@ -166,8 +205,10 @@ function selectNode(nodeId) {
   state.selectedNodeId = nodeId;
   state.selectedEdgeId = null;
   state.selectedRecordingPresetIndex = null;
+  state.selectedScheduleIndex = null;
   state.selectedPublicVariableIndex = null;
   renderRecordingPresetSidebar();
+  renderScheduleSidebar();
   renderPublicVariablesSidebar();
 }
 
@@ -175,8 +216,10 @@ function selectEdge(edgeId) {
   state.selectedEdgeId = edgeId;
   state.selectedNodeId = null;
   state.selectedRecordingPresetIndex = null;
+  state.selectedScheduleIndex = null;
   state.selectedPublicVariableIndex = null;
   renderRecordingPresetSidebar();
+  renderScheduleSidebar();
   renderPublicVariablesSidebar();
 }
 
@@ -184,6 +227,17 @@ function selectRecordingPreset(index) {
   state.selectedRecordingPresetIndex = Number.isInteger(index) && index >= 0 ? index : null;
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
+  state.selectedScheduleIndex = null;
+  state.selectedPublicVariableIndex = null;
+  state.connecting = null;
+  state.connectionCursor = null;
+}
+
+function selectSchedule(index) {
+  state.selectedScheduleIndex = Number.isInteger(index) && index >= 0 ? index : null;
+  state.selectedNodeId = null;
+  state.selectedEdgeId = null;
+  state.selectedRecordingPresetIndex = null;
   state.selectedPublicVariableIndex = null;
   state.connecting = null;
   state.connectionCursor = null;
@@ -194,13 +248,14 @@ function selectPublicVariable(index) {
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
   state.selectedRecordingPresetIndex = null;
+  state.selectedScheduleIndex = null;
   state.connecting = null;
   state.connectionCursor = null;
 }
 
 function normalizeVariableType(value) {
   const type = String(value || "string").trim().toLowerCase();
-  return ["string", "number", "boolean", "json"].includes(type) ? type : "string";
+  return ["string", "number", "boolean", "json", "schedule"].includes(type) ? type : "string";
 }
 
 function parseBooleanLike(value) {
@@ -248,6 +303,425 @@ function normalizePublicVariableRecord(item = {}) {
 
 function normalizePublicVariableRecords(items = []) {
   return (items || []).map((item) => normalizePublicVariableRecord(item));
+}
+
+function emptyScheduleDays() {
+  return Object.fromEntries(WEEKDAY_META.map(([key]) => [key, []]));
+}
+
+function normalizeScheduleTime(value, fallback = "09:00") {
+  const raw = String(value || fallback).trim();
+  const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return fallback;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return fallback;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function normalizeSchedulePeriods(periods = []) {
+  const seen = new Set();
+  const out = [];
+
+  for (const period of periods || []) {
+    if (!period || typeof period !== "object") continue;
+    const start = normalizeScheduleTime(period.start, "09:00");
+    const end = normalizeScheduleTime(period.end, "17:00");
+    if (start === end) continue;
+    const key = `${start}-${end}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ start, end });
+  }
+
+  out.sort((left, right) => left.start.localeCompare(right.start) || left.end.localeCompare(right.end));
+  return out;
+}
+
+function normalizeScheduleRecord(item = {}) {
+  const days = emptyScheduleDays();
+  const incomingDays = item.days && typeof item.days === "object" ? item.days : {};
+
+  for (const [dayKey] of WEEKDAY_META) {
+    days[dayKey] = normalizeSchedulePeriods(incomingDays[dayKey] || []);
+  }
+
+  return {
+    key: String(item.key || "").trim(),
+    name: String(item.name || item.key || "").trim() || "Schedule",
+    days,
+    is_active: Boolean(item.is_active),
+  };
+}
+
+function normalizeScheduleRecords(items = []) {
+  return (items || []).map((item) => normalizeScheduleRecord(item));
+}
+
+function scheduleByKey(key) {
+  const wanted = String(key || "").trim();
+  return currentSchedules().find((item) => String(item.key || "").trim() === wanted) || null;
+}
+
+function scheduleNameForKey(key) {
+  const schedule = scheduleByKey(key);
+  return schedule?.name || String(key || "").trim();
+}
+
+function scheduleSummary(schedule) {
+  const totalPeriods = WEEKDAY_META.reduce((count, [dayKey]) => count + ((schedule?.days?.[dayKey] || []).length), 0);
+  if (!totalPeriods) return "No active hours";
+  return totalPeriods === 1 ? "1 active period" : `${totalPeriods} active periods`;
+}
+
+function scheduleStatusLabel(schedule) {
+  return schedule?.is_active ? "Active now" : "Inactive now";
+}
+
+function scheduleOptionsHtml(selected = "") {
+  const options = [`<option value="">Select schedule</option>`];
+  for (const schedule of currentSchedules()) {
+    options.push(
+      `<option value="${escapeHtml(schedule.key)}" ${schedule.key === selected ? "selected" : ""}>${escapeHtml(schedule.name)}</option>`
+    );
+  }
+  if (selected && !scheduleByKey(selected)) {
+    options.push(`<option value="${escapeHtml(selected)}" selected>[Missing schedule] ${escapeHtml(selected)}</option>`);
+  }
+  return options.join("");
+}
+
+function nextScheduleKey() {
+  const existing = new Set(currentSchedules().map((item) => String(item.key || "").trim()).filter(Boolean));
+  let idx = currentSchedules().length + 1;
+  while (existing.has(`schedule_${idx}`)) {
+    idx += 1;
+  }
+  return `schedule_${idx}`;
+}
+
+function isScheduleEditing() {
+  return state.selectedScheduleIndex != null && !!currentSelectedSchedule();
+}
+
+function syncScheduleEditingLayout() {
+  const shell = document.querySelector(".flowsShell");
+  if (!shell) return;
+  shell.classList.toggle("is-schedule-editing", isScheduleEditing());
+}
+
+function scheduleTimeToMinutes(value) {
+  const normalized = normalizeScheduleTime(value, "00:00");
+  const [hour, minute] = normalized.split(":").map((item) => Number(item));
+  return Math.max(0, Math.min(SCHEDULE_MAX_MINUTE, hour * 60 + minute));
+}
+
+function scheduleMinutesToTime(value) {
+  const clamped = Math.max(0, Math.min(SCHEDULE_MAX_MINUTE, Math.round(Number(value) || 0)));
+  const hour = Math.floor(clamped / 60);
+  const minute = clamped % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function scheduleSnapMinutes(value) {
+  const snapped = Math.round((Number(value) || 0) / SCHEDULE_SNAP_MINUTES) * SCHEDULE_SNAP_MINUTES;
+  return Math.max(0, Math.min(SCHEDULE_MAX_MINUTE, snapped));
+}
+
+function schedulePeriodDurationMinutes(period) {
+  const start = scheduleTimeToMinutes(period?.start || "00:00");
+  const end = scheduleTimeToMinutes(period?.end || "00:00");
+  return end > start ? end - start : 0;
+}
+
+function normalizeScheduleDayPeriods(periods = []) {
+  const daytime = [];
+  const overnight = [];
+
+  for (const period of periods || []) {
+    if (!period || typeof period !== "object") continue;
+    const start = scheduleTimeToMinutes(period.start);
+    const end = scheduleTimeToMinutes(period.end);
+    if (end > start) {
+      daytime.push({ start, end });
+    } else {
+      overnight.push({ start: scheduleMinutesToTime(start), end: scheduleMinutesToTime(end) });
+    }
+  }
+
+  daytime.sort((left, right) => left.start - right.start || left.end - right.end);
+
+  const merged = [];
+  for (const period of daytime) {
+    const current = merged[merged.length - 1];
+    if (!current || period.start > current.end) {
+      merged.push({ ...period });
+      continue;
+    }
+    current.end = Math.max(current.end, period.end);
+  }
+
+  return [
+    ...merged.map((period) => ({
+      start: scheduleMinutesToTime(period.start),
+      end: scheduleMinutesToTime(period.end),
+    })),
+    ...overnight,
+  ];
+}
+
+function schedulePreviousDayKey(dayKey) {
+  const dayIndex = WEEKDAY_META.findIndex(([key]) => key === dayKey);
+  if (dayIndex < 0) return WEEKDAY_META[WEEKDAY_META.length - 1][0];
+  return WEEKDAY_META[(dayIndex - 1 + WEEKDAY_META.length) % WEEKDAY_META.length][0];
+}
+
+function scheduleDraftForIndex(index) {
+  return state.scheduleDrag && state.scheduleDrag.scheduleIndex === index ? state.scheduleDrag : null;
+}
+
+function buildScheduleSegments(schedule, scheduleIndex, dayKey) {
+  const segments = [];
+  const draft = scheduleDraftForIndex(scheduleIndex);
+  const currentDayPeriods = schedule?.days?.[dayKey] || [];
+  const previousDayPeriods = schedule?.days?.[schedulePreviousDayKey(dayKey)] || [];
+
+  previousDayPeriods.forEach((period, periodIndex) => {
+    const start = scheduleTimeToMinutes(period.start);
+    const end = scheduleTimeToMinutes(period.end);
+    if (end <= start) {
+      segments.push({
+        dayKey,
+        sourceDayKey: schedulePreviousDayKey(dayKey),
+        sourcePeriodIndex: periodIndex,
+        startMinutes: 0,
+        endMinutes: end,
+        editable: false,
+        overnight: true,
+        continuation: true,
+        draft: false,
+      });
+    }
+  });
+
+  currentDayPeriods.forEach((period, periodIndex) => {
+    if (draft && draft.sourceDayKey === dayKey && draft.sourcePeriodIndex === periodIndex) {
+      return;
+    }
+
+    const start = scheduleTimeToMinutes(period.start);
+    const end = scheduleTimeToMinutes(period.end);
+    if (end > start) {
+      segments.push({
+        dayKey,
+        sourceDayKey: dayKey,
+        sourcePeriodIndex: periodIndex,
+        startMinutes: start,
+        endMinutes: end,
+        editable: true,
+        overnight: false,
+        continuation: false,
+        draft: false,
+      });
+      return;
+    }
+
+    segments.push({
+      dayKey,
+      sourceDayKey: dayKey,
+      sourcePeriodIndex: periodIndex,
+      startMinutes: start,
+      endMinutes: SCHEDULE_MAX_MINUTE,
+      editable: false,
+      overnight: true,
+      continuation: false,
+      draft: false,
+    });
+  });
+
+  if (draft && draft.targetDayKey === dayKey) {
+    segments.push({
+      dayKey,
+      sourceDayKey: draft.sourceDayKey,
+      sourcePeriodIndex: draft.sourcePeriodIndex,
+      startMinutes: draft.startMinutes,
+      endMinutes: draft.endMinutes,
+      editable: true,
+      overnight: false,
+      continuation: false,
+      draft: true,
+    });
+  }
+
+  return segments
+    .filter((segment) => segment.endMinutes > segment.startMinutes)
+    .sort((left, right) => left.startMinutes - right.startMinutes || left.endMinutes - right.endMinutes);
+}
+
+function scheduleMinuteToPercent(minutes) {
+  return (Math.max(0, Math.min(SCHEDULE_MAX_MINUTE, minutes)) / SCHEDULE_DAY_MINUTES) * 100;
+}
+
+function renderScheduleHourLabels() {
+  return Array.from({ length: 13 }, (_, index) => {
+    const hour = index * 2;
+    const left = (hour / 24) * 100;
+    return `<div class="scheduleTimeLabel" style="left:${left}%">${hour === 24 ? "24:00" : `${String(hour).padStart(2, "0")}:00`}</div>`;
+  }).join("");
+}
+
+function renderScheduleDaySummary(schedule, dayKey) {
+  const periods = schedule?.days?.[dayKey] || [];
+  if (!periods.length) return `<span class="scheduleDaySummaryEmpty">Inactive</span>`;
+  return periods.map((period) => `
+    <span class="scheduleDaySummaryLine">${escapeHtml(normalizeScheduleTime(period.start, "00:00"))} - ${escapeHtml(normalizeScheduleTime(period.end, "00:00"))}</span>
+  `).join("");
+}
+
+function schedulePeriodCount(schedule) {
+  return WEEKDAY_META.reduce((total, [dayKey]) => total + ((schedule?.days?.[dayKey] || []).length), 0);
+}
+
+function scheduleActiveDayCount(schedule) {
+  return WEEKDAY_META.reduce((total, [dayKey]) => total + (((schedule?.days?.[dayKey] || []).length > 0) ? 1 : 0), 0);
+}
+
+function renderScheduleDayLane(schedule, scheduleIndex, dayKey, label) {
+  const segments = buildScheduleSegments(schedule, scheduleIndex, dayKey);
+  return `
+    <div class="scheduleDayRow">
+      <div class="scheduleDayLabelCell">
+        <div class="scheduleDayLabel">${escapeHtml(label)}</div>
+      </div>
+      <div class="scheduleDayTrackWrap">
+        <div class="scheduleDayTrack" data-schedule-track="${dayKey}">
+          ${segments.map((segment) => {
+            const left = scheduleMinuteToPercent(segment.startMinutes);
+            const width = Math.max(1.4, scheduleMinuteToPercent(segment.endMinutes) - scheduleMinuteToPercent(segment.startMinutes));
+        const startLabel = scheduleMinutesToTime(segment.startMinutes);
+            const endLabel = scheduleMinutesToTime(segment.endMinutes);
+        const meta = segment.continuation
+          ? `Continues until ${endLabel}`
+          : (segment.overnight ? `Overnight from ${startLabel}` : `${startLabel} to ${endLabel}`);
+
+        return `
+          <button
+            class="scheduleBlock ${segment.draft ? "is-draft" : ""} ${segment.overnight ? "is-overnight" : ""} ${segment.continuation ? "is-continuation" : ""}"
+            type="button"
+            style="left:${left}%;width:${width}%"
+            data-schedule-block="true"
+            data-schedule-day="${dayKey}"
+            data-schedule-period-index="${segment.sourcePeriodIndex}"
+            data-schedule-editable="${segment.editable ? "true" : "false"}"
+            title="${escapeHtml(meta)}"
+          >
+            <span class="scheduleBlockTime">${escapeHtml(startLabel)} - ${escapeHtml(endLabel)}</span>
+            ${segment.editable ? `<span class="scheduleBlockDelete" data-schedule-delete="true" aria-label="Delete period">&times;</span>` : ``}
+            ${segment.editable ? `
+              <span class="scheduleBlockHandle is-start" data-schedule-resize="start"></span>
+              <span class="scheduleBlockHandle is-end" data-schedule-resize="end"></span>
+            ` : `<span class="scheduleBlockBadge">${segment.continuation ? "Carry-over" : "Overnight"}</span>`}
+          </button>
+        `;
+          }).join("")}
+        </div>
+      </div>
+      <div class="scheduleDaySummary">${renderScheduleDaySummary(schedule, dayKey)}</div>
+    </div>
+  `;
+}
+
+function scheduleTrackDayKeyFromPoint(clientX, clientY) {
+  const lane = document.elementFromPoint(clientX, clientY)?.closest?.("[data-schedule-track]");
+  return lane?.dataset?.scheduleTrack || null;
+}
+
+function scheduleTrackMinutesFromClient(dayKey, clientX) {
+  const lane = document.querySelector(`[data-schedule-track="${CSS.escape(dayKey)}"]`);
+  if (!lane) return 0;
+  const rect = lane.getBoundingClientRect();
+  const ratio = rect.width > 0 ? (clientX - rect.left) / rect.width : 0;
+  return scheduleSnapMinutes(Math.max(0, Math.min(SCHEDULE_MAX_MINUTE, ratio * SCHEDULE_DAY_MINUTES)));
+}
+
+function startScheduleDrag(dragState) {
+  state.scheduleDrag = dragState;
+  setSchedulesInteracting(true);
+  renderCanvas();
+}
+
+function commitScheduleDrag() {
+  const drag = state.scheduleDrag;
+  const schedule = currentSchedules()[drag?.scheduleIndex ?? -1];
+  if (!drag || !schedule) {
+    state.scheduleDrag = null;
+    return;
+  }
+
+  const sourceDay = drag.sourceDayKey;
+  const targetDay = drag.targetDayKey;
+  const start = scheduleMinutesToTime(drag.startMinutes);
+  const end = scheduleMinutesToTime(drag.endMinutes);
+
+  if (sourceDay && Number.isInteger(drag.sourcePeriodIndex) && drag.sourcePeriodIndex >= 0) {
+    schedule.days[sourceDay].splice(drag.sourcePeriodIndex, 1);
+    schedule.days[sourceDay] = normalizeScheduleDayPeriods(schedule.days[sourceDay]);
+  }
+
+  schedule.days[targetDay].push({ start, end });
+  schedule.days[targetDay] = normalizeScheduleDayPeriods(schedule.days[targetDay]);
+
+  state.scheduleDrag = null;
+  markSchedulesDirty();
+  renderScheduleSidebar();
+  renderCanvas();
+  renderInspector();
+}
+
+function updateScheduleDrag(event) {
+  const drag = state.scheduleDrag;
+  if (!drag) return;
+
+  if (drag.mode === "create") {
+    const minute = scheduleTrackMinutesFromClient(drag.targetDayKey, event.clientX);
+    let startMinutes = Math.min(drag.anchorMinutes, minute);
+    let endMinutes = Math.max(drag.anchorMinutes, minute);
+    if (endMinutes - startMinutes < SCHEDULE_MIN_DURATION_MINUTES) {
+      if (minute >= drag.anchorMinutes) {
+        endMinutes = Math.min(SCHEDULE_MAX_MINUTE, startMinutes + SCHEDULE_MIN_DURATION_MINUTES);
+      } else {
+        startMinutes = Math.max(0, endMinutes - SCHEDULE_MIN_DURATION_MINUTES);
+      }
+    }
+    drag.startMinutes = startMinutes;
+    drag.endMinutes = endMinutes;
+    renderCanvas();
+    return;
+  }
+
+  if (drag.mode === "move") {
+    const dayKey = scheduleTrackDayKeyFromPoint(event.clientX, event.clientY) || drag.targetDayKey || drag.sourceDayKey;
+    const minute = scheduleTrackMinutesFromClient(dayKey, event.clientX);
+    const startMinutes = Math.max(0, Math.min(SCHEDULE_MAX_MINUTE - drag.durationMinutes, minute - drag.pointerOffsetMinutes));
+    drag.targetDayKey = dayKey;
+    drag.startMinutes = startMinutes;
+    drag.endMinutes = Math.min(SCHEDULE_MAX_MINUTE, startMinutes + drag.durationMinutes);
+    renderCanvas();
+    return;
+  }
+
+  if (drag.mode === "resize-start") {
+    const minute = scheduleTrackMinutesFromClient(drag.targetDayKey, event.clientX);
+    drag.startMinutes = Math.max(0, Math.min(drag.endMinutes - SCHEDULE_MIN_DURATION_MINUTES, minute));
+    renderCanvas();
+    return;
+  }
+
+  if (drag.mode === "resize-end") {
+    const minute = scheduleTrackMinutesFromClient(drag.targetDayKey, event.clientX);
+    drag.endMinutes = Math.min(SCHEDULE_MAX_MINUTE, Math.max(drag.startMinutes + SCHEDULE_MIN_DURATION_MINUTES, minute));
+    renderCanvas();
+  }
 }
 
 function normalizeRecordingPresetColor(value) {
@@ -375,7 +849,7 @@ function variableKeyOptionsHtml(selected = "", { includePhysical = true } = {}) 
 
 function normalizeVariableTypeChoice(value) {
   const selected = String(value || "string").trim().toLowerCase();
-  return ["string", "number", "boolean", "json", "physical_input"].includes(selected)
+  return ["string", "number", "boolean", "json", "schedule", "physical_input"].includes(selected)
     ? selected
     : "string";
 }
@@ -400,6 +874,7 @@ function variableTypeOptionsHtml(selected = "string") {
     ["number", "Number"],
     ["boolean", "Boolean"],
     ["json", "JSON"],
+    ["schedule", "Schedule"],
     ["physical_input", "Physical I/O"],
   ]
     .map(([value, label]) => `<option value="${value}" ${value === normalizeVariableTypeChoice(selected) ? "selected" : ""}>${label}</option>`)
@@ -611,6 +1086,10 @@ function displayNodeTitle(node) {
     return "Compare";
   }
 
+   if (node.type === "condition.schedule_active" && (!raw || raw === "Schedule active")) {
+    return "Schedule active";
+  }
+
   return raw || "";
 }
 
@@ -651,6 +1130,7 @@ function compareSideLabel(source, value) {
   }
 
   if (!raw) return "empty value";
+  if (scheduleByKey(raw)) return scheduleNameForKey(raw);
   if (/^(true|false)$/i.test(raw)) return raw.toLowerCase();
   if (!Number.isNaN(Number(raw))) return raw;
 
@@ -758,7 +1238,7 @@ function renderSetVariableTemplateHelp(cfg) {
 }
 
 function displayPortLabel(node, kind, port) {
-  if (node?.type === "condition.compare" && kind === "output") {
+  if ((node?.type === "condition.compare" || node?.type === "condition.schedule_active") && kind === "output") {
     if (port === "true") return "THEN";
     if (port === "false") return "ELSE";
   }
@@ -806,6 +1286,16 @@ function nodePreview(node) {
     case "trigger.manual":
       return "Run this node manually from the editor";
 
+    case "trigger.schedule_active": {
+      const schedule = scheduleByKey(cfg.schedule_key || "");
+      return `When ${(schedule?.name || cfg.schedule_key || "schedule")} becomes active${schedule ? ` · ${schedule.is_active ? "active now" : "inactive now"}` : ""}`;
+    }
+
+    case "trigger.schedule_inactive": {
+      const schedule = scheduleByKey(cfg.schedule_key || "");
+      return `When ${(schedule?.name || cfg.schedule_key || "schedule")} becomes inactive${schedule ? ` · ${schedule.is_active ? "active now" : "inactive now"}` : ""}`;
+    }
+
     case "trigger.digital_input_changed":
       return `When ${physicalLabel("digital", cfg.channel || "1")} changes · now ${physicalLiveValueText("digital", cfg.channel || "1")}`;
 
@@ -831,6 +1321,11 @@ function nodePreview(node) {
 
       const right = compareSideLabel(cfg.right_source || "literal", cfg.right_value || "");
       return `If ${left} ${operator} ${right}`;
+    }
+
+    case "condition.schedule_active": {
+      const schedule = scheduleByKey(cfg.schedule_key || "");
+      return `If ${(schedule?.name || cfg.schedule_key || "schedule")} is active${schedule ? ` · ${schedule.is_active ? "active now" : "inactive now"}` : ""}`;
     }
 
     case "operator.delay":
@@ -1462,8 +1957,34 @@ function renderCanvas() {
   const flow = currentFlow();
   const nodesBox = el("flowNodes");
   const hint = el("emptyBoardHint");
+  const boardWrap = document.querySelector(".flowBoardWrap");
+  const scheduleWorkspace = el("scheduleWorkspace");
+  const boardStatusLine = el("boardStatusLine");
+  const scheduleViewport = document.getElementById("schedulePlannerViewport");
+
+  if (scheduleViewport) {
+    state.scheduleViewportScrollTop = scheduleViewport.scrollTop;
+    state.scheduleViewportScrollLeft = scheduleViewport.scrollLeft;
+  }
 
   if (!nodesBox || !hint) return;
+
+  const schedule = currentSelectedSchedule();
+  if (isScheduleEditing() && schedule && scheduleWorkspace) {
+    boardWrap?.classList.add("hidden");
+    boardStatusLine?.classList.add("hidden");
+    scheduleWorkspace.classList.remove("hidden");
+    scheduleWorkspace.innerHTML = renderSchedulePlannerWorkspace(schedule, state.selectedScheduleIndex);
+    bindScheduleWorkspace(state.selectedScheduleIndex);
+    return;
+  }
+
+  boardWrap?.classList.remove("hidden");
+  boardStatusLine?.classList.remove("hidden");
+  if (scheduleWorkspace) {
+    scheduleWorkspace.classList.add("hidden");
+    scheduleWorkspace.innerHTML = "";
+  }
 
   if (!flow) {
     nodesBox.innerHTML = "";
@@ -1790,18 +2311,26 @@ function renderInspector() {
   const box = el("inspectorBody");
   const flow = currentFlow();
   const focusState = captureInspectorFocusState();
+  const scheduleViewport = document.getElementById("schedulePlannerViewport");
+
+  if (scheduleViewport) {
+    state.scheduleViewportScrollTop = scheduleViewport.scrollTop;
+    state.scheduleViewportScrollLeft = scheduleViewport.scrollLeft;
+  }
 
   if (!box) return;
 
+  syncScheduleEditingLayout();
+  setSchedulesInteracting(!!state.scheduleDrag);
   setPublicVariablesInteracting(false);
 
-  if (!flow) {
-    box.innerHTML = `<div class="inspectorHint">No flow selected.</div>`;
-    restoreInspectorFocusState(focusState);
-    return;
-  }
-
   if (state.selectedEdgeId) {
+    if (!flow) {
+      state.selectedEdgeId = null;
+      renderInspector();
+      return;
+    }
+
     const edge = flow.edges.find((item) => item.id === state.selectedEdgeId);
     if (!edge) {
       state.selectedEdgeId = null;
@@ -1836,6 +2365,12 @@ function renderInspector() {
   }
 
   if (state.selectedNodeId) {
+    if (!flow) {
+      state.selectedNodeId = null;
+      renderInspector();
+      return;
+    }
+
     const node = flow.nodes.find((item) => item.id === state.selectedNodeId);
     if (!node) {
       state.selectedNodeId = null;
@@ -1871,6 +2406,25 @@ function renderInspector() {
     return;
   }
 
+  if (state.selectedScheduleIndex != null) {
+    const schedule = currentSelectedSchedule();
+    if (!schedule) {
+      state.selectedScheduleIndex = null;
+      renderInspector();
+      return;
+    }
+
+    if (el("inspectorSubtext")) {
+      el("inspectorSubtext").textContent = `${schedule.name} schedule`;
+    }
+
+    box.innerHTML = renderScheduleInspector(schedule, state.selectedScheduleIndex);
+    bindScheduleInspector(state.selectedScheduleIndex);
+    refreshScheduleRuntimeUi();
+    restoreInspectorFocusState(focusState);
+    return;
+  }
+
   if (state.selectedPublicVariableIndex != null) {
     const variable = currentSelectedPublicVariable();
     if (!variable) {
@@ -1886,6 +2440,12 @@ function renderInspector() {
     box.innerHTML = renderPublicVariableInspector(variable, state.selectedPublicVariableIndex);
     bindPublicVariableInspector(state.selectedPublicVariableIndex);
     refreshPublicVariableRuntimeUi();
+    restoreInspectorFocusState(focusState);
+    return;
+  }
+
+  if (!flow) {
+    box.innerHTML = `<div class="inspectorHint">No flow selected.</div>`;
     restoreInspectorFocusState(focusState);
     return;
   }
@@ -1999,6 +2559,80 @@ function renderFlowInspector(flow) {
   `;
 }
 
+function renderSchedulePlannerWorkspace(schedule, index) {
+  const totalPeriods = schedulePeriodCount(schedule);
+  const activeDays = scheduleActiveDayCount(schedule);
+
+  return `
+    <div id="scheduleWorkspaceBody" class="scheduleWorkspaceSurface" data-schedule-index="${index}">
+      <div class="scheduleWorkspaceHeader">
+        <div class="scheduleWorkspaceTitleRow">
+          <div>
+            <div class="scheduleWorkspaceEyebrow">Schedule Editor</div>
+            <div class="scheduleWorkspaceTitle">${escapeHtml(schedule.name || schedule.key || `schedule_${index + 1}`)}</div>
+            <div class="scheduleWorkspaceHint">Drag across a row to create time blocks. Drag blocks to move them across time or day, use the side handles to resize, and use x to remove a block.</div>
+          </div>
+          <span class="miniPill scheduleStatusPill ${schedule.is_active ? "is-active" : "is-inactive"}">${escapeHtml(scheduleStatusLabel(schedule))}</span>
+        </div>
+        <div class="scheduleWorkspaceStats">
+          <span class="scheduleWorkspaceChip">${totalPeriods} ${totalPeriods === 1 ? "period" : "periods"}</span>
+          <span class="scheduleWorkspaceChip">${activeDays} ${activeDays === 1 ? "active day" : "active days"}</span>
+          <span class="scheduleWorkspaceChip is-muted">15 min snap</span>
+        </div>
+      </div>
+
+      <div class="schedulePlannerViewport" id="schedulePlannerViewport">
+        <div class="schedulePlannerHeader">
+          <div class="schedulePlannerCorner">Day</div>
+          <div class="scheduleTimeHeader">${renderScheduleHourLabels()}</div>
+          <div class="schedulePlannerCorner is-summary">Summary</div>
+        </div>
+        <div class="schedulePlannerRows">
+          ${WEEKDAY_META.map(([dayKey, label]) => renderScheduleDayLane(schedule, index, dayKey, label)).join("")}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderScheduleInspector(schedule, index) {
+  return `
+    <div id="scheduleInspectorBody" class="scheduleInspectorPanel" data-schedule-index="${index}">
+      <div class="inspectorCard schedulePlannerMetaCard">
+        <div class="rowSplit">
+          <div>
+            <div class="inspectorTitle schedulePlannerTitle">${escapeHtml(schedule.name || schedule.key || `schedule_${index + 1}`)}</div>
+            <div class="inspectorHint">Weekly schedule details. The timeline editor is shown in the main panel.</div>
+          </div>
+          <span id="scheduleInspectorStatus" class="miniPill scheduleStatusPill ${schedule.is_active ? "is-active" : "is-inactive"}">${escapeHtml(scheduleStatusLabel(schedule))}</span>
+        </div>
+        <div class="schedulePlannerMetaGrid mt-10">
+          <div>
+            <label>Key</label>
+            <input id="scheduleKeyInput" value="${escapeHtml(schedule.key || "")}" placeholder="schedule_1" />
+          </div>
+          <div>
+            <label>Name</label>
+            <input id="scheduleNameInput" value="${escapeHtml(schedule.name || "")}" placeholder="Office hours" />
+          </div>
+        </div>
+      </div>
+
+      <div class="inspectorCard inspectorActionsCard">
+        <div class="inspectorActionHeader">
+          <div class="inspectorTitle">Schedule actions</div>
+          <div class="inspectorHint">Create a new schedule, save this one, or delete it.</div>
+        </div>
+        <div class="schedulePlannerToolbarActions">
+            <button class="btn btn-primary" id="btnInspectorAddSchedule" type="button">New</button>
+            <button class="btn" id="btnInspectorSaveSchedules" type="button">Save</button>
+            <button class="btn btn-danger" id="btnInspectorDeleteSchedule" type="button">Delete</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderPublicVariableInspector(variable, index) {
   const selectedType = publicVariableTypeChoice(variable);
   const variableType = normalizeVariableType(variable.type);
@@ -2068,6 +2702,10 @@ function renderPublicVariableInspector(variable, index) {
 function formatVariableValue(value, type) {
   const normalizedType = normalizeVariableType(type);
 
+  if (normalizedType === "schedule") {
+    return value == null ? "" : String(value);
+  }
+
   if (normalizedType === "json") {
     if (typeof value === "string") {
       try {
@@ -2089,6 +2727,14 @@ function formatVariableValue(value, type) {
 }
 
 function summarizeVariableValue(value, type) {
+  if (normalizeVariableType(type) === "schedule") {
+    const key = String(value || "").trim();
+    if (!key) return "No schedule";
+    const schedule = scheduleByKey(key);
+    if (!schedule) return `[Missing] ${key}`;
+    return `${schedule.name} · ${schedule.is_active ? "Active" : "Inactive"}`;
+  }
+
   const compact = formatVariableValue(value, type).replace(/\s+/g, " ").trim();
   if (!compact) return "Empty";
   return compact.length > 96 ? `${compact.slice(0, 93)}...` : compact;
@@ -2113,6 +2759,10 @@ function renderVariableValueEditor({ inputId = "", inputClass = "", value = "", 
 
   if (normalizedType === "number" && !readOnly) {
     return `<input${idAttr}${classAttr} type="number" step="any" value="${escapeHtml(formatVariableValue(value, normalizedType))}" placeholder="${escapeHtml(placeholder)}" />`;
+  }
+
+  if (normalizedType === "schedule" && !readOnly) {
+    return `<select${idAttr}${classAttr}>${scheduleOptionsHtml(formatVariableValue(value, normalizedType))}</select>`;
   }
 
   if (normalizedType === "json") {
@@ -2228,6 +2878,44 @@ function restoreInspectorFocusState(focusState) {
   if (typeof focusState.scrollTop === "number") {
     target.scrollTop = focusState.scrollTop;
   }
+}
+
+function schedulesDefinitionFingerprint(items = []) {
+  return JSON.stringify(
+    (items || []).map((item) => [
+      (item?.key || "").trim(),
+      (item?.name || "").trim(),
+      ...WEEKDAY_META.map(([dayKey]) => ((item?.days?.[dayKey] || []).map((period) => `${period.start}-${period.end}`).join(","))),
+    ])
+  );
+}
+
+function syncSchedulesHeader() {
+  for (const buttonId of ["btnSaveSchedules", "btnInspectorSaveSchedules"]) {
+    if (el(buttonId)) {
+      el(buttonId).disabled = !state.schedulesDirty;
+    }
+  }
+
+  for (const buttonId of ["btnDeleteSchedule", "btnInspectorDeleteSchedule"]) {
+    if (el(buttonId)) {
+      el(buttonId).disabled = currentSelectedSchedule() == null;
+    }
+  }
+}
+
+function markSchedulesDirty() {
+  state.schedulesDirty = true;
+  syncSchedulesHeader();
+}
+
+function clearSchedulesDirty() {
+  state.schedulesDirty = false;
+  syncSchedulesHeader();
+}
+
+function setSchedulesInteracting(active) {
+  state.schedulesInteracting = !!active;
 }
 
 function syncPublicVariablesHeader() {
@@ -2592,6 +3280,366 @@ function bindRecordingPresetInspector(index) {
   });
 }
 
+function validateSchedules() {
+  const keys = new Set();
+
+  for (const schedule of currentSchedules()) {
+    const key = (schedule.key || "").trim();
+    const name = (schedule.name || "").trim();
+    if (!key) {
+      throw new Error("Every schedule needs a key.");
+    }
+    if (!name) {
+      throw new Error(`Schedule '${key}' needs a name.`);
+    }
+    if (keys.has(key)) {
+      throw new Error(`Duplicate schedule key: ${key}`);
+    }
+    keys.add(key);
+
+    for (const [dayKey, dayLabel] of WEEKDAY_META) {
+      for (const period of schedule.days?.[dayKey] || []) {
+        const start = normalizeScheduleTime(period.start, "09:00");
+        const end = normalizeScheduleTime(period.end, "17:00");
+        if (start === end) {
+          throw new Error(`${dayLabel} active hours cannot start and end at the same time.`);
+        }
+      }
+    }
+  }
+}
+
+function serializeSchedules() {
+  return {
+    items: currentSchedules().map((schedule) => ({
+      key: String(schedule.key || "").trim(),
+      name: String(schedule.name || "").trim(),
+      days: Object.fromEntries(
+        WEEKDAY_META.map(([dayKey]) => [
+          dayKey,
+          normalizeSchedulePeriods(schedule.days?.[dayKey] || []),
+        ])
+      ),
+    })),
+  };
+}
+
+function addSchedule() {
+  state.schedules.push(normalizeScheduleRecord({
+    key: nextScheduleKey(),
+    name: `Schedule ${currentSchedules().length + 1}`,
+    days: emptyScheduleDays(),
+    is_active: false,
+  }));
+
+  if (el("scheduleSearch")) {
+    el("scheduleSearch").value = "";
+  }
+
+  selectSchedule(currentSchedules().length - 1);
+  setSidebarSectionExpanded("schedules", true);
+  markSchedulesDirty();
+  renderScheduleSidebar();
+  renderInspector();
+}
+
+function removeSchedule(index) {
+  if (!currentSchedules()[index]) return;
+
+  state.schedules.splice(index, 1);
+
+  if (!currentSchedules().length) {
+    state.selectedScheduleIndex = null;
+  } else {
+    state.selectedScheduleIndex = Math.min(index, currentSchedules().length - 1);
+  }
+
+  markSchedulesDirty();
+  renderScheduleSidebar();
+  renderInspector();
+  renderCanvas();
+}
+
+function renderScheduleSidebar() {
+  const box = el("scheduleList");
+  if (!box) return;
+
+  const query = (el("scheduleSearch")?.value || "").trim().toLowerCase();
+  const selectedSchedule = currentSelectedSchedule();
+  const items = currentSchedules().map((schedule, idx) => ({ schedule, idx })).filter(({ schedule }) => {
+    if (!query) return true;
+    const haystack = [schedule.key || "", schedule.name || "", scheduleSummary(schedule), scheduleStatusLabel(schedule)].join(" ").toLowerCase();
+    return haystack.includes(query);
+  });
+
+  syncSchedulesHeader();
+  syncSidebarSection("schedules", currentSchedules().length > 0);
+
+  const currentCard = !selectedSchedule ? `
+    <div class="varCard varCardActionsOnly">
+      <div class="sidebarCardActions is-standalone">
+        <button class="btn btn-primary btn-compact" id="btnAddSchedule" type="button">New</button>
+        <button class="btn btn-compact" id="btnSaveSchedules" type="button">Save</button>
+        <button class="btn btn-danger btn-compact" id="btnDeleteSchedule" type="button">Delete</button>
+      </div>
+    </div>` : "";
+
+  box.innerHTML = `
+    ${currentCard}
+    ${currentSchedules().length ? "" : `<div class="emptyState">No schedules yet.</div>`}
+    ${items.length ? items.map(({ schedule, idx }) => {
+      const isActive = idx === state.selectedScheduleIndex;
+      return `
+        <${isActive ? "div" : "button"} class="varCard is-preview ${isActive ? "active varCardCurrent" : ""}" ${isActive ? "" : 'type="button"'} data-schedule-index="${idx}" aria-pressed="${isActive ? "true" : "false"}">
+          <div class="varCardTop">
+            <div class="varCardName">${escapeHtml(schedule.name || schedule.key || `schedule_${idx + 1}`)}</div>
+          </div>
+          <div class="chipRow">
+            <span class="miniPill">${escapeHtml(schedule.key || `schedule_${idx + 1}`)}</span>
+            <span class="miniPill scheduleStatusPill ${schedule.is_active ? "is-active" : "is-inactive"} jsScheduleStatusPreview">${escapeHtml(scheduleStatusLabel(schedule))}</span>
+          </div>
+          <div class="flowListItemMeta">${escapeHtml(scheduleSummary(schedule))}</div>
+          ${isActive ? `
+            <div class="sidebarCardActions">
+              <button class="btn btn-primary btn-compact" id="btnAddSchedule" type="button">New</button>
+              <button class="btn btn-compact" id="btnSaveSchedules" type="button">Save</button>
+              <button class="btn btn-danger btn-compact" id="btnDeleteSchedule" type="button">Delete</button>
+            </div>` : ""}
+        </${isActive ? "div" : "button"}>
+      `;
+    }).join("") : ""}
+  `;
+
+  bindScheduleActionButtons();
+  syncSchedulesHeader();
+
+  box.querySelectorAll(".varCard.is-preview").forEach((card) => {
+    if (card.classList.contains("varCardCurrent")) return;
+    card.addEventListener("click", () => {
+      const index = Number(card.dataset.scheduleIndex || -1);
+      if (!currentSchedules()[index]) return;
+      selectSchedule(index);
+      renderScheduleSidebar();
+      renderInspector();
+      renderCanvas();
+      drawEdges();
+    });
+  });
+
+  refreshScheduleRuntimeUi();
+}
+
+function handleAddSchedule() {
+  addSchedule();
+}
+
+async function handleSaveSchedules() {
+  try {
+    await saveSchedules();
+  } catch (err) {
+    setStatus(err.message || String(err), true);
+  }
+}
+
+function handleDeleteSchedule() {
+  if (state.selectedScheduleIndex == null) return;
+  const schedule = currentSchedules()[state.selectedScheduleIndex];
+  if (!schedule) return;
+  if (!window.confirm(`Delete schedule '${schedule.name || schedule.key || `schedule_${state.selectedScheduleIndex + 1}`}'?`)) return;
+  removeSchedule(state.selectedScheduleIndex);
+}
+
+function bindScheduleActionButtons() {
+  el("btnAddSchedule")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    handleAddSchedule();
+  });
+
+  el("btnSaveSchedules")?.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    await handleSaveSchedules();
+  });
+
+  el("btnDeleteSchedule")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    handleDeleteSchedule();
+  });
+}
+
+function bindScheduleInspector(index) {
+  const inspector = document.getElementById("scheduleInspectorBody");
+  const getSchedule = () => currentSchedules()[index];
+
+  document.getElementById("btnInspectorAddSchedule")?.addEventListener("click", () => {
+    handleAddSchedule();
+  });
+
+  document.getElementById("btnInspectorSaveSchedules")?.addEventListener("click", async () => {
+    await handleSaveSchedules();
+  });
+
+  document.getElementById("btnInspectorDeleteSchedule")?.addEventListener("click", () => {
+    handleDeleteSchedule();
+  });
+
+  inspector?.addEventListener("focusin", () => {
+    setSchedulesInteracting(true);
+  });
+
+  inspector?.addEventListener("focusout", (ev) => {
+    const nextTarget = ev.relatedTarget;
+    const currentTarget = ev.currentTarget;
+    if (nextTarget instanceof Node && currentTarget instanceof Node && currentTarget.contains(nextTarget)) {
+      return;
+    }
+    setSchedulesInteracting(false);
+  });
+
+  document.getElementById("scheduleKeyInput")?.addEventListener("input", (ev) => {
+    const schedule = getSchedule();
+    if (!schedule) return;
+    schedule.key = ev.target.value.trim();
+    markSchedulesDirty();
+    renderScheduleSidebar();
+    if (el("inspectorSubtext")) {
+      el("inspectorSubtext").textContent = `${schedule.name || schedule.key || `schedule_${index + 1}`} schedule`;
+    }
+  });
+
+  document.getElementById("scheduleNameInput")?.addEventListener("input", (ev) => {
+    const schedule = getSchedule();
+    if (!schedule) return;
+    schedule.name = ev.target.value.trim();
+    markSchedulesDirty();
+    renderScheduleSidebar();
+    const title = document.querySelector("#inspectorBody .inspectorCard .inspectorTitle");
+    if (title) title.textContent = schedule.name || schedule.key || `schedule_${index + 1}`;
+    if (el("inspectorSubtext")) {
+      el("inspectorSubtext").textContent = `${schedule.name || schedule.key || `schedule_${index + 1}`} schedule`;
+    }
+  });
+}
+
+function bindScheduleWorkspace(index) {
+  const workspace = document.getElementById("scheduleWorkspaceBody");
+  const viewport = document.getElementById("schedulePlannerViewport");
+  const getSchedule = () => currentSchedules()[index];
+
+  if (viewport) {
+    const restoreTop = state.scheduleViewportScrollTop ?? 0;
+    const restoreLeft = state.scheduleViewportScrollLeft ?? (SCHEDULE_INITIAL_SCROLL_HOUR * SCHEDULE_HOUR_WIDTH);
+    viewport.scrollTop = restoreTop;
+    viewport.scrollLeft = restoreLeft;
+    viewport.addEventListener("scroll", () => {
+      state.scheduleViewportScrollTop = viewport.scrollTop;
+      state.scheduleViewportScrollLeft = viewport.scrollLeft;
+    });
+  }
+
+  workspace?.addEventListener("focusin", () => {
+    setSchedulesInteracting(true);
+  });
+
+  workspace?.addEventListener("focusout", (ev) => {
+    const nextTarget = ev.relatedTarget;
+    const currentTarget = ev.currentTarget;
+    if (nextTarget instanceof Node && currentTarget instanceof Node && currentTarget.contains(nextTarget)) {
+      return;
+    }
+    setSchedulesInteracting(false);
+  });
+
+  workspace?.querySelectorAll(".scheduleDayTrack").forEach((track) => {
+    track.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      if (event.target instanceof Element && event.target.closest("[data-schedule-block]")) return;
+
+      const dayKey = track.dataset.scheduleTrack;
+      if (!dayKey) return;
+
+      const anchorMinutes = scheduleTrackMinutesFromClient(dayKey, event.clientX);
+      startScheduleDrag({
+        mode: "create",
+        scheduleIndex: index,
+        sourceDayKey: null,
+        sourcePeriodIndex: null,
+        targetDayKey: dayKey,
+        anchorMinutes,
+        startMinutes: anchorMinutes,
+        endMinutes: Math.min(SCHEDULE_MAX_MINUTE, anchorMinutes + SCHEDULE_MIN_DURATION_MINUTES),
+      });
+      event.preventDefault();
+    });
+  });
+
+  workspace?.querySelectorAll("[data-schedule-block]").forEach((block) => {
+    block.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      const schedule = getSchedule();
+      if (!schedule) return;
+
+      const dayKey = block.dataset.scheduleDay;
+      const periodIndex = Number(block.dataset.schedulePeriodIndex || -1);
+      const editable = block.dataset.scheduleEditable === "true";
+      if (!dayKey || periodIndex < 0 || !editable) return;
+
+      if (event.target instanceof Element && event.target.closest("[data-schedule-delete]")) {
+        if (!window.confirm("Delete this schedule period?")) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        schedule.days[dayKey].splice(periodIndex, 1);
+        schedule.days[dayKey] = normalizeScheduleDayPeriods(schedule.days[dayKey]);
+        markSchedulesDirty();
+        renderScheduleSidebar();
+        renderInspector();
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
+      const period = schedule.days?.[dayKey]?.[periodIndex];
+      if (!period) return;
+
+      const startMinutes = scheduleTimeToMinutes(period.start);
+      const endMinutes = scheduleTimeToMinutes(period.end);
+      if (endMinutes <= startMinutes) return;
+
+      const resizeHandle = event.target instanceof Element ? event.target.closest("[data-schedule-resize]") : null;
+      if (resizeHandle) {
+        startScheduleDrag({
+          mode: resizeHandle.dataset.scheduleResize === "start" ? "resize-start" : "resize-end",
+          scheduleIndex: index,
+          sourceDayKey: dayKey,
+          sourcePeriodIndex: periodIndex,
+          targetDayKey: dayKey,
+          startMinutes,
+          endMinutes,
+        });
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
+      const pointerMinutes = scheduleTrackMinutesFromClient(dayKey, event.clientX);
+      startScheduleDrag({
+        mode: "move",
+        scheduleIndex: index,
+        sourceDayKey: dayKey,
+        sourcePeriodIndex: periodIndex,
+        targetDayKey: dayKey,
+        startMinutes,
+        endMinutes,
+        durationMinutes: endMinutes - startMinutes,
+        pointerOffsetMinutes: Math.max(0, Math.min(endMinutes - startMinutes, pointerMinutes - startMinutes)),
+      });
+      event.preventDefault();
+      event.stopPropagation();
+    });
+  });
+}
+
 function validatePublicVariables() {
   const keys = new Set();
 
@@ -2604,6 +3652,13 @@ function validatePublicVariables() {
       throw new Error(`Duplicate variable key: ${key}`);
     }
     keys.add(key);
+
+    if (normalizeVariableSource(variable.source) !== "physical_input" && normalizeVariableType(variable.type) === "schedule") {
+      const scheduleKey = String(variable.value || "").trim();
+      if (scheduleKey && !scheduleByKey(scheduleKey)) {
+        throw new Error(`Variable '${key}' references an unknown schedule: ${scheduleKey}`);
+      }
+    }
   }
 }
 
@@ -2677,6 +3732,7 @@ function renderPublicVariablesSidebar() {
       type,
       normalizeVariableSource(variable.source),
       physicalLabel(variable.input_kind || "digital", variable.channel || "1"),
+      scheduleNameForKey(variable.current_value ?? variable.value),
       formatVariableValue(variable.current_value ?? variable.value, type),
     ].join(" ").toLowerCase();
 
@@ -2860,6 +3916,9 @@ function bindPublicVariableInspector(index) {
       if (isPhysical) {
         variable.value = "";
         variable.current_value = "";
+      } else if (nextType === "schedule") {
+        variable.value = "";
+        variable.current_value = "";
       }
     }
 
@@ -2951,6 +4010,105 @@ function refreshPublicVariableRuntimeUi() {
     channelInput.innerHTML = physicalInputChannelOptionsHtml(inputKind, selectedChannel);
     channelInput.value = selectedChannel;
   }
+}
+
+function refreshScheduleRuntimeUi() {
+  syncSchedulesHeader();
+
+  document.querySelectorAll("#scheduleList .varCard").forEach((row) => {
+    const idx = Number(row.dataset.scheduleIndex || -1);
+    const schedule = currentSchedules()[idx];
+    if (!schedule) return;
+
+    const statusPreview = row.querySelector(".jsScheduleStatusPreview");
+    if (statusPreview) {
+      statusPreview.textContent = scheduleStatusLabel(schedule);
+      statusPreview.classList.toggle("is-active", schedule.is_active);
+      statusPreview.classList.toggle("is-inactive", !schedule.is_active);
+    }
+  });
+
+  if (state.schedulesInteracting) {
+    return;
+  }
+
+  const selectedSchedule = currentSelectedSchedule();
+  const statusPill = document.getElementById("scheduleInspectorStatus");
+  if (selectedSchedule && statusPill) {
+    statusPill.textContent = scheduleStatusLabel(selectedSchedule);
+    statusPill.classList.toggle("is-active", selectedSchedule.is_active);
+    statusPill.classList.toggle("is-inactive", !selectedSchedule.is_active);
+  }
+}
+
+async function refreshSchedules(silent = true) {
+  try {
+    const data = await api("/api/schedules");
+    const incoming = normalizeScheduleRecords(Array.isArray(data?.items) ? data.items : []);
+    const incomingFingerprint = schedulesDefinitionFingerprint(incoming);
+    const currentFingerprint = schedulesDefinitionFingerprint(state.schedules);
+
+    state.schedulesUpdatedAt = data?.evaluated_at || null;
+
+    const activeByKey = new Map(incoming.map((item) => [item.key, item.is_active]));
+
+    if (state.schedulesDirty || state.schedulesInteracting) {
+      for (const schedule of state.schedules) {
+        if (activeByKey.has(schedule.key)) {
+          schedule.is_active = Boolean(activeByKey.get(schedule.key));
+        }
+      }
+      refreshScheduleRuntimeUi();
+      return;
+    }
+
+    if (incomingFingerprint !== currentFingerprint) {
+      state.schedules = incoming;
+      renderScheduleSidebar();
+      if (!inspectorHasFocus()) {
+        renderInspector();
+      }
+      return;
+    }
+
+    for (const schedule of state.schedules) {
+      if (activeByKey.has(schedule.key)) {
+        schedule.is_active = Boolean(activeByKey.get(schedule.key));
+      }
+    }
+
+    refreshScheduleRuntimeUi();
+  } catch (err) {
+    if (!silent) {
+      setStatus(err.message || String(err), true);
+    }
+  }
+}
+
+function startSchedulesPolling() {
+  if (state.schedulesTimer) {
+    window.clearInterval(state.schedulesTimer);
+  }
+
+  state.schedulesTimer = window.setInterval(() => {
+    refreshSchedules(true).catch(() => { });
+  }, 30000);
+}
+
+async function saveSchedules() {
+  validateSchedules();
+
+  const out = await api("/api/schedules", {
+    method: "PUT",
+    body: JSON.stringify(serializeSchedules()),
+  });
+
+  state.schedules = normalizeScheduleRecords(Array.isArray(out?.items) ? out.items : []);
+  state.schedulesUpdatedAt = out?.evaluated_at || null;
+  clearSchedulesDirty();
+  renderScheduleSidebar();
+  renderInspector();
+  setStatus("Schedules saved.");
 }
 
 function bindFlowInspector(flow) {
@@ -3102,6 +4260,51 @@ function renderNodeInspector(node) {
         </div>
       `;
       break;
+
+    case "trigger.schedule_active":
+    case "trigger.schedule_inactive": {
+      const schedule = scheduleByKey(cfg.schedule_key || "");
+      const title = node.type === "trigger.schedule_active" ? "Schedule becomes active" : "Schedule becomes inactive";
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">${escapeHtml(title)}</div>
+          <div class="fieldGrid">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+            <div class="full">
+              <label>Schedule</label>
+              <select id="cfg_schedule_key">${scheduleOptionsHtml(cfg.schedule_key || "")}</select>
+            </div>
+            <div class="full inlineMeta">${escapeHtml(schedule ? `${scheduleStatusLabel(schedule)} · ${scheduleSummary(schedule)}` : "Select a schedule to watch for active-hour changes.")}</div>
+          </div>
+        </div>
+      `;
+      break;
+    }
+
+    case "condition.schedule_active": {
+      const schedule = scheduleByKey(cfg.schedule_key || "");
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Schedule active</div>
+          <div class="inspectorHint">Checks a schedule and follows THEN when it is active or ELSE when it is inactive.</div>
+          <div class="fieldGrid">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+            <div class="full">
+              <label>Schedule</label>
+              <select id="cfg_schedule_key">${scheduleOptionsHtml(cfg.schedule_key || "")}</select>
+            </div>
+            <div class="full inlineMeta">${escapeHtml(schedule ? `${scheduleStatusLabel(schedule)} · ${scheduleSummary(schedule)}` : "Select a schedule to evaluate.")}</div>
+          </div>
+        </div>
+      `;
+      break;
+    }
 
     case "trigger.digital_input_changed":
       body = `
@@ -3507,6 +4710,13 @@ function bindNodeInspector(node) {
     });
   }
 
+  if (node.type === "condition.schedule_active") {
+    document.getElementById("cfg_schedule_key")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+  }
+
   if (node.type === "operator.set_variable") {
     document.getElementById("cfg_variable_key")?.addEventListener("change", () => {
       applyNodeInspector(node);
@@ -3589,6 +4799,11 @@ function applyNodeInspector(node) {
     case "trigger.manual":
       set("name");
       break;
+    case "trigger.schedule_active":
+    case "trigger.schedule_inactive":
+      set("name");
+      set("schedule_key");
+      break;
     case "trigger.digital_input_changed":
       set("name");
       set("channel");
@@ -3616,6 +4831,10 @@ function applyNodeInspector(node) {
       set("right_value");
       set("right_input_kind");
       set("right_channel");
+      break;
+    case "condition.schedule_active":
+      set("name");
+      set("schedule_key");
       break;
     case "operator.delay":
       set("name");
@@ -4128,10 +5347,12 @@ function renderAll() {
   renderFlowList();
   syncHeader();
   renderRecordingPresetSidebar();
+  renderScheduleSidebar();
   renderPublicVariablesSidebar();
   renderCanvas();
   renderInspector();
   refreshPhysicalUi();
+  refreshScheduleRuntimeUi();
   refreshPublicVariableRuntimeUi();
 }
 
@@ -4321,6 +5542,7 @@ function bindGlobalEvents() {
 
   el("flowSearch")?.addEventListener("input", renderFlowList);
   el("presetSearch")?.addEventListener("input", renderRecordingPresetSidebar);
+  el("scheduleSearch")?.addEventListener("input", renderScheduleSidebar);
   el("variableSearch")?.addEventListener("input", renderPublicVariablesSidebar);
   el("paletteSearch")?.addEventListener("input", renderPalette);
 
@@ -4375,6 +5597,12 @@ function bindGlobalEvents() {
   window.addEventListener("mouseup", () => {
     const boardScroller = el("flowBoardScroller");
 
+    if (state.scheduleDrag) {
+      commitScheduleDrag();
+      setSchedulesInteracting(false);
+      return;
+    }
+
     if (state.pan) {
       const moved = state.pan.moved;
       state.pan = null;
@@ -4400,12 +5628,17 @@ function bindGlobalEvents() {
   window.addEventListener("resize", drawEdges);
 
   window.addEventListener("beforeunload", (ev) => {
-    if (!state.dirty && !state.publicVariablesDirty) return;
+    if (!state.dirty && !state.publicVariablesDirty && !state.schedulesDirty) return;
     ev.preventDefault();
     ev.returnValue = "";
   });
 
   window.addEventListener("mousemove", (ev) => {
+    if (state.scheduleDrag) {
+      updateScheduleDrag(ev);
+      return;
+    }
+
     if (state.pan) {
       const boardScroller = el("flowBoardScroller");
       if (!boardScroller) return;
@@ -4463,8 +5696,10 @@ async function init() {
 
     await refreshFlows();
     await refreshRecordingPresets(true);
+    await refreshSchedules(true);
     await refreshPublicVariables(true);
     await refreshPhysicalState(true);
+    startSchedulesPolling();
     startPublicVariablesPolling();
     startPhysicalStatePolling();
 
@@ -4472,6 +5707,7 @@ async function init() {
     state.selectedSavedFlowId = state.draft.id || null;
 
     clearDirty();
+    clearSchedulesDirty();
     clearPublicVariablesDirty();
     clearTestResult();
     renderPalette();
