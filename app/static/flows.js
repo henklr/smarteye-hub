@@ -3015,7 +3015,10 @@ function renderNodeInspector(node) {
             </div>
             <div class="full">
               <label>Topic</label>
-              <select id="cfg_topic"><option value="">Select topic</option></select>
+              <input id="cfg_topic_search" class="topicPickerSearch" data-inspector-transient="true" placeholder="Search motion, relay, input, tamper..." />
+              <div class="inlineMeta topicPickerMeta" id="cfg_topic_meta">Load topics for this device to search them.</div>
+              <input id="cfg_topic" type="hidden" value="${escapeHtml(cfg.topic || "")}" />
+              <div id="cfg_topic_list" class="topicPickerList"></div>
             </div>
             <div class="full row2 mt-0">
               <button class="btn" id="btnRefreshTopics" type="button">Refresh topics</button>
@@ -3410,7 +3413,7 @@ function bindNodeInspector(node) {
   });
 
   for (const element of document.querySelectorAll("#inspectorBody input, #inspectorBody select, #inspectorBody textarea")) {
-    if (element.id === "nodeLabelInput") continue;
+    if (element.id === "nodeLabelInput" || element.dataset.inspectorTransient === "true") continue;
     element.addEventListener("input", () => applyNodeInspector(node));
     element.addEventListener("change", () => applyNodeInspector(node));
   }
@@ -3418,9 +3421,16 @@ function bindNodeInspector(node) {
   if (node.type === "trigger.onvif_event") {
     hydrateTopicSelect(node, false);
 
+    document.getElementById("cfg_topic_search")?.addEventListener("input", () => {
+      renderTopicPicker(node);
+    });
+
     document.getElementById("cfg_device_id")?.addEventListener("change", async () => {
       node.config.device_id = document.getElementById("cfg_device_id").value;
       node.config.topic = "";
+      if (document.getElementById("cfg_topic_search")) {
+        document.getElementById("cfg_topic_search").value = "";
+      }
       await hydrateTopicSelect(node, false);
       markDirty();
       renderCanvas();
@@ -3727,29 +3737,235 @@ function buildWebhookUrl(path) {
   return `${window.location.origin}/flow-hook${clean}`;
 }
 
+function normalizeTopicSearchQuery(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeTopicCatalogEntry(raw) {
+  const path = String(raw?.path || "").trim();
+  if (!path) return null;
+
+  const label = String(raw?.label || raw?.name || path).trim() || path;
+  const category = String(raw?.category || "Other").trim() || "Other";
+  const aliases = [...new Set(
+    (Array.isArray(raw?.aliases) ? raw.aliases : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+  )];
+  const sourcePaths = [...new Set(
+    (Array.isArray(raw?.source_paths) ? raw.source_paths : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+  )];
+  const searchText = normalizeTopicSearchQuery(
+    raw?.search_text || [label, path, category, ...aliases, ...sourcePaths].join(" ")
+  );
+
+  return {
+    path,
+    name: label,
+    label,
+    category,
+    aliases,
+    source_paths: sourcePaths,
+    recommended: !!raw?.recommended,
+    search_text: searchText,
+  };
+}
+
+function topicCategoryOrder(category) {
+  switch (String(category || "Other").trim()) {
+    case "Current selection":
+      return -1;
+    case "Analytics":
+      return 0;
+    case "Inputs":
+      return 1;
+    case "Outputs":
+      return 2;
+    case "Video":
+      return 3;
+    case "Device":
+      return 4;
+    default:
+      return 5;
+  }
+}
+
+function topicMatchesQuery(topic, query) {
+  if (!query) return true;
+  return normalizeTopicSearchQuery(topic?.search_text).includes(query);
+}
+
+function topicDisplayLabel(topic) {
+  const path = String(topic?.path || "").trim();
+  return String(topic?.label || topic?.name || path).trim() || path;
+}
+
+function topicDisplayHint(topic) {
+  const aliases = Array.isArray(topic?.source_paths) ? topic.source_paths : [];
+  if (aliases.length > 1) {
+    return `${aliases.length} variants merged`;
+  }
+  if (topic?.recommended) {
+    return "Recommended";
+  }
+  return "";
+}
+
+function topicMetaText(topics, visibleCount, query) {
+  if (!topics.length) {
+    return "No event topics were returned by this camera.";
+  }
+
+  if (query && !visibleCount) {
+    return `No topics match "${query}".`;
+  }
+
+  const mergedCount = topics.filter((topic) => (topic.source_paths || []).length > 1).length;
+  const base = query
+    ? `Showing ${visibleCount} of ${topics.length} topics.`
+    : `${topics.length} topics available.`;
+
+  return mergedCount
+    ? `${base} ${mergedCount} duplicate topic variants were merged automatically.`
+    : base;
+}
+
+function renderTopicPicker(node) {
+  const valueInput = document.getElementById("cfg_topic");
+  const list = document.getElementById("cfg_topic_list");
+  const meta = document.getElementById("cfg_topic_meta");
+  const searchInput = document.getElementById("cfg_topic_search");
+  const deviceId = document.getElementById("cfg_device_id")?.value || node.config.device_id || "";
+
+  if (!valueInput || !list) return;
+
+  const topics = state.topicCache.get(deviceId) || [];
+  const chosen = String(node.config.topic || "").trim();
+  const query = normalizeTopicSearchQuery(searchInput?.value || "");
+  const filtered = topics.filter((topic) => topicMatchesQuery(topic, query));
+  const selectedTopic = chosen
+    ? topics.find((topic) => topic.path === chosen) || normalizeTopicCatalogEntry({
+      path: chosen,
+      label: chosen,
+      category: "Current selection",
+      source_paths: [chosen],
+    })
+    : null;
+  const visible = [...filtered];
+
+  if (selectedTopic && !visible.some((topic) => topic.path === selectedTopic.path)) {
+    visible.unshift(selectedTopic);
+  }
+
+  if (!topics.length) {
+    list.innerHTML = `<div class="emptyState">No event topics were returned by this camera.</div>`;
+    if (meta) meta.textContent = topicMetaText(topics, 0, query);
+    return;
+  }
+
+  if (!visible.length) {
+    list.innerHTML = `<div class="emptyState">No topics match this search.</div>`;
+    if (meta) meta.textContent = topicMetaText(topics, 0, query);
+    return;
+  }
+
+  const groups = new Map();
+  for (const topic of visible) {
+    const category = String(topic?.category || "Other").trim() || "Other";
+    const list = groups.get(category) || [];
+    list.push(topic);
+    groups.set(category, list);
+  }
+
+  const groupHtml = [...groups.entries()]
+    .sort(([left], [right]) => {
+      const orderDelta = topicCategoryOrder(left) - topicCategoryOrder(right);
+      if (orderDelta !== 0) return orderDelta;
+      return left.localeCompare(right);
+    })
+    .map(([category, items]) => {
+      const options = items
+        .sort((left, right) => {
+          if (!!left?.recommended !== !!right?.recommended) {
+            return left?.recommended ? -1 : 1;
+          }
+          return topicDisplayLabel(left).localeCompare(topicDisplayLabel(right));
+        })
+        .map((topic) => {
+          const hint = topicDisplayHint(topic);
+          return `
+            <button
+              class="topicPickerItem ${topic.path === chosen ? "active" : ""}"
+              type="button"
+              data-topic-path="${escapeHtml(topic.path)}"
+            >
+              <span class="topicPickerItemTop">
+                <span class="topicPickerItemLabel">${escapeHtml(topicDisplayLabel(topic))}</span>
+                ${hint ? `<span class="miniPill">${escapeHtml(hint)}</span>` : ""}
+              </span>
+              <span class="topicPickerItemPath">${escapeHtml(topic.path)}</span>
+            </button>
+          `;
+        })
+        .join("");
+      return `
+        <section class="topicPickerGroup">
+          <div class="topicPickerGroupTitle">${escapeHtml(category)}</div>
+          <div class="topicPickerGroupItems">${options}</div>
+        </section>
+      `;
+    })
+    .join("");
+
+  list.innerHTML = groupHtml;
+
+  list.querySelectorAll("[data-topic-path]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextTopic = String(button.dataset.topicPath || "").trim();
+      valueInput.value = nextTopic;
+      node.config.topic = nextTopic;
+      applyNodeInspector(node);
+      renderTopicPicker(node);
+    });
+  });
+
+  if (meta) {
+    meta.textContent = topicMetaText(topics, filtered.length, query);
+  }
+}
+
 async function hydrateTopicSelect(node, force = false) {
-  const select = document.getElementById("cfg_topic");
+  const valueInput = document.getElementById("cfg_topic");
+  const list = document.getElementById("cfg_topic_list");
+  const meta = document.getElementById("cfg_topic_meta");
+  const searchInput = document.getElementById("cfg_topic_search");
   const deviceId = document.getElementById("cfg_device_id")?.value || node.config.device_id || "";
 
   node.config.device_id = deviceId;
 
-  if (!select) return;
+  if (!valueInput || !list) return;
 
   if (!deviceId) {
-    select.innerHTML = `<option value="">Select device first</option>`;
+    valueInput.value = "";
+    list.innerHTML = `<div class="emptyState">Select a device to load event topics.</div>`;
+    if (searchInput) searchInput.disabled = true;
+    if (meta) meta.textContent = "Select a device to load event topics.";
     return;
   }
 
   try {
-    const topics = await loadTopics(deviceId, force);
-    const chosen = node.config.topic || "";
-    select.innerHTML = `<option value="">Select topic</option>${topics.map((topic) => `
-      <option value="${escapeHtml(topic.path)}" ${topic.path === chosen ? "selected" : ""}>
-        ${escapeHtml(topic.name || topic.path)}
-      </option>
-    `).join("")}`;
+    list.innerHTML = `<div class="emptyState">Loading event topics...</div>`;
+    if (searchInput) searchInput.disabled = true;
+    if (meta) meta.textContent = "Loading event topics from the camera...";
+    await loadTopics(deviceId, force);
+    if (searchInput) searchInput.disabled = false;
+    renderTopicPicker(node);
   } catch (err) {
-    select.innerHTML = `<option value="">Failed to load topics</option>`;
+    list.innerHTML = `<div class="emptyState">Failed to load topics.</div>`;
+    if (searchInput) searchInput.disabled = true;
+    if (meta) meta.textContent = "Could not load event topics for this device.";
     setStatus(err.message || String(err), true);
   }
 }
@@ -3760,7 +3976,9 @@ async function loadTopics(deviceId, force = false) {
   }
 
   const data = await api(`/api/events/properties/${encodeURIComponent(deviceId)}`);
-  const topics = Array.isArray(data?.topics) ? data.topics : [];
+  const topics = Array.isArray(data?.topics)
+    ? data.topics.map((topic) => normalizeTopicCatalogEntry(topic)).filter(Boolean)
+    : [];
   state.topicCache.set(deviceId, topics);
   return topics;
 }

@@ -1301,6 +1301,98 @@ body.flowsPage {
   width: 100%;
 }
 
+.flowsPage .topicPickerSearch {
+  margin-bottom: 8px;
+}
+
+.flowsPage .topicPickerMeta {
+  margin-bottom: 8px;
+}
+
+.flowsPage .topicPickerList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.flowsPage .topicPickerGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.flowsPage .topicPickerGroupTitle {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.flowsPage .topicPickerGroupItems {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.flowsPage .topicPickerItem {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.flowsPage .topicPickerItem:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--stroke-2);
+}
+
+.flowsPage .topicPickerItem:focus-visible {
+  outline: 2px solid rgba(198, 161, 75, 0.38);
+  outline-offset: 2px;
+}
+
+.flowsPage .topicPickerItem.active {
+  border-color: rgba(198, 161, 75, 0.35);
+  box-shadow: 0 0 0 3px rgba(198, 161, 75, 0.08);
+  background: linear-gradient(180deg, rgba(198, 161, 75, 0.08), rgba(255, 255, 255, 0.03));
+}
+
+.flowsPage .topicPickerItemTop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.flowsPage .topicPickerItemLabel {
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.flowsPage .topicPickerItemPath {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted);
+  word-break: break-word;
+}
+
 .flowsPage .enableRow {
   display: inline-flex;
   align-items: center;
@@ -1358,5 +1450,9 @@ body.flowsPage {
 
   .flowsPage .flowListActions {
     grid-template-columns: 1fr;
+  }
+
+  .flowsPage .topicPickerList {
+    max-height: 260px;
   }
 }

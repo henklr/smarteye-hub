@@ -213,6 +213,55 @@ def _normalize_allow_topic(s: Optional[str]) -> str:
     return "/".join(cleaned)
 
 
+def _humanize_topic_segment(segment: str) -> str:
+    raw = str(segment or "").strip().replace("_", " ").replace("-", " ")
+    if not raw:
+        return ""
+
+    out: List[str] = []
+    prev_is_lower = False
+    prev_is_alpha = False
+
+    for ch in raw:
+        if ch == " ":
+            if out and out[-1] != " ":
+                out.append(" ")
+            prev_is_lower = False
+            prev_is_alpha = False
+            continue
+
+        is_upper = ch.isupper()
+        is_lower = ch.islower()
+        is_digit = ch.isdigit()
+
+        if out:
+            prev = out[-1]
+            prev_is_digit = prev.isdigit()
+            if is_upper and prev_is_lower:
+                out.append(" ")
+            elif is_digit and prev_is_alpha:
+                out.append(" ")
+            elif is_lower and prev_is_digit:
+                out.append(" ")
+
+        out.append(ch)
+        prev_is_lower = is_lower
+        prev_is_alpha = is_upper or is_lower
+
+    return " ".join("".join(out).split())
+
+
+_TOPIC_SCHEMA_STOP_NODES = {
+    "MessageDescription",
+    "Source",
+    "Data",
+    "Key",
+    "SimpleItemDescription",
+    "ElementItemDescription",
+    "MessageContentFilter",
+}
+
+
 def _normalize_http_method(value: Optional[str], allow_any: bool = False) -> str:
     method = str(value or "").strip().upper()
     if not method:
@@ -336,11 +385,13 @@ def _canonical_topic_aliases(topic: Optional[str]) -> set[str]:
         or "ismotion" in low
         or "motionalarm" in low
         or "cellmotiondetector" in low
+        or "motiondetector" in low
         or t == "VideoSource/MotionAlarm"
     ):
         aliases.update({
             "VideoSource/MotionAlarm",
             "RuleEngine/CellMotionDetector/Motion",
+            "VideoSource/MotionDetector/Motion",
             "IsMotion/Rule/VideoAnalyticsConfigurationToken/VideoSourceConfigurationToken",
         })
 
@@ -365,6 +416,12 @@ def _canonical_topic_aliases(topic: Optional[str]) -> set[str]:
     if "relay" in low or "relaytoken" in low:
         aliases.update({
             "Device/Trigger/Relay",
+        })
+
+    if "tamper" in low:
+        aliases.update({
+            "VideoSource/ImageTooDark/Tamper",
+            "VideoSource/TamperDetector/Tamper",
         })
 
     return {_normalize_allow_topic(x) for x in aliases if _normalize_allow_topic(x)}
@@ -393,6 +450,178 @@ def _topic_matches_allowlist(candidate: str, allow_set: set[str]) -> bool:
                 return True
 
     return False
+
+
+def _matching_allow_topic(candidate: str, allow_set: set[str]) -> Optional[str]:
+    for allow_topic in sorted(allow_set):
+        if _topic_matches_allowlist(candidate, {allow_topic}):
+            return allow_topic
+    return None
+
+
+def _known_event_topic_groups() -> List[dict]:
+    return [
+        {
+            "path": "VideoSource/MotionAlarm",
+            "label": "Motion detected",
+            "category": "Analytics",
+            "keywords": ["motion", "movement", "motion alarm", "cell motion"],
+            "aliases": sorted(_canonical_topic_aliases("VideoSource/MotionAlarm")),
+            "recommended": True,
+        },
+        {
+            "path": "RuleEngine/FieldDetector/ObjectsInside",
+            "label": "Objects inside area",
+            "category": "Analytics",
+            "keywords": ["object inside", "objects inside", "field detector", "intrusion"],
+            "aliases": sorted(_canonical_topic_aliases("RuleEngine/FieldDetector/ObjectsInside")),
+            "recommended": True,
+        },
+        {
+            "path": "Device/Trigger/DigitalInput",
+            "label": "Digital input changed",
+            "category": "Inputs",
+            "keywords": ["digital input", "input trigger", "input state"],
+            "aliases": sorted(_canonical_topic_aliases("Device/Trigger/DigitalInput")),
+            "recommended": True,
+        },
+        {
+            "path": "Device/Trigger/Relay",
+            "label": "Relay changed",
+            "category": "Outputs",
+            "keywords": ["relay", "relay output", "output state"],
+            "aliases": sorted(_canonical_topic_aliases("Device/Trigger/Relay")),
+            "recommended": True,
+        },
+        {
+            "path": "VideoSource/ImageTooDark/Tamper",
+            "label": "Tamper detected",
+            "category": "Video",
+            "keywords": ["tamper", "scene blocked", "image too dark"],
+            "aliases": ["VideoSource/ImageTooDark/Tamper"],
+            "recommended": True,
+        },
+    ]
+
+
+def _topic_category_from_path(path: str) -> str:
+    normalized = _normalize_allow_topic(path)
+    if not normalized:
+        return "Other"
+
+    parts = [part for part in normalized.split("/") if part]
+    head = parts[0] if parts else ""
+
+    if head == "RuleEngine":
+        return "Analytics"
+    if normalized.startswith("Device/Trigger/DigitalInput"):
+        return "Inputs"
+    if normalized.startswith("Device/Trigger/Relay"):
+        return "Outputs"
+    if head == "VideoSource":
+        return "Video"
+    if head == "Device":
+        return "Device"
+    return "Other"
+
+
+def _topic_label_from_path(path: str) -> str:
+    parts = [part for part in _normalize_allow_topic(path).split("/") if part]
+    if not parts:
+        return ""
+
+    leaf = _humanize_topic_segment(parts[-1]) or parts[-1]
+    if len(parts) == 1:
+        return leaf
+
+    parent = _humanize_topic_segment(parts[-2]) or parts[-2]
+    if parent and parent.lower() not in leaf.lower():
+        return f"{leaf} ({parent})"
+    return leaf
+
+
+def _event_topic_profile(path: str) -> Optional[dict]:
+    normalized = _normalize_allow_topic(path)
+    if not normalized:
+        return None
+
+    for group in _known_event_topic_groups():
+        if _topic_matches_allowlist(normalized, {group["path"]}):
+            return group
+    return None
+
+
+def _format_event_topics(raw_paths: List[str]) -> List[dict]:
+    groups: Dict[str, dict] = {}
+    category_order = {
+        "Analytics": 0,
+        "Inputs": 1,
+        "Outputs": 2,
+        "Video": 3,
+        "Device": 4,
+        "Other": 5,
+    }
+
+    for raw_path in raw_paths:
+        normalized = _normalize_allow_topic(raw_path)
+        if not normalized:
+            continue
+
+        profile = _event_topic_profile(normalized)
+        canonical_path = profile["path"] if profile else normalized
+
+        entry = groups.setdefault(
+            canonical_path,
+            {
+                "path": canonical_path,
+                "label": (profile or {}).get("label") or _topic_label_from_path(canonical_path) or canonical_path,
+                "category": (profile or {}).get("category") or _topic_category_from_path(canonical_path),
+                "recommended": bool((profile or {}).get("recommended")),
+                "aliases": set((profile or {}).get("aliases") or []),
+                "source_paths": set(),
+                "keywords": set((profile or {}).get("keywords") or []),
+            },
+        )
+
+        entry["source_paths"].add(normalized)
+        entry["aliases"].add(normalized)
+
+    out: List[dict] = []
+    for entry in groups.values():
+        path = entry["path"]
+        aliases = sorted({_normalize_allow_topic(x) for x in entry["aliases"] if _normalize_allow_topic(x)})
+        source_paths = sorted({_normalize_allow_topic(x) for x in entry["source_paths"] if _normalize_allow_topic(x)})
+        search_terms = [
+            entry["label"],
+            path,
+            entry["category"],
+            *sorted(entry["keywords"]),
+            *aliases,
+            *source_paths,
+        ]
+        search_text = " ".join(str(term).strip().lower() for term in search_terms if str(term).strip())
+        out.append(
+            {
+                "path": path,
+                "name": entry["label"],
+                "label": entry["label"],
+                "category": entry["category"],
+                "recommended": bool(entry["recommended"]),
+                "aliases": aliases,
+                "source_paths": source_paths,
+                "search_text": search_text,
+            }
+        )
+
+    out.sort(
+        key=lambda item: (
+            0 if item.get("recommended") else 1,
+            category_order.get(str(item.get("category") or "Other"), 99),
+            str(item.get("label") or item.get("path") or "").lower(),
+            str(item.get("path") or "").lower(),
+        )
+    )
+    return out
 
 
 def _get_effective_event_allowlist(device_id: str) -> set[str]:
@@ -547,20 +776,16 @@ def _serialize_zeep_obj(obj):
         return str(obj)
 
 
-def _collect_topic_paths(topic_set_obj) -> List[dict]:
-    results: List[dict] = []
+def _collect_topic_leaf_paths(topic_set_obj) -> List[str]:
+    results: List[str] = []
     seen: set[str] = set()
 
     def add_path(path: str) -> None:
-        path = _normalize_allow_topic(path)
-        if not path or path in seen:
+        normalized = _normalize_allow_topic(path)
+        if not normalized or normalized in seen:
             return
-        seen.add(path)
-        parts = [p for p in path.split("/") if p]
-        results.append({
-            "path": path,
-            "name": parts[-1] if parts else path,
-        })
+        seen.add(normalized)
+        results.append(normalized)
 
     def walk_elem(elem, prefix: str = "") -> None:
         if elem is None:
@@ -569,15 +794,20 @@ def _collect_topic_paths(topic_set_obj) -> List[dict]:
         tag = getattr(elem, "tag", None)
         name = _strip_ns(tag) if tag else None
 
-        current = prefix
-        if name:
-            current = f"{prefix}/{name}" if prefix else name
-            add_path(current)
+        if name in _TOPIC_SCHEMA_STOP_NODES:
+            add_path(prefix)
+            return
+
+        current = f"{prefix}/{name}" if prefix and name else (name or prefix)
 
         try:
-            children = list(elem)
+            children = [child for child in list(elem) if hasattr(child, "tag")]
         except Exception:
             children = []
+
+        if current and not children:
+            add_path(current)
+            return
 
         for child in children:
             walk_elem(child, current)
@@ -719,10 +949,11 @@ def _get_event_properties(req: OnvifBase) -> dict:
     cam = _cam(req)
     events = cam.create_events_service()
     props = events.GetEventProperties()
-    topics = _collect_topic_paths(getattr(props, "TopicSet", None))
+    raw_topics = _collect_topic_leaf_paths(getattr(props, "TopicSet", None))
+    topics = _format_event_topics(raw_topics)
     return {
         "topics": topics,
-        "fixed_topic_set": bool(topics),
+        "fixed_topic_set": bool(raw_topics),
         "raw_topic_set": _serialize_zeep_obj(getattr(props, "TopicSet", None)),
         "raw": _serialize_zeep_obj(props),
     }
@@ -754,7 +985,12 @@ def _emit_event(device_id: str, level: str, msg: str, extra: Optional[dict] = No
             "message": msg,
             "extra": extra or {},
             "ts": payload["ts"],
-            "topic": (extra or {}).get("matched_by") or (extra or {}).get("topic_path") or (extra or {}).get("guessed_topic"),
+            "topic": (
+                (extra or {}).get("matched_allow_topic")
+                or (extra or {}).get("matched_by")
+                or (extra or {}).get("topic_path")
+                or (extra or {}).get("guessed_topic")
+            ),
         }
         dispatch_flow_trigger(trigger)
         
@@ -838,14 +1074,17 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, stop_flag: threading.Eve
 
                     matched = False
                     matched_by = None
+                    matched_allow_topic = None
 
                     if not allow_set:
                         matched = False
                     else:
                         for candidate in match_candidates:
-                            if _topic_matches_allowlist(candidate, allow_set):
+                            allow_topic = _matching_allow_topic(candidate, allow_set)
+                            if allow_topic:
                                 matched = True
                                 matched_by = candidate
+                                matched_allow_topic = allow_topic
                                 break
 
                     if EVENT_DEBUG:
@@ -862,6 +1101,7 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, stop_flag: threading.Eve
                                 "match_key": matched_by,
                                 "matched_allowlist": matched,
                                 "matched_by": matched_by,
+                                "matched_allow_topic": matched_allow_topic,
                                 "allow_count": len(allow_set),
                                 "op": op,
                                 "utc": utc,
@@ -942,6 +1182,7 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, stop_flag: threading.Eve
                             "fallback_key": fallback_key,
                             "match_candidates": match_candidates,
                             "matched_by": matched_by,
+                            "matched_allow_topic": matched_allow_topic,
                             "changed": changed,
                             "items": items,
                         },
