@@ -1731,6 +1731,97 @@ function compareSideLabel(source, value) {
   return `"${raw}"`;
 }
 
+function compareTriggerPathGroups() {
+  const flow = currentFlow();
+  const nodes = Array.isArray(flow?.nodes) ? flow.nodes : [];
+  const triggerTypes = Array.from(new Set(
+    nodes
+      .filter((node) => node?.category === "trigger" || String(node?.type || "").startsWith("trigger."))
+      .map((node) => String(node?.type || "").trim())
+      .filter(Boolean),
+  ));
+
+  const commonPaths = [
+    "kind",
+    "ts",
+    "message",
+    "device_id",
+    "path",
+    "method",
+    "topic",
+    "channel",
+    "value",
+    "previous_value",
+    "extra.some_key",
+  ];
+
+  const triggerTypePaths = {
+    "trigger.manual": ["manual_kind", "trigger_node_id", "flow_id", "device_id", "method", "path", "topic", "extra.some_key"],
+    "trigger.onvif_event": ["device_id", "topic", "extra.matched_allow_topic", "extra.matched_by", "extra.topic_path", "extra.guessed_topic"],
+    "trigger.device_offline": ["device_id", "status", "message"],
+    "trigger.device_back_online": ["device_id", "status", "message"],
+    "trigger.ptz_manual_control_started": ["device_id", "pan", "tilt", "zoom", "extra.reason"],
+    "trigger.ptz_manual_control_stopped": ["device_id", "pan", "tilt", "zoom", "extra.reason"],
+    "trigger.incoming_http_request": ["path", "method", "device_id", "topic", "extra.some_key"],
+    "trigger.schedule_active": ["schedule_key", "schedule_name", "active", "previous_active", "weekday", "local_time"],
+    "trigger.schedule_inactive": ["schedule_key", "schedule_name", "active", "previous_active", "weekday", "local_time"],
+    "trigger.digital_input_changed": ["input_kind", "channel", "value", "previous_value", "label", "extra.channel", "extra.value", "extra.previous_value"],
+    "trigger.analog_input_above": ["input_kind", "channel", "value", "previous_value", "delta", "label", "extra.channel", "extra.value", "extra.previous_value"],
+    "trigger.analog_input_below": ["input_kind", "channel", "value", "previous_value", "delta", "label", "extra.channel", "extra.value", "extra.previous_value"],
+    "trigger.physical_output_changed": ["target_kind", "channel", "value", "previous_value", "label", "extra.target_kind", "extra.channel", "extra.value", "extra.previous_value"],
+  };
+
+  const dedupePaths = (values) => Array.from(new Set(values.filter(Boolean)));
+  const groups = [
+    {
+      key: "common",
+      title: triggerTypes.length ? "Useful paths" : "Common examples",
+      paths: dedupePaths(commonPaths),
+    },
+  ];
+
+  triggerTypes.forEach((type) => {
+    const paths = dedupePaths(triggerTypePaths[type] || []);
+    if (!paths.length) return;
+    groups.push({
+      key: type,
+      title: nodeDef(type)?.label || type.replace(/^trigger\./, "").replaceAll("_", " "),
+      paths,
+    });
+  });
+
+  return groups;
+}
+
+function renderCompareTriggerPathHelp(prefix, value) {
+  const groups = compareTriggerPathGroups();
+  const currentValue = String(value || "").trim();
+
+  return `
+    <div class="compareTriggerPathHelp setVariableTemplateHelp mt-8">
+      <div class="setVariableTemplateHelpTitle">Available trigger paths</div>
+      <div class="setVariableTemplateHelpText">Paths are relative to the trigger object. Click to insert. Use <strong>extra.changed.IsMotion</strong>, not <strong>trigger.extra.changed.IsMotion</strong>.</div>
+      <div class="compareTriggerPathGroups">
+        ${groups.map((group) => `
+          <div class="compareTriggerPathGroup">
+            <div class="compareTriggerPathGroupTitle">${escapeHtml(group.title)}</div>
+            <div class="setVariableTemplateHelpChips">
+              ${group.paths.map((path) => `
+                <button
+                  class="setVariableTemplateChip compareTriggerPathChip ${path === currentValue ? "is-active" : ""}"
+                  type="button"
+                  data-trigger-path-insert="${escapeHtml(prefix)}"
+                  data-trigger-path-value="${escapeHtml(path)}"
+                >${escapeHtml(path)}</button>
+              `).join("")}
+            </div>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function renderCompareSourceValueControl(prefix, source, value) {
   const sourceType = String(source || "literal").trim().toLowerCase();
 
@@ -1759,7 +1850,9 @@ function renderCompareSourceValueControl(prefix, source, value) {
     ? "armed"
     : (sourceType === "trigger" ? "extra.changed.IsMotion" : "true");
 
-  return `<input id="cfg_${prefix}_value" value="${escapeHtml(value || "")}" placeholder="${escapeHtml(placeholder)}" list="variableKeysList" />`;
+  const input = `<input id="cfg_${prefix}_value" value="${escapeHtml(value || "")}" placeholder="${escapeHtml(placeholder)}" list="variableKeysList" />`;
+  if (sourceType !== "trigger") return input;
+  return `${input}${renderCompareTriggerPathHelp(prefix, value)}`;
 }
 
 function setVariableSourcePreview(cfg) {
@@ -5473,7 +5566,7 @@ function renderNodeInspector(node) {
               <label>Compare source</label>
               <select id="cfg_left_source">${sourceOptionsHtml(leftSource, true)}</select>
             </div>
-            <div class="${leftSource === "physical_input" ? "full" : ""}">
+            <div class="${leftSource === "physical_input" || leftSource === "trigger" ? "full" : ""}">
               <label>Compare value / path</label>
               ${renderCompareSourceValueControl("left", leftSource, cfg.left_value || "")}
             </div>
@@ -5489,7 +5582,7 @@ function renderNodeInspector(node) {
               <label>Compare to source</label>
               <select id="cfg_right_source">${sourceOptionsHtml(rightSource, true)}</select>
             </div>
-            <div class="${rightSource === "physical_input" ? "full" : ""}">
+            <div class="${rightSource === "physical_input" || rightSource === "trigger" ? "full" : ""}">
               <label>Compare to value / path</label>
               ${renderCompareSourceValueControl("right", rightSource, cfg.right_value || "")}
             </div>
@@ -5763,6 +5856,21 @@ function bindNodeInspector(node) {
   }
 
   if (node.type === "condition.compare") {
+    for (const button of document.querySelectorAll("[data-trigger-path-insert]")) {
+      button.addEventListener("click", () => {
+        const prefix = button.getAttribute("data-trigger-path-insert");
+        const value = button.getAttribute("data-trigger-path-value") || "";
+        const input = prefix ? document.getElementById(`cfg_${prefix}_value`) : null;
+        if (!input) return;
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.focus();
+        if (typeof input.setSelectionRange === "function") {
+          input.setSelectionRange(value.length, value.length);
+        }
+      });
+    }
+
     document.getElementById("cfg_left_source")?.addEventListener("change", () => {
       applyNodeInspector(node);
       renderInspector();

@@ -1792,6 +1792,38 @@ body.flowsPage {
   white-space: nowrap;
 }
 
+.flowsPage .compareTriggerPathHelp {
+  width: 100%;
+}
+
+.flowsPage .compareTriggerPathGroups {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.flowsPage .compareTriggerPathGroupTitle {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.52);
+}
+
+.flowsPage .compareTriggerPathGroup .setVariableTemplateHelpChips {
+  margin-top: 6px;
+}
+
+.flowsPage .compareTriggerPathChip {
+  cursor: pointer;
+}
+
+.flowsPage .compareTriggerPathChip.is-active {
+  border-color: rgba(198, 161, 75, 0.5);
+  background: rgba(198, 161, 75, 0.16);
+  color: var(--text);
+}
+
 .flowsPage .comparePhysicalSourceFields {
   margin-top: 2px;
 }
