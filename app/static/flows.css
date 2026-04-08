@@ -313,6 +313,11 @@ body.flowsPage {
   min-height: 0;
 }
 
+.flowsPage .scheduleInspectorPanel > .inspectorCard,
+.flowsPage .scheduleWorkspaceSurface > * {
+  flex: 0 0 auto;
+}
+
 .flowsPage .schedulePlannerMetaCard {
   flex: 0 0 auto;
   padding: 14px;
@@ -329,6 +334,11 @@ body.flowsPage {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 12px;
   align-items: end;
+}
+
+.flowsPage .inspectorCard.is-active {
+  border-color: rgba(198, 161, 75, 0.42);
+  box-shadow: 0 0 0 1px rgba(198, 161, 75, 0.16);
 }
 
 .flowsPage .schedulePeriodGrid {
@@ -482,10 +492,38 @@ body.flowsPage {
   min-height: 44px;
 }
 
+.flowsPage .scheduleDayLabelButton {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
 .flowsPage .scheduleDayLabel {
   font-size: 13px;
   font-weight: 900;
   color: rgba(255, 255, 255, 0.92);
+}
+
+.flowsPage .scheduleDayRow.is-selected {
+  border-color: rgba(198, 161, 75, 0.28);
+  background: linear-gradient(180deg, rgba(198, 161, 75, 0.07), rgba(255, 255, 255, 0.025));
+}
+
+.flowsPage .scheduleDayRow.is-selected .scheduleDayLabelButton {
+  border-color: rgba(198, 161, 75, 0.22);
+  background: rgba(198, 161, 75, 0.08);
+}
+
+.flowsPage .scheduleDayLabelButton:focus-visible {
+  outline: 2px solid rgba(198, 161, 75, 0.38);
+  outline-offset: 2px;
 }
 
 .flowsPage .scheduleDayRow.is-disabled .scheduleDayLabel {
@@ -600,6 +638,52 @@ body.flowsPage {
 
 .flowsPage .scheduleBlock.is-time-hidden .scheduleBlockTime {
   display: none;
+}
+
+.flowsPage .scheduleDayEditList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.flowsPage .scheduleDayEditItem {
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+}
+
+.flowsPage .scheduleDayEditItem.is-selected {
+  border-color: rgba(198, 161, 75, 0.32);
+  background: linear-gradient(180deg, rgba(198, 161, 75, 0.08), rgba(255, 255, 255, 0.025));
+  cursor: default;
+}
+
+.flowsPage .scheduleDayEditHeader {
+  align-items: center;
+}
+
+.flowsPage .scheduleDayEditMeta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.flowsPage .scheduleDayEditTitle {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.flowsPage .scheduleDayEditItem:not(.is-selected) {
+  padding: 10px 12px;
+}
+
+.flowsPage .scheduleDayEditItem:not(.is-selected) .scheduleDayEditHeader {
+  margin: 0;
 }
 
 .flowsPage .scheduleBlockDelete,

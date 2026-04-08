@@ -19,6 +19,7 @@ const state = {
   schedulesUpdatedAt: null,
   schedulesTimer: null,
   scheduleDrag: null,
+  selectedScheduleDay: null,
   selectedSchedulePeriod: null,
   scheduleViewportScrollTop: null,
   scheduleViewportScrollLeft: null,
@@ -199,6 +200,25 @@ function currentSelectedSchedule() {
   return currentSchedules()[idx] || null;
 }
 
+function currentSelectedScheduleDayEntry(index = state.selectedScheduleIndex) {
+  const selection = state.selectedScheduleDay;
+  if (!selection || selection.scheduleIndex !== index || !selection.dayKey) return null;
+
+  const schedule = currentSchedules()[index];
+  if (!schedule) return null;
+
+  const dayMeta = SCHEDULE_DAY_META.find(([dayKey]) => dayKey === selection.dayKey);
+  if (!dayMeta) return null;
+
+  return {
+    schedule,
+    selection,
+    dayKey: dayMeta[0],
+    dayLabel: dayMeta[1],
+    periods: schedule.days?.[selection.dayKey] || [],
+  };
+}
+
 function currentSelectedSchedulePeriodEntry(index = state.selectedScheduleIndex) {
   const selection = state.selectedSchedulePeriod;
   if (!selection || selection.scheduleIndex !== index) return null;
@@ -224,6 +244,7 @@ function clearEditorSelection() {
   state.selectedEdgeId = null;
   state.selectedRecordingPresetIndex = null;
   state.selectedScheduleIndex = null;
+  state.selectedScheduleDay = null;
   state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
   renderRecordingPresetSidebar();
@@ -236,6 +257,7 @@ function selectNode(nodeId) {
   state.selectedEdgeId = null;
   state.selectedRecordingPresetIndex = null;
   state.selectedScheduleIndex = null;
+  state.selectedScheduleDay = null;
   state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
   renderRecordingPresetSidebar();
@@ -248,6 +270,7 @@ function selectEdge(edgeId) {
   state.selectedNodeId = null;
   state.selectedRecordingPresetIndex = null;
   state.selectedScheduleIndex = null;
+  state.selectedScheduleDay = null;
   state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
   renderRecordingPresetSidebar();
@@ -260,6 +283,7 @@ function selectRecordingPreset(index) {
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
   state.selectedScheduleIndex = null;
+  state.selectedScheduleDay = null;
   state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
   state.connecting = null;
@@ -268,6 +292,7 @@ function selectRecordingPreset(index) {
 
 function selectSchedule(index) {
   state.selectedScheduleIndex = Number.isInteger(index) && index >= 0 ? index : null;
+  state.selectedScheduleDay = null;
   state.selectedSchedulePeriod = null;
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
@@ -277,12 +302,26 @@ function selectSchedule(index) {
   state.connectionCursor = null;
 }
 
+function selectScheduleDay(scheduleIndex, dayKey) {
+  if (!Number.isInteger(scheduleIndex) || scheduleIndex < 0 || !SCHEDULE_DAY_META.some(([key]) => key === dayKey)) {
+    state.selectedScheduleDay = null;
+    state.selectedSchedulePeriod = null;
+    return;
+  }
+
+  state.selectedScheduleDay = { scheduleIndex, dayKey };
+  if (state.selectedSchedulePeriod?.scheduleIndex !== scheduleIndex || state.selectedSchedulePeriod?.dayKey !== dayKey) {
+    state.selectedSchedulePeriod = null;
+  }
+}
+
 function selectSchedulePeriod(scheduleIndex, dayKey, periodIndex) {
   if (!Number.isInteger(scheduleIndex) || scheduleIndex < 0 || !dayKey || !Number.isInteger(periodIndex) || periodIndex < 0) {
     state.selectedSchedulePeriod = null;
     return;
   }
 
+  selectScheduleDay(scheduleIndex, dayKey);
   state.selectedSchedulePeriod = { scheduleIndex, dayKey, periodIndex };
 }
 
@@ -292,6 +331,7 @@ function selectPublicVariable(index) {
   state.selectedEdgeId = null;
   state.selectedRecordingPresetIndex = null;
   state.selectedScheduleIndex = null;
+  state.selectedScheduleDay = null;
   state.selectedSchedulePeriod = null;
   state.connecting = null;
   state.connectionCursor = null;
@@ -654,13 +694,16 @@ function renderScheduleHourLabels() {
 }
 
 function renderScheduleDayLane(schedule, scheduleIndex, dayKey, label) {
+  const selectedDay = currentSelectedScheduleDayEntry(scheduleIndex)?.selection || null;
   const segments = buildScheduleSegments(schedule, scheduleIndex, dayKey);
   const selectedPeriod = currentSelectedSchedulePeriodEntry(scheduleIndex)?.selection || null;
   const disabled = scheduleDayDisabled(schedule, dayKey);
   return `
-    <div class="scheduleDayRow ${disabled ? "is-disabled" : ""}">
+    <div class="scheduleDayRow ${disabled ? "is-disabled" : ""} ${selectedDay?.dayKey === dayKey ? "is-selected" : ""}" data-schedule-day-row="${dayKey}">
       <div class="scheduleDayLabelCell">
-        <div class="scheduleDayLabel">${escapeHtml(label)}</div>
+        <button class="scheduleDayLabelButton" type="button" data-schedule-day-select="${dayKey}" aria-pressed="${selectedDay?.dayKey === dayKey ? "true" : "false"}">
+          <span class="scheduleDayLabel">${escapeHtml(label)}</span>
+        </button>
       </div>
       <div class="scheduleDayTrackWrap">
         <div class="scheduleDayTrack ${disabled ? "is-disabled" : ""}" data-schedule-track="${dayKey}" data-schedule-disabled="${disabled ? "true" : "false"}">
@@ -2689,41 +2732,67 @@ function renderSchedulePlannerWorkspace(schedule, index) {
   `;
 }
 
-function renderSchedulePeriodInspector(index) {
-  const selected = currentSelectedSchedulePeriodEntry(index);
-  if (!selected) {
+function renderScheduleManualEditInspector(index) {
+  const selectedDay = currentSelectedScheduleDayEntry(index);
+  const selectedPeriod = currentSelectedSchedulePeriodEntry(index);
+  if (!selectedDay) {
     return `
       <div class="inspectorCard">
         <div class="inspectorTitle">Manual edit</div>
-        <div class="inspectorHint">Click a time block to edit its day and times manually.</div>
+        <div class="inspectorHint">Select a day or time block to edit that day.</div>
       </div>
     `;
   }
 
+  const { dayKey, dayLabel, periods, schedule } = selectedDay;
+  const selectedPeriodIndex = selectedPeriod?.selection?.dayKey === dayKey ? selectedPeriod.selection.periodIndex : null;
+  const isHolidayDay = dayKey === HOLIDAY_DAY_KEY;
+
   return `
-    <div class="inspectorCard">
-      <div class="inspectorTitle">Selected period</div>
-      <div class="inspectorHint">Adjust the selected block manually.</div>
-      <div class="fieldGrid schedulePeriodGrid mt-10">
-        <div class="schedulePeriodField schedulePeriodField--day">
-          <label>Day</label>
-          <select id="schedulePeriodDayInput">
-            ${SCHEDULE_DAY_META.map(([dayKey, dayLabel]) => `<option value="${dayKey}" ${selected.selection.dayKey === dayKey ? "selected" : ""}>${escapeHtml(dayLabel)}</option>`).join("")}
-          </select>
+    <div class="inspectorCard ${selectedPeriodIndex != null ? "is-active" : ""}">
+      <div class="inspectorTitle">Manual edit</div>
+      <div class="inspectorHint">${escapeHtml(dayLabel)}${selectedPeriodIndex != null ? ` · Entry ${selectedPeriodIndex + 1} selected` : " · Select an entry to focus it"}</div>
+      ${isHolidayDay ? `
+        <div class="fieldGrid mt-10">
+          <div>
+            <label>Holiday calendar</label>
+            <select id="scheduleHolidayCalendarInput">
+              ${HOLIDAY_CALENDAR_OPTIONS.map(([code, label]) => `<option value="${code}" ${normalizeHolidayCalendar(schedule.holiday_calendar) === code ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+            </select>
+          </div>
         </div>
-        <div class="schedulePeriodField schedulePeriodField--start">
-          <label>Start</label>
-          <input id="schedulePeriodStartInput" class="scheduleTimeInput" lang="en-GB" type="time" step="60" value="${escapeHtml(normalizeScheduleTime(selected.period.start, "09:00"))}" />
+      ` : ""}
+      ${periods.length ? `
+        <div class="scheduleDayEditList mt-10">
+          ${periods.map((period, periodIndex) => `
+            <div class="scheduleDayEditItem ${selectedPeriodIndex === periodIndex ? "is-selected" : ""}" data-schedule-day-edit-item="${periodIndex}" data-schedule-day-edit-select="${periodIndex}">
+              ${selectedPeriodIndex === periodIndex ? "" : `
+                <div class="rowSplit scheduleDayEditHeader">
+                  <div class="scheduleDayEditTitle">Entry ${periodIndex + 1}</div>
+                  <div class="scheduleDayEditMeta">
+                    <span class="miniPill">${escapeHtml(period.start)} - ${escapeHtml(period.end)}</span>
+                  </div>
+                </div>
+              `}
+              ${selectedPeriodIndex === periodIndex ? `
+                <div class="fieldGrid schedulePeriodGrid mt-10">
+                  <div class="schedulePeriodField schedulePeriodField--start">
+                    <label>Start</label>
+                    <input class="scheduleTimeInput" lang="en-GB" type="time" step="60" value="${escapeHtml(normalizeScheduleTime(period.start, "09:00"))}" data-schedule-day-edit-start="${periodIndex}" />
+                  </div>
+                  <div class="schedulePeriodField schedulePeriodField--end">
+                    <label>End</label>
+                    <input class="scheduleTimeInput" lang="en-GB" type="time" step="60" value="${escapeHtml(normalizeScheduleTime(period.end, "17:00"))}" data-schedule-day-edit-end="${periodIndex}" />
+                  </div>
+                </div>
+                <div class="inspectorActionGrid schedulePeriodActions mt-10">
+                  <button class="btn btn-danger" type="button" data-schedule-day-edit-delete="${periodIndex}">Delete</button>
+                </div>
+              ` : ""}
+            </div>
+          `).join("")}
         </div>
-        <div class="schedulePeriodField schedulePeriodField--end">
-          <label>End</label>
-          <input id="schedulePeriodEndInput" class="scheduleTimeInput" lang="en-GB" type="time" step="60" value="${escapeHtml(normalizeScheduleTime(selected.period.end, "17:00"))}" />
-        </div>
-      </div>
-      <div class="inspectorActionGrid inspectorActionGrid--twoUp schedulePeriodActions mt-10">
-        <button class="btn" id="btnSchedulePeriodApply" type="button">Apply</button>
-        <button class="btn" id="btnSchedulePeriodClear" type="button">Done</button>
-      </div>
+      ` : `<div class="emptyState">No manual edits for ${escapeHtml(dayLabel.toLowerCase())}. Drag on the timeline to add one.</div>`}
     </div>
   `;
 }
@@ -2748,17 +2817,11 @@ function renderScheduleInspector(schedule, index) {
             <label>Name</label>
             <input id="scheduleNameInput" value="${escapeHtml(schedule.name || "")}" placeholder="Office hours" />
           </div>
-          <div>
-            <label>Holiday calendar</label>
-            <select id="scheduleHolidayCalendarInput">
-              ${HOLIDAY_CALENDAR_OPTIONS.map(([code, label]) => `<option value="${code}" ${normalizeHolidayCalendar(schedule.holiday_calendar) === code ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
-            </select>
-          </div>
         </div>
-        <div class="inspectorHint mt-10">The Holidays row uses the selected calendar. If it has periods, it overrides the normal weekday on holiday dates.</div>
+        <div class="inspectorHint mt-10">Select a day on the planner to edit that day. The Holidays day uses its selected calendar when it has periods.</div>
       </div>
 
-      ${renderSchedulePeriodInspector(index)}
+      ${renderScheduleManualEditInspector(index)}
 
       <div class="inspectorCard inspectorActionsCard">
         <div class="inspectorActionHeader">
@@ -3494,6 +3557,7 @@ function removeSchedule(index) {
   if (!currentSchedules()[index]) return;
 
   state.schedules.splice(index, 1);
+  state.selectedScheduleDay = null;
   state.selectedSchedulePeriod = null;
 
   if (!currentSchedules().length) {
@@ -3617,6 +3681,7 @@ function bindScheduleActionButtons() {
 function bindScheduleInspector(index) {
   const inspector = document.getElementById("scheduleInspectorBody");
   const getSchedule = () => currentSchedules()[index];
+  const getSelectedDayEntry = () => currentSelectedScheduleDayEntry(index);
   const getSelectedPeriodEntry = () => currentSelectedSchedulePeriodEntry(index);
 
   document.getElementById("btnInspectorAddSchedule")?.addEventListener("click", () => {
@@ -3684,38 +3749,41 @@ function bindScheduleInspector(index) {
     setStatus(`Holiday calendar set to ${holidayCalendarLabel(schedule.holiday_calendar)}.`);
   });
 
-  const applySelectedPeriod = () => {
-    const selected = getSelectedPeriodEntry();
-    if (!selected) return;
+  const applyDayPeriodEdit = (periodIndex) => {
+    const selectedDay = getSelectedDayEntry();
+    if (!selectedDay) return;
 
-    const nextDayKey = String(document.getElementById("schedulePeriodDayInput")?.value || selected.selection.dayKey).trim().toLowerCase();
-    const start = normalizeScheduleTime(document.getElementById("schedulePeriodStartInput")?.value || selected.period.start, selected.period.start);
-    const end = normalizeScheduleTime(document.getElementById("schedulePeriodEndInput")?.value || selected.period.end, selected.period.end);
+    const currentPeriod = selectedDay.periods?.[periodIndex];
+    if (!currentPeriod) return;
+
+    const start = normalizeScheduleTime(
+      inspector?.querySelector(`[data-schedule-day-edit-start="${periodIndex}"]`)?.value || currentPeriod.start,
+      currentPeriod.start,
+    );
+    const end = normalizeScheduleTime(
+      inspector?.querySelector(`[data-schedule-day-edit-end="${periodIndex}"]`)?.value || currentPeriod.end,
+      currentPeriod.end,
+    );
     const startMinutes = scheduleTimeToMinutes(start);
     const endMinutes = scheduleTimeToMinutes(end);
-
-    if (!SCHEDULE_DAY_META.some(([dayKey]) => dayKey === nextDayKey)) {
-      setStatus("Pick a valid schedule day for the period.", true);
-      return;
-    }
 
     if (endMinutes - startMinutes < SCHEDULE_MIN_DURATION_MINUTES) {
       setStatus(`Schedule periods must be at least ${SCHEDULE_MIN_DURATION_MINUTES} minutes long.`, true);
       return;
     }
 
-    if (selected.selection.dayKey === nextDayKey && selected.period.start === start && selected.period.end === end) {
+    if (currentPeriod.start === start && currentPeriod.end === end) {
       return;
     }
 
-    const schedule = selected.schedule;
-    schedule.days[selected.selection.dayKey].splice(selected.selection.periodIndex, 1);
-    schedule.days[selected.selection.dayKey] = normalizeScheduleDayPeriods(schedule.days[selected.selection.dayKey]);
-    schedule.days[nextDayKey].push({ start, end });
-    schedule.days[nextDayKey] = normalizeScheduleDayPeriods(schedule.days[nextDayKey]);
+    const schedule = selectedDay.schedule;
+    schedule.days[selectedDay.dayKey].splice(periodIndex, 1);
+    schedule.days[selectedDay.dayKey].push({ start, end });
+    schedule.days[selectedDay.dayKey] = normalizeScheduleDayPeriods(schedule.days[selectedDay.dayKey]);
 
-    const nextPeriodIndex = schedule.days[nextDayKey].findIndex((period) => period.start === start && period.end === end);
-    selectSchedulePeriod(index, nextDayKey, nextPeriodIndex);
+    const nextPeriodIndex = schedule.days[selectedDay.dayKey].findIndex((period) => period.start === start && period.end === end);
+    selectScheduleDay(index, selectedDay.dayKey);
+    selectSchedulePeriod(index, selectedDay.dayKey, nextPeriodIndex);
     markSchedulesDirty();
     renderScheduleSidebar();
     renderCanvas();
@@ -3723,20 +3791,59 @@ function bindScheduleInspector(index) {
     setStatus("Schedule period updated.");
   };
 
-  document.getElementById("btnSchedulePeriodApply")?.addEventListener("click", applySelectedPeriod);
-  document.getElementById("btnSchedulePeriodClear")?.addEventListener("click", () => {
-    state.selectedSchedulePeriod = null;
-    renderCanvas();
-    renderInspector();
+  inspector?.querySelectorAll("[data-schedule-day-edit-item]").forEach((item) => {
+    item.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.closest("[data-schedule-day-edit-delete], input, select, textarea")) {
+        return;
+      }
+      const selectedDay = getSelectedDayEntry();
+      const periodIndex = Number(item.dataset.scheduleDayEditSelect || -1);
+      if (!selectedDay || periodIndex < 0) return;
+      selectSchedulePeriod(index, selectedDay.dayKey, periodIndex);
+      renderCanvas();
+      renderInspector();
+    });
   });
 
-  for (const inputId of ["schedulePeriodStartInput", "schedulePeriodEndInput"]) {
-    document.getElementById(inputId)?.addEventListener("keydown", (event) => {
+  inspector?.querySelectorAll("[data-schedule-day-edit-start], [data-schedule-day-edit-end]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const item = input.closest("[data-schedule-day-edit-item]");
+      const periodIndex = Number(item?.dataset.scheduleDayEditItem || -1);
+      if (periodIndex < 0) return;
+      applyDayPeriodEdit(periodIndex);
+    });
+
+    input.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
       event.preventDefault();
-      applySelectedPeriod();
+      const item = input.closest("[data-schedule-day-edit-item]");
+      const periodIndex = Number(item?.dataset.scheduleDayEditItem || -1);
+      if (periodIndex < 0) return;
+      applyDayPeriodEdit(periodIndex);
     });
-  }
+  });
+
+  inspector?.querySelectorAll("[data-schedule-day-edit-delete]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const selectedDay = getSelectedDayEntry();
+      const periodIndex = Number(button.dataset.scheduleDayEditDelete || -1);
+      if (!selectedDay || periodIndex < 0) return;
+
+      selectedDay.schedule.days[selectedDay.dayKey].splice(periodIndex, 1);
+      selectedDay.schedule.days[selectedDay.dayKey] = normalizeScheduleDayPeriods(selectedDay.schedule.days[selectedDay.dayKey]);
+      if (state.selectedSchedulePeriod?.scheduleIndex === index
+        && state.selectedSchedulePeriod?.dayKey === selectedDay.dayKey
+        && state.selectedSchedulePeriod?.periodIndex === periodIndex) {
+        state.selectedSchedulePeriod = null;
+      }
+      selectScheduleDay(index, selectedDay.dayKey);
+      markSchedulesDirty();
+      renderScheduleSidebar();
+      renderCanvas();
+      renderInspector();
+    });
+  });
+
 }
 
 function bindScheduleWorkspace(index) {
@@ -3783,10 +3890,15 @@ function bindScheduleWorkspace(index) {
     track.addEventListener("mousedown", (event) => {
       if (event.button !== 0) return;
       if (event.target instanceof Element && event.target.closest("[data-schedule-block]")) return;
-      if (track.dataset.scheduleDisabled === "true") return;
 
       const dayKey = track.dataset.scheduleTrack;
       if (!dayKey) return;
+      selectScheduleDay(index, dayKey);
+      if (track.dataset.scheduleDisabled === "true") {
+        renderCanvas();
+        renderInspector();
+        return;
+      }
 
       const anchorMinutes = scheduleTrackMinutesFromClient(dayKey, event.clientX);
       startScheduleDrag({
@@ -3803,6 +3915,16 @@ function bindScheduleWorkspace(index) {
     });
   });
 
+  workspace?.querySelectorAll("[data-schedule-day-select]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const dayKey = button.dataset.scheduleDaySelect;
+      if (!dayKey) return;
+      selectScheduleDay(index, dayKey);
+      renderCanvas();
+      renderInspector();
+    });
+  });
+
   workspace?.querySelectorAll("[data-schedule-delete]").forEach((button) => {
     button.addEventListener("click", (event) => {
       const schedule = getSchedule();
@@ -3816,6 +3938,8 @@ function bindScheduleWorkspace(index) {
       if (selected && selected.scheduleIndex === index && selected.dayKey === dayKey && selected.periodIndex === periodIndex) {
         state.selectedSchedulePeriod = null;
       }
+
+      selectScheduleDay(index, dayKey);
 
       schedule.days[dayKey].splice(periodIndex, 1);
       schedule.days[dayKey] = normalizeScheduleDayPeriods(schedule.days[dayKey]);
@@ -3842,6 +3966,7 @@ function bindScheduleWorkspace(index) {
       const editable = block.dataset.scheduleEditable === "true";
       if (!dayKey || periodIndex < 0 || !editable) return;
 
+      selectScheduleDay(index, dayKey);
       selectSchedulePeriod(index, dayKey, periodIndex);
       renderInspector();
 
