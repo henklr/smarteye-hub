@@ -331,6 +331,46 @@ body.flowsPage {
   align-items: end;
 }
 
+.flowsPage .schedulePeriodGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.flowsPage .schedulePeriodField {
+  min-width: 0;
+}
+
+.flowsPage .schedulePeriodField--day {
+  grid-column: 1 / -1;
+}
+
+.flowsPage .schedulePeriodActions {
+  margin-top: 12px;
+}
+
+.flowsPage .scheduleTimeInput {
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: 0.01em;
+}
+
+.flowsPage .scheduleTimeInput::-webkit-date-and-time-value {
+  text-align: left;
+}
+
+.flowsPage .scheduleTimeInput::-webkit-datetime-edit,
+.flowsPage .scheduleTimeInput::-webkit-datetime-edit-fields-wrapper {
+  padding: 0;
+}
+
+.flowsPage .scheduleTimeInput::-webkit-calendar-picker-indicator {
+  margin: 0;
+  opacity: 0.78;
+  cursor: pointer;
+  filter: invert(0.86);
+}
+
 .flowsPage .schedulePlannerToolbarActions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -525,6 +565,10 @@ body.flowsPage {
   font-weight: 900;
   line-height: 1.2;
   white-space: nowrap;
+}
+
+.flowsPage .scheduleBlock.is-time-hidden .scheduleBlockTime {
+  display: none;
 }
 
 .flowsPage .scheduleBlockDelete,
@@ -1605,6 +1649,12 @@ body.flowsPage {
   .flowsPage .flowBoardScroller {
     min-height: 56vh;
     max-height: 56vh;
+  }
+
+  .flowsPage .schedulePlannerMetaGrid,
+  .flowsPage .schedulePeriodGrid,
+  .flowsPage .schedulePlannerToolbarActions {
+    grid-template-columns: 1fr;
   }
 }
 

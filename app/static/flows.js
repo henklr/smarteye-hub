@@ -22,6 +22,7 @@ const state = {
   selectedSchedulePeriod: null,
   scheduleViewportScrollTop: null,
   scheduleViewportScrollLeft: null,
+  scheduleBlockResizeObserver: null,
   publicVariables: [],
   publicVariablesDirty: false,
   publicVariablesInteracting: false,
@@ -653,6 +654,23 @@ function renderScheduleDayLane(schedule, scheduleIndex, dayKey, label) {
       </div>
     </div>
   `;
+}
+
+function syncScheduleBlockTimeVisibility(root = document) {
+  const scope = root instanceof Element || root instanceof Document ? root : document;
+
+  scope.querySelectorAll("[data-schedule-block]").forEach((block) => {
+    const label = block.querySelector(".scheduleBlockTime");
+    if (!(label instanceof HTMLElement) || !(block instanceof HTMLElement)) return;
+
+    const deleteButton = block.querySelector(".scheduleBlockDelete");
+    const reservedWidth = (deleteButton instanceof HTMLElement ? deleteButton.offsetWidth : 0) + 42;
+    const availableWidth = Math.max(0, block.clientWidth - reservedWidth);
+    const shouldHide = availableWidth <= 0 || label.scrollWidth > availableWidth;
+
+    block.classList.toggle("is-time-hidden", shouldHide);
+    label.setAttribute("aria-hidden", shouldHide ? "true" : "false");
+  });
 }
 
 function scheduleTrackDayKeyFromPoint(clientX, clientY) {
@@ -2009,6 +2027,8 @@ function renderCanvas() {
 
   const schedule = currentSelectedSchedule();
   if (isScheduleEditing() && schedule && scheduleWorkspace) {
+    state.scheduleBlockResizeObserver?.disconnect();
+    state.scheduleBlockResizeObserver = null;
     boardWrap?.classList.add("hidden");
     boardStatusLine?.classList.add("hidden");
     scheduleWorkspace.classList.remove("hidden");
@@ -2019,6 +2039,8 @@ function renderCanvas() {
 
   boardWrap?.classList.remove("hidden");
   boardStatusLine?.classList.remove("hidden");
+  state.scheduleBlockResizeObserver?.disconnect();
+  state.scheduleBlockResizeObserver = null;
   if (scheduleWorkspace) {
     scheduleWorkspace.classList.add("hidden");
     scheduleWorkspace.innerHTML = "";
@@ -2628,23 +2650,23 @@ function renderSchedulePeriodInspector(index) {
     <div class="inspectorCard">
       <div class="inspectorTitle">Selected period</div>
       <div class="inspectorHint">Adjust the selected block manually.</div>
-      <div class="fieldGrid mt-10">
-        <div>
+      <div class="fieldGrid schedulePeriodGrid mt-10">
+        <div class="schedulePeriodField schedulePeriodField--day">
           <label>Day</label>
           <select id="schedulePeriodDayInput">
             ${WEEKDAY_META.map(([dayKey, dayLabel]) => `<option value="${dayKey}" ${selected.selection.dayKey === dayKey ? "selected" : ""}>${escapeHtml(dayLabel)}</option>`).join("")}
           </select>
         </div>
-        <div>
+        <div class="schedulePeriodField schedulePeriodField--start">
           <label>Start</label>
-          <input id="schedulePeriodStartInput" type="time" step="60" value="${escapeHtml(normalizeScheduleTime(selected.period.start, "09:00"))}" />
+          <input id="schedulePeriodStartInput" class="scheduleTimeInput" lang="en-GB" type="time" step="60" value="${escapeHtml(normalizeScheduleTime(selected.period.start, "09:00"))}" />
         </div>
-        <div>
+        <div class="schedulePeriodField schedulePeriodField--end">
           <label>End</label>
-          <input id="schedulePeriodEndInput" type="time" step="60" value="${escapeHtml(normalizeScheduleTime(selected.period.end, "17:00"))}" />
+          <input id="schedulePeriodEndInput" class="scheduleTimeInput" lang="en-GB" type="time" step="60" value="${escapeHtml(normalizeScheduleTime(selected.period.end, "17:00"))}" />
         </div>
       </div>
-      <div class="inspectorActionGrid inspectorActionGrid--twoUp mt-10">
+      <div class="inspectorActionGrid inspectorActionGrid--twoUp schedulePeriodActions mt-10">
         <button class="btn" id="btnSchedulePeriodApply" type="button">Apply</button>
         <button class="btn" id="btnSchedulePeriodClear" type="button">Done</button>
       </div>
@@ -3640,6 +3662,17 @@ function bindScheduleWorkspace(index) {
   const viewport = document.getElementById("schedulePlannerViewport");
   const getSchedule = () => currentSchedules()[index];
 
+  window.requestAnimationFrame(() => syncScheduleBlockTimeVisibility(workspace || document));
+
+  state.scheduleBlockResizeObserver?.disconnect();
+  state.scheduleBlockResizeObserver = null;
+  if (typeof ResizeObserver === "function" && viewport) {
+    state.scheduleBlockResizeObserver = new ResizeObserver(() => {
+      syncScheduleBlockTimeVisibility(workspace || document);
+    });
+    state.scheduleBlockResizeObserver.observe(viewport);
+  }
+
   if (viewport) {
     const restoreTop = state.scheduleViewportScrollTop ?? 0;
     const restoreLeft = state.scheduleViewportScrollLeft ?? (SCHEDULE_INITIAL_SCROLL_HOUR * SCHEDULE_HOUR_WIDTH);
@@ -3695,11 +3728,6 @@ function bindScheduleWorkspace(index) {
       const dayKey = button.dataset.scheduleSourceDay;
       const periodIndex = Number(button.dataset.schedulePeriodIndex || -1);
       if (!dayKey || periodIndex < 0) return;
-      if (!window.confirm("Delete this schedule period?")) {
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
 
       const selected = state.selectedSchedulePeriod;
       if (selected && selected.scheduleIndex === index && selected.dayKey === dayKey && selected.periodIndex === periodIndex) {
