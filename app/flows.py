@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 import uuid
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -54,6 +54,30 @@ _WEEKDAY_KEYS: Tuple[str, ...] = (
     "saturday",
     "sunday",
 )
+_HOLIDAY_DAY_KEY = "holidays"
+_SCHEDULE_DAY_KEYS: Tuple[str, ...] = _WEEKDAY_KEYS + (_HOLIDAY_DAY_KEY,)
+_DEFAULT_HOLIDAY_CALENDAR = "DK"
+_HOLIDAY_CALENDAR_ALIASES: Dict[str, str] = {
+    "DK": "DK",
+    "DENMARK": "DK",
+    "SE": "SE",
+    "SWEDEN": "SE",
+    "NO": "NO",
+    "NORWAY": "NO",
+    "DE": "DE",
+    "GERMANY": "DE",
+    "GB": "GB",
+    "UK": "GB",
+    "UNITEDKINGDOM": "GB",
+    "GREATBRITAIN": "GB",
+    "US": "US",
+    "USA": "US",
+    "UNITEDSTATES": "US",
+    "NONE": "NONE",
+    "DISABLED": "NONE",
+    "OFF": "NONE",
+}
+_holiday_cache: Dict[Tuple[str, int], Any] = {}
 
 _storage_lock = threading.RLock()
 _runtime_lock = threading.RLock()
@@ -125,6 +149,7 @@ class SchedulePeriodModel(BaseModel):
 class ScheduleModel(BaseModel):
     key: str = Field(..., min_length=1)
     name: str = Field(..., min_length=1)
+    holiday_calendar: str = _DEFAULT_HOLIDAY_CALENDAR
     days: Dict[str, List[SchedulePeriodModel]] = Field(default_factory=dict)
 
 
@@ -939,7 +964,65 @@ def _merge_recording_presets(items: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 
 def _schedule_days_template() -> Dict[str, List[Dict[str, str]]]:
-    return {day: [] for day in _WEEKDAY_KEYS}
+    return {day: [] for day in _SCHEDULE_DAY_KEYS}
+
+
+def _normalize_holiday_calendar(value: Any) -> str:
+    raw = re.sub(r"[\s_-]+", "", str(value or _DEFAULT_HOLIDAY_CALENDAR).strip().upper())
+    if not raw:
+        return _DEFAULT_HOLIDAY_CALENDAR
+
+    normalized = _HOLIDAY_CALENDAR_ALIASES.get(raw)
+    if normalized is None:
+        raise HTTPException(status_code=400, detail=f"Unsupported holiday calendar: {value}")
+    return normalized
+
+
+def _schedule_holiday_country(schedule: Dict[str, Any]) -> Optional[str]:
+    normalized = _normalize_holiday_calendar(schedule.get("holiday_calendar"))
+    return None if normalized == "NONE" else normalized
+
+
+def _load_holidays_module() -> Any:
+    try:
+        import holidays as holidays_module
+    except ImportError:
+        return None
+    return holidays_module
+
+
+def _holiday_dates(country: str, year: int) -> Any:
+    key = (country, year)
+    cached = _holiday_cache.get(key)
+    if cached is not None:
+        return cached
+
+    holidays_module = _load_holidays_module()
+    if holidays_module is None:
+        raise RuntimeError("holidays dependency is not installed")
+
+    calendar = holidays_module.country_holidays(country, years=year)
+    _holiday_cache[key] = calendar
+    return calendar
+
+
+def _is_schedule_holiday_date(schedule: Dict[str, Any], day_value: date) -> bool:
+    country = _schedule_holiday_country(schedule)
+    if not country:
+        return False
+    try:
+        return day_value in _holiday_dates(country, day_value.year)
+    except Exception:
+        return False
+
+
+def _effective_schedule_day_key(schedule: Dict[str, Any], day_value: date) -> str:
+    weekday_key = _WEEKDAY_KEYS[day_value.weekday()]
+    days = schedule.get("days") if isinstance(schedule.get("days"), dict) else {}
+    holiday_periods = list(days.get(_HOLIDAY_DAY_KEY) or [])
+    if holiday_periods and _is_schedule_holiday_date(schedule, day_value):
+        return _HOLIDAY_DAY_KEY
+    return weekday_key
 
 
 def _normalize_schedule_time(value: Any, label: str) -> str:
@@ -981,8 +1064,9 @@ def _normalize_schedule_items(items: Any) -> List[Dict[str, Any]]:
 
         raw_days = raw.get("days") if isinstance(raw.get("days"), dict) else {}
         days = _schedule_days_template()
+        holiday_calendar = _normalize_holiday_calendar(raw.get("holiday_calendar"))
 
-        for day in _WEEKDAY_KEYS:
+        for day in _SCHEDULE_DAY_KEYS:
             periods: List[Dict[str, str]] = []
             seen_periods: set[Tuple[str, str]] = set()
             for period in list(raw_days.get(day) or []):
@@ -1008,6 +1092,7 @@ def _normalize_schedule_items(items: Any) -> List[Dict[str, Any]]:
             {
                 "key": key,
                 "name": name,
+                "holiday_calendar": holiday_calendar,
                 "days": days,
             }
         )
@@ -1027,8 +1112,10 @@ def _schedule_by_key(key: Any, items: Optional[List[Dict[str, Any]]] = None) -> 
 
 def _is_schedule_active_at(schedule: Dict[str, Any], when: Optional[datetime] = None) -> bool:
     now = when or datetime.now()
-    current_day = _WEEKDAY_KEYS[now.weekday()]
-    previous_day = _WEEKDAY_KEYS[(now.weekday() - 1) % len(_WEEKDAY_KEYS)]
+    current_date = now.date()
+    previous_date = current_date - timedelta(days=1)
+    current_day = _effective_schedule_day_key(schedule, current_date)
+    previous_day = _effective_schedule_day_key(schedule, previous_date)
     minute_of_day = now.hour * 60 + now.minute
     days = schedule.get("days") if isinstance(schedule.get("days"), dict) else {}
 

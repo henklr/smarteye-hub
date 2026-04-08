@@ -74,6 +74,18 @@ const WEEKDAY_META = [
   ["sunday", "Sunday"],
 ];
 
+const HOLIDAY_DAY_KEY = "holidays";
+const SCHEDULE_DAY_META = [...WEEKDAY_META, [HOLIDAY_DAY_KEY, "Holidays"]];
+const HOLIDAY_CALENDAR_OPTIONS = [
+  ["DK", "Denmark"],
+  ["SE", "Sweden"],
+  ["NO", "Norway"],
+  ["DE", "Germany"],
+  ["GB", "United Kingdom"],
+  ["US", "United States"],
+  ["NONE", "Disabled"],
+];
+
 const SCHEDULE_SNAP_MINUTES = 15;
 const SCHEDULE_MIN_DURATION_MINUTES = 15;
 const SCHEDULE_RESIZE_SNAP_MINUTES = 1;
@@ -337,8 +349,39 @@ function normalizePublicVariableRecords(items = []) {
   return (items || []).map((item) => normalizePublicVariableRecord(item));
 }
 
+function normalizeHolidayCalendar(value) {
+  const raw = String(value || "DK").trim().toUpperCase().replace(/[\s_-]+/g, "");
+  const aliases = {
+    DK: "DK",
+    DENMARK: "DK",
+    SE: "SE",
+    SWEDEN: "SE",
+    NO: "NO",
+    NORWAY: "NO",
+    DE: "DE",
+    GERMANY: "DE",
+    GB: "GB",
+    UK: "GB",
+    UNITEDKINGDOM: "GB",
+    GREATBRITAIN: "GB",
+    US: "US",
+    USA: "US",
+    UNITEDSTATES: "US",
+    NONE: "NONE",
+    DISABLED: "NONE",
+    OFF: "NONE",
+  };
+  const normalized = aliases[raw] || "DK";
+  return HOLIDAY_CALENDAR_OPTIONS.some(([code]) => code === normalized) ? normalized : "DK";
+}
+
+function holidayCalendarLabel(value) {
+  const code = normalizeHolidayCalendar(value);
+  return HOLIDAY_CALENDAR_OPTIONS.find(([optionCode]) => optionCode === code)?.[1] || "Denmark";
+}
+
 function emptyScheduleDays() {
-  return Object.fromEntries(WEEKDAY_META.map(([key]) => [key, []]));
+  return Object.fromEntries(SCHEDULE_DAY_META.map(([key]) => [key, []]));
 }
 
 function normalizeScheduleTime(value, fallback = "09:00") {
@@ -374,13 +417,14 @@ function normalizeScheduleRecord(item = {}) {
   const days = emptyScheduleDays();
   const incomingDays = item.days && typeof item.days === "object" ? item.days : {};
 
-  for (const [dayKey] of WEEKDAY_META) {
+  for (const [dayKey] of SCHEDULE_DAY_META) {
     days[dayKey] = normalizeSchedulePeriods(incomingDays[dayKey] || []);
   }
 
   return {
     key: String(item.key || "").trim(),
     name: String(item.name || item.key || "").trim() || "Schedule",
+    holiday_calendar: normalizeHolidayCalendar(item.holiday_calendar),
     days,
     is_active: Boolean(item.is_active),
   };
@@ -401,7 +445,7 @@ function scheduleNameForKey(key) {
 }
 
 function scheduleSummary(schedule) {
-  const totalPeriods = WEEKDAY_META.reduce((count, [dayKey]) => count + ((schedule?.days?.[dayKey] || []).length), 0);
+  const totalPeriods = SCHEDULE_DAY_META.reduce((count, [dayKey]) => count + ((schedule?.days?.[dayKey] || []).length), 0);
   if (!totalPeriods) return "No active hours";
   return totalPeriods === 1 ? "1 active period" : `${totalPeriods} active periods`;
 }
@@ -505,7 +549,7 @@ function normalizeScheduleDayPeriods(periods = []) {
 
 function schedulePreviousDayKey(dayKey) {
   const dayIndex = WEEKDAY_META.findIndex(([key]) => key === dayKey);
-  if (dayIndex < 0) return WEEKDAY_META[WEEKDAY_META.length - 1][0];
+  if (dayIndex < 0) return null;
   return WEEKDAY_META[(dayIndex - 1 + WEEKDAY_META.length) % WEEKDAY_META.length][0];
 }
 
@@ -517,7 +561,8 @@ function buildScheduleSegments(schedule, scheduleIndex, dayKey) {
   const segments = [];
   const draft = scheduleDraftForIndex(scheduleIndex);
   const currentDayPeriods = schedule?.days?.[dayKey] || [];
-  const previousDayPeriods = schedule?.days?.[schedulePreviousDayKey(dayKey)] || [];
+  const previousDayKey = schedulePreviousDayKey(dayKey);
+  const previousDayPeriods = previousDayKey ? (schedule?.days?.[previousDayKey] || []) : [];
 
   previousDayPeriods.forEach((period, periodIndex) => {
     const start = scheduleTimeToMinutes(period.start);
@@ -525,7 +570,7 @@ function buildScheduleSegments(schedule, scheduleIndex, dayKey) {
     if (end <= start) {
       segments.push({
         dayKey,
-        sourceDayKey: schedulePreviousDayKey(dayKey),
+        sourceDayKey: previousDayKey,
         sourcePeriodIndex: periodIndex,
         startMinutes: 0,
         endMinutes: end,
@@ -2628,7 +2673,7 @@ function renderSchedulePlannerWorkspace(schedule, index) {
           <div class="scheduleTimeHeader">${renderScheduleHourLabels()}</div>
         </div>
         <div class="schedulePlannerRows">
-          ${WEEKDAY_META.map(([dayKey, label]) => renderScheduleDayLane(schedule, index, dayKey, label)).join("")}
+          ${SCHEDULE_DAY_META.map(([dayKey, label]) => renderScheduleDayLane(schedule, index, dayKey, label)).join("")}
         </div>
       </div>
     </div>
@@ -2654,7 +2699,7 @@ function renderSchedulePeriodInspector(index) {
         <div class="schedulePeriodField schedulePeriodField--day">
           <label>Day</label>
           <select id="schedulePeriodDayInput">
-            ${WEEKDAY_META.map(([dayKey, dayLabel]) => `<option value="${dayKey}" ${selected.selection.dayKey === dayKey ? "selected" : ""}>${escapeHtml(dayLabel)}</option>`).join("")}
+            ${SCHEDULE_DAY_META.map(([dayKey, dayLabel]) => `<option value="${dayKey}" ${selected.selection.dayKey === dayKey ? "selected" : ""}>${escapeHtml(dayLabel)}</option>`).join("")}
           </select>
         </div>
         <div class="schedulePeriodField schedulePeriodField--start">
@@ -2694,7 +2739,14 @@ function renderScheduleInspector(schedule, index) {
             <label>Name</label>
             <input id="scheduleNameInput" value="${escapeHtml(schedule.name || "")}" placeholder="Office hours" />
           </div>
+          <div>
+            <label>Holiday calendar</label>
+            <select id="scheduleHolidayCalendarInput">
+              ${HOLIDAY_CALENDAR_OPTIONS.map(([code, label]) => `<option value="${code}" ${normalizeHolidayCalendar(schedule.holiday_calendar) === code ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+            </select>
+          </div>
         </div>
+        <div class="inspectorHint mt-10">The Holidays row uses the selected calendar. If it has periods, it overrides the normal weekday on holiday dates.</div>
       </div>
 
       ${renderSchedulePeriodInspector(index)}
@@ -2966,7 +3018,8 @@ function schedulesDefinitionFingerprint(items = []) {
     (items || []).map((item) => [
       (item?.key || "").trim(),
       (item?.name || "").trim(),
-      ...WEEKDAY_META.map(([dayKey]) => ((item?.days?.[dayKey] || []).map((period) => `${period.start}-${period.end}`).join(","))),
+      normalizeHolidayCalendar(item?.holiday_calendar),
+      ...SCHEDULE_DAY_META.map(([dayKey]) => ((item?.days?.[dayKey] || []).map((period) => `${period.start}-${period.end}`).join(","))),
     ])
   );
 }
@@ -3378,7 +3431,7 @@ function validateSchedules() {
     }
     keys.add(key);
 
-    for (const [dayKey, dayLabel] of WEEKDAY_META) {
+    for (const [dayKey, dayLabel] of SCHEDULE_DAY_META) {
       for (const period of schedule.days?.[dayKey] || []) {
         const start = normalizeScheduleTime(period.start, "09:00");
         const end = normalizeScheduleTime(period.end, "17:00");
@@ -3387,6 +3440,8 @@ function validateSchedules() {
         }
       }
     }
+
+    schedule.holiday_calendar = normalizeHolidayCalendar(schedule.holiday_calendar);
   }
 }
 
@@ -3395,8 +3450,9 @@ function serializeSchedules() {
     items: currentSchedules().map((schedule) => ({
       key: String(schedule.key || "").trim(),
       name: String(schedule.name || "").trim(),
+      holiday_calendar: normalizeHolidayCalendar(schedule.holiday_calendar),
       days: Object.fromEntries(
-        WEEKDAY_META.map(([dayKey]) => [
+        SCHEDULE_DAY_META.map(([dayKey]) => [
           dayKey,
           normalizeSchedulePeriods(schedule.days?.[dayKey] || []),
         ])
@@ -3409,6 +3465,7 @@ function addSchedule() {
   state.schedules.push(normalizeScheduleRecord({
     key: nextScheduleKey(),
     name: `Schedule ${currentSchedules().length + 1}`,
+    holiday_calendar: "DK",
     days: emptyScheduleDays(),
     is_active: false,
   }));
@@ -3602,6 +3659,15 @@ function bindScheduleInspector(index) {
     }
   });
 
+  document.getElementById("scheduleHolidayCalendarInput")?.addEventListener("change", (ev) => {
+    const schedule = getSchedule();
+    if (!schedule) return;
+    schedule.holiday_calendar = normalizeHolidayCalendar(ev.target.value);
+    markSchedulesDirty();
+    renderScheduleSidebar();
+    setStatus(`Holiday calendar set to ${holidayCalendarLabel(schedule.holiday_calendar)}.`);
+  });
+
   const applySelectedPeriod = () => {
     const selected = getSelectedPeriodEntry();
     if (!selected) return;
@@ -3612,8 +3678,8 @@ function bindScheduleInspector(index) {
     const startMinutes = scheduleTimeToMinutes(start);
     const endMinutes = scheduleTimeToMinutes(end);
 
-    if (!WEEKDAY_META.some(([dayKey]) => dayKey === nextDayKey)) {
-      setStatus("Pick a valid weekday for the schedule period.", true);
+    if (!SCHEDULE_DAY_META.some(([dayKey]) => dayKey === nextDayKey)) {
+      setStatus("Pick a valid schedule day for the period.", true);
       return;
     }
 
