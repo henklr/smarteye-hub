@@ -146,6 +146,22 @@ body.flowsPage {
   font-size: 14px;
 }
 
+.flowsPage .mt-0 {
+  margin-top: 0;
+}
+
+.flowsPage .mt-8 {
+  margin-top: 8px;
+}
+
+.flowsPage .mt-10 {
+  margin-top: 12px;
+}
+
+.flowsPage .mt-12 {
+  margin-top: 14px;
+}
+
 /* Saved flows list */
 .flowsPage .flowList {
   display: flex;
@@ -356,6 +372,7 @@ body.flowsPage {
 
 .flowsPage .schedulePeriodActions {
   margin-top: 12px;
+  grid-template-columns: 1fr;
 }
 
 .flowsPage .scheduleTimeInput {
@@ -1512,8 +1529,8 @@ body.flowsPage {
 
 .flowsPage .inspectorActionGrid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 10px;
 }
 
 .flowsPage .inspectorActionGrid--twoUp {
@@ -1527,6 +1544,9 @@ body.flowsPage {
 .flowsPage .inspectorActionGrid .btn {
   width: 100%;
   justify-content: center;
+  min-height: 42px;
+  line-height: 1.2;
+  white-space: normal;
 }
 
 .flowsPage .fieldGrid,
