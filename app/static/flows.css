@@ -488,6 +488,10 @@ body.flowsPage {
   color: rgba(255, 255, 255, 0.92);
 }
 
+.flowsPage .scheduleDayRow.is-disabled .scheduleDayLabel {
+  color: rgba(255, 255, 255, 0.48);
+}
+
 .flowsPage .scheduleDayTrackWrap {
   min-width: 0;
 }
@@ -508,6 +512,21 @@ body.flowsPage {
   background:
     linear-gradient(180deg, rgba(198, 161, 75, 0.08), rgba(255, 255, 255, 0.025)),
     repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.09) 0, rgba(255, 255, 255, 0.09) 1px, transparent 1px, transparent calc(100% / 24));
+}
+
+.flowsPage .scheduleDayTrack.is-disabled {
+  cursor: not-allowed;
+  border-color: rgba(255, 255, 255, 0.06);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.012)),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.04) 0, rgba(255, 255, 255, 0.04) 1px, transparent 1px, transparent calc(100% / 24));
+  opacity: 0.55;
+}
+
+.flowsPage .scheduleDayTrack.is-disabled:hover {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.012)),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.04) 0, rgba(255, 255, 255, 0.04) 1px, transparent 1px, transparent calc(100% / 24));
 }
 
 .flowsPage .scheduleBlock {
@@ -558,6 +577,18 @@ body.flowsPage {
 .flowsPage .scheduleBlock.is-continuation {
   border-color: rgba(79, 140, 255, 0.28);
   background: linear-gradient(90deg, rgba(79, 140, 255, 0.72), rgba(79, 140, 255, 0.44));
+}
+
+.flowsPage .scheduleBlock.is-disabled {
+  cursor: default;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: linear-gradient(90deg, rgba(138, 145, 153, 0.55), rgba(117, 124, 132, 0.44));
+  color: rgba(255, 255, 255, 0.76);
+  box-shadow: none;
+}
+
+.flowsPage .scheduleBlock.is-disabled:hover {
+  filter: none;
 }
 
 .flowsPage .scheduleBlockTime {

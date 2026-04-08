@@ -380,6 +380,10 @@ function holidayCalendarLabel(value) {
   return HOLIDAY_CALENDAR_OPTIONS.find(([optionCode]) => optionCode === code)?.[1] || "Denmark";
 }
 
+function scheduleDayDisabled(schedule, dayKey) {
+  return dayKey === HOLIDAY_DAY_KEY && normalizeHolidayCalendar(schedule?.holiday_calendar) === "NONE";
+}
+
 function emptyScheduleDays() {
   return Object.fromEntries(SCHEDULE_DAY_META.map(([key]) => [key, []]));
 }
@@ -652,21 +656,24 @@ function renderScheduleHourLabels() {
 function renderScheduleDayLane(schedule, scheduleIndex, dayKey, label) {
   const segments = buildScheduleSegments(schedule, scheduleIndex, dayKey);
   const selectedPeriod = currentSelectedSchedulePeriodEntry(scheduleIndex)?.selection || null;
+  const disabled = scheduleDayDisabled(schedule, dayKey);
   return `
-    <div class="scheduleDayRow">
+    <div class="scheduleDayRow ${disabled ? "is-disabled" : ""}">
       <div class="scheduleDayLabelCell">
         <div class="scheduleDayLabel">${escapeHtml(label)}</div>
       </div>
       <div class="scheduleDayTrackWrap">
-        <div class="scheduleDayTrack" data-schedule-track="${dayKey}">
+        <div class="scheduleDayTrack ${disabled ? "is-disabled" : ""}" data-schedule-track="${dayKey}" data-schedule-disabled="${disabled ? "true" : "false"}">
           ${segments.map((segment) => {
             const left = scheduleMinuteToPercent(segment.startMinutes);
             const rawWidth = scheduleMinuteToPercent(segment.endMinutes) - scheduleMinuteToPercent(segment.startMinutes);
             const width = Math.max(0.6, Math.min(100 - left, Math.max(1.4, rawWidth)));
             const startLabel = scheduleMinutesToTime(segment.startMinutes);
             const endLabel = scheduleMinutesToTime(segment.endMinutes);
+            const editable = segment.editable && !disabled;
+            const showTime = editable || disabled;
             const isSelected = !!(
-              segment.editable
+              editable
               && selectedPeriod
               && selectedPeriod.dayKey === segment.sourceDayKey
               && selectedPeriod.periodIndex === segment.sourcePeriodIndex
@@ -677,20 +684,22 @@ function renderScheduleDayLane(schedule, scheduleIndex, dayKey, label) {
 
             return `
               <button
-                class="scheduleBlock ${segment.draft ? "is-draft" : ""} ${segment.overnight ? "is-overnight" : ""} ${segment.continuation ? "is-continuation" : ""} ${isSelected ? "is-selected" : ""}"
+                class="scheduleBlock ${segment.draft ? "is-draft" : ""} ${segment.overnight ? "is-overnight" : ""} ${segment.continuation ? "is-continuation" : ""} ${isSelected ? "is-selected" : ""} ${disabled ? "is-disabled" : ""}"
                 type="button"
                 style="left:${left}%;width:${width}%"
                 data-schedule-block="true"
                 data-schedule-day="${dayKey}"
                 data-schedule-period-index="${segment.sourcePeriodIndex}"
-                data-schedule-editable="${segment.editable ? "true" : "false"}"
+                data-schedule-editable="${editable ? "true" : "false"}"
                 title="${escapeHtml(meta)}"
               >
-                ${segment.editable ? `
+                ${showTime ? `
                   <span class="scheduleBlockTime">${escapeHtml(startLabel)} - ${escapeHtml(endLabel)}</span>
-                  <span class="scheduleBlockDelete" data-schedule-delete="true" data-schedule-source-day="${segment.sourceDayKey}" data-schedule-period-index="${segment.sourcePeriodIndex}" aria-label="Delete period">&times;</span>
-                  <span class="scheduleBlockHandle is-start" data-schedule-resize="start"></span>
-                  <span class="scheduleBlockHandle is-end" data-schedule-resize="end"></span>
+                  ${editable ? `
+                    <span class="scheduleBlockDelete" data-schedule-delete="true" data-schedule-source-day="${segment.sourceDayKey}" data-schedule-period-index="${segment.sourcePeriodIndex}" aria-label="Delete period">&times;</span>
+                    <span class="scheduleBlockHandle is-start" data-schedule-resize="start"></span>
+                    <span class="scheduleBlockHandle is-end" data-schedule-resize="end"></span>
+                  ` : ""}
                 ` : `<span class="scheduleBlockBadge">${segment.continuation ? `Carry-over until ${escapeHtml(endLabel)}` : `Overnight until ${escapeHtml(endLabel)}`}</span>`}
               </button>
             `;
@@ -3663,8 +3672,15 @@ function bindScheduleInspector(index) {
     const schedule = getSchedule();
     if (!schedule) return;
     schedule.holiday_calendar = normalizeHolidayCalendar(ev.target.value);
+    if (scheduleDayDisabled(schedule, HOLIDAY_DAY_KEY)
+      && state.selectedSchedulePeriod?.scheduleIndex === index
+      && state.selectedSchedulePeriod?.dayKey === HOLIDAY_DAY_KEY) {
+      state.selectedSchedulePeriod = null;
+    }
     markSchedulesDirty();
     renderScheduleSidebar();
+    renderCanvas();
+    renderInspector();
     setStatus(`Holiday calendar set to ${holidayCalendarLabel(schedule.holiday_calendar)}.`);
   });
 
@@ -3767,6 +3783,7 @@ function bindScheduleWorkspace(index) {
     track.addEventListener("mousedown", (event) => {
       if (event.button !== 0) return;
       if (event.target instanceof Element && event.target.closest("[data-schedule-block]")) return;
+      if (track.dataset.scheduleDisabled === "true") return;
 
       const dayKey = track.dataset.scheduleTrack;
       if (!dayKey) return;
