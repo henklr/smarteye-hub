@@ -21,6 +21,8 @@ const state = {
   scheduleDrag: null,
   selectedScheduleDay: null,
   selectedSchedulePeriod: null,
+  scheduleSpecialDayCalendarMonths: {},
+  scheduleSpecialDayCalendarViews: {},
   scheduleViewportScrollTop: null,
   scheduleViewportScrollLeft: null,
   scheduleBlockResizeObserver: null,
@@ -79,6 +81,8 @@ const HOLIDAY_DAY_KEY = "holidays";
 const SCHEDULE_DAY_META = [...WEEKDAY_META, [HOLIDAY_DAY_KEY, "Holidays"]];
 const SPECIAL_DAY_ROW_PREFIX = "special:";
 const SPECIAL_DAY_KEY_PREFIX = "special_day_";
+const SCHEDULE_CALENDAR_WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const SCHEDULE_CALENDAR_MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const HOLIDAY_CALENDAR_OPTIONS = [
   ["DK", "Denmark"],
   ["SE", "Sweden"],
@@ -594,6 +598,261 @@ function scheduleDateAssignedElsewhere(schedule, dateValue, specialDayKey) {
   if (!normalized) return null;
 
   return scheduleSpecialDays(schedule).find((item) => item.key !== specialDayKey && (item.dates || []).includes(normalized)) || null;
+}
+
+function currentScheduleMonthKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function currentScheduleDateValue() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+function normalizeScheduleMonthKey(value) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return currentScheduleMonthKey();
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) return currentScheduleMonthKey();
+  return `${match[1]}-${match[2]}`;
+}
+
+function scheduleMonthKeyForDate(value) {
+  const normalized = normalizeScheduleDate(value);
+  return normalized ? normalized.slice(0, 7) : "";
+}
+
+function scheduleMonthDateFromKey(monthKey) {
+  const normalized = normalizeScheduleMonthKey(monthKey);
+  const [year, month] = normalized.split("-").map((item) => Number(item));
+  return new Date(Date.UTC(year, month - 1, 1));
+}
+
+function scheduleShiftMonthKey(monthKey, offset) {
+  const monthDate = scheduleMonthDateFromKey(monthKey);
+  monthDate.setUTCMonth(monthDate.getUTCMonth() + Number(offset || 0));
+  return `${monthDate.getUTCFullYear()}-${String(monthDate.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function scheduleMonthLabel(monthKey) {
+  return scheduleMonthDateFromKey(monthKey).toLocaleDateString(undefined, {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function scheduleMonthName(monthKey) {
+  return scheduleMonthDateFromKey(monthKey).toLocaleDateString(undefined, {
+    month: "long",
+    timeZone: "UTC",
+  });
+}
+
+function scheduleDateShortLabel(dateValue) {
+  const normalized = normalizeScheduleDate(dateValue);
+  if (!normalized) return "";
+  return new Date(`${normalized}T00:00:00Z`).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function scheduleSpecialDayCalendarStateKey(scheduleIndex, rowKey) {
+  return `${scheduleIndex}:${rowKey}`;
+}
+
+function scheduleSpecialDayCalendarView(scheduleIndex, rowKey) {
+  return state.scheduleSpecialDayCalendarViews?.[scheduleSpecialDayCalendarStateKey(scheduleIndex, rowKey)] || "days";
+}
+
+function setScheduleSpecialDayCalendarView(scheduleIndex, rowKey, view) {
+  const nextView = ["days", "months", "years"].includes(view) ? view : "days";
+  state.scheduleSpecialDayCalendarViews[scheduleSpecialDayCalendarStateKey(scheduleIndex, rowKey)] = nextView;
+}
+
+function scheduleSpecialDayCalendarMonth(scheduleIndex, rowKey, selectedDates = []) {
+  const stateKey = scheduleSpecialDayCalendarStateKey(scheduleIndex, rowKey);
+  const fromState = normalizeScheduleMonthKey(state.scheduleSpecialDayCalendarMonths?.[stateKey] || "");
+  if (state.scheduleSpecialDayCalendarMonths?.[stateKey]) return fromState;
+
+  const latestSelectedDate = [...selectedDates].sort().at(-1);
+  return normalizeScheduleMonthKey(scheduleMonthKeyForDate(latestSelectedDate) || currentScheduleMonthKey());
+}
+
+function setScheduleSpecialDayCalendarMonth(scheduleIndex, rowKey, monthKey) {
+  state.scheduleSpecialDayCalendarMonths[scheduleSpecialDayCalendarStateKey(scheduleIndex, rowKey)] = normalizeScheduleMonthKey(monthKey);
+}
+
+function scheduleCalendarYearRange(yearValue) {
+  const centerYear = Math.round(Number(yearValue) || new Date().getFullYear());
+  const startYear = centerYear - 5;
+  return Array.from({ length: 12 }, (_, index) => startYear + index);
+}
+
+function renderScheduleSpecialDayCalendarDays(schedule, scheduleIndex, rowKey, specialDay, monthKey, selectedDates) {
+  const monthDate = scheduleMonthDateFromKey(monthKey);
+  const year = monthDate.getUTCFullYear();
+  const monthIndex = monthDate.getUTCMonth();
+  const daysInMonth = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+  const monthStartsAt = (monthDate.getUTCDay() + 6) % 7;
+  const totalCells = Math.ceil((monthStartsAt + daysInMonth) / 7) * 7;
+  const selectedDateSet = new Set(selectedDates);
+  const todayValue = currentScheduleDateValue();
+
+  const cells = Array.from({ length: totalCells }, (_, cellIndex) => {
+    const dayNumber = cellIndex - monthStartsAt + 1;
+    const cellDate = new Date(Date.UTC(year, monthIndex, dayNumber));
+    const cellMonthMatches = cellDate.getUTCMonth() === monthIndex;
+    const cellDateValue = `${cellDate.getUTCFullYear()}-${String(cellDate.getUTCMonth() + 1).padStart(2, "0")}-${String(cellDate.getUTCDate()).padStart(2, "0")}`;
+    const isWeekend = [0, 6].includes(cellDate.getUTCDay());
+
+    if (!cellMonthMatches) {
+      return `
+        <div class="scheduleCalendarDay is-outside ${isWeekend ? "is-weekend" : ""}" aria-hidden="true">
+          <span class="scheduleCalendarDayNumber">${cellDate.getUTCDate()}</span>
+        </div>
+      `;
+    }
+
+    const dateValue = cellDateValue;
+    const isSelected = selectedDateSet.has(dateValue);
+    const otherOwner = scheduleDateAssignedElsewhere(schedule, dateValue, specialDay?.key || "");
+    const isDisabled = !!otherOwner;
+    const isToday = dateValue === todayValue;
+    const title = isDisabled
+      ? `${dateValue} is already used by ${scheduleSpecialDayDisplayName(otherOwner)}.`
+      : (isSelected ? `Remove ${dateValue}` : `Add ${dateValue}`);
+
+    return `
+      <button
+        class="scheduleCalendarDay ${isSelected ? "is-selected" : ""} ${isDisabled ? "is-disabled" : ""} ${isToday ? "is-today" : ""} ${isWeekend ? "is-weekend" : ""}"
+        type="button"
+        data-schedule-special-calendar-date="${dateValue}"
+        aria-pressed="${isSelected ? "true" : "false"}"
+        ${isDisabled ? "disabled" : ""}
+        title="${escapeHtml(isToday ? `${title} Today.` : title)}"
+      >
+        <span class="scheduleCalendarDayNumber">${dayNumber}</span>
+        <span class="scheduleCalendarDayDot" aria-hidden="true"></span>
+      </button>
+    `;
+  }).join("");
+
+  return `
+    <div class="scheduleCalendarWeekdays">
+      ${SCHEDULE_CALENDAR_WEEKDAY_LABELS.map((label) => `<div class="scheduleCalendarWeekday">${label}</div>`).join("")}
+    </div>
+    <div class="scheduleCalendarGrid">
+      ${cells}
+    </div>
+  `;
+}
+
+function renderScheduleSpecialDayCalendarMonths(monthKey) {
+  const monthDate = scheduleMonthDateFromKey(monthKey);
+  const activeMonthIndex = monthDate.getUTCMonth();
+
+  return `
+    <div class="scheduleCalendarPickerGrid scheduleCalendarPickerGrid--months">
+      ${SCHEDULE_CALENDAR_MONTH_LABELS.map((label, monthIndex) => `
+        <button
+          class="scheduleCalendarPickerButton ${monthIndex === activeMonthIndex ? "is-selected" : ""}"
+          type="button"
+          data-schedule-special-calendar-month="${monthIndex}"
+        >
+          ${label}
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderScheduleSpecialDayCalendarYears(monthKey) {
+  const monthDate = scheduleMonthDateFromKey(monthKey);
+  const activeYear = monthDate.getUTCFullYear();
+  const years = scheduleCalendarYearRange(activeYear);
+
+  return `
+    <div class="scheduleCalendarPickerGrid scheduleCalendarPickerGrid--years">
+      ${years.map((yearValue) => `
+        <button
+          class="scheduleCalendarPickerButton ${yearValue === activeYear ? "is-selected" : ""}"
+          type="button"
+          data-schedule-special-calendar-year="${yearValue}"
+        >
+          ${yearValue}
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderScheduleSpecialDayCalendar(schedule, scheduleIndex, rowKey, specialDay) {
+  const selectedDates = normalizeScheduleSpecialDayDates(specialDay?.dates || []);
+  const monthKey = scheduleSpecialDayCalendarMonth(scheduleIndex, rowKey, selectedDates);
+  const monthDate = scheduleMonthDateFromKey(monthKey);
+  const year = monthDate.getUTCFullYear();
+  const monthIndex = monthDate.getUTCMonth();
+  const calendarView = scheduleSpecialDayCalendarView(scheduleIndex, rowKey);
+  const selectedPreview = selectedDates.slice(0, 6);
+  const bodyMarkup = calendarView === "months"
+    ? renderScheduleSpecialDayCalendarMonths(monthKey)
+    : (calendarView === "years"
+      ? renderScheduleSpecialDayCalendarYears(monthKey)
+      : renderScheduleSpecialDayCalendarDays(schedule, scheduleIndex, rowKey, specialDay, monthKey, selectedDates));
+  const headerMeta = calendarView === "days"
+    ? `Click a day to toggle it for this group. ${selectedDates.length ? `${selectedDates.length} selected.` : "No dates selected yet."}`
+    : (calendarView === "months" ? "Choose a month to return to the day grid." : "Choose a year, then pick a month.");
+  const yearRange = scheduleCalendarYearRange(year);
+
+  return `
+    <div class="scheduleCalendar mt-10">
+      <div class="rowSplit scheduleCalendarHeader">
+        <div>
+          <div class="inspectorTitle">Selected dates</div>
+          <div class="inlineMeta">${escapeHtml(headerMeta)}</div>
+        </div>
+        <div class="scheduleCalendarNav">
+          <button
+            class="btn"
+            type="button"
+            data-schedule-special-calendar-nav="${calendarView === "years" ? "-12" : "-1"}"
+            data-schedule-special-calendar-nav-mode="${calendarView === "years" ? "years" : (calendarView === "months" ? "year" : "month")}"
+            aria-label="${calendarView === "years" ? "Previous years" : (calendarView === "months" ? "Previous year" : "Previous month")}"
+          >&lsaquo;</button>
+          <div class="scheduleCalendarTitleGroup">
+            ${calendarView === "years" ? `
+              <button class="scheduleCalendarTitleButton is-static" type="button" disabled>${yearRange[0]}-${yearRange[yearRange.length - 1]}</button>
+            ` : calendarView === "months" ? `
+              <button class="scheduleCalendarTitleButton is-active" type="button" data-schedule-special-calendar-view="years">${year}</button>
+            ` : `
+              <button class="scheduleCalendarTitleButton" type="button" data-schedule-special-calendar-view="months">${escapeHtml(scheduleMonthName(monthKey))}</button>
+            `}
+          </div>
+          <button class="btn" type="button" data-schedule-special-calendar-today="true">Today</button>
+          <button
+            class="btn"
+            type="button"
+            data-schedule-special-calendar-nav="${calendarView === "years" ? "12" : "1"}"
+            data-schedule-special-calendar-nav-mode="${calendarView === "years" ? "years" : (calendarView === "months" ? "year" : "month")}"
+            aria-label="${calendarView === "years" ? "Next years" : (calendarView === "months" ? "Next year" : "Next month")}"
+          >&rsaquo;</button>
+        </div>
+      </div>
+      ${bodyMarkup}
+      ${selectedPreview.length ? `
+        <div class="scheduleCalendarSelection">
+          ${selectedPreview.map((dateValue) => `<span class="miniPill">${escapeHtml(scheduleDateShortLabel(dateValue))}</span>`).join("")}
+          ${selectedDates.length > selectedPreview.length ? `<span class="miniPill">+${selectedDates.length - selectedPreview.length} more</span>` : ""}
+        </div>
+      ` : ""}
+    </div>
+  `;
 }
 
 function normalizeScheduleTime(value, fallback = "09:00") {
@@ -2949,25 +3208,9 @@ function renderScheduleManualEditInspector(index) {
             <label>Special day group name</label>
             <input id="scheduleSpecialDayNameInput" value="${escapeHtml(row.specialDay?.name || "")}" placeholder="Christmas week" />
           </div>
-          <div>
-            <label>Add date</label>
-            <input id="scheduleSpecialDayDateInput" type="date" />
-          </div>
-          <div>
-            <label>&nbsp;</label>
-            <button class="btn" id="btnScheduleSpecialDayAddDate" type="button">Add date</button>
-          </div>
         </div>
-        ${specialDates.length ? `
-          <div class="scheduleSpecialDateList mt-10">
-            ${specialDates.map((dateValue) => `
-              <button class="scheduleSpecialDateChip" type="button" data-schedule-special-date-remove="${dateValue}">
-                <span>${escapeHtml(dateValue)}</span>
-                <span aria-hidden="true">&times;</span>
-              </button>
-            `).join("")}
-          </div>
-        ` : `<div class="inlineMeta mt-10">No dates added yet. Dates in this group override the regular weekday and holiday rows.</div>`}
+        ${renderScheduleSpecialDayCalendar(schedule, index, dayKey, row.specialDay)}
+        ${specialDates.length ? "" : `<div class="inlineMeta mt-10">No dates selected yet. Dates in this group override the regular weekday and holiday rows.</div>`}
         <div class="inspectorActionGrid inspectorActionGrid--single mt-10">
           <button class="btn btn-danger" id="btnScheduleSpecialDayDelete" type="button">Delete special day group</button>
         </div>
@@ -4048,43 +4291,98 @@ function bindScheduleInspector(index) {
     renderInspector();
   });
 
-  document.getElementById("btnScheduleSpecialDayAddDate")?.addEventListener("click", () => {
-    const selectedDay = getSelectedDayEntry();
-    if (!selectedDay || selectedDay.row.kind !== "special") return;
-
-    const input = document.getElementById("scheduleSpecialDayDateInput");
-    const nextDate = normalizeScheduleDate(input?.value || "");
-    if (!nextDate) {
-      setStatus("Choose a valid date for the special day group.", true);
-      return;
-    }
-
-    const otherOwner = scheduleDateAssignedElsewhere(selectedDay.schedule, nextDate, selectedDay.row.specialDay.key);
-    if (otherOwner) {
-      setStatus(`${nextDate} is already assigned to ${scheduleSpecialDayDisplayName(otherOwner)}.`, true);
-      return;
-    }
-
-    selectedDay.row.specialDay.dates = normalizeScheduleSpecialDayDates([
-      ...(selectedDay.row.specialDay.dates || []),
-      nextDate,
-    ]);
-
-    if (input) input.value = "";
-    markSchedulesDirty();
-    renderCanvas();
-    renderInspector();
-  });
-
-  inspector?.querySelectorAll("[data-schedule-special-date-remove]").forEach((button) => {
+  inspector?.querySelectorAll("[data-schedule-special-calendar-nav]").forEach((button) => {
     button.addEventListener("click", () => {
       const selectedDay = getSelectedDayEntry();
       if (!selectedDay || selectedDay.row.kind !== "special") return;
 
-      const dateValue = normalizeScheduleDate(button.dataset.scheduleSpecialDateRemove || "");
-      selectedDay.row.specialDay.dates = (selectedDay.row.specialDay.dates || []).filter((item) => item !== dateValue);
+      const offset = Number(button.dataset.scheduleSpecialCalendarNav || 0);
+      const mode = String(button.dataset.scheduleSpecialCalendarNavMode || "month");
+      const currentMonth = scheduleSpecialDayCalendarMonth(index, selectedDay.dayKey, selectedDay.row.specialDay.dates || []);
+      if (mode === "month") {
+        setScheduleSpecialDayCalendarMonth(index, selectedDay.dayKey, scheduleShiftMonthKey(currentMonth, offset));
+      } else {
+        const monthDate = scheduleMonthDateFromKey(currentMonth);
+        const nextYear = monthDate.getUTCFullYear() + offset;
+        const nextMonthKey = `${nextYear}-${String(monthDate.getUTCMonth() + 1).padStart(2, "0")}`;
+        setScheduleSpecialDayCalendarMonth(index, selectedDay.dayKey, nextMonthKey);
+      }
+      renderInspector();
+    });
+  });
+
+  inspector?.querySelectorAll("[data-schedule-special-calendar-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const selectedDay = getSelectedDayEntry();
+      if (!selectedDay || selectedDay.row.kind !== "special") return;
+
+      setScheduleSpecialDayCalendarView(index, selectedDay.dayKey, button.dataset.scheduleSpecialCalendarView || "days");
+      renderInspector();
+    });
+  });
+
+  inspector?.querySelectorAll("[data-schedule-special-calendar-today]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const selectedDay = getSelectedDayEntry();
+      if (!selectedDay || selectedDay.row.kind !== "special") return;
+
+      setScheduleSpecialDayCalendarMonth(index, selectedDay.dayKey, currentScheduleMonthKey());
+      setScheduleSpecialDayCalendarView(index, selectedDay.dayKey, "days");
+      renderInspector();
+    });
+  });
+
+  inspector?.querySelectorAll("[data-schedule-special-calendar-month]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const selectedDay = getSelectedDayEntry();
+      if (!selectedDay || selectedDay.row.kind !== "special") return;
+
+      const currentMonth = scheduleSpecialDayCalendarMonth(index, selectedDay.dayKey, selectedDay.row.specialDay.dates || []);
+      const currentMonthDate = scheduleMonthDateFromKey(currentMonth);
+      const yearValue = currentMonthDate.getUTCFullYear();
+      const monthIndex = Math.max(0, Math.min(11, Number(button.dataset.scheduleSpecialCalendarMonth || 0)));
+      setScheduleSpecialDayCalendarMonth(index, selectedDay.dayKey, `${yearValue}-${String(monthIndex + 1).padStart(2, "0")}`);
+      setScheduleSpecialDayCalendarView(index, selectedDay.dayKey, "days");
+      renderInspector();
+    });
+  });
+
+  inspector?.querySelectorAll("[data-schedule-special-calendar-year]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const selectedDay = getSelectedDayEntry();
+      if (!selectedDay || selectedDay.row.kind !== "special") return;
+
+      const currentMonth = scheduleSpecialDayCalendarMonth(index, selectedDay.dayKey, selectedDay.row.specialDay.dates || []);
+      const currentMonthDate = scheduleMonthDateFromKey(currentMonth);
+      const nextYear = Number(button.dataset.scheduleSpecialCalendarYear || currentMonthDate.getUTCFullYear());
+      const nextMonthKey = `${nextYear}-${String(currentMonthDate.getUTCMonth() + 1).padStart(2, "0")}`;
+      setScheduleSpecialDayCalendarMonth(index, selectedDay.dayKey, nextMonthKey);
+      setScheduleSpecialDayCalendarView(index, selectedDay.dayKey, "months");
+      renderInspector();
+    });
+  });
+
+  inspector?.querySelectorAll("[data-schedule-special-calendar-date]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const selectedDay = getSelectedDayEntry();
+      if (!selectedDay || selectedDay.row.kind !== "special") return;
+
+      const dateValue = normalizeScheduleDate(button.dataset.scheduleSpecialCalendarDate || "");
+      if (!dateValue) return;
+
+      const currentDates = selectedDay.row.specialDay.dates || [];
+      if (currentDates.includes(dateValue)) {
+        selectedDay.row.specialDay.dates = currentDates.filter((item) => item !== dateValue);
+      } else {
+        const otherOwner = scheduleDateAssignedElsewhere(selectedDay.schedule, dateValue, selectedDay.row.specialDay.key);
+        if (otherOwner) {
+          setStatus(`${dateValue} is already assigned to ${scheduleSpecialDayDisplayName(otherOwner)}.`, true);
+          return;
+        }
+        selectedDay.row.specialDay.dates = normalizeScheduleSpecialDayDates([...currentDates, dateValue]);
+      }
+
       markSchedulesDirty();
-      renderCanvas();
       renderInspector();
     });
   });

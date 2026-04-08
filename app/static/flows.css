@@ -692,27 +692,225 @@ body.flowsPage {
   margin: 0;
 }
 
-.flowsPage .scheduleSpecialDateList {
-  display: flex;
+.flowsPage .scheduleCalendar {
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at top left, rgba(198, 161, 75, 0.08), transparent 38%),
+    rgba(255, 255, 255, 0.02);
+}
+
+.flowsPage .scheduleCalendarHeader {
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.flowsPage .scheduleCalendarHeader .inspectorTitle {
+  margin-bottom: 4px;
+}
+
+.flowsPage .scheduleCalendarNav {
+  display: inline-flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.flowsPage .scheduleSpecialDateChip {
+.flowsPage .scheduleCalendarTitleGroup {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border: 1px solid rgba(198, 161, 75, 0.2);
+  gap: 6px;
+}
+
+.flowsPage .scheduleCalendarTitleButton {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 999px;
-  background: rgba(198, 161, 75, 0.08);
-  color: rgba(255, 245, 214, 0.94);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
   cursor: pointer;
 }
 
-.flowsPage .scheduleSpecialDateChip:hover {
-  background: rgba(198, 161, 75, 0.14);
-  border-color: rgba(198, 161, 75, 0.3);
+.flowsPage .scheduleCalendarTitleButton:hover {
+  border-color: rgba(198, 161, 75, 0.24);
+  background: rgba(198, 161, 75, 0.08);
+}
+
+.flowsPage .scheduleCalendarTitleButton.is-active,
+.flowsPage .scheduleCalendarTitleButton.is-static {
+  border-color: rgba(198, 161, 75, 0.28);
+  background: rgba(198, 161, 75, 0.12);
+  color: rgba(255, 247, 224, 0.96);
+}
+
+.flowsPage .scheduleCalendarTitleButton.is-static {
+  cursor: default;
+}
+
+.flowsPage .scheduleCalendarNav .btn {
+  min-width: 40px;
+  padding-inline: 0;
+}
+
+.flowsPage .scheduleCalendarPickerGrid {
+  display: grid;
+  gap: 8px;
+}
+
+.flowsPage .scheduleCalendarPickerGrid--months {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.flowsPage .scheduleCalendarPickerGrid--years {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.flowsPage .scheduleCalendarPickerButton {
+  min-height: 48px;
+  padding: 10px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(9, 13, 17, 0.84), rgba(8, 12, 16, 0.56));
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    transform 0.12s ease,
+    color 0.12s ease;
+}
+
+.flowsPage .scheduleCalendarPickerButton:hover {
+  border-color: rgba(198, 161, 75, 0.24);
+  background: rgba(198, 161, 75, 0.08);
+  transform: translateY(-1px);
+}
+
+.flowsPage .scheduleCalendarPickerButton.is-selected {
+  border-color: rgba(198, 161, 75, 0.34);
+  background: linear-gradient(180deg, rgba(198, 161, 75, 0.12), rgba(255, 255, 255, 0.03));
+  color: rgba(255, 248, 228, 0.98);
+  box-shadow: inset 0 0 0 1px rgba(198, 161, 75, 0.12);
+}
+
+.flowsPage .scheduleCalendarWeekdays,
+.flowsPage .scheduleCalendarGrid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.flowsPage .scheduleCalendarWeekdays {
+  margin-bottom: 6px;
+}
+
+.flowsPage .scheduleCalendarWeekday {
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.flowsPage .scheduleCalendarDay {
+  position: relative;
+  min-height: 50px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 10px 4px 15px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(9, 13, 17, 0.84), rgba(8, 12, 16, 0.56));
+  color: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    transform 0.12s ease,
+    color 0.12s ease;
+}
+
+.flowsPage .scheduleCalendarDay:hover {
+  border-color: rgba(198, 161, 75, 0.24);
+  background: rgba(198, 161, 75, 0.08);
+  transform: translateY(-1px);
+}
+
+.flowsPage .scheduleCalendarDay.is-selected {
+  border-color: rgba(198, 161, 75, 0.34);
+  background: linear-gradient(180deg, rgba(198, 161, 75, 0.12), rgba(255, 255, 255, 0.03));
+  color: rgba(255, 248, 228, 0.98);
+  box-shadow: inset 0 0 0 1px rgba(198, 161, 75, 0.12);
+}
+
+.flowsPage .scheduleCalendarDay.is-today {
+  border-color: rgba(79, 140, 255, 0.34);
+  box-shadow: inset 0 0 0 1px rgba(79, 140, 255, 0.18);
+}
+
+.flowsPage .scheduleCalendarDay.is-weekend:not(.is-selected):not(.is-disabled):not(.is-outside) {
+  background: linear-gradient(180deg, rgba(14, 20, 28, 0.82), rgba(8, 12, 16, 0.56));
+}
+
+.flowsPage .scheduleCalendarDay.is-disabled,
+.flowsPage .scheduleCalendarDay:disabled {
+  cursor: not-allowed;
+  color: rgba(255, 255, 255, 0.34);
+  background: rgba(255, 255, 255, 0.02);
+  border-color: rgba(255, 255, 255, 0.05);
+  transform: none;
+}
+
+.flowsPage .scheduleCalendarDay.is-outside {
+  min-height: 50px;
+  border-style: dashed;
+  color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.01);
+  border-color: rgba(255, 255, 255, 0.04);
+}
+
+.flowsPage .scheduleCalendarDay.is-outside.is-weekend {
+  color: rgba(79, 140, 255, 0.22);
+}
+
+.flowsPage .scheduleCalendarDayNumber {
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.flowsPage .scheduleCalendarDayDot {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(198, 161, 75, 0.92);
+  transform: translateX(-50%) scale(0);
+  transition: transform 0.12s ease;
+}
+
+.flowsPage .scheduleCalendarDay.is-selected .scheduleCalendarDayDot {
+  transform: translateX(-50%) scale(1);
+}
+
+.flowsPage .scheduleCalendarSelection {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .flowsPage .scheduleBlockDelete,
