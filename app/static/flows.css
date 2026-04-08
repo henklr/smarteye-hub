@@ -383,13 +383,14 @@ body.flowsPage {
 
 .flowsPage .schedulePlannerToolbarActions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 8px;
 }
 
 .flowsPage .schedulePlannerToolbarActions .btn {
   width: 100%;
   justify-content: center;
+  white-space: nowrap;
 }
 
 .flowsPage .schedulePlannerViewport {
@@ -496,6 +497,8 @@ body.flowsPage {
   width: 100%;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   min-height: 44px;
   padding: 0 12px;
   border: 1px solid transparent;
@@ -506,6 +509,9 @@ body.flowsPage {
 }
 
 .flowsPage .scheduleDayLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 13px;
   font-weight: 900;
   color: rgba(255, 255, 255, 0.92);
@@ -684,6 +690,29 @@ body.flowsPage {
 
 .flowsPage .scheduleDayEditItem:not(.is-selected) .scheduleDayEditHeader {
   margin: 0;
+}
+
+.flowsPage .scheduleSpecialDateList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.flowsPage .scheduleSpecialDateChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid rgba(198, 161, 75, 0.2);
+  border-radius: 999px;
+  background: rgba(198, 161, 75, 0.08);
+  color: rgba(255, 245, 214, 0.94);
+  cursor: pointer;
+}
+
+.flowsPage .scheduleSpecialDateChip:hover {
+  background: rgba(198, 161, 75, 0.14);
+  border-color: rgba(198, 161, 75, 0.3);
 }
 
 .flowsPage .scheduleBlockDelete,

@@ -56,6 +56,8 @@ _WEEKDAY_KEYS: Tuple[str, ...] = (
 )
 _HOLIDAY_DAY_KEY = "holidays"
 _SCHEDULE_DAY_KEYS: Tuple[str, ...] = _WEEKDAY_KEYS + (_HOLIDAY_DAY_KEY,)
+_SPECIAL_DAY_ROW_PREFIX = "special:"
+_SPECIAL_DAY_KEY_PREFIX = "special_day_"
 _DEFAULT_HOLIDAY_CALENDAR = "DK"
 _HOLIDAY_CALENDAR_ALIASES: Dict[str, str] = {
     "DK": "DK",
@@ -146,11 +148,19 @@ class SchedulePeriodModel(BaseModel):
     end: str = "17:00"
 
 
+class ScheduleSpecialDayModel(BaseModel):
+    key: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)
+    dates: List[str] = Field(default_factory=list)
+    periods: List[SchedulePeriodModel] = Field(default_factory=list)
+
+
 class ScheduleModel(BaseModel):
     key: str = Field(..., min_length=1)
     name: str = Field(..., min_length=1)
     holiday_calendar: str = _DEFAULT_HOLIDAY_CALENDAR
     days: Dict[str, List[SchedulePeriodModel]] = Field(default_factory=dict)
+    special_days: List[ScheduleSpecialDayModel] = Field(default_factory=list)
 
 
 class SchedulesIn(BaseModel):
@@ -967,6 +977,91 @@ def _schedule_days_template() -> Dict[str, List[Dict[str, str]]]:
     return {day: [] for day in _SCHEDULE_DAY_KEYS}
 
 
+def _normalize_schedule_date(value: Any, label: str) -> str:
+    raw = str(value or "").strip()
+    matched = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", raw)
+    if matched is None:
+        raise HTTPException(status_code=400, detail=f"{label} must use YYYY-MM-DD date")
+
+    year = int(matched.group(1))
+    month = int(matched.group(2))
+    day = int(matched.group(3))
+    try:
+        normalized = date(year, month, day)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{label} must use a valid calendar date") from exc
+    return normalized.isoformat()
+
+
+def _normalize_schedule_special_day_key(value: Any, index: int) -> str:
+    raw = re.sub(r"[^a-z0-9_-]+", "_", str(value or "").strip().lower())
+    raw = re.sub(r"^[_-]+|[_-]+$", "", raw)
+    return raw or f"{_SPECIAL_DAY_KEY_PREFIX}{index + 1}"
+
+
+def _normalize_schedule_special_days(items: Any) -> List[Dict[str, Any]]:
+    special_days: List[Dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    seen_dates: Dict[str, str] = {}
+
+    for index, raw in enumerate(list(items or [])):
+        if not isinstance(raw, dict):
+            continue
+
+        key = _normalize_schedule_special_day_key(raw.get("key"), index)
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail=f"Special day group '{key}' needs a name")
+        if key in seen_keys:
+            raise HTTPException(status_code=400, detail=f"Duplicate special day group key: {key}")
+        seen_keys.add(key)
+
+        dates: List[str] = []
+        group_dates: set[str] = set()
+        for raw_date in list(raw.get("dates") or []):
+            normalized_date = _normalize_schedule_date(raw_date, f"{name} date")
+            if normalized_date in group_dates:
+                continue
+            owner = seen_dates.get(normalized_date)
+            if owner is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Special day date {normalized_date} is already assigned to '{owner}'",
+                )
+            group_dates.add(normalized_date)
+            seen_dates[normalized_date] = name
+            dates.append(normalized_date)
+        dates.sort()
+
+        periods: List[Dict[str, str]] = []
+        seen_periods: set[Tuple[str, str]] = set()
+        for period in list(raw.get("periods") or []):
+            if not isinstance(period, dict):
+                continue
+            start = _normalize_schedule_time(period.get("start"), f"{name} start time")
+            end = _normalize_schedule_time(period.get("end"), f"{name} end time")
+            if start == end:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{name} active hours cannot start and end at the same time",
+                )
+            pair = (start, end)
+            if pair in seen_periods:
+                continue
+            seen_periods.add(pair)
+            periods.append({"start": start, "end": end})
+
+        periods.sort(key=lambda item: (_schedule_time_to_minutes(item["start"]), _schedule_time_to_minutes(item["end"])))
+        special_days.append({
+            "key": key,
+            "name": name,
+            "dates": dates,
+            "periods": periods,
+        })
+
+    return special_days
+
+
 def _normalize_holiday_calendar(value: Any) -> str:
     raw = re.sub(r"[\s_-]+", "", str(value or _DEFAULT_HOLIDAY_CALENDAR).strip().upper())
     if not raw:
@@ -1016,10 +1111,37 @@ def _is_schedule_holiday_date(schedule: Dict[str, Any], day_value: date) -> bool
         return False
 
 
-def _effective_schedule_day_key(schedule: Dict[str, Any], day_value: date) -> str:
-    weekday_key = _WEEKDAY_KEYS[day_value.weekday()]
+def _schedule_special_day_for_date(schedule: Dict[str, Any], day_value: date) -> Optional[Dict[str, Any]]:
+    wanted = day_value.isoformat()
+    for item in list(schedule.get("special_days") or []):
+        if not isinstance(item, dict):
+            continue
+        if wanted in list(item.get("dates") or []):
+            return item
+    return None
+
+
+def _schedule_row_periods(schedule: Dict[str, Any], row_key: str) -> List[Dict[str, str]]:
+    if str(row_key).startswith(_SPECIAL_DAY_ROW_PREFIX):
+        special_key = str(row_key)[len(_SPECIAL_DAY_ROW_PREFIX):]
+        for item in list(schedule.get("special_days") or []):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("key") or "").strip() == special_key:
+                return list(item.get("periods") or [])
+        return []
+
     days = schedule.get("days") if isinstance(schedule.get("days"), dict) else {}
-    holiday_periods = list(days.get(_HOLIDAY_DAY_KEY) or [])
+    return list(days.get(row_key) or [])
+
+
+def _effective_schedule_row_key(schedule: Dict[str, Any], day_value: date) -> str:
+    special_day = _schedule_special_day_for_date(schedule, day_value)
+    if special_day is not None:
+        return f"{_SPECIAL_DAY_ROW_PREFIX}{special_day.get('key')}"
+
+    weekday_key = _WEEKDAY_KEYS[day_value.weekday()]
+    holiday_periods = _schedule_row_periods(schedule, _HOLIDAY_DAY_KEY)
     if holiday_periods and _is_schedule_holiday_date(schedule, day_value):
         return _HOLIDAY_DAY_KEY
     return weekday_key
@@ -1065,6 +1187,7 @@ def _normalize_schedule_items(items: Any) -> List[Dict[str, Any]]:
         raw_days = raw.get("days") if isinstance(raw.get("days"), dict) else {}
         days = _schedule_days_template()
         holiday_calendar = _normalize_holiday_calendar(raw.get("holiday_calendar"))
+        special_days = _normalize_schedule_special_days(raw.get("special_days") if isinstance(raw.get("special_days"), list) else [])
 
         for day in _SCHEDULE_DAY_KEYS:
             periods: List[Dict[str, str]] = []
@@ -1094,6 +1217,7 @@ def _normalize_schedule_items(items: Any) -> List[Dict[str, Any]]:
                 "name": name,
                 "holiday_calendar": holiday_calendar,
                 "days": days,
+                "special_days": special_days,
             }
         )
 
@@ -1114,12 +1238,11 @@ def _is_schedule_active_at(schedule: Dict[str, Any], when: Optional[datetime] = 
     now = when or datetime.now()
     current_date = now.date()
     previous_date = current_date - timedelta(days=1)
-    current_day = _effective_schedule_day_key(schedule, current_date)
-    previous_day = _effective_schedule_day_key(schedule, previous_date)
+    current_day = _effective_schedule_row_key(schedule, current_date)
+    previous_day = _effective_schedule_row_key(schedule, previous_date)
     minute_of_day = now.hour * 60 + now.minute
-    days = schedule.get("days") if isinstance(schedule.get("days"), dict) else {}
 
-    for period in list(days.get(current_day) or []):
+    for period in _schedule_row_periods(schedule, current_day):
         if not isinstance(period, dict):
             continue
         start = _schedule_time_to_minutes(period.get("start"))
@@ -1129,7 +1252,7 @@ def _is_schedule_active_at(schedule: Dict[str, Any], when: Optional[datetime] = 
         if start > end and minute_of_day >= start:
             return True
 
-    for period in list(days.get(previous_day) or []):
+    for period in _schedule_row_periods(schedule, previous_day):
         if not isinstance(period, dict):
             continue
         start = _schedule_time_to_minutes(period.get("start"))

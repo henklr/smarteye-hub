@@ -77,6 +77,8 @@ const WEEKDAY_META = [
 
 const HOLIDAY_DAY_KEY = "holidays";
 const SCHEDULE_DAY_META = [...WEEKDAY_META, [HOLIDAY_DAY_KEY, "Holidays"]];
+const SPECIAL_DAY_ROW_PREFIX = "special:";
+const SPECIAL_DAY_KEY_PREFIX = "special_day_";
 const HOLIDAY_CALENDAR_OPTIONS = [
   ["DK", "Denmark"],
   ["SE", "Sweden"],
@@ -207,15 +209,16 @@ function currentSelectedScheduleDayEntry(index = state.selectedScheduleIndex) {
   const schedule = currentSchedules()[index];
   if (!schedule) return null;
 
-  const dayMeta = SCHEDULE_DAY_META.find(([dayKey]) => dayKey === selection.dayKey);
-  if (!dayMeta) return null;
+  const row = scheduleRowEntry(schedule, selection.dayKey);
+  if (!row) return null;
 
   return {
     schedule,
     selection,
-    dayKey: dayMeta[0],
-    dayLabel: dayMeta[1],
-    periods: schedule.days?.[selection.dayKey] || [],
+    dayKey: row.rowKey,
+    dayLabel: row.label,
+    periods: row.periods,
+    row,
   };
 }
 
@@ -226,11 +229,14 @@ function currentSelectedSchedulePeriodEntry(index = state.selectedScheduleIndex)
   const schedule = currentSchedules()[index];
   if (!schedule) return null;
 
-  const periods = schedule.days?.[selection.dayKey];
+  const row = scheduleRowEntry(schedule, selection.dayKey);
+  if (!row) return null;
+
+  const periods = row.periods;
   const period = periods?.[selection.periodIndex];
   if (!period) return null;
 
-  return { schedule, selection, period };
+  return { schedule, selection, period, row };
 }
 
 function currentSelectedPublicVariable() {
@@ -303,7 +309,8 @@ function selectSchedule(index) {
 }
 
 function selectScheduleDay(scheduleIndex, dayKey) {
-  if (!Number.isInteger(scheduleIndex) || scheduleIndex < 0 || !SCHEDULE_DAY_META.some(([key]) => key === dayKey)) {
+  const schedule = currentSchedules()[scheduleIndex];
+  if (!Number.isInteger(scheduleIndex) || scheduleIndex < 0 || !schedule || !scheduleRowEntry(schedule, dayKey)) {
     state.selectedScheduleDay = null;
     state.selectedSchedulePeriod = null;
     return;
@@ -428,6 +435,167 @@ function emptyScheduleDays() {
   return Object.fromEntries(SCHEDULE_DAY_META.map(([key]) => [key, []]));
 }
 
+function normalizeScheduleDate(value) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return "";
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const normalized = new Date(Date.UTC(year, month - 1, day));
+  if (normalized.getUTCFullYear() !== year || normalized.getUTCMonth() !== month - 1 || normalized.getUTCDate() !== day) {
+    return "";
+  }
+
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
+
+function normalizeScheduleSpecialDayKey(value, fallbackIndex = 0) {
+  const slug = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^[_-]+|[_-]+$/g, "");
+  return slug || `${SPECIAL_DAY_KEY_PREFIX}${fallbackIndex + 1}`;
+}
+
+function scheduleSpecialDayDisplayName(item = {}, fallbackIndex = 0) {
+  return String(item?.name || "").trim() || `Special day ${fallbackIndex + 1}`;
+}
+
+function normalizeScheduleSpecialDayDates(values = []) {
+  const seen = new Set();
+  const out = [];
+
+  for (const value of values || []) {
+    const normalized = normalizeScheduleDate(value);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+
+  return out.sort((left, right) => left.localeCompare(right));
+}
+
+function normalizeScheduleSpecialDayRecord(item = {}, fallbackIndex = 0) {
+  return {
+    key: normalizeScheduleSpecialDayKey(item.key, fallbackIndex),
+    name: scheduleSpecialDayDisplayName(item, fallbackIndex),
+    dates: normalizeScheduleSpecialDayDates(item.dates || []),
+    periods: normalizeSchedulePeriods(item.periods || []),
+  };
+}
+
+function normalizeScheduleSpecialDays(items = []) {
+  const out = [];
+  const seen = new Set();
+
+  for (const [index, item] of (items || []).entries()) {
+    if (!item || typeof item !== "object") continue;
+    const normalized = normalizeScheduleSpecialDayRecord(item, index);
+    let nextKey = normalized.key;
+    let suffix = 2;
+    while (seen.has(nextKey)) {
+      nextKey = `${normalized.key}_${suffix}`;
+      suffix += 1;
+    }
+    normalized.key = nextKey;
+    seen.add(nextKey);
+    out.push(normalized);
+  }
+
+  return out;
+}
+
+function scheduleSpecialDays(schedule) {
+  return Array.isArray(schedule?.special_days) ? schedule.special_days : [];
+}
+
+function scheduleRowEntry(schedule, rowKey) {
+  const builtIn = SCHEDULE_DAY_META.find(([dayKey]) => dayKey === rowKey);
+  if (builtIn) {
+    return {
+      rowKey: builtIn[0],
+      sourceKey: builtIn[0],
+      label: builtIn[1],
+      kind: "built-in",
+      periods: schedule?.days?.[builtIn[0]] || [],
+      disabled: scheduleDayDisabled(schedule, builtIn[0]),
+      specialDay: null,
+      specialIndex: -1,
+    };
+  }
+
+  const normalizedKey = String(rowKey || "");
+  if (!normalizedKey.startsWith(SPECIAL_DAY_ROW_PREFIX)) return null;
+
+  const specialKey = normalizedKey.slice(SPECIAL_DAY_ROW_PREFIX.length);
+  const specialIndex = scheduleSpecialDays(schedule).findIndex((item) => item.key === specialKey);
+  if (specialIndex < 0) return null;
+
+  const specialDay = scheduleSpecialDays(schedule)[specialIndex];
+  return {
+    rowKey: normalizedKey,
+    sourceKey: specialKey,
+    label: scheduleSpecialDayDisplayName(specialDay, specialIndex),
+    kind: "special",
+    periods: specialDay.periods || [],
+    disabled: false,
+    specialDay,
+    specialIndex,
+  };
+}
+
+function scheduleRowsForSchedule(schedule) {
+  return [
+    ...SCHEDULE_DAY_META.map(([dayKey]) => scheduleRowEntry(schedule, dayKey)).filter(Boolean),
+    ...scheduleSpecialDays(schedule).map((item) => scheduleRowEntry(schedule, `${SPECIAL_DAY_ROW_PREFIX}${item.key}`)).filter(Boolean),
+  ];
+}
+
+function scheduleRowPeriods(schedule, rowKey) {
+  return scheduleRowEntry(schedule, rowKey)?.periods || [];
+}
+
+function setScheduleRowPeriods(schedule, rowKey, periods) {
+  const row = scheduleRowEntry(schedule, rowKey);
+  if (!row) return [];
+
+  const normalized = normalizeScheduleDayPeriods(periods || []);
+  if (row.kind === "special") {
+    row.specialDay.periods = normalized;
+  } else {
+    schedule.days[row.rowKey] = normalized;
+  }
+  return normalized;
+}
+
+function nextScheduleSpecialDayKey(schedule) {
+  const existing = new Set(scheduleSpecialDays(schedule).map((item) => String(item.key || "").trim()).filter(Boolean));
+  let index = scheduleSpecialDays(schedule).length + 1;
+  while (existing.has(`${SPECIAL_DAY_KEY_PREFIX}${index}`)) {
+    index += 1;
+  }
+  return `${SPECIAL_DAY_KEY_PREFIX}${index}`;
+}
+
+function nextScheduleSpecialDayName(schedule) {
+  const existing = new Set(scheduleSpecialDays(schedule).map((item) => scheduleSpecialDayDisplayName(item).toLowerCase()));
+  let index = scheduleSpecialDays(schedule).length + 1;
+  while (existing.has(`special day ${index}`)) {
+    index += 1;
+  }
+  return `Special day ${index}`;
+}
+
+function scheduleDateAssignedElsewhere(schedule, dateValue, specialDayKey) {
+  const normalized = normalizeScheduleDate(dateValue);
+  if (!normalized) return null;
+
+  return scheduleSpecialDays(schedule).find((item) => item.key !== specialDayKey && (item.dates || []).includes(normalized)) || null;
+}
+
 function normalizeScheduleTime(value, fallback = "09:00") {
   const raw = String(value || fallback).trim();
   const match = raw.match(/^(\d{1,2}):(\d{2})$/);
@@ -470,6 +638,7 @@ function normalizeScheduleRecord(item = {}) {
     name: String(item.name || item.key || "").trim() || "Schedule",
     holiday_calendar: normalizeHolidayCalendar(item.holiday_calendar),
     days,
+    special_days: normalizeScheduleSpecialDays(item.special_days || []),
     is_active: Boolean(item.is_active),
   };
 }
@@ -489,9 +658,11 @@ function scheduleNameForKey(key) {
 }
 
 function scheduleSummary(schedule) {
-  const totalPeriods = SCHEDULE_DAY_META.reduce((count, [dayKey]) => count + ((schedule?.days?.[dayKey] || []).length), 0);
-  if (!totalPeriods) return "No active hours";
-  return totalPeriods === 1 ? "1 active period" : `${totalPeriods} active periods`;
+  const totalPeriods = scheduleRowsForSchedule(schedule).reduce((count, row) => count + (row.periods || []).length, 0);
+  const specialDayCount = scheduleSpecialDays(schedule).length;
+  const periodSummary = !totalPeriods ? "No active hours" : (totalPeriods === 1 ? "1 active period" : `${totalPeriods} active periods`);
+  if (!specialDayCount) return periodSummary;
+  return `${periodSummary} · ${specialDayCount} special day ${specialDayCount === 1 ? "group" : "groups"}`;
 }
 
 function scheduleStatusLabel(schedule) {
@@ -604,9 +775,12 @@ function scheduleDraftForIndex(index) {
 function buildScheduleSegments(schedule, scheduleIndex, dayKey) {
   const segments = [];
   const draft = scheduleDraftForIndex(scheduleIndex);
-  const currentDayPeriods = schedule?.days?.[dayKey] || [];
-  const previousDayKey = schedulePreviousDayKey(dayKey);
-  const previousDayPeriods = previousDayKey ? (schedule?.days?.[previousDayKey] || []) : [];
+  const row = scheduleRowEntry(schedule, dayKey);
+  if (!row) return segments;
+
+  const currentDayPeriods = row.periods || [];
+  const previousDayKey = row.kind === "built-in" ? schedulePreviousDayKey(dayKey) : null;
+  const previousDayPeriods = previousDayKey ? scheduleRowPeriods(schedule, previousDayKey) : [];
 
   previousDayPeriods.forEach((period, periodIndex) => {
     const start = scheduleTimeToMinutes(period.start);
@@ -694,19 +868,23 @@ function renderScheduleHourLabels() {
 }
 
 function renderScheduleDayLane(schedule, scheduleIndex, dayKey, label) {
+  const row = typeof dayKey === "object" ? dayKey : scheduleRowEntry(schedule, dayKey);
+  if (!row) return "";
+
+  const rowKey = row.rowKey;
   const selectedDay = currentSelectedScheduleDayEntry(scheduleIndex)?.selection || null;
-  const segments = buildScheduleSegments(schedule, scheduleIndex, dayKey);
+  const segments = buildScheduleSegments(schedule, scheduleIndex, rowKey);
   const selectedPeriod = currentSelectedSchedulePeriodEntry(scheduleIndex)?.selection || null;
-  const disabled = scheduleDayDisabled(schedule, dayKey);
+  const disabled = row.disabled;
   return `
-    <div class="scheduleDayRow ${disabled ? "is-disabled" : ""} ${selectedDay?.dayKey === dayKey ? "is-selected" : ""}" data-schedule-day-row="${dayKey}">
+    <div class="scheduleDayRow ${disabled ? "is-disabled" : ""} ${selectedDay?.dayKey === rowKey ? "is-selected" : ""}" data-schedule-day-row="${rowKey}">
       <div class="scheduleDayLabelCell">
-        <button class="scheduleDayLabelButton" type="button" data-schedule-day-select="${dayKey}" aria-pressed="${selectedDay?.dayKey === dayKey ? "true" : "false"}">
-          <span class="scheduleDayLabel">${escapeHtml(label)}</span>
+        <button class="scheduleDayLabelButton" type="button" data-schedule-day-select="${rowKey}" aria-pressed="${selectedDay?.dayKey === rowKey ? "true" : "false"}">
+          <span class="scheduleDayLabel">${escapeHtml(row.label)}</span>
         </button>
       </div>
       <div class="scheduleDayTrackWrap">
-        <div class="scheduleDayTrack ${disabled ? "is-disabled" : ""}" data-schedule-track="${dayKey}" data-schedule-disabled="${disabled ? "true" : "false"}">
+        <div class="scheduleDayTrack ${disabled ? "is-disabled" : ""}" data-schedule-track="${rowKey}" data-schedule-disabled="${disabled ? "true" : "false"}">
           ${segments.map((segment) => {
             const left = scheduleMinuteToPercent(segment.startMinutes);
             const rawWidth = scheduleMinuteToPercent(segment.endMinutes) - scheduleMinuteToPercent(segment.startMinutes);
@@ -731,7 +909,7 @@ function renderScheduleDayLane(schedule, scheduleIndex, dayKey, label) {
                 type="button"
                 style="left:${left}%;width:${width}%"
                 data-schedule-block="true"
-                data-schedule-day="${dayKey}"
+                data-schedule-day="${rowKey}"
                 data-schedule-period-index="${segment.sourcePeriodIndex}"
                 data-schedule-editable="${editable ? "true" : "false"}"
                 title="${escapeHtml(meta)}"
@@ -814,14 +992,15 @@ function commitScheduleDrag() {
   const end = scheduleMinutesToTime(drag.endMinutes);
 
   if (sourceDay && Number.isInteger(drag.sourcePeriodIndex) && drag.sourcePeriodIndex >= 0) {
-    schedule.days[sourceDay].splice(drag.sourcePeriodIndex, 1);
-    schedule.days[sourceDay] = normalizeScheduleDayPeriods(schedule.days[sourceDay]);
+    const sourcePeriods = [...scheduleRowPeriods(schedule, sourceDay)];
+    sourcePeriods.splice(drag.sourcePeriodIndex, 1);
+    setScheduleRowPeriods(schedule, sourceDay, sourcePeriods);
   }
 
-  schedule.days[targetDay].push({ start, end });
-  schedule.days[targetDay] = normalizeScheduleDayPeriods(schedule.days[targetDay]);
+  const targetPeriods = [...scheduleRowPeriods(schedule, targetDay), { start, end }];
+  const normalizedTargetPeriods = setScheduleRowPeriods(schedule, targetDay, targetPeriods);
 
-  const nextPeriodIndex = schedule.days[targetDay].findIndex((period) => period.start === start && period.end === end);
+  const nextPeriodIndex = normalizedTargetPeriods.findIndex((period) => period.start === start && period.end === end);
   selectSchedulePeriod(drag.scheduleIndex, targetDay, nextPeriodIndex);
 
   state.scheduleDrag = null;
@@ -2725,7 +2904,7 @@ function renderSchedulePlannerWorkspace(schedule, index) {
           <div class="scheduleTimeHeader">${renderScheduleHourLabels()}</div>
         </div>
         <div class="schedulePlannerRows">
-          ${SCHEDULE_DAY_META.map(([dayKey, label]) => renderScheduleDayLane(schedule, index, dayKey, label)).join("")}
+          ${scheduleRowsForSchedule(schedule).map((row) => renderScheduleDayLane(schedule, index, row)).join("")}
         </div>
       </div>
     </div>
@@ -2744,9 +2923,11 @@ function renderScheduleManualEditInspector(index) {
     `;
   }
 
-  const { dayKey, dayLabel, periods, schedule } = selectedDay;
+  const { dayKey, dayLabel, periods, schedule, row } = selectedDay;
   const selectedPeriodIndex = selectedPeriod?.selection?.dayKey === dayKey ? selectedPeriod.selection.periodIndex : null;
   const isHolidayDay = dayKey === HOLIDAY_DAY_KEY;
+  const isSpecialDay = row.kind === "special";
+  const specialDates = isSpecialDay ? (row.specialDay?.dates || []) : [];
 
   return `
     <div class="inspectorCard ${selectedPeriodIndex != null ? "is-active" : ""}">
@@ -2760,6 +2941,35 @@ function renderScheduleManualEditInspector(index) {
               ${HOLIDAY_CALENDAR_OPTIONS.map(([code, label]) => `<option value="${code}" ${normalizeHolidayCalendar(schedule.holiday_calendar) === code ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
             </select>
           </div>
+        </div>
+      ` : ""}
+      ${isSpecialDay ? `
+        <div class="fieldGrid mt-10">
+          <div class="full">
+            <label>Special day group name</label>
+            <input id="scheduleSpecialDayNameInput" value="${escapeHtml(row.specialDay?.name || "")}" placeholder="Christmas week" />
+          </div>
+          <div>
+            <label>Add date</label>
+            <input id="scheduleSpecialDayDateInput" type="date" />
+          </div>
+          <div>
+            <label>&nbsp;</label>
+            <button class="btn" id="btnScheduleSpecialDayAddDate" type="button">Add date</button>
+          </div>
+        </div>
+        ${specialDates.length ? `
+          <div class="scheduleSpecialDateList mt-10">
+            ${specialDates.map((dateValue) => `
+              <button class="scheduleSpecialDateChip" type="button" data-schedule-special-date-remove="${dateValue}">
+                <span>${escapeHtml(dateValue)}</span>
+                <span aria-hidden="true">&times;</span>
+              </button>
+            `).join("")}
+          </div>
+        ` : `<div class="inlineMeta mt-10">No dates added yet. Dates in this group override the regular weekday and holiday rows.</div>`}
+        <div class="inspectorActionGrid inspectorActionGrid--single mt-10">
+          <button class="btn btn-danger" id="btnScheduleSpecialDayDelete" type="button">Delete special day group</button>
         </div>
       ` : ""}
       ${periods.length ? `
@@ -2818,7 +3028,7 @@ function renderScheduleInspector(schedule, index) {
             <input id="scheduleNameInput" value="${escapeHtml(schedule.name || "")}" placeholder="Office hours" />
           </div>
         </div>
-        <div class="inspectorHint mt-10">Select a day on the planner to edit that day. The Holidays day uses its selected calendar when it has periods.</div>
+        <div class="inspectorHint mt-10">Select a day on the planner to edit that day. Special day groups appear below Holidays and override recurring days on their selected dates.</div>
       </div>
 
       ${renderScheduleManualEditInspector(index)}
@@ -2826,10 +3036,11 @@ function renderScheduleInspector(schedule, index) {
       <div class="inspectorCard inspectorActionsCard">
         <div class="inspectorActionHeader">
           <div class="inspectorTitle">Schedule actions</div>
-          <div class="inspectorHint">Create a new schedule, save this one, or delete it.</div>
+          <div class="inspectorHint">Create a new schedule, add a special-day group, save this one, or delete it.</div>
         </div>
         <div class="schedulePlannerToolbarActions">
             <button class="btn btn-primary" id="btnInspectorAddSchedule" type="button">New</button>
+            <button class="btn" id="btnInspectorAddSpecialDay" type="button">Add special day</button>
             <button class="btn" id="btnInspectorSaveSchedules" type="button">Save</button>
             <button class="btn btn-danger" id="btnInspectorDeleteSchedule" type="button">Delete</button>
         </div>
@@ -3092,6 +3303,12 @@ function schedulesDefinitionFingerprint(items = []) {
       (item?.name || "").trim(),
       normalizeHolidayCalendar(item?.holiday_calendar),
       ...SCHEDULE_DAY_META.map(([dayKey]) => ((item?.days?.[dayKey] || []).map((period) => `${period.start}-${period.end}`).join(","))),
+      ...(item?.special_days || []).map((specialDay) => [
+        specialDay?.key || "",
+        specialDay?.name || "",
+        (specialDay?.dates || []).join(","),
+        (specialDay?.periods || []).map((period) => `${period.start}-${period.end}`).join(","),
+      ]),
     ])
   );
 }
@@ -3514,6 +3731,34 @@ function validateSchedules() {
     }
 
     schedule.holiday_calendar = normalizeHolidayCalendar(schedule.holiday_calendar);
+    schedule.special_days = normalizeScheduleSpecialDays(schedule.special_days || []);
+
+    const seenSpecialDates = new Map();
+    const seenSpecialKeys = new Set();
+    schedule.special_days.forEach((specialDay, specialIndex) => {
+      if (!specialDay.key || seenSpecialKeys.has(specialDay.key)) {
+        throw new Error(`Schedule '${key}' has duplicate special day groups.`);
+      }
+      seenSpecialKeys.add(specialDay.key);
+      specialDay.name = scheduleSpecialDayDisplayName(specialDay, specialIndex);
+      specialDay.dates = normalizeScheduleSpecialDayDates(specialDay.dates || []);
+      specialDay.periods = normalizeScheduleDayPeriods(specialDay.periods || []);
+
+      for (const dateValue of specialDay.dates) {
+        if (seenSpecialDates.has(dateValue)) {
+          throw new Error(`Special day date ${dateValue} is already assigned to '${seenSpecialDates.get(dateValue)}'.`);
+        }
+        seenSpecialDates.set(dateValue, specialDay.name);
+      }
+
+      for (const period of specialDay.periods || []) {
+        const start = normalizeScheduleTime(period.start, "09:00");
+        const end = normalizeScheduleTime(period.end, "17:00");
+        if (start === end) {
+          throw new Error(`${specialDay.name} active hours cannot start and end at the same time.`);
+        }
+      }
+    });
   }
 }
 
@@ -3529,6 +3774,12 @@ function serializeSchedules() {
           normalizeSchedulePeriods(schedule.days?.[dayKey] || []),
         ])
       ),
+      special_days: normalizeScheduleSpecialDays(schedule.special_days || []).map((specialDay) => ({
+        key: specialDay.key,
+        name: specialDay.name,
+        dates: [...specialDay.dates],
+        periods: normalizeSchedulePeriods(specialDay.periods || []),
+      })),
     })),
   };
 }
@@ -3539,6 +3790,7 @@ function addSchedule() {
     name: `Schedule ${currentSchedules().length + 1}`,
     holiday_calendar: "DK",
     days: emptyScheduleDays(),
+    special_days: [],
     is_active: false,
   }));
 
@@ -3551,6 +3803,27 @@ function addSchedule() {
   markSchedulesDirty();
   renderScheduleSidebar();
   renderInspector();
+}
+
+function addScheduleSpecialDay(scheduleIndex = state.selectedScheduleIndex) {
+  const schedule = currentSchedules()[scheduleIndex];
+  if (!schedule) return;
+
+  const specialDay = normalizeScheduleSpecialDayRecord({
+    key: nextScheduleSpecialDayKey(schedule),
+    name: nextScheduleSpecialDayName(schedule),
+    dates: [],
+    periods: [],
+  }, scheduleSpecialDays(schedule).length);
+
+  schedule.special_days.push(specialDay);
+  selectScheduleDay(scheduleIndex, `${SPECIAL_DAY_ROW_PREFIX}${specialDay.key}`);
+  state.selectedSchedulePeriod = null;
+  markSchedulesDirty();
+  renderScheduleSidebar();
+  renderCanvas();
+  renderInspector();
+  setStatus(`Added ${specialDay.name}.`);
 }
 
 function removeSchedule(index) {
@@ -3682,10 +3955,13 @@ function bindScheduleInspector(index) {
   const inspector = document.getElementById("scheduleInspectorBody");
   const getSchedule = () => currentSchedules()[index];
   const getSelectedDayEntry = () => currentSelectedScheduleDayEntry(index);
-  const getSelectedPeriodEntry = () => currentSelectedSchedulePeriodEntry(index);
 
   document.getElementById("btnInspectorAddSchedule")?.addEventListener("click", () => {
     handleAddSchedule();
+  });
+
+  document.getElementById("btnInspectorAddSpecialDay")?.addEventListener("click", () => {
+    addScheduleSpecialDay(index);
   });
 
   document.getElementById("btnInspectorSaveSchedules")?.addEventListener("click", async () => {
@@ -3749,6 +4025,83 @@ function bindScheduleInspector(index) {
     setStatus(`Holiday calendar set to ${holidayCalendarLabel(schedule.holiday_calendar)}.`);
   });
 
+  document.getElementById("scheduleSpecialDayNameInput")?.addEventListener("input", (ev) => {
+    const selectedDay = getSelectedDayEntry();
+    if (!selectedDay || selectedDay.row.kind !== "special") return;
+
+    selectedDay.row.specialDay.name = ev.target.value;
+    markSchedulesDirty();
+
+    const rowLabel = document.querySelector(`[data-schedule-day-select="${CSS.escape(selectedDay.dayKey)}"] .scheduleDayLabel`);
+    if (rowLabel) {
+      rowLabel.textContent = scheduleSpecialDayDisplayName(selectedDay.row.specialDay, selectedDay.row.specialIndex);
+    }
+  });
+
+  document.getElementById("scheduleSpecialDayNameInput")?.addEventListener("change", () => {
+    const selectedDay = getSelectedDayEntry();
+    if (!selectedDay || selectedDay.row.kind !== "special") return;
+
+    selectedDay.row.specialDay.name = scheduleSpecialDayDisplayName(selectedDay.row.specialDay, selectedDay.row.specialIndex);
+    renderScheduleSidebar();
+    renderCanvas();
+    renderInspector();
+  });
+
+  document.getElementById("btnScheduleSpecialDayAddDate")?.addEventListener("click", () => {
+    const selectedDay = getSelectedDayEntry();
+    if (!selectedDay || selectedDay.row.kind !== "special") return;
+
+    const input = document.getElementById("scheduleSpecialDayDateInput");
+    const nextDate = normalizeScheduleDate(input?.value || "");
+    if (!nextDate) {
+      setStatus("Choose a valid date for the special day group.", true);
+      return;
+    }
+
+    const otherOwner = scheduleDateAssignedElsewhere(selectedDay.schedule, nextDate, selectedDay.row.specialDay.key);
+    if (otherOwner) {
+      setStatus(`${nextDate} is already assigned to ${scheduleSpecialDayDisplayName(otherOwner)}.`, true);
+      return;
+    }
+
+    selectedDay.row.specialDay.dates = normalizeScheduleSpecialDayDates([
+      ...(selectedDay.row.specialDay.dates || []),
+      nextDate,
+    ]);
+
+    if (input) input.value = "";
+    markSchedulesDirty();
+    renderCanvas();
+    renderInspector();
+  });
+
+  inspector?.querySelectorAll("[data-schedule-special-date-remove]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const selectedDay = getSelectedDayEntry();
+      if (!selectedDay || selectedDay.row.kind !== "special") return;
+
+      const dateValue = normalizeScheduleDate(button.dataset.scheduleSpecialDateRemove || "");
+      selectedDay.row.specialDay.dates = (selectedDay.row.specialDay.dates || []).filter((item) => item !== dateValue);
+      markSchedulesDirty();
+      renderCanvas();
+      renderInspector();
+    });
+  });
+
+  document.getElementById("btnScheduleSpecialDayDelete")?.addEventListener("click", () => {
+    const selectedDay = getSelectedDayEntry();
+    if (!selectedDay || selectedDay.row.kind !== "special") return;
+
+    selectedDay.schedule.special_days.splice(selectedDay.row.specialIndex, 1);
+    selectScheduleDay(index, HOLIDAY_DAY_KEY);
+    state.selectedSchedulePeriod = null;
+    markSchedulesDirty();
+    renderScheduleSidebar();
+    renderCanvas();
+    renderInspector();
+  });
+
   const applyDayPeriodEdit = (periodIndex) => {
     const selectedDay = getSelectedDayEntry();
     if (!selectedDay) return;
@@ -3777,11 +4130,12 @@ function bindScheduleInspector(index) {
     }
 
     const schedule = selectedDay.schedule;
-    schedule.days[selectedDay.dayKey].splice(periodIndex, 1);
-    schedule.days[selectedDay.dayKey].push({ start, end });
-    schedule.days[selectedDay.dayKey] = normalizeScheduleDayPeriods(schedule.days[selectedDay.dayKey]);
+    const nextPeriods = [...scheduleRowPeriods(schedule, selectedDay.dayKey)];
+    nextPeriods.splice(periodIndex, 1);
+    nextPeriods.push({ start, end });
+    const normalizedPeriods = setScheduleRowPeriods(schedule, selectedDay.dayKey, nextPeriods);
 
-    const nextPeriodIndex = schedule.days[selectedDay.dayKey].findIndex((period) => period.start === start && period.end === end);
+    const nextPeriodIndex = normalizedPeriods.findIndex((period) => period.start === start && period.end === end);
     selectScheduleDay(index, selectedDay.dayKey);
     selectSchedulePeriod(index, selectedDay.dayKey, nextPeriodIndex);
     markSchedulesDirty();
@@ -3829,8 +4183,9 @@ function bindScheduleInspector(index) {
       const periodIndex = Number(button.dataset.scheduleDayEditDelete || -1);
       if (!selectedDay || periodIndex < 0) return;
 
-      selectedDay.schedule.days[selectedDay.dayKey].splice(periodIndex, 1);
-      selectedDay.schedule.days[selectedDay.dayKey] = normalizeScheduleDayPeriods(selectedDay.schedule.days[selectedDay.dayKey]);
+      const nextPeriods = [...scheduleRowPeriods(selectedDay.schedule, selectedDay.dayKey)];
+      nextPeriods.splice(periodIndex, 1);
+      setScheduleRowPeriods(selectedDay.schedule, selectedDay.dayKey, nextPeriods);
       if (state.selectedSchedulePeriod?.scheduleIndex === index
         && state.selectedSchedulePeriod?.dayKey === selectedDay.dayKey
         && state.selectedSchedulePeriod?.periodIndex === periodIndex) {
@@ -3941,8 +4296,9 @@ function bindScheduleWorkspace(index) {
 
       selectScheduleDay(index, dayKey);
 
-      schedule.days[dayKey].splice(periodIndex, 1);
-      schedule.days[dayKey] = normalizeScheduleDayPeriods(schedule.days[dayKey]);
+        const nextPeriods = [...scheduleRowPeriods(schedule, dayKey)];
+        nextPeriods.splice(periodIndex, 1);
+        setScheduleRowPeriods(schedule, dayKey, nextPeriods);
       markSchedulesDirty();
       renderScheduleSidebar();
       renderCanvas();
@@ -3970,7 +4326,7 @@ function bindScheduleWorkspace(index) {
       selectSchedulePeriod(index, dayKey, periodIndex);
       renderInspector();
 
-      const period = schedule.days?.[dayKey]?.[periodIndex];
+      const period = scheduleRowPeriods(schedule, dayKey)?.[periodIndex];
       if (!period) return;
 
       const startMinutes = scheduleTimeToMinutes(period.start);
