@@ -302,6 +302,9 @@ function selectRecordingPreset(index) {
 
 function selectSchedule(index) {
   state.selectedScheduleIndex = Number.isInteger(index) && index >= 0 ? index : null;
+  if (state.selectedScheduleIndex != null) {
+    state.selectedSavedFlowId = null;
+  }
   state.selectedScheduleDay = null;
   state.selectedSchedulePeriod = null;
   state.selectedNodeId = null;
@@ -4044,7 +4047,9 @@ function addSchedule() {
   selectSchedule(currentSchedules().length - 1);
   setSidebarSectionExpanded("schedules", true);
   markSchedulesDirty();
+  renderFlowList();
   renderScheduleSidebar();
+  renderCanvas();
   renderInspector();
 }
 
@@ -4078,11 +4083,13 @@ function removeSchedule(index) {
 
   if (!currentSchedules().length) {
     state.selectedScheduleIndex = null;
+    state.selectedSavedFlowId = currentFlow()?.id || null;
   } else {
     state.selectedScheduleIndex = Math.min(index, currentSchedules().length - 1);
   }
 
   markSchedulesDirty();
+  renderFlowList();
   renderScheduleSidebar();
   renderInspector();
   renderCanvas();
@@ -4147,6 +4154,7 @@ function renderScheduleSidebar() {
       const index = Number(card.dataset.scheduleIndex || -1);
       if (!currentSchedules()[index]) return;
       selectSchedule(index);
+      renderFlowList();
       renderScheduleSidebar();
       renderInspector();
       renderCanvas();
