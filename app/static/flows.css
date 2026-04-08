@@ -35,6 +35,7 @@ body.flowsPage {
 .flowsPage .flowsSidebar,
 .flowsPage .flowsMain,
 .flowsPage .flowsInspector {
+  min-width: 0;
   min-height: 0;
   height: 100%;
 }
@@ -298,6 +299,7 @@ body.flowsPage {
 .flowsPage .scheduleWorkspace {
   display: flex;
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -307,6 +309,7 @@ body.flowsPage {
   flex-direction: column;
   gap: 12px;
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -339,73 +342,9 @@ body.flowsPage {
   justify-content: center;
 }
 
-.flowsPage .scheduleWorkspaceHeader {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px 18px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 18px;
-  background:
-    radial-gradient(circle at top left, rgba(198, 161, 75, 0.12), transparent 30%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
-}
-
-.flowsPage .scheduleWorkspaceTitleRow {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.flowsPage .scheduleWorkspaceEyebrow {
-  margin-bottom: 6px;
-  color: rgba(255, 255, 255, 0.52);
-  font-size: 11px;
-  font-weight: 900;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.flowsPage .scheduleWorkspaceTitle {
-  font-size: 22px;
-  font-weight: 900;
-  line-height: 1.1;
-}
-
-.flowsPage .scheduleWorkspaceHint {
-  margin-top: 6px;
-  max-width: 860px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.flowsPage .scheduleWorkspaceStats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.flowsPage .scheduleWorkspaceChip {
-  display: inline-flex;
-  align-items: center;
-  padding: 7px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.88);
-  font-size: 11px;
-  font-weight: 800;
-  line-height: 1;
-}
-
-.flowsPage .scheduleWorkspaceChip.is-muted {
-  color: var(--muted);
-}
-
 .flowsPage .schedulePlannerViewport {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -476,6 +415,16 @@ body.flowsPage {
   font-weight: 700;
 }
 
+.flowsPage .scheduleTimeLabel.is-start {
+  transform: translate(0, -50%);
+  margin-left: 10px;
+}
+
+.flowsPage .scheduleTimeLabel.is-end {
+  transform: translate(-100%, -50%);
+  margin-left: -10px;
+}
+
 .flowsPage .schedulePlannerRows {
   display: flex;
   flex-direction: column;
@@ -529,7 +478,7 @@ body.flowsPage {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-width: 20px;
+  min-width: 0;
   padding: 0 32px 0 10px;
   border: 1px solid rgba(198, 161, 75, 0.35);
   border-radius: 10px;
@@ -543,6 +492,13 @@ body.flowsPage {
 
 .flowsPage .scheduleBlock:hover {
   filter: brightness(1.04);
+}
+
+.flowsPage .scheduleBlock.is-selected {
+  border-color: rgba(255, 245, 214, 0.92);
+  box-shadow:
+    0 0 0 1px rgba(255, 244, 206, 0.55),
+    0 12px 28px rgba(0, 0, 0, 0.24);
 }
 
 .flowsPage .scheduleBlock:active {
@@ -659,11 +615,6 @@ body.flowsPage {
     grid-template-columns: 100px minmax(720px, 1fr);
   }
 
-  .flowsPage .scheduleWorkspaceTitleRow {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
   .flowsPage .scheduleBlock {
     min-width: 152px;
   }
@@ -740,7 +691,9 @@ body.flowsPage {
 .flowsPage .flowsMain {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
 
 .flowsPage .flowsToolbar {

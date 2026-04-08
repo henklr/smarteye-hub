@@ -19,6 +19,7 @@ const state = {
   schedulesUpdatedAt: null,
   schedulesTimer: null,
   scheduleDrag: null,
+  selectedSchedulePeriod: null,
   scheduleViewportScrollTop: null,
   scheduleViewportScrollLeft: null,
   publicVariables: [],
@@ -74,6 +75,7 @@ const WEEKDAY_META = [
 
 const SCHEDULE_SNAP_MINUTES = 15;
 const SCHEDULE_MIN_DURATION_MINUTES = 15;
+const SCHEDULE_RESIZE_SNAP_MINUTES = 1;
 const SCHEDULE_MAX_MINUTE = 23 * 60 + 59;
 const SCHEDULE_DAY_MINUTES = 24 * 60;
 const SCHEDULE_HOUR_WIDTH = 96;
@@ -184,6 +186,20 @@ function currentSelectedSchedule() {
   return currentSchedules()[idx] || null;
 }
 
+function currentSelectedSchedulePeriodEntry(index = state.selectedScheduleIndex) {
+  const selection = state.selectedSchedulePeriod;
+  if (!selection || selection.scheduleIndex !== index) return null;
+
+  const schedule = currentSchedules()[index];
+  if (!schedule) return null;
+
+  const periods = schedule.days?.[selection.dayKey];
+  const period = periods?.[selection.periodIndex];
+  if (!period) return null;
+
+  return { schedule, selection, period };
+}
+
 function currentSelectedPublicVariable() {
   const idx = state.selectedPublicVariableIndex;
   if (!Number.isInteger(idx) || idx < 0) return null;
@@ -195,6 +211,7 @@ function clearEditorSelection() {
   state.selectedEdgeId = null;
   state.selectedRecordingPresetIndex = null;
   state.selectedScheduleIndex = null;
+  state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
   renderRecordingPresetSidebar();
   renderScheduleSidebar();
@@ -206,6 +223,7 @@ function selectNode(nodeId) {
   state.selectedEdgeId = null;
   state.selectedRecordingPresetIndex = null;
   state.selectedScheduleIndex = null;
+  state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
   renderRecordingPresetSidebar();
   renderScheduleSidebar();
@@ -217,6 +235,7 @@ function selectEdge(edgeId) {
   state.selectedNodeId = null;
   state.selectedRecordingPresetIndex = null;
   state.selectedScheduleIndex = null;
+  state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
   renderRecordingPresetSidebar();
   renderScheduleSidebar();
@@ -228,6 +247,7 @@ function selectRecordingPreset(index) {
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
   state.selectedScheduleIndex = null;
+  state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
   state.connecting = null;
   state.connectionCursor = null;
@@ -235,12 +255,22 @@ function selectRecordingPreset(index) {
 
 function selectSchedule(index) {
   state.selectedScheduleIndex = Number.isInteger(index) && index >= 0 ? index : null;
+  state.selectedSchedulePeriod = null;
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
   state.selectedRecordingPresetIndex = null;
   state.selectedPublicVariableIndex = null;
   state.connecting = null;
   state.connectionCursor = null;
+}
+
+function selectSchedulePeriod(scheduleIndex, dayKey, periodIndex) {
+  if (!Number.isInteger(scheduleIndex) || scheduleIndex < 0 || !dayKey || !Number.isInteger(periodIndex) || periodIndex < 0) {
+    state.selectedSchedulePeriod = null;
+    return;
+  }
+
+  state.selectedSchedulePeriod = { scheduleIndex, dayKey, periodIndex };
 }
 
 function selectPublicVariable(index) {
@@ -249,6 +279,7 @@ function selectPublicVariable(index) {
   state.selectedEdgeId = null;
   state.selectedRecordingPresetIndex = null;
   state.selectedScheduleIndex = null;
+  state.selectedSchedulePeriod = null;
   state.connecting = null;
   state.connectionCursor = null;
 }
@@ -423,8 +454,9 @@ function scheduleMinutesToTime(value) {
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
-function scheduleSnapMinutes(value) {
-  const snapped = Math.round((Number(value) || 0) / SCHEDULE_SNAP_MINUTES) * SCHEDULE_SNAP_MINUTES;
+function scheduleSnapMinutes(value, snapMinutes = SCHEDULE_SNAP_MINUTES) {
+  const step = Math.max(1, Math.round(Number(snapMinutes) || 1));
+  const snapped = Math.round((Number(value) || 0) / step) * step;
   return Math.max(0, Math.min(SCHEDULE_MAX_MINUTE, snapped));
 }
 
@@ -566,20 +598,14 @@ function renderScheduleHourLabels() {
   return Array.from({ length: 13 }, (_, index) => {
     const hour = index * 2;
     const left = (hour / 24) * 100;
-    return `<div class="scheduleTimeLabel" style="left:${left}%">${hour === 24 ? "24:00" : `${String(hour).padStart(2, "0")}:00`}</div>`;
+    const edgeClass = hour === 0 ? " is-start" : (hour === 24 ? " is-end" : "");
+    return `<div class="scheduleTimeLabel${edgeClass}" style="left:${left}%">${hour === 24 ? "24:00" : `${String(hour).padStart(2, "0")}:00`}</div>`;
   }).join("");
-}
-
-function schedulePeriodCount(schedule) {
-  return WEEKDAY_META.reduce((total, [dayKey]) => total + ((schedule?.days?.[dayKey] || []).length), 0);
-}
-
-function scheduleActiveDayCount(schedule) {
-  return WEEKDAY_META.reduce((total, [dayKey]) => total + (((schedule?.days?.[dayKey] || []).length > 0) ? 1 : 0), 0);
 }
 
 function renderScheduleDayLane(schedule, scheduleIndex, dayKey, label) {
   const segments = buildScheduleSegments(schedule, scheduleIndex, dayKey);
+  const selectedPeriod = currentSelectedSchedulePeriodEntry(scheduleIndex)?.selection || null;
   return `
     <div class="scheduleDayRow">
       <div class="scheduleDayLabelCell">
@@ -589,16 +615,23 @@ function renderScheduleDayLane(schedule, scheduleIndex, dayKey, label) {
         <div class="scheduleDayTrack" data-schedule-track="${dayKey}">
           ${segments.map((segment) => {
             const left = scheduleMinuteToPercent(segment.startMinutes);
-            const width = Math.max(1.4, scheduleMinuteToPercent(segment.endMinutes) - scheduleMinuteToPercent(segment.startMinutes));
+            const rawWidth = scheduleMinuteToPercent(segment.endMinutes) - scheduleMinuteToPercent(segment.startMinutes);
+            const width = Math.max(0.6, Math.min(100 - left, Math.max(1.4, rawWidth)));
             const startLabel = scheduleMinutesToTime(segment.startMinutes);
             const endLabel = scheduleMinutesToTime(segment.endMinutes);
+            const isSelected = !!(
+              segment.editable
+              && selectedPeriod
+              && selectedPeriod.dayKey === segment.sourceDayKey
+              && selectedPeriod.periodIndex === segment.sourcePeriodIndex
+            );
             const meta = segment.continuation
               ? `Continues until ${endLabel}`
               : (segment.overnight ? `Overnight from ${startLabel}` : `${startLabel} to ${endLabel}`);
 
             return `
               <button
-                class="scheduleBlock ${segment.draft ? "is-draft" : ""} ${segment.overnight ? "is-overnight" : ""} ${segment.continuation ? "is-continuation" : ""}"
+                class="scheduleBlock ${segment.draft ? "is-draft" : ""} ${segment.overnight ? "is-overnight" : ""} ${segment.continuation ? "is-continuation" : ""} ${isSelected ? "is-selected" : ""}"
                 type="button"
                 style="left:${left}%;width:${width}%"
                 data-schedule-block="true"
@@ -627,12 +660,12 @@ function scheduleTrackDayKeyFromPoint(clientX, clientY) {
   return lane?.dataset?.scheduleTrack || null;
 }
 
-function scheduleTrackMinutesFromClient(dayKey, clientX) {
+function scheduleTrackMinutesFromClient(dayKey, clientX, snapMinutes = SCHEDULE_SNAP_MINUTES) {
   const lane = document.querySelector(`[data-schedule-track="${CSS.escape(dayKey)}"]`);
   if (!lane) return 0;
   const rect = lane.getBoundingClientRect();
   const ratio = rect.width > 0 ? (clientX - rect.left) / rect.width : 0;
-  return scheduleSnapMinutes(Math.max(0, Math.min(SCHEDULE_MAX_MINUTE, ratio * SCHEDULE_DAY_MINUTES)));
+  return scheduleSnapMinutes(Math.max(0, Math.min(SCHEDULE_MAX_MINUTE, ratio * SCHEDULE_DAY_MINUTES)), snapMinutes);
 }
 
 function startScheduleDrag(dragState) {
@@ -649,6 +682,17 @@ function commitScheduleDrag() {
     return;
   }
 
+  const unchanged = drag.mode !== "create"
+    && drag.targetDayKey === drag.sourceDayKey
+    && drag.startMinutes === (drag.originalStartMinutes ?? drag.startMinutes)
+    && drag.endMinutes === (drag.originalEndMinutes ?? drag.endMinutes);
+
+  if (unchanged) {
+    state.scheduleDrag = null;
+    renderCanvas();
+    return;
+  }
+
   const sourceDay = drag.sourceDayKey;
   const targetDay = drag.targetDayKey;
   const start = scheduleMinutesToTime(drag.startMinutes);
@@ -661,6 +705,9 @@ function commitScheduleDrag() {
 
   schedule.days[targetDay].push({ start, end });
   schedule.days[targetDay] = normalizeScheduleDayPeriods(schedule.days[targetDay]);
+
+  const nextPeriodIndex = schedule.days[targetDay].findIndex((period) => period.start === start && period.end === end);
+  selectSchedulePeriod(drag.scheduleIndex, targetDay, nextPeriodIndex);
 
   state.scheduleDrag = null;
   markSchedulesDirty();
@@ -702,14 +749,14 @@ function updateScheduleDrag(event) {
   }
 
   if (drag.mode === "resize-start") {
-    const minute = scheduleTrackMinutesFromClient(drag.targetDayKey, event.clientX);
+    const minute = scheduleTrackMinutesFromClient(drag.targetDayKey, event.clientX, SCHEDULE_RESIZE_SNAP_MINUTES);
     drag.startMinutes = Math.max(0, Math.min(drag.endMinutes - SCHEDULE_MIN_DURATION_MINUTES, minute));
     renderCanvas();
     return;
   }
 
   if (drag.mode === "resize-end") {
-    const minute = scheduleTrackMinutesFromClient(drag.targetDayKey, event.clientX);
+    const minute = scheduleTrackMinutesFromClient(drag.targetDayKey, event.clientX, SCHEDULE_RESIZE_SNAP_MINUTES);
     drag.endMinutes = Math.min(SCHEDULE_MAX_MINUTE, Math.max(drag.startMinutes + SCHEDULE_MIN_DURATION_MINUTES, minute));
     renderCanvas();
   }
@@ -2551,27 +2598,8 @@ function renderFlowInspector(flow) {
 }
 
 function renderSchedulePlannerWorkspace(schedule, index) {
-  const totalPeriods = schedulePeriodCount(schedule);
-  const activeDays = scheduleActiveDayCount(schedule);
-
   return `
     <div id="scheduleWorkspaceBody" class="scheduleWorkspaceSurface" data-schedule-index="${index}">
-      <div class="scheduleWorkspaceHeader">
-        <div class="scheduleWorkspaceTitleRow">
-          <div>
-            <div class="scheduleWorkspaceEyebrow">Schedule Editor</div>
-            <div class="scheduleWorkspaceTitle">${escapeHtml(schedule.name || schedule.key || `schedule_${index + 1}`)}</div>
-            <div class="scheduleWorkspaceHint">Click a day row to add a time block, then edit the start and end times directly inside the block. Use x to remove a block.</div>
-          </div>
-          <span class="miniPill scheduleStatusPill ${schedule.is_active ? "is-active" : "is-inactive"}">${escapeHtml(scheduleStatusLabel(schedule))}</span>
-        </div>
-        <div class="scheduleWorkspaceStats">
-          <span class="scheduleWorkspaceChip">${totalPeriods} ${totalPeriods === 1 ? "period" : "periods"}</span>
-          <span class="scheduleWorkspaceChip">${activeDays} ${activeDays === 1 ? "active day" : "active days"}</span>
-          <span class="scheduleWorkspaceChip is-muted">15 min snap</span>
-        </div>
-      </div>
-
       <div class="schedulePlannerViewport" id="schedulePlannerViewport">
         <div class="schedulePlannerHeader">
           <div class="schedulePlannerCorner">Day</div>
@@ -2580,6 +2608,45 @@ function renderSchedulePlannerWorkspace(schedule, index) {
         <div class="schedulePlannerRows">
           ${WEEKDAY_META.map(([dayKey, label]) => renderScheduleDayLane(schedule, index, dayKey, label)).join("")}
         </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSchedulePeriodInspector(index) {
+  const selected = currentSelectedSchedulePeriodEntry(index);
+  if (!selected) {
+    return `
+      <div class="inspectorCard">
+        <div class="inspectorTitle">Manual edit</div>
+        <div class="inspectorHint">Click a time block to edit its day and times manually.</div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="inspectorCard">
+      <div class="inspectorTitle">Selected period</div>
+      <div class="inspectorHint">Adjust the selected block manually.</div>
+      <div class="fieldGrid mt-10">
+        <div>
+          <label>Day</label>
+          <select id="schedulePeriodDayInput">
+            ${WEEKDAY_META.map(([dayKey, dayLabel]) => `<option value="${dayKey}" ${selected.selection.dayKey === dayKey ? "selected" : ""}>${escapeHtml(dayLabel)}</option>`).join("")}
+          </select>
+        </div>
+        <div>
+          <label>Start</label>
+          <input id="schedulePeriodStartInput" type="time" step="60" value="${escapeHtml(normalizeScheduleTime(selected.period.start, "09:00"))}" />
+        </div>
+        <div>
+          <label>End</label>
+          <input id="schedulePeriodEndInput" type="time" step="60" value="${escapeHtml(normalizeScheduleTime(selected.period.end, "17:00"))}" />
+        </div>
+      </div>
+      <div class="inspectorActionGrid inspectorActionGrid--twoUp mt-10">
+        <button class="btn" id="btnSchedulePeriodApply" type="button">Apply</button>
+        <button class="btn" id="btnSchedulePeriodClear" type="button">Done</button>
       </div>
     </div>
   `;
@@ -2607,6 +2674,8 @@ function renderScheduleInspector(schedule, index) {
           </div>
         </div>
       </div>
+
+      ${renderSchedulePeriodInspector(index)}
 
       <div class="inspectorCard inspectorActionsCard">
         <div class="inspectorActionHeader">
@@ -3337,6 +3406,7 @@ function removeSchedule(index) {
   if (!currentSchedules()[index]) return;
 
   state.schedules.splice(index, 1);
+  state.selectedSchedulePeriod = null;
 
   if (!currentSchedules().length) {
     state.selectedScheduleIndex = null;
@@ -3459,6 +3529,7 @@ function bindScheduleActionButtons() {
 function bindScheduleInspector(index) {
   const inspector = document.getElementById("scheduleInspectorBody");
   const getSchedule = () => currentSchedules()[index];
+  const getSelectedPeriodEntry = () => currentSelectedSchedulePeriodEntry(index);
 
   document.getElementById("btnInspectorAddSchedule")?.addEventListener("click", () => {
     handleAddSchedule();
@@ -3508,6 +3579,60 @@ function bindScheduleInspector(index) {
       el("inspectorSubtext").textContent = `${schedule.name || schedule.key || `schedule_${index + 1}`} schedule`;
     }
   });
+
+  const applySelectedPeriod = () => {
+    const selected = getSelectedPeriodEntry();
+    if (!selected) return;
+
+    const nextDayKey = String(document.getElementById("schedulePeriodDayInput")?.value || selected.selection.dayKey).trim().toLowerCase();
+    const start = normalizeScheduleTime(document.getElementById("schedulePeriodStartInput")?.value || selected.period.start, selected.period.start);
+    const end = normalizeScheduleTime(document.getElementById("schedulePeriodEndInput")?.value || selected.period.end, selected.period.end);
+    const startMinutes = scheduleTimeToMinutes(start);
+    const endMinutes = scheduleTimeToMinutes(end);
+
+    if (!WEEKDAY_META.some(([dayKey]) => dayKey === nextDayKey)) {
+      setStatus("Pick a valid weekday for the schedule period.", true);
+      return;
+    }
+
+    if (endMinutes - startMinutes < SCHEDULE_MIN_DURATION_MINUTES) {
+      setStatus(`Schedule periods must be at least ${SCHEDULE_MIN_DURATION_MINUTES} minutes long.`, true);
+      return;
+    }
+
+    if (selected.selection.dayKey === nextDayKey && selected.period.start === start && selected.period.end === end) {
+      return;
+    }
+
+    const schedule = selected.schedule;
+    schedule.days[selected.selection.dayKey].splice(selected.selection.periodIndex, 1);
+    schedule.days[selected.selection.dayKey] = normalizeScheduleDayPeriods(schedule.days[selected.selection.dayKey]);
+    schedule.days[nextDayKey].push({ start, end });
+    schedule.days[nextDayKey] = normalizeScheduleDayPeriods(schedule.days[nextDayKey]);
+
+    const nextPeriodIndex = schedule.days[nextDayKey].findIndex((period) => period.start === start && period.end === end);
+    selectSchedulePeriod(index, nextDayKey, nextPeriodIndex);
+    markSchedulesDirty();
+    renderScheduleSidebar();
+    renderCanvas();
+    renderInspector();
+    setStatus("Schedule period updated.");
+  };
+
+  document.getElementById("btnSchedulePeriodApply")?.addEventListener("click", applySelectedPeriod);
+  document.getElementById("btnSchedulePeriodClear")?.addEventListener("click", () => {
+    state.selectedSchedulePeriod = null;
+    renderCanvas();
+    renderInspector();
+  });
+
+  for (const inputId of ["schedulePeriodStartInput", "schedulePeriodEndInput"]) {
+    document.getElementById(inputId)?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      applySelectedPeriod();
+    });
+  }
 }
 
 function bindScheduleWorkspace(index) {
@@ -3576,6 +3701,11 @@ function bindScheduleWorkspace(index) {
         return;
       }
 
+      const selected = state.selectedSchedulePeriod;
+      if (selected && selected.scheduleIndex === index && selected.dayKey === dayKey && selected.periodIndex === periodIndex) {
+        state.selectedSchedulePeriod = null;
+      }
+
       schedule.days[dayKey].splice(periodIndex, 1);
       schedule.days[dayKey] = normalizeScheduleDayPeriods(schedule.days[dayKey]);
       markSchedulesDirty();
@@ -3601,6 +3731,9 @@ function bindScheduleWorkspace(index) {
       const editable = block.dataset.scheduleEditable === "true";
       if (!dayKey || periodIndex < 0 || !editable) return;
 
+      selectSchedulePeriod(index, dayKey, periodIndex);
+      renderInspector();
+
       const period = schedule.days?.[dayKey]?.[periodIndex];
       if (!period) return;
 
@@ -3616,6 +3749,8 @@ function bindScheduleWorkspace(index) {
           sourceDayKey: dayKey,
           sourcePeriodIndex: periodIndex,
           targetDayKey: dayKey,
+          originalStartMinutes: startMinutes,
+          originalEndMinutes: endMinutes,
           startMinutes,
           endMinutes,
         });
@@ -3631,6 +3766,8 @@ function bindScheduleWorkspace(index) {
         sourceDayKey: dayKey,
         sourcePeriodIndex: periodIndex,
         targetDayKey: dayKey,
+        originalStartMinutes: startMinutes,
+        originalEndMinutes: endMinutes,
         startMinutes,
         endMinutes,
         durationMinutes: endMinutes - startMinutes,
