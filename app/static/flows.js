@@ -2547,6 +2547,48 @@ function addNodeFromPalette(type) {
   renderAll();
 }
 
+function duplicatedNodePosition(flow, sourceNode) {
+  const baseX = Number(sourceNode?.x) || 0;
+  const baseY = Number(sourceNode?.y) || 0;
+  const stepX = 36;
+  const stepY = 28;
+
+  for (let attempt = 1; attempt <= 24; attempt += 1) {
+    const x = Math.max(20, baseX + stepX * attempt);
+    const y = Math.max(20, baseY + stepY * attempt);
+    const occupied = (flow?.nodes || []).some((item) => Math.abs((Number(item?.x) || 0) - x) < 8 && Math.abs((Number(item?.y) || 0) - y) < 8);
+    if (!occupied) {
+      return { x, y };
+    }
+  }
+
+  return {
+    x: Math.max(20, baseX + stepX),
+    y: Math.max(20, baseY + stepY),
+  };
+}
+
+function duplicateNodeById(nodeId) {
+  const flow = currentFlow();
+  const node = flow?.nodes.find((item) => item.id === nodeId);
+  if (!flow || !node) return null;
+
+  const position = duplicatedNodePosition(flow, node);
+  const copy = {
+    ...deepClone(node),
+    id: makeId("node"),
+    x: position.x,
+    y: position.y,
+  };
+
+  flow.nodes.push(copy);
+  selectNode(copy.id);
+  markDirty();
+  renderAll();
+  setStatus(`Duplicated node "${displayNodeTitle(node) || node.label}".`);
+  return copy;
+}
+
 function renderCanvas() {
   const flow = currentFlow();
   const nodesBox = el("flowNodes");
@@ -5629,9 +5671,10 @@ function renderNodeInspector(node) {
     <div class="inspectorCard inspectorActionsCard inspectorActionsCard--danger">
       <div class="inspectorActionHeader">
         <div class="inspectorTitle">Node actions</div>
-        <div class="inspectorHint">Remove this node and its connections from the flow.</div>
+        <div class="inspectorHint">Duplicate this node or remove it and its connections from the flow.</div>
       </div>
-      <div class="inspectorActionGrid inspectorActionGrid--single">
+      <div class="inspectorActionGrid inspectorActionGrid--twoUp">
+        <button class="btn" id="btnDuplicateNode" type="button">Duplicate node</button>
         <button class="btn btn-danger" id="btnDeleteNode" type="button">Delete node</button>
       </div>
     </div>
@@ -5639,6 +5682,10 @@ function renderNodeInspector(node) {
 }
 
 function bindNodeInspector(node) {
+  document.getElementById("btnDuplicateNode")?.addEventListener("click", () => {
+    duplicateNodeById(node.id);
+  });
+
   document.getElementById("btnDeleteNode")?.addEventListener("click", () => {
     const flow = currentFlow();
     flow.nodes = flow.nodes.filter((item) => item.id !== node.id);
@@ -6668,6 +6715,24 @@ function bindGlobalEvents() {
     if (!state.dirty && !state.publicVariablesDirty && !state.schedulesDirty) return;
     ev.preventDefault();
     ev.returnValue = "";
+  });
+
+  window.addEventListener("keydown", (ev) => {
+    if (!(ev.ctrlKey || ev.metaKey) || ev.altKey || ev.shiftKey || ev.key.toLowerCase() !== "d") return;
+    if (state.selectedScheduleIndex != null || state.selectedPublicVariableIndex != null || state.selectedRecordingPresetIndex != null) return;
+
+    const target = ev.target;
+    if (target instanceof HTMLElement) {
+      if (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) {
+        return;
+      }
+    }
+
+    if (!state.selectedNodeId) return;
+    if (!currentFlow()?.nodes.some((item) => item.id === state.selectedNodeId)) return;
+
+    ev.preventDefault();
+    duplicateNodeById(state.selectedNodeId);
   });
 
   window.addEventListener("mousemove", (ev) => {
