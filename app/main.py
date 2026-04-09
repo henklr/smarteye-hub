@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import json
 import uuid
+import importlib
 import threading
 import asyncio
 import time
@@ -50,6 +51,7 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DEVICES_JSON = DATA_DIR / "devices.json"
+CLOUD_CONNECTOR_JSON = DATA_DIR / "cloud_connector.json"
 
 MEDIAMTX_API_URL = os.getenv("MEDIAMTX_API_URL", "http://mediamtx:9997").rstrip("/")
 MEDIAMTX_API_USER = os.getenv("MEDIAMTX_API_USER", "apiuser")
@@ -252,6 +254,13 @@ class PTZMoveRequest(BaseModel):
     pan: float = 0.0
     tilt: float = 0.0
     zoom: float = 0.0
+
+
+class CloudConnectorConfigIn(BaseModel):
+    cloud_ws_url: str = Field(..., min_length=1)
+    cloud_token: str = Field(..., min_length=1)
+    hub_device_id: str = Field(..., min_length=1)
+    mediamtx_rtsp: str = Field(..., min_length=1)
     
 
 def _normalize_allow_topic(s: Optional[str]) -> str:
@@ -425,6 +434,81 @@ def _update_device(device_id: str, dev_in: DeviceIn) -> Device:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _default_cloud_connector_config() -> Dict[str, str]:
+    return {
+        "cloud_ws_url": str(os.getenv("CLOUD_WS_URL", "ws://localhost:5000/pi/connect")).strip(),
+        "cloud_token": str(os.getenv("CLOUD_TOKEN", "")).strip(),
+        "hub_device_id": str(os.getenv("HUB_DEVICE_ID", "smarteye-pi")).strip(),
+        "mediamtx_rtsp": str(os.getenv("MEDIAMTX_RTSP", "rtsp://localhost:8554")).strip(),
+    }
+
+
+def _normalize_cloud_connector_config(payload: Dict[str, Any]) -> Dict[str, str]:
+    cfg = {
+        "cloud_ws_url": str(payload.get("cloud_ws_url") or "").strip(),
+        "cloud_token": str(payload.get("cloud_token") or "").strip(),
+        "hub_device_id": str(payload.get("hub_device_id") or "").strip(),
+        "mediamtx_rtsp": str(payload.get("mediamtx_rtsp") or "").strip(),
+    }
+
+    if not cfg["cloud_ws_url"]:
+        raise HTTPException(status_code=400, detail="cloud_ws_url is required")
+    if not cfg["cloud_ws_url"].startswith(("ws://", "wss://")):
+        raise HTTPException(status_code=400, detail="cloud_ws_url must start with ws:// or wss://")
+    if not cfg["cloud_token"]:
+        raise HTTPException(status_code=400, detail="cloud_token is required")
+    if not cfg["hub_device_id"]:
+        raise HTTPException(status_code=400, detail="hub_device_id is required")
+    if not cfg["mediamtx_rtsp"]:
+        raise HTTPException(status_code=400, detail="mediamtx_rtsp is required")
+    if not cfg["mediamtx_rtsp"].startswith(("rtsp://", "rtsps://")):
+        raise HTTPException(status_code=400, detail="mediamtx_rtsp must start with rtsp:// or rtsps://")
+
+    return cfg
+
+
+def _load_cloud_connector_config() -> Dict[str, str]:
+    defaults = _default_cloud_connector_config()
+
+    if not CLOUD_CONNECTOR_JSON.exists():
+        return defaults
+
+    try:
+        raw = json.loads(CLOUD_CONNECTOR_JSON.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return defaults
+        merged = {**defaults, **{k: str(v) for k, v in raw.items() if isinstance(k, str)}}
+        return _normalize_cloud_connector_config(merged)
+    except HTTPException:
+        return defaults
+    except Exception:
+        return defaults
+
+
+def _save_cloud_connector_config(cfg: Dict[str, str]) -> None:
+    tmp = CLOUD_CONNECTOR_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    tmp.replace(CLOUD_CONNECTOR_JSON)
+
+
+def _cloud_connector_module():
+    try:
+        return importlib.import_module("cloud_connector")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cloud connector module unavailable: {e}")
+
+
+def _apply_cloud_connector_config(cfg: Dict[str, str]) -> bool:
+    module = _cloud_connector_module()
+    module.configure_connector(
+        cloud_ws_url=cfg["cloud_ws_url"],
+        cloud_token=cfg["cloud_token"],
+        hub_device_id=cfg["hub_device_id"],
+        mediamtx_rtsp=cfg["mediamtx_rtsp"],
+    )
+    return bool(module.is_connector_running())
 
 
 def _canonical_topic_aliases(topic: Optional[str]) -> set[str]:
@@ -2066,6 +2150,50 @@ async def refresh_device_stream(device_id: str):
         return {"ok": True, "device_id": device_id, "result": out}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Refresh stream failed: {e}")
+
+
+@app.get("/api/cloud/config")
+def cloud_config_get():
+    cfg = _load_cloud_connector_config()
+    running = False
+
+    try:
+        running = _apply_cloud_connector_config(cfg)
+    except HTTPException:
+        pass
+
+    return {"ok": True, **cfg, "running": running}
+
+
+@app.post("/api/cloud/config")
+def cloud_config_save(req: CloudConnectorConfigIn):
+    cfg = _normalize_cloud_connector_config(_dump(req))
+    _save_cloud_connector_config(cfg)
+
+    running = False
+    try:
+        running = _apply_cloud_connector_config(cfg)
+    except HTTPException:
+        pass
+
+    return {"ok": True, **cfg, "running": running}
+
+
+@app.post("/api/cloud/connect")
+def cloud_connect(req: CloudConnectorConfigIn):
+    cfg = _normalize_cloud_connector_config(_dump(req))
+    _save_cloud_connector_config(cfg)
+
+    module = _cloud_connector_module()
+    module.configure_connector(
+        cloud_ws_url=cfg["cloud_ws_url"],
+        cloud_token=cfg["cloud_token"],
+        hub_device_id=cfg["hub_device_id"],
+        mediamtx_rtsp=cfg["mediamtx_rtsp"],
+    )
+    module.start_cloud_connector()
+
+    return {"ok": True, **cfg, "running": bool(module.is_connector_running())}
 
 
 @app.get("/api/devices")

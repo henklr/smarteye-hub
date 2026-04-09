@@ -3,6 +3,13 @@ const sidebarListStatus = document.getElementById("sidebarListStatus");
 const deviceFormStatus = document.getElementById("deviceFormStatus");
 const deviceFormTitle = document.getElementById("deviceFormTitle");
 const refreshDevicesBtn = document.getElementById("overlayRefreshDevices");
+const cloudWsUrlEl = document.getElementById("cloudWsUrl");
+const cloudTokenEl = document.getElementById("cloudToken");
+const cloudDeviceIdEl = document.getElementById("cloudDeviceId");
+const cloudRtspEl = document.getElementById("cloudRtsp");
+const cloudSaveBtn = document.getElementById("cloudSaveBtn");
+const cloudConnectBtn = document.getElementById("cloudConnectBtn");
+const cloudStatusEl = document.getElementById("cloudStatus");
 
 const startAllBtn = document.getElementById("startAll");
 const stopAllBtn = document.getElementById("stopAll");
@@ -114,6 +121,69 @@ function setListStatus(text) {
 
 function setFormStatus(text) {
   deviceFormStatus.textContent = text;
+}
+
+function setCloudStatus(text) {
+  if (!cloudStatusEl) return;
+  cloudStatusEl.textContent = text;
+}
+
+function readCloudForm() {
+  const cloud_ws_url = (cloudWsUrlEl?.value || "").trim();
+  const cloud_token = (cloudTokenEl?.value || "").trim();
+  const hub_device_id = (cloudDeviceIdEl?.value || "").trim();
+  const mediamtx_rtsp = (cloudRtspEl?.value || "").trim();
+
+  if (!cloud_ws_url) throw new Error("Cloud WebSocket URL is required.");
+  if (!cloud_token) throw new Error("Cloud token is required.");
+  if (!hub_device_id) throw new Error("Hub device ID is required.");
+  if (!mediamtx_rtsp) throw new Error("Local RTSP base is required.");
+
+  return { cloud_ws_url, cloud_token, hub_device_id, mediamtx_rtsp };
+}
+
+function fillCloudForm(cfg) {
+  if (!cfg) return;
+  if (cloudWsUrlEl) cloudWsUrlEl.value = cfg.cloud_ws_url || "";
+  if (cloudTokenEl) cloudTokenEl.value = cfg.cloud_token || "";
+  if (cloudDeviceIdEl) cloudDeviceIdEl.value = cfg.hub_device_id || "";
+  if (cloudRtspEl) cloudRtspEl.value = cfg.mediamtx_rtsp || "";
+}
+
+async function loadCloudConfig() {
+  if (!cloudStatusEl) return;
+  try {
+    setCloudStatus("Loading cloud settings…");
+    const data = await api("/api/cloud/config", { method: "GET" });
+    fillCloudForm(data);
+    setCloudStatus(data.running ? "Connected (connector running)." : "Saved. Click Connect to start.");
+  } catch (e) {
+    setCloudStatus(`Error loading settings: ${String(e.message || e)}`);
+  }
+}
+
+async function saveCloudConfig() {
+  const payload = readCloudForm();
+  setCloudStatus("Saving cloud settings…");
+  const data = await api("/api/cloud/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  fillCloudForm(data);
+  setCloudStatus(data.running ? "Saved (connector already running)." : "Saved. Click Connect to start.");
+}
+
+async function connectCloud() {
+  const payload = readCloudForm();
+  setCloudStatus("Connecting to cloud…");
+  const data = await api("/api/cloud/connect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  fillCloudForm(data);
+  setCloudStatus(data.running ? "Connected (connector running)." : "Connect requested, waiting for connector state.");
 }
 
 function updateListStatusSummary(prefix = "") {
@@ -1952,6 +2022,22 @@ refreshDevicesBtn?.addEventListener("click", async () => {
   await loadDevices();
 });
 
+cloudSaveBtn?.addEventListener("click", async () => {
+  try {
+    await saveCloudConfig();
+  } catch (e) {
+    setCloudStatus(`Error: ${String(e.message || e)}`);
+  }
+});
+
+cloudConnectBtn?.addEventListener("click", async () => {
+  try {
+    await connectCloud();
+  } catch (e) {
+    setCloudStatus(`Error: ${String(e.message || e)}`);
+  }
+});
+
 startAllBtn.addEventListener("click", async () => {
   const ready = devices.filter(profileReady);
   const toStart = ready.filter((d) => !isStreaming(d.id));
@@ -1995,6 +2081,7 @@ installListDnD();
 clearForm();
 
 (async function init() {
+  await loadCloudConfig();
   await loadDevices();
   await restoreGrid();
 
