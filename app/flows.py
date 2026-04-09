@@ -172,15 +172,23 @@ class RecordingPresetIn(BaseModel):
     color: str = "#c6a14b"
     
 
+_ONVIF_TRANSITION_BY_LEGACY_TRIGGER = {
+    "trigger.onvif_motion_started": "became_active",
+    "trigger.onvif_motion_stopped": "became_inactive",
+    "trigger.onvif_objects_entered": "became_active",
+    "trigger.onvif_objects_left": "became_inactive",
+}
+
+
 NODE_LIBRARY: List[Dict[str, Any]] = [
     {
         "type": "trigger.onvif_event",
         "category": "trigger",
         "label": "ONVIF event",
-        "description": "Starts the flow when a selected ONVIF topic is emitted.",
+        "description": "Starts the flow when a selected ONVIF topic is emitted, optionally filtered by active or inactive state transitions.",
         "color": "#4f8cff",
         "ports": {"inputs": [], "outputs": ["out"]},
-        "defaults": {"device_id": "", "topic": "", "name": ""},
+        "defaults": {"device_id": "", "topic": "", "transition": "any", "name": ""},
     },
     {
         "type": "trigger.device_offline",
@@ -1513,6 +1521,12 @@ def _normalize_node_payload(
         if "pulse_seconds" not in raw_config and "activation_seconds" in raw_config:
             raw_config["pulse_seconds"] = raw_config.get("activation_seconds")
 
+    if node_type in _ONVIF_TRANSITION_BY_LEGACY_TRIGGER:
+        raw_config.setdefault("transition", _ONVIF_TRANSITION_BY_LEGACY_TRIGGER[node_type])
+        node_type = "trigger.onvif_event"
+        if raw_label in {"Motion started", "Motion stopped", "Objects entered", "Objects left"}:
+            raw_label = ""
+
     if node_type not in NODE_LIBRARY_BY_TYPE:
         raise HTTPException(status_code=400, detail=f"Unsupported node type: {node_type}")
 
@@ -1562,6 +1576,7 @@ def _normalize_node_config(
     if node_type == "trigger.onvif_event":
         cfg["device_id"] = str(cfg.get("device_id") or "").strip()
         cfg["topic"] = _normalize_topic(cfg.get("topic"))
+        cfg["transition"] = _normalize_onvif_transition(cfg.get("transition"))
         if not cfg["device_id"]:
             raise HTTPException(status_code=400, detail="ONVIF trigger needs a device")
         if not cfg["topic"]:
@@ -1839,6 +1854,28 @@ def _normalize_topic(value: Any) -> str:
             part = part.split(":", 1)[1]
         cleaned.append(part)
     return "/".join(cleaned)
+
+
+def _normalize_onvif_transition(value: Any) -> str:
+    raw = str(value or "any").strip().lower()
+    aliases = {
+        "": "any",
+        "any": "any",
+        "all": "any",
+        "started": "became_active",
+        "entered": "became_active",
+        "active": "became_active",
+        "true": "became_active",
+        "became_true": "became_active",
+        "became_active": "became_active",
+        "stopped": "became_inactive",
+        "left": "became_inactive",
+        "inactive": "became_inactive",
+        "false": "became_inactive",
+        "became_false": "became_inactive",
+        "became_inactive": "became_inactive",
+    }
+    return aliases.get(raw, "any")
 
 
 def _normalize_physical_input_kind(value: Any) -> str:
@@ -2303,7 +2340,24 @@ def _trigger_matches_node(node: Dict[str, Any], trigger: Dict[str, Any]) -> bool
             or ((trigger.get("extra") or {}).get("topic_path"))
             or ((trigger.get("extra") or {}).get("guessed_topic"))
         )
-        return bool(wanted and got and (got == wanted or got.startswith(wanted + "/") or wanted.startswith(got + "/")))
+        if not (wanted and got and (got == wanted or got.startswith(wanted + "/") or wanted.startswith(got + "/"))):
+            return False
+
+        transition = _normalize_onvif_transition(cfg.get("transition"))
+        if transition == "any":
+            return True
+
+        if _normalize_onvif_transition(trigger.get("state_transition")) == transition:
+            return True
+
+        state_changes = trigger.get("state_changes") or ((trigger.get("extra") or {}).get("state_changes")) or []
+        if isinstance(state_changes, list):
+            return any(
+                isinstance(item, dict)
+                and _normalize_onvif_transition(item.get("transition")) == transition
+                for item in state_changes
+            )
+        return False
 
     if node_type == "trigger.device_offline":
         return kind == "device_offline" and str(cfg.get("device_id") or "") == str(trigger.get("device_id") or "")

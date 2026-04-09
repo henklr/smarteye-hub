@@ -1731,6 +1731,30 @@ function compareSideLabel(source, value) {
   return `"${raw}"`;
 }
 
+function normalizeOnvifTransition(value) {
+  const raw = String(value || "any").trim().toLowerCase();
+  if (["became_active", "started", "entered", "active", "true"].includes(raw)) return "became_active";
+  if (["became_inactive", "stopped", "left", "inactive", "false"].includes(raw)) return "became_inactive";
+  return "any";
+}
+
+function onvifTransitionOptionsHtml(value) {
+  const current = normalizeOnvifTransition(value);
+  const options = [
+    ["any", "Any event"],
+    ["became_active", "Became active / true"],
+    ["became_inactive", "Became inactive / false"],
+  ];
+  return options.map(([optionValue, label]) => `<option value="${escapeHtml(optionValue)}" ${optionValue === current ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
+}
+
+function onvifTransitionSummary(value) {
+  const current = normalizeOnvifTransition(value);
+  if (current === "became_active") return "when state becomes active";
+  if (current === "became_inactive") return "when state becomes inactive";
+  return "for any matching event";
+}
+
 function compareTriggerPathGroups() {
   const flow = currentFlow();
   const nodes = Array.isArray(flow?.nodes) ? flow.nodes : [];
@@ -1757,7 +1781,7 @@ function compareTriggerPathGroups() {
 
   const triggerTypePaths = {
     "trigger.manual": ["manual_kind", "trigger_node_id", "flow_id", "device_id", "method", "path", "topic", "extra.some_key"],
-    "trigger.onvif_event": ["device_id", "topic", "extra.matched_allow_topic", "extra.matched_by", "extra.topic_path", "extra.guessed_topic"],
+    "trigger.onvif_event": ["device_id", "topic", "state_key", "state_value", "state_transition", "state_changes.0.key", "state_changes.0.state_value", "state_changes.0.transition", "extra.matched_allow_topic", "extra.matched_by", "extra.topic_path", "extra.guessed_topic", "extra.changed.IsMotion", "extra.changed.IsInside"],
     "trigger.device_offline": ["device_id", "status", "message"],
     "trigger.device_back_online": ["device_id", "status", "message"],
     "trigger.ptz_manual_control_started": ["device_id", "pan", "tilt", "zoom", "extra.reason"],
@@ -1944,7 +1968,7 @@ function nodePreview(node) {
   switch (node.type) {
     case "trigger.onvif_event": {
       const device = state.devices.find((item) => item.id === cfg.device_id);
-      return `${device?.name || cfg.device_id || "device"} → ${cfg.topic || "topic"}`;
+      return `${device?.name || cfg.device_id || "device"} → ${cfg.topic || "topic"} · ${onvifTransitionSummary(cfg.transition)}`;
     }
 
     case "trigger.device_offline": {
@@ -5343,7 +5367,8 @@ function renderNodeInspector(node) {
     case "trigger.onvif_event":
       body = `
         <div class="inspectorCard">
-          <div class="inspectorTitle">Trigger details</div>
+          <div class="inspectorTitle">ONVIF event</div>
+          <div class="inspectorHint">Choose a topic, then optionally restrict the trigger to active or inactive boolean state transitions when the event provides them.</div>
           <div class="fieldGrid">
             <div class="full">
               <label>Name</label>
@@ -5359,6 +5384,11 @@ function renderNodeInspector(node) {
               <div class="inlineMeta topicPickerMeta" id="cfg_topic_meta">Load topics for this device to search them.</div>
               <input id="cfg_topic" type="hidden" value="${escapeHtml(cfg.topic || "")}" />
               <div id="cfg_topic_list" class="topicPickerList"></div>
+            </div>
+            <div class="full">
+              <label>Transition</label>
+              <select id="cfg_transition">${onvifTransitionOptionsHtml(cfg.transition || "any")}</select>
+              <div class="inlineMeta">Use active or inactive only for stateful ONVIF events that carry boolean values such as motion, inside-area, relays, tamper, or similar analytics states.</div>
             </div>
             <div class="full row2 mt-0">
               <button class="btn" id="btnRefreshTopics" type="button">Refresh topics</button>
@@ -5975,6 +6005,7 @@ function applyNodeInspector(node) {
       set("name");
       set("device_id");
       set("topic");
+      set("transition");
       break;
     case "trigger.device_offline":
     case "trigger.device_back_online":

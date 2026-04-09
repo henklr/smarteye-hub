@@ -1035,18 +1035,61 @@ def _emit_event(device_id: str, level: str, msg: str, extra: Optional[dict] = No
     }
     _broadcast_event(device_id, payload)
     if level == "event" and msg == "ONVIF event":
+        def event_topic(extra_payload: dict) -> str:
+            return (
+                extra_payload.get("matched_allow_topic")
+                or extra_payload.get("matched_by")
+                or extra_payload.get("topic_path")
+                or extra_payload.get("guessed_topic")
+                or ""
+            )
+
+        def parse_onvif_bool(value: Any) -> Optional[bool]:
+            if isinstance(value, bool):
+                return value
+            text = str(value or "").strip().lower()
+            if text in {"1", "true", "yes", "on"}:
+                return True
+            if text in {"0", "false", "no", "off"}:
+                return False
+            return None
+
+        def onvif_state_changes(extra_payload: dict) -> List[dict]:
+            changed = extra_payload.get("changed") or {}
+            if not isinstance(changed, dict) or not changed:
+                return []
+
+            out: List[dict] = []
+            for key, raw_value in changed.items():
+                state_value = parse_onvif_bool(raw_value)
+                if state_value is None:
+                    continue
+                out.append(
+                    {
+                        "key": str(key),
+                        "state_value": state_value,
+                        "transition": "became_active" if state_value else "became_inactive",
+                    }
+                )
+            return out
+
+        extra_payload = dict(extra or {})
+        state_changes = onvif_state_changes(extra_payload)
+        if state_changes:
+            extra_payload["state_changes"] = state_changes
+        primary_state = state_changes[0] if state_changes else {}
+
         trigger = {
             "kind": "onvif_event",
             "device_id": device_id,
             "message": msg,
-            "extra": extra or {},
+            "extra": extra_payload,
             "ts": payload["ts"],
-            "topic": (
-                (extra or {}).get("matched_allow_topic")
-                or (extra or {}).get("matched_by")
-                or (extra or {}).get("topic_path")
-                or (extra or {}).get("guessed_topic")
-            ),
+            "topic": event_topic(extra_payload),
+            "state_key": primary_state.get("key"),
+            "state_value": primary_state.get("state_value"),
+            "state_transition": primary_state.get("transition"),
+            "state_changes": state_changes,
         }
         dispatch_flow_trigger(trigger)
         
