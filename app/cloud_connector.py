@@ -12,7 +12,7 @@ Protocol (over a single persistent WebSocket):
 
 Environment variables:
   CLOUD_WS_URL    — ws(s)://host/pi/connect          (default: ws://localhost:5000/pi/connect)
-  CLOUD_TOKEN     — shared secret matching PiToken in server appsettings.json
+    CLOUD_TOKEN     — pairing key from cloud dashboard (single-use, obtained via /settings page)
   HUB_DEVICE_ID   — identifier shown in the dashboard  (default: smarteye-pi)
   MEDIAMTX_RTSP   — base RTSP URL of local MediaMTX   (default: rtsp://localhost:8554)
   DATA_DIR        — path to data/ folder               (default: /app/data)

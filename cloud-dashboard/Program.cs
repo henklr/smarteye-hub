@@ -20,7 +20,6 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
 // Middleware pipeline
 // ─────────────────────────────────────────────────────────────────────────────
 var app = builder.Build();
-var piToken = app.Configuration["PiToken"] ?? "changeme-secret-token";
 var log = app.Logger;
 
 app.UseCors();
@@ -36,12 +35,9 @@ app.Map("/pi/connect", async (HttpContext ctx, DeviceRegistry registry, StreamRe
     if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
 
     var token = ctx.Request.Query["token"].FirstOrDefault() ?? string.Empty;
-    var usingMasterToken = token == piToken;
-    var usingPairingKey = !usingMasterToken && keys.IsValid(token);
-    if (!usingMasterToken && !usingPairingKey) { ctx.Response.StatusCode = 401; return; }
+    if (!keys.IsValid(token)) { ctx.Response.StatusCode = 401; return; }
 
-    if (usingPairingKey)
-        keys.MarkUsed(token);
+    keys.MarkUsed(token);
 
     var ws = await ctx.WebSockets.AcceptWebSocketAsync();
     log.LogInformation("Pi connected from {IP}", ctx.Connection.RemoteIpAddress);
@@ -143,14 +139,30 @@ app.Map("/stream/{streamId}", async (HttpContext ctx, string streamId, StreamRel
 app.MapGet("/api/devices", (DeviceRegistry registry) =>
     Results.Ok(registry.GetAll()));
 
-// POST /api/device-keys — generate a long-lived pairing key for a Pi
+// DELETE /api/devices/{deviceId} — forcibly disconnect a Pi device
+app.MapDelete("/api/devices/{deviceId}", async (string deviceId, DeviceRegistry registry, StreamRelay relay) =>
+{
+    var conn = registry.Unregister(deviceId);
+    if (conn == null) return Results.NotFound(new { error = "Device not connected" });
+
+    // Stop all streams owned by this device
+    foreach (var sid in conn.StreamIds.ToList())
+        relay.RemoveStream(sid);
+
+    // Close the Pi WebSocket
+    await conn.CloseAsync();
+
+    log.LogInformation("Pi device removed by dashboard: {DeviceId}", deviceId);
+    return Results.NoContent();
+});
+
+// POST /api/device-keys — generate a single-use pairing key for a Pi
 app.MapPost("/api/device-keys", (DeviceKeyCreateRequest req, DeviceKeyStore keys) =>
 {
-    var created = keys.Generate(req.Label);
+    var created = keys.Generate();
     return Results.Ok(new
     {
         key = created.Value,
-        label = created.Label,
         createdAtUtc = created.CreatedAtUtc,
     });
 });
@@ -212,8 +224,7 @@ app.Run();
 
 record CameraInfo(string Id, string Name);
 
-record DeviceKeyCreateRequest(
-    [property: JsonPropertyName("label")] string? Label);
+record DeviceKeyCreateRequest;
 
 record StreamStartRequest(
     [property: JsonPropertyName("deviceId")] string DeviceId,
@@ -237,6 +248,17 @@ class PiConnection
 
     public void AddStream(string streamId) { lock (_streamIds) { _streamIds.Add(streamId); } }
     public void RemoveStream(string streamId) { lock (_streamIds) { _streamIds.Remove(streamId); } }
+
+    public async Task CloseAsync()
+    {
+        try
+        {
+            if (_ws.State == WebSocketState.Open)
+                await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure,
+                    "Removed by dashboard", CancellationToken.None);
+        }
+        catch { }
+    }
 
     public async Task SendTextAsync(string text, CancellationToken ct = default)
     {
@@ -358,7 +380,6 @@ class StreamRelay
 
 record DeviceKey(
     string Value,
-    string? Label,
     DateTime CreatedAtUtc,
     DateTime? LastUsedAtUtc);
 
@@ -366,13 +387,11 @@ class DeviceKeyStore
 {
     private readonly ConcurrentDictionary<string, DeviceKey> _keys = new();
 
-    public DeviceKey Generate(string? label)
+    public DeviceKey Generate()
     {
         var key = BuildKey();
-        var trimmedLabel = string.IsNullOrWhiteSpace(label) ? null : label.Trim();
         var created = new DeviceKey(
             Value: key,
-            Label: trimmedLabel,
             CreatedAtUtc: DateTime.UtcNow,
             LastUsedAtUtc: null
         );
@@ -383,7 +402,10 @@ class DeviceKeyStore
     public bool IsValid(string key)
     {
         if (string.IsNullOrWhiteSpace(key)) return false;
-        return _keys.ContainsKey(key.Trim());
+        var cleaned = key.Trim();
+        if (!_keys.TryGetValue(cleaned, out var deviceKey)) return false;
+        // Key is valid only if it hasn't been used yet
+        return deviceKey.LastUsedAtUtc == null;
     }
 
     public void MarkUsed(string key)
@@ -392,7 +414,7 @@ class DeviceKeyStore
         var cleaned = key.Trim();
         _keys.AddOrUpdate(
             cleaned,
-            _ => new DeviceKey(cleaned, null, DateTime.UtcNow, DateTime.UtcNow),
+            _ => new DeviceKey(cleaned, DateTime.UtcNow, DateTime.UtcNow),
             (_, existing) => existing with { LastUsedAtUtc = DateTime.UtcNow });
     }
 
