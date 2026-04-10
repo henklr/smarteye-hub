@@ -201,6 +201,11 @@ def devices_page():
     return (STATIC_DIR / "devices.html").read_text(encoding="utf-8")
 
 
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page():
+    return (STATIC_DIR / "settings.html").read_text(encoding="utf-8")
+
+
 @app.get("/health")
 def health():
     with _event_worker_lock:
@@ -260,7 +265,6 @@ class CloudConnectorConfigIn(BaseModel):
     cloud_ws_url: str = Field(..., min_length=1)
     cloud_token: str = Field(..., min_length=1)
     hub_device_id: str = Field(..., min_length=1)
-    mediamtx_rtsp: str = Field(..., min_length=1)
     
 
 def _normalize_allow_topic(s: Optional[str]) -> str:
@@ -441,7 +445,6 @@ def _default_cloud_connector_config() -> Dict[str, str]:
         "cloud_ws_url": str(os.getenv("CLOUD_WS_URL", "ws://localhost:5000/pi/connect")).strip(),
         "cloud_token": str(os.getenv("CLOUD_TOKEN", "")).strip(),
         "hub_device_id": str(os.getenv("HUB_DEVICE_ID", "smarteye-pi")).strip(),
-        "mediamtx_rtsp": str(os.getenv("MEDIAMTX_RTSP", "rtsp://localhost:8554")).strip(),
     }
 
 
@@ -450,7 +453,6 @@ def _normalize_cloud_connector_config(payload: Dict[str, Any]) -> Dict[str, str]
         "cloud_ws_url": str(payload.get("cloud_ws_url") or "").strip(),
         "cloud_token": str(payload.get("cloud_token") or "").strip(),
         "hub_device_id": str(payload.get("hub_device_id") or "").strip(),
-        "mediamtx_rtsp": str(payload.get("mediamtx_rtsp") or "").strip(),
     }
 
     if not cfg["cloud_ws_url"]:
@@ -461,10 +463,6 @@ def _normalize_cloud_connector_config(payload: Dict[str, Any]) -> Dict[str, str]
         raise HTTPException(status_code=400, detail="cloud_token is required")
     if not cfg["hub_device_id"]:
         raise HTTPException(status_code=400, detail="hub_device_id is required")
-    if not cfg["mediamtx_rtsp"]:
-        raise HTTPException(status_code=400, detail="mediamtx_rtsp is required")
-    if not cfg["mediamtx_rtsp"].startswith(("rtsp://", "rtsps://")):
-        raise HTTPException(status_code=400, detail="mediamtx_rtsp must start with rtsp:// or rtsps://")
 
     return cfg
 
@@ -506,7 +504,6 @@ def _apply_cloud_connector_config(cfg: Dict[str, str]) -> bool:
         cloud_ws_url=cfg["cloud_ws_url"],
         cloud_token=cfg["cloud_token"],
         hub_device_id=cfg["hub_device_id"],
-        mediamtx_rtsp=cfg["mediamtx_rtsp"],
     )
     return bool(module.is_connector_running())
 
@@ -2189,7 +2186,6 @@ def cloud_connect(req: CloudConnectorConfigIn):
         cloud_ws_url=cfg["cloud_ws_url"],
         cloud_token=cfg["cloud_token"],
         hub_device_id=cfg["hub_device_id"],
-        mediamtx_rtsp=cfg["mediamtx_rtsp"],
     )
     module.start_cloud_connector()
 

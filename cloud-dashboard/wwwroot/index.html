@@ -35,6 +35,58 @@
     .dot.on  { background: #4caf50; box-shadow: 0 0 6px #4caf5088; }
     .dot.err { background: #f44336; }
     #hdr-right { margin-left: auto; font-size: 0.78rem; color: #666; }
+    .header-btn {
+      border: 1px solid #3f3f3f;
+      background: #202020;
+      color: #e6e6e6;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      padding: 6px 10px;
+      cursor: pointer;
+      margin-left: auto;
+    }
+    .header-btn:hover { background: #2b2b2b; }
+
+    .modal {
+      position: fixed; inset: 0;
+      display: none; align-items: center; justify-content: center;
+      background: rgba(0, 0, 0, 0.65);
+      z-index: 20;
+      padding: 16px;
+    }
+    .modal.open { display: flex; }
+    .modal-card {
+      width: 100%; max-width: 560px;
+      background: #161616;
+      border: 1px solid #2a2a2a;
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .modal-card h3 { font-size: 0.95rem; margin-bottom: 10px; }
+    .modal-card p { font-size: 0.82rem; color: #9a9a9a; margin-bottom: 10px; }
+    .key-box {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      background: #0f0f0f;
+      color: #f0f0f0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.82rem;
+      margin-bottom: 10px;
+    }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .modal-btn {
+      border: 1px solid #3f3f3f;
+      background: #202020;
+      color: #e6e6e6;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      padding: 7px 10px;
+      cursor: pointer;
+    }
+    .modal-btn.primary { background: #1b3558; border-color: #2a4f83; }
+    .modal-btn:hover { background: #2b2b2b; }
 
     /* ── Layout ── */
     .layout { display: flex; flex: 1; overflow: hidden; }
@@ -140,6 +192,7 @@
 <header>
   <div class="dot" id="server-dot"></div>
   <h1>SmartEye Cloud Dashboard</h1>
+  <button class="header-btn" id="add-device-btn" type="button">Add Device</button>
   <span id="hdr-right">No active stream</span>
 </header>
 
@@ -203,6 +256,20 @@
   </div>
 </div>
 
+<div class="modal" id="pair-modal" aria-hidden="true">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="pair-modal-title">
+    <h3 id="pair-modal-title">Pairing Key Generated</h3>
+    <p>
+      On the Pi, open Devices -> Cloud connection, paste this key into Pairing key, then press Connect to cloud.
+    </p>
+    <input id="pair-key-value" class="key-box" readonly />
+    <div class="modal-actions">
+      <button class="modal-btn" id="pair-close-btn" type="button">Close</button>
+      <button class="modal-btn primary" id="pair-copy-btn" type="button">Copy Key</button>
+    </div>
+  </div>
+</div>
+
 <script>
 'use strict';
 
@@ -220,6 +287,44 @@ let chunkQueue       = [];
 let sbBusy           = false;
 let chunkCount       = 0;
 let bufIntervalId    = null;
+
+const addDeviceBtn = document.getElementById('add-device-btn');
+const pairModal = document.getElementById('pair-modal');
+const pairKeyValue = document.getElementById('pair-key-value');
+const pairCopyBtn = document.getElementById('pair-copy-btn');
+const pairCloseBtn = document.getElementById('pair-close-btn');
+
+function openPairModal(key) {
+  pairKeyValue.value = key;
+  pairModal.classList.add('open');
+  pairModal.setAttribute('aria-hidden', 'false');
+}
+
+function closePairModal() {
+  pairModal.classList.remove('open');
+  pairModal.setAttribute('aria-hidden', 'true');
+}
+
+async function addDevice() {
+  const label = window.prompt('Optional label for this key (e.g., Front Gate Pi):', '') || '';
+
+  const res = await fetch(`${API}/api/device-keys`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to create key (HTTP ${res.status})`);
+  }
+
+  const data = await res.json();
+  if (!data?.key) {
+    throw new Error('Server returned no key');
+  }
+
+  openPairModal(data.key);
+}
 
 // ── Device list ──────────────────────────────────────────────────────────────
 async function loadDevices() {
@@ -465,6 +570,31 @@ function escHtml(s) {
                   .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function escAttr(s) { return String(s).replace(/'/g, "\\'"); }
+
+addDeviceBtn?.addEventListener('click', async () => {
+  try {
+    await addDevice();
+  } catch (e) {
+    window.alert(`Could not create key: ${e.message || e}`);
+  }
+});
+
+pairCloseBtn?.addEventListener('click', closePairModal);
+
+pairCopyBtn?.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(pairKeyValue.value || '');
+    pairCopyBtn.textContent = 'Copied';
+    setTimeout(() => { pairCopyBtn.textContent = 'Copy Key'; }, 1200);
+  } catch {
+    pairKeyValue.focus();
+    pairKeyValue.select();
+  }
+});
+
+pairModal?.addEventListener('click', (ev) => {
+  if (ev.target === pairModal) closePairModal();
+});
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────
 loadDevices();

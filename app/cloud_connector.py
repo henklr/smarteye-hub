@@ -37,7 +37,7 @@ log = logging.getLogger("cloud_connector")
 CLOUD_WS_URL  = os.environ.get("CLOUD_WS_URL",   "ws://172.16.0.10:5000/pi/connect")
 CLOUD_TOKEN   = os.environ.get("CLOUD_TOKEN",     "changeme-secret-token")
 HUB_DEVICE_ID = os.environ.get("HUB_DEVICE_ID",  "smarteye-pi")
-MEDIAMTX_RTSP = os.environ.get("MEDIAMTX_RTSP",  "rtsp://localhost:8554")
+MEDIAMTX_RTSP = os.environ.get("MEDIAMTX_RTSP",  "rtsp://mediamtx:8554")
 DATA_DIR      = Path(os.environ.get("DATA_DIR",   "/app/data"))
 
 CHUNK_SIZE    = 32 * 1024   # bytes read per ffmpeg stdout read
@@ -192,21 +192,18 @@ def configure_connector(
     cloud_ws_url: str,
     cloud_token: str,
     hub_device_id: str,
-    mediamtx_rtsp: str,
 ) -> None:
     """Update connector runtime config for future connects/reconnects."""
-    global CLOUD_WS_URL, CLOUD_TOKEN, HUB_DEVICE_ID, MEDIAMTX_RTSP
+    global CLOUD_WS_URL, CLOUD_TOKEN, HUB_DEVICE_ID
 
     CLOUD_WS_URL = cloud_ws_url.strip()
     CLOUD_TOKEN = cloud_token.strip()
     HUB_DEVICE_ID = hub_device_id.strip()
-    MEDIAMTX_RTSP = mediamtx_rtsp.strip()
 
     # Keep env in sync so child processes and diagnostics reflect active settings.
     os.environ["CLOUD_WS_URL"] = CLOUD_WS_URL
     os.environ["CLOUD_TOKEN"] = CLOUD_TOKEN
     os.environ["HUB_DEVICE_ID"] = HUB_DEVICE_ID
-    os.environ["MEDIAMTX_RTSP"] = MEDIAMTX_RTSP
 
 
 def is_connector_running() -> bool:

@@ -15,6 +15,7 @@
         <a class="tab active" href="/live"><span class="tabDot"></span>Live</a>
         <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
         <a class="tab" href="/flows"><span class="tabDot"></span>Flows</a>
+        <a class="tab" href="/settings"><span class="tabDot"></span>Settings</a>
       </div>
 
       <div class="topbarActions">
@@ -57,44 +58,6 @@
 
           <div class="statusLine compact" style="margin-top:12px;">
             <strong>Status:</strong> <span id="sidebarListStatus" class="muted">Loading devices…</span>
-          </div>
-        </section>
-
-        <section class="overlaySection">
-          <div class="sidebarSectionHead">
-            <div>Cloud connection</div>
-            <div class="sidebarSectionSub">Configure outbound cloud relay settings for this Pi and start the connector.</div>
-          </div>
-
-          <div class="grid overlayFormGrid" style="margin-top:10px;">
-            <div data-full>
-              <label for="cloudWsUrl">Cloud WebSocket URL</label>
-              <input id="cloudWsUrl" placeholder="wss://cloud.example.com/pi/connect" />
-            </div>
-
-            <div data-full>
-              <label for="cloudToken">Cloud token</label>
-              <input id="cloudToken" type="password" placeholder="shared-secret-token" />
-            </div>
-
-            <div>
-              <label for="cloudDeviceId">Hub device ID</label>
-              <input id="cloudDeviceId" placeholder="smarteye-pi" />
-            </div>
-
-            <div>
-              <label for="cloudRtsp">Local RTSP base</label>
-              <input id="cloudRtsp" placeholder="rtsp://localhost:8554" />
-            </div>
-          </div>
-
-          <div class="row2" style="margin-top:12px;">
-            <button class="btn" id="cloudSaveBtn" type="button">Save cloud details</button>
-            <button class="btn btn-primary" id="cloudConnectBtn" type="button">Connect to cloud</button>
-          </div>
-
-          <div class="statusLine compact" style="margin-top:12px;">
-            <strong>Cloud:</strong> <span id="cloudStatus" class="muted">Not configured.</span>
           </div>
         </section>
 

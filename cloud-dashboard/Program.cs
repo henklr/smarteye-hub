@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -11,6 +12,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSingleton<DeviceRegistry>();
 builder.Services.AddSingleton<StreamRelay>();
+builder.Services.AddSingleton<DeviceKeyStore>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
     p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
@@ -29,12 +31,17 @@ app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSecond
 // ─────────────────────────────────────────────────────────────────────────────
 // /pi/connect  — Pi devices connect here (outbound from Pi, no inbound needed)
 // ─────────────────────────────────────────────────────────────────────────────
-app.Map("/pi/connect", async (HttpContext ctx, DeviceRegistry registry, StreamRelay relay) =>
+app.Map("/pi/connect", async (HttpContext ctx, DeviceRegistry registry, StreamRelay relay, DeviceKeyStore keys) =>
 {
     if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
 
     var token = ctx.Request.Query["token"].FirstOrDefault() ?? string.Empty;
-    if (token != piToken) { ctx.Response.StatusCode = 401; return; }
+    var usingMasterToken = token == piToken;
+    var usingPairingKey = !usingMasterToken && keys.IsValid(token);
+    if (!usingMasterToken && !usingPairingKey) { ctx.Response.StatusCode = 401; return; }
+
+    if (usingPairingKey)
+        keys.MarkUsed(token);
 
     var ws = await ctx.WebSockets.AcceptWebSocketAsync();
     log.LogInformation("Pi connected from {IP}", ctx.Connection.RemoteIpAddress);
@@ -136,6 +143,18 @@ app.Map("/stream/{streamId}", async (HttpContext ctx, string streamId, StreamRel
 app.MapGet("/api/devices", (DeviceRegistry registry) =>
     Results.Ok(registry.GetAll()));
 
+// POST /api/device-keys — generate a long-lived pairing key for a Pi
+app.MapPost("/api/device-keys", (DeviceKeyCreateRequest req, DeviceKeyStore keys) =>
+{
+    var created = keys.Generate(req.Label);
+    return Results.Ok(new
+    {
+        key = created.Value,
+        label = created.Label,
+        createdAtUtc = created.CreatedAtUtc,
+    });
+});
+
 // POST /api/stream/start — tell the Pi to start streaming a camera
 app.MapPost("/api/stream/start", async (
     StreamStartRequest req, DeviceRegistry registry, StreamRelay relay) =>
@@ -192,6 +211,9 @@ app.Run();
 // ─────────────────────────────────────────────────────────────────────────────
 
 record CameraInfo(string Id, string Name);
+
+record DeviceKeyCreateRequest(
+    [property: JsonPropertyName("label")] string? Label);
 
 record StreamStartRequest(
     [property: JsonPropertyName("deviceId")] string DeviceId,
@@ -331,5 +353,52 @@ class StreamRelay
     {
         if (_streams.TryRemove(streamId, out var session))
             _ = session.CloseAllAsync();
+    }
+}
+
+record DeviceKey(
+    string Value,
+    string? Label,
+    DateTime CreatedAtUtc,
+    DateTime? LastUsedAtUtc);
+
+class DeviceKeyStore
+{
+    private readonly ConcurrentDictionary<string, DeviceKey> _keys = new();
+
+    public DeviceKey Generate(string? label)
+    {
+        var key = BuildKey();
+        var trimmedLabel = string.IsNullOrWhiteSpace(label) ? null : label.Trim();
+        var created = new DeviceKey(
+            Value: key,
+            Label: trimmedLabel,
+            CreatedAtUtc: DateTime.UtcNow,
+            LastUsedAtUtc: null
+        );
+        _keys[key] = created;
+        return created;
+    }
+
+    public bool IsValid(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return false;
+        return _keys.ContainsKey(key.Trim());
+    }
+
+    public void MarkUsed(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return;
+        var cleaned = key.Trim();
+        _keys.AddOrUpdate(
+            cleaned,
+            _ => new DeviceKey(cleaned, null, DateTime.UtcNow, DateTime.UtcNow),
+            (_, existing) => existing with { LastUsedAtUtc = DateTime.UtcNow });
+    }
+
+    private static string BuildKey()
+    {
+        var bytes = RandomNumberGenerator.GetBytes(12);
+        return $"pair_{Convert.ToHexString(bytes).ToLowerInvariant()}";
     }
 }

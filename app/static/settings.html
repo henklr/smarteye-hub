@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Settings</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+
+<body class="settingsPage">
+  <div class="wrap full">
+    <div class="topbar">
+      <div class="tabs">
+        <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
+        <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
+        <a class="tab" href="/flows"><span class="tabDot"></span>Flows</a>
+        <a class="tab active" href="/settings"><span class="tabDot"></span>Settings</a>
+      </div>
+    </div>
+
+    <div class="settingsShell">
+      <div class="settingsContent">
+
+        <section class="card settingsCard">
+          <div class="listHeader compact">
+            <div>
+              <div class="listTitle small">Cloud connection</div>
+              <div class="listSub">Paste the pairing key from Cloud Dashboard → Add Device, then connect this hub to the cloud relay.</div>
+            </div>
+            <div class="statusLine compact" id="cloudStatusBadge" style="margin:0;flex:0 0 auto;"></div>
+          </div>
+
+          <div class="grid overlayFormGrid" style="margin-top:14px;">
+            <div data-full>
+              <label for="cloudWsUrl">Cloud WebSocket URL</label>
+              <input id="cloudWsUrl" placeholder="ws://cloud.example.com/pi/connect" />
+            </div>
+
+            <div data-full>
+              <label for="cloudToken">Pairing key</label>
+              <input id="cloudToken" type="password" placeholder="pair_xxxxxxxxxxxxxxxx" autocomplete="off" />
+            </div>
+
+            <div data-full>
+              <label for="cloudDeviceId">Hub device ID</label>
+              <input id="cloudDeviceId" placeholder="smarteye-pi" />
+            </div>
+          </div>
+
+          <div class="row2" style="margin-top:14px;">
+            <button class="btn" id="cloudSaveBtn" type="button">Save</button>
+            <button class="btn btn-primary" id="cloudConnectBtn" type="button">Connect to cloud</button>
+          </div>
+
+          <div class="statusLine compact" style="margin-top:12px;">
+            <strong>Status:</strong>&nbsp;<span id="cloudStatus" class="muted">Loading…</span>
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/settings.js"></script>
+</body>
+
+</html>
