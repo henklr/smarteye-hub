@@ -8,9 +8,9 @@
   --flow-grid-major: rgba(255, 255, 255, 0.04);
   --flow-grid-minor: rgba(255, 255, 255, 0.02);
 
-  --flow-node-bg: rgba(16, 21, 28, 0.96);
-  --flow-node-border: rgba(255, 255, 255, 0.1);
-  --flow-node-shadow: 0 18px 42px rgba(0, 0, 0, 0.32);
+  --flow-node-bg: #161616;
+  --flow-node-border: #2a2a2a;
+  --flow-node-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 body.flowsPage {
@@ -262,15 +262,15 @@ body.flowsPage {
 }
 
 .flowsPage .miniPill.enabled {
-  color: #072016;
-  background: rgba(61, 195, 161, 0.96);
-  border-color: rgba(61, 195, 161, 0.3);
+  color: #e0e0e0;
+  background: rgba(76, 175, 80, 0.96);
+  border-color: rgba(76, 175, 80, 0.3);
 }
 
 .flowsPage .miniPill.disabled {
   color: #ffd3d8;
-  background: rgba(223, 102, 114, 0.12);
-  border-color: rgba(223, 102, 114, 0.25);
+  background: rgba(244, 67, 54, 0.12);
+  border-color: rgba(244, 67, 54, 0.25);
 }
 
 /* Palette area */
@@ -303,9 +303,9 @@ body.flowsPage {
 }
 
 .flowsPage .scheduleStatusPill.is-active {
-  color: #072016;
-  background: rgba(61, 195, 161, 0.96);
-  border-color: rgba(61, 195, 161, 0.3);
+  color: #e0e0e0;
+  background: rgba(76, 175, 80, 0.96);
+  border-color: rgba(76, 175, 80, 0.3);
 }
 
 .flowsPage .scheduleStatusPill.is-inactive {
@@ -415,12 +415,10 @@ body.flowsPage {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid #2a2a2a;
   border-radius: 18px;
   padding: 14px;
-  background:
-    radial-gradient(circle at top left, rgba(198, 161, 75, 0.08), transparent 24%),
-    linear-gradient(180deg, rgba(12, 16, 20, 0.96), rgba(9, 13, 17, 0.98));
+  background: #0d0d0d;
 }
 
 .flowsPage .schedulePlannerHeader,
@@ -446,7 +444,7 @@ body.flowsPage {
   min-height: 36px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
-  background: rgba(12, 17, 21, 0.98);
+  background: rgba(16, 16, 16, 0.98);
   color: var(--muted);
   font-size: 11px;
   font-weight: 900;
@@ -460,7 +458,7 @@ body.flowsPage {
   z-index: 6;
   margin-bottom: 10px;
   padding-bottom: 8px;
-  background: linear-gradient(180deg, rgba(9, 13, 17, 0.98), rgba(9, 13, 17, 0.9));
+  background: linear-gradient(180deg, rgba(13, 13, 13, 0.98), rgba(13, 13, 13, 0.9));
 }
 
 .flowsPage .scheduleTimeHeader {
@@ -469,7 +467,7 @@ body.flowsPage {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
   background:
-    linear-gradient(180deg, rgba(12, 17, 21, 0.98), rgba(12, 17, 21, 0.98)),
+    linear-gradient(180deg, rgba(16, 16, 16, 0.98), rgba(16, 16, 16, 0.98)),
     repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.06) 0, rgba(255, 255, 255, 0.06) 1px, transparent 1px, transparent calc(100% / 24));
 }
 
@@ -602,8 +600,8 @@ body.flowsPage {
   padding: 0 32px 0 10px;
   border: 1px solid rgba(198, 161, 75, 0.35);
   border-radius: 10px;
-  background: linear-gradient(90deg, rgba(198, 161, 75, 0.9), rgba(222, 191, 108, 0.78));
-  color: rgba(255, 249, 235, 0.96);
+  background: linear-gradient(90deg, rgba(198, 161, 75, 0.9), rgba(108, 180, 234, 0.78));
+  color: rgba(235, 245, 255, 0.96);
   text-align: left;
   box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
   overflow: hidden;
@@ -615,9 +613,9 @@ body.flowsPage {
 }
 
 .flowsPage .scheduleBlock.is-selected {
-  border-color: rgba(255, 245, 214, 0.92);
+  border-color: rgba(144, 202, 249, 0.92);
   box-shadow:
-    0 0 0 1px rgba(255, 244, 206, 0.55),
+    0 0 0 1px rgba(206, 230, 255, 0.55),
     0 12px 28px rgba(0, 0, 0, 0.24);
 }
 
@@ -627,10 +625,10 @@ body.flowsPage {
 
 .flowsPage .scheduleBlock.is-draft {
   border-style: dashed;
-  background: linear-gradient(90deg, rgba(214, 182, 102, 0.96), rgba(196, 161, 75, 0.76));
-  border-color: rgba(234, 209, 140, 0.75);
+  background: linear-gradient(90deg, rgba(102, 170, 230, 0.96), rgba(75, 150, 220, 0.76));
+  border-color: rgba(140, 200, 234, 0.75);
   box-shadow:
-    0 0 0 1px rgba(255, 240, 196, 0.28),
+    0 0 0 1px rgba(196, 225, 255, 0.28),
     0 12px 28px rgba(0, 0, 0, 0.22);
 }
 
@@ -711,11 +709,9 @@ body.flowsPage {
 
 .flowsPage .scheduleCalendar {
   padding: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid #2a2a2a;
   border-radius: 14px;
-  background:
-    radial-gradient(circle at top left, rgba(198, 161, 75, 0.08), transparent 38%),
-    rgba(255, 255, 255, 0.02);
+  background: #161616;
 }
 
 .flowsPage .scheduleCalendarHeader {
@@ -762,7 +758,7 @@ body.flowsPage {
 .flowsPage .scheduleCalendarTitleButton.is-static {
   border-color: rgba(198, 161, 75, 0.28);
   background: rgba(198, 161, 75, 0.12);
-  color: rgba(255, 247, 224, 0.96);
+  color: rgba(224, 240, 255, 0.96);
 }
 
 .flowsPage .scheduleCalendarTitleButton.is-static {
@@ -792,7 +788,7 @@ body.flowsPage {
   padding: 10px 8px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
-  background: linear-gradient(180deg, rgba(9, 13, 17, 0.84), rgba(8, 12, 16, 0.56));
+  background: linear-gradient(180deg, rgba(13, 13, 13, 0.84), rgba(13, 13, 13, 0.56));
   color: rgba(255, 255, 255, 0.92);
   font-size: 13px;
   font-weight: 800;
@@ -813,7 +809,7 @@ body.flowsPage {
 .flowsPage .scheduleCalendarPickerButton.is-selected {
   border-color: rgba(198, 161, 75, 0.34);
   background: linear-gradient(180deg, rgba(198, 161, 75, 0.12), rgba(255, 255, 255, 0.03));
-  color: rgba(255, 248, 228, 0.98);
+  color: rgba(228, 243, 255, 0.98);
   box-shadow: inset 0 0 0 1px rgba(198, 161, 75, 0.12);
 }
 
@@ -846,7 +842,7 @@ body.flowsPage {
   padding: 10px 4px 15px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
-  background: linear-gradient(180deg, rgba(9, 13, 17, 0.84), rgba(8, 12, 16, 0.56));
+  background: linear-gradient(180deg, rgba(13, 13, 13, 0.84), rgba(13, 13, 13, 0.56));
   color: rgba(255, 255, 255, 0.92);
   cursor: pointer;
   transition:
@@ -865,7 +861,7 @@ body.flowsPage {
 .flowsPage .scheduleCalendarDay.is-selected {
   border-color: rgba(198, 161, 75, 0.34);
   background: linear-gradient(180deg, rgba(198, 161, 75, 0.12), rgba(255, 255, 255, 0.03));
-  color: rgba(255, 248, 228, 0.98);
+  color: rgba(228, 243, 255, 0.98);
   box-shadow: inset 0 0 0 1px rgba(198, 161, 75, 0.12);
 }
 
@@ -875,7 +871,7 @@ body.flowsPage {
 }
 
 .flowsPage .scheduleCalendarDay.is-weekend:not(.is-selected):not(.is-disabled):not(.is-outside) {
-  background: linear-gradient(180deg, rgba(14, 20, 28, 0.82), rgba(8, 12, 16, 0.56));
+  background: linear-gradient(180deg, rgba(18, 18, 18, 0.82), rgba(13, 13, 13, 0.56));
 }
 
 .flowsPage .scheduleCalendarDay.is-disabled,
@@ -949,7 +945,7 @@ body.flowsPage {
   height: 18px;
   border: 0;
   border-radius: 999px;
-  background: rgba(10, 14, 18, 0.28);
+  background: rgba(16, 16, 16, 0.28);
   padding: 0;
   cursor: pointer;
   font-weight: 900;
@@ -957,7 +953,7 @@ body.flowsPage {
 }
 
 .flowsPage .scheduleBlockDelete:hover {
-  background: rgba(10, 14, 18, 0.46);
+  background: rgba(16, 16, 16, 0.46);
   color: rgba(255, 255, 255, 1);
 }
 
@@ -1119,7 +1115,7 @@ body.flowsPage {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
-  border: 1px solid var(--stroke);
+  border: 1px solid #2a2a2a;
   border-radius: 18px;
   overflow: hidden;
   background:
@@ -1127,7 +1123,7 @@ body.flowsPage {
     linear-gradient(90deg, var(--flow-grid-major) 1px, transparent 1px),
     linear-gradient(var(--flow-grid-minor) 1px, transparent 1px),
     linear-gradient(90deg, var(--flow-grid-minor) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(16, 19, 23, 0.82), rgba(16, 19, 23, 0.96));
+    #0d0d0d;
   background-size:
     72px 72px,
     72px 72px,
@@ -1358,7 +1354,7 @@ body.flowsPage {
   width: 18px;
   height: 18px;
   border-radius: 999px;
-  border: 2px solid rgba(16, 19, 23, 0.92);
+  border: 2px solid rgba(16, 16, 16, 0.92);
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
   cursor: crosshair;
   pointer-events: auto;
@@ -1467,7 +1463,7 @@ body.flowsPage {
   padding: 12px 16px;
   border: 1px dashed rgba(255, 255, 255, 0.14);
   border-radius: 12px;
-  background: rgba(10, 14, 18, 0.84);
+  background: rgba(16, 16, 16, 0.84);
   color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
@@ -1509,8 +1505,8 @@ body.flowsPage {
 }
 
 .flowsPage .inspectorActionsCard--danger {
-  background: linear-gradient(180deg, rgba(223, 102, 114, 0.06), rgba(255, 255, 255, 0.02));
-  border-color: rgba(223, 102, 114, 0.2);
+  background: linear-gradient(180deg, rgba(244, 67, 54, 0.06), rgba(255, 255, 255, 0.02));
+  border-color: rgba(244, 67, 54, 0.2);
 }
 
 .flowsPage .inspectorTitle {
@@ -1568,7 +1564,7 @@ body.flowsPage {
   padding: 10px 12px;
   border: 1px solid var(--stroke);
   border-radius: var(--r-xs);
-  background: rgba(8, 12, 16, 0.72);
+  background: rgba(13, 13, 13, 0.72);
   color: var(--text);
   outline: none;
   resize: vertical;
@@ -1579,7 +1575,7 @@ body.flowsPage {
 }
 
 .flowsPage textarea:hover {
-  background: rgba(10, 14, 19, 0.82);
+  background: rgba(16, 16, 16, 0.82);
 }
 
 .flowsPage textarea:focus {
@@ -1785,7 +1781,7 @@ body.flowsPage {
   padding: 5px 9px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 999px;
-  background: rgba(8, 12, 16, 0.62);
+  background: rgba(13, 13, 13, 0.62);
   color: rgba(255, 255, 255, 0.9);
   font-size: 11px;
   line-height: 1;
