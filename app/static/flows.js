@@ -44,6 +44,9 @@ const state = {
   connectionCursor: null,
   drag: null,
   pan: null,
+  panX: 0,
+  panY: 0,
+  zoom: 1,
   justPanned: false,
   topicCache: new Map(),
 };
@@ -2087,29 +2090,79 @@ function starterFlow() {
   };
 }
 
+let _saveViewportTimer = 0;
+
+function saveViewport() {
+  const id = currentFlow()?.id;
+  if (!id) return;
+  const scroller = el("flowBoardScroller");
+  if (!scroller || scroller.clientWidth === 0) return;
+  try {
+    const cache = JSON.parse(localStorage.getItem("flowViewports") || "{}");
+    cache[id] = {
+      zoom: state.zoom,
+      panX: state.panX,
+      panY: state.panY,
+    };
+    localStorage.setItem("flowViewports", JSON.stringify(cache));
+  } catch (_) { /* quota / private mode */ }
+}
+
+function saveViewportDebounced() {
+  clearTimeout(_saveViewportTimer);
+  _saveViewportTimer = setTimeout(saveViewport, 200);
+}
+
+function restoreOrFitViewport() {
+  const id = currentFlow()?.id;
+  let saved = null;
+  try {
+    const cache = JSON.parse(localStorage.getItem("flowViewports") || "{}");
+    saved = id && cache[id];
+  } catch (_) { /* ignore */ }
+  if (saved && typeof saved.panX === "number") {
+    _zoomTarget = saved.zoom;
+    state.panX = saved.panX;
+    state.panY = saved.panY;
+    applyZoom(saved.zoom);
+  } else {
+    zoomToFit();
+  }
+}
+
 function centerBoardViewport() {
   const scroller = el("flowBoardScroller");
   const board = el("flowBoard");
   const nodesBox = el("flowNodes");
+  const z = state.zoom || 1;
 
   if (!scroller || !board || !nodesBox) return;
 
   const nodeEls = [...nodesBox.querySelectorAll(".flowNode")];
+  const vw = scroller.clientWidth;
+  const vh = scroller.clientHeight;
 
   if (!nodeEls.length) {
-    const left = Math.max(0, (board.scrollWidth - scroller.clientWidth) / 2);
-    const top = Math.max(0, (board.scrollHeight - scroller.clientHeight) / 2);
-
-    scroller.scrollLeft = left;
-    scroller.scrollTop = top;
+    state.panX = vw / 2;
+    state.panY = vh / 2;
+    applyTransform();
     drawEdges();
     return;
   }
 
-  let minLeft = Infinity;
-  let minTop = Infinity;
-  let maxRight = -Infinity;
-  let maxBottom = -Infinity;
+  const bounds = getNodeBounds(nodeEls);
+  const cx = (bounds.minLeft + bounds.maxRight) / 2;
+  const cy = (bounds.minTop + bounds.maxBottom) / 2;
+
+  state.panX = vw / 2 - cx * z;
+  state.panY = vh / 2 - cy * z;
+  applyTransform();
+  drawEdges();
+}
+
+function getNodeBounds(nodeEls) {
+  let minLeft = Infinity, minTop = Infinity;
+  let maxRight = -Infinity, maxBottom = -Infinity;
 
   for (const nodeEl of nodeEls) {
     const left = nodeEl.offsetLeft;
@@ -2123,32 +2176,37 @@ function centerBoardViewport() {
     if (bottom > maxBottom) maxBottom = bottom;
   }
 
-  const padding = 120;
-  const contentCenterX = (minLeft + maxRight) / 2;
-  const contentCenterY = (minTop + maxBottom) / 2;
+  return { minLeft, minTop, maxRight, maxBottom };
+}
 
-  const maxScrollLeft = Math.max(0, board.scrollWidth - scroller.clientWidth);
-  const maxScrollTop = Math.max(0, board.scrollHeight - scroller.clientHeight);
+function zoomToFit() {
+  const scroller = el("flowBoardScroller");
+  const nodesBox = el("flowNodes");
+  if (!scroller || !nodesBox) { applyZoom(1); return; }
 
-  const targetLeft = Math.min(
-    maxScrollLeft,
-    Math.max(0, contentCenterX - scroller.clientWidth / 2)
-  );
-  const targetTop = Math.min(
-    maxScrollTop,
-    Math.max(0, contentCenterY - scroller.clientHeight / 2)
-  );
+  const nodeEls = [...nodesBox.querySelectorAll(".flowNode")];
+  if (!nodeEls.length) { applyZoom(1); centerBoardViewport(); return; }
 
-  scroller.scrollLeft = Math.max(
-    0,
-    Math.min(maxScrollLeft, targetLeft - padding / 2)
-  );
-  scroller.scrollTop = Math.max(
-    0,
-    Math.min(maxScrollTop, targetTop - padding / 2)
-  );
+  const bounds = getNodeBounds(nodeEls);
+  const padding = 60;
+  const contentW = bounds.maxRight - bounds.minLeft + padding * 2;
+  const contentH = bounds.maxBottom - bounds.minTop + padding * 2;
 
-  drawEdges();
+  const viewW = scroller.clientWidth;
+  const viewH = scroller.clientHeight;
+
+  let fitZoom = Math.min(viewW / contentW, viewH / contentH);
+  fitZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, fitZoom));
+  fitZoom = Math.min(fitZoom, 1.5);
+
+  _zoomTarget = fitZoom;
+
+  const cx = (bounds.minLeft + bounds.maxRight) / 2;
+  const cy = (bounds.minTop + bounds.maxBottom) / 2;
+
+  state.panX = viewW / 2 - cx * fitZoom;
+  state.panY = viewH / 2 - cy * fitZoom;
+  applyZoom(fitZoom);
 }
 
 function syncHeader() {
@@ -2321,6 +2379,7 @@ function renderFlowList() {
       if (!flow) return;
       if (!confirmDiscard()) return;
 
+      saveViewport();
       state.selectedSavedFlowId = flow.id;
       state.draft = deepClone(flow);
       clearEditorSelection();
@@ -2330,7 +2389,7 @@ function renderFlowList() {
       clearDirty();
       clearTestResult();
       renderAll();
-      window.requestAnimationFrame(centerBoardViewport);
+      window.requestAnimationFrame(restoreOrFitViewport);
       setStatus(`Loaded flow "${flow.name}".`);
     });
   });
@@ -2339,6 +2398,7 @@ function renderFlowList() {
 function handleNewFlow() {
   if (!confirmDiscard()) return;
 
+  saveViewport();
   state.selectedSavedFlowId = null;
   state.draft = starterFlow();
   clearEditorSelection();
@@ -2348,7 +2408,7 @@ function handleNewFlow() {
   clearDirty();
   clearTestResult();
   renderAll();
-  window.requestAnimationFrame(centerBoardViewport);
+  window.requestAnimationFrame(zoomToFit);
   setStatus("Started a new flow.");
 }
 
@@ -2532,7 +2592,7 @@ async function importFlows() {
     clearDirty();
     clearTestResult();
     renderAll();
-    window.requestAnimationFrame(centerBoardViewport);
+    window.requestAnimationFrame(zoomToFit);
     setStatus(`Imported ${prepared.length} flow${prepared.length === 1 ? "" : "s"}.`);
   } catch (err) {
     setStatus(err.message || String(err), true);
@@ -2644,8 +2704,10 @@ function addNodeFromPalette(type) {
   if (!flow || !def) return;
 
   const boardScroller = el("flowBoardScroller");
-  const x = (boardScroller?.scrollLeft || 0) + 220;
-  const y = (boardScroller?.scrollTop || 0) + 150;
+  const vw = boardScroller?.clientWidth || 400;
+  const vh = boardScroller?.clientHeight || 300;
+  const x = (vw / 2 - state.panX) / state.zoom;
+  const y = (vh / 2 - state.panY) / state.zoom;
 
   const node = {
     id: makeId("node"),
@@ -2724,6 +2786,7 @@ function renderCanvas() {
 
   const schedule = currentSelectedSchedule();
   if (isScheduleEditing() && schedule && scheduleWorkspace) {
+    saveViewport();
     state.scheduleBlockResizeObserver?.disconnect();
     state.scheduleBlockResizeObserver = null;
     boardWrap?.classList.add("hidden");
@@ -2734,6 +2797,7 @@ function renderCanvas() {
     return;
   }
 
+  const wasHidden = boardWrap?.classList.contains("hidden");
   boardWrap?.classList.remove("hidden");
   boardStatusLine?.classList.remove("hidden");
   state.scheduleBlockResizeObserver?.disconnect();
@@ -2865,8 +2929,8 @@ function renderCanvas() {
       if (board) {
         const rect = board.getBoundingClientRect();
         cursor = {
-          x: ev.clientX - rect.left,
-          y: ev.clientY - rect.top,
+          x: (ev.clientX - rect.left) / state.zoom,
+          y: (ev.clientY - rect.top) / state.zoom,
         };
       }
 
@@ -2955,7 +3019,104 @@ function renderCanvas() {
     });
   });
 
-  window.requestAnimationFrame(drawEdges);
+  window.requestAnimationFrame(() => {
+    drawEdges();
+    if (wasHidden) {
+      restoreOrFitViewport();
+    }
+  });
+}
+
+/* ── Zoom helpers ──────────────────────────────────── */
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 2;
+let _zoomRaf = 0;
+let _zoomTarget = 1;
+let _zoomAnchor = null;        /* { cx, cy } */
+
+function applyTransform() {
+  const board = el("flowBoard");
+  if (!board) return;
+  board.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+
+  /* Infinite grid tied to pan + zoom */
+  const scroller = el("flowBoardScroller");
+  if (scroller) {
+    const z = state.zoom;
+    const majorSize = 72 * z;
+    const minorSize = 18 * z;
+    const ox = state.panX;
+    const oy = state.panY;
+    scroller.style.backgroundImage = [
+      `linear-gradient(var(--flow-grid-major) 1px, transparent 1px)`,
+      `linear-gradient(90deg, var(--flow-grid-major) 1px, transparent 1px)`,
+      `linear-gradient(var(--flow-grid-minor) 1px, transparent 1px)`,
+      `linear-gradient(90deg, var(--flow-grid-minor) 1px, transparent 1px)`,
+    ].join(",");
+    scroller.style.backgroundSize = `${majorSize}px ${majorSize}px, ${majorSize}px ${majorSize}px, ${minorSize}px ${minorSize}px, ${minorSize}px ${minorSize}px`;
+    scroller.style.backgroundPosition = `${ox}px ${oy}px, ${ox}px ${oy}px, ${ox}px ${oy}px, ${ox}px ${oy}px`;
+  }
+}
+
+function applyZoom(newZoom, ev) {
+  const z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, newZoom));
+  const board = el("flowBoard");
+  const scroller = el("flowBoardScroller");
+  if (!board || !scroller) { state.zoom = z; return; }
+
+  const prevZoom = state.zoom;
+  state.zoom = z;
+
+  /* Keep zoom centred on pointer (or centre of viewport) */
+  if (ev) {
+    const rect = scroller.getBoundingClientRect();
+    const cx = ev.clientX - rect.left;
+    const cy = ev.clientY - rect.top;
+    /* board point under cursor: bx = (cx - panX) / prevZoom
+       new panX so bx stays under cursor: panX_new = cx - bx * z */
+    state.panX = cx - (cx - state.panX) / prevZoom * z;
+    state.panY = cy - (cy - state.panY) / prevZoom * z;
+  } else if (_zoomAnchor) {
+    const { cx, cy } = _zoomAnchor;
+    state.panX = cx - (cx - state.panX) / prevZoom * z;
+    state.panY = cy - (cy - state.panY) / prevZoom * z;
+  }
+
+  applyTransform();
+
+  const label = document.getElementById("zoomLabel");
+  if (label) label.textContent = `${Math.round(z * 100)}%`;
+
+  drawEdges();
+  saveViewportDebounced();
+}
+
+/* Smooth animated zoom — lerps toward _zoomTarget each frame */
+function _tickZoom() {
+  const diff = _zoomTarget - state.zoom;
+  if (Math.abs(diff) < 0.002) {
+    applyZoom(_zoomTarget);
+    _zoomRaf = 0;
+    _zoomAnchor = null;
+    return;
+  }
+  applyZoom(state.zoom + diff * 0.25);
+  _zoomRaf = requestAnimationFrame(_tickZoom);
+}
+
+function smoothZoom(delta, ev) {
+  _zoomTarget = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, _zoomTarget + delta));
+  if (ev) {
+    const scroller = el("flowBoardScroller");
+    if (scroller) {
+      const rect = scroller.getBoundingClientRect();
+      _zoomAnchor = {
+        cx: ev.clientX - rect.left,
+        cy: ev.clientY - rect.top,
+      };
+    }
+  }
+  if (!_zoomRaf) _zoomRaf = requestAnimationFrame(_tickZoom);
 }
 
 function makeBezierPath(sx, sy, tx, ty) {
@@ -2989,10 +3150,10 @@ function drawEdges() {
     const sourceRect = sourcePort.getBoundingClientRect();
     const targetRect = targetPort.getBoundingClientRect();
 
-    const sx = sourceRect.left - boardRect.left + sourceRect.width / 2;
-    const sy = sourceRect.top - boardRect.top + sourceRect.height / 2;
-    const tx = targetRect.left - boardRect.left + targetRect.width / 2;
-    const ty = targetRect.top - boardRect.top + targetRect.height / 2;
+    const sx = (sourceRect.left - boardRect.left + sourceRect.width / 2) / state.zoom;
+    const sy = (sourceRect.top - boardRect.top + sourceRect.height / 2) / state.zoom;
+    const tx = (targetRect.left - boardRect.left + targetRect.width / 2) / state.zoom;
+    const ty = (targetRect.top - boardRect.top + targetRect.height / 2) / state.zoom;
 
     const d = makeBezierPath(sx, sy, tx, ty);
 
@@ -3046,8 +3207,8 @@ function drawEdges() {
     if (anchorPort) {
       const anchorRect = anchorPort.getBoundingClientRect();
 
-      const ax = anchorRect.left - boardRect.left + anchorRect.width / 2;
-      const ay = anchorRect.top - boardRect.top + anchorRect.height / 2;
+      const ax = (anchorRect.left - boardRect.left + anchorRect.width / 2) / state.zoom;
+      const ay = (anchorRect.top - boardRect.top + anchorRect.height / 2) / state.zoom;
       const cx = state.connectionCursor.x;
       const cy = state.connectionCursor.y;
 
@@ -6786,8 +6947,8 @@ function bindGlobalEvents() {
     state.pan = {
       startX: ev.clientX,
       startY: ev.clientY,
-      scrollLeft: boardScroller.scrollLeft,
-      scrollTop: boardScroller.scrollTop,
+      startPanX: state.panX,
+      startPanY: state.panY,
       moved: false,
     };
 
@@ -6847,10 +7008,42 @@ function bindGlobalEvents() {
     drawEdges();
   });
 
-  el("flowBoardScroller")?.addEventListener("scroll", drawEdges);
   window.addEventListener("resize", drawEdges);
 
+  /* ── Zoom ─────────────────────────────────────────── */
+  el("flowBoardScroller")?.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+
+    if (ev.ctrlKey || ev.metaKey) {
+      /* Pinch / Ctrl+wheel → zoom */
+      const raw = -ev.deltaY * (ev.deltaMode === 1 ? 20 : 1);
+      const delta = raw * 0.004 * state.zoom;
+      _zoomTarget = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, state.zoom + delta));
+      applyZoom(_zoomTarget, ev);
+    } else {
+      /* Regular scroll / two-finger pan */
+      const dx = ev.deltaX * (ev.deltaMode === 1 ? 20 : 1);
+      const dy = ev.deltaY * (ev.deltaMode === 1 ? 20 : 1);
+      state.panX -= dx;
+      state.panY -= dy;
+      applyTransform();
+      drawEdges();
+      saveViewportDebounced();
+    }
+  }, { passive: false });
+
+  document.getElementById("zoomIn")?.addEventListener("click", () => {
+    _zoomTarget = Math.min(ZOOM_MAX, state.zoom + 0.15);
+    if (!_zoomRaf) _zoomRaf = requestAnimationFrame(_tickZoom);
+  });
+  document.getElementById("zoomOut")?.addEventListener("click", () => {
+    _zoomTarget = Math.max(ZOOM_MIN, state.zoom - 0.15);
+    if (!_zoomRaf) _zoomRaf = requestAnimationFrame(_tickZoom);
+  });
+  document.getElementById("zoomReset")?.addEventListener("click", () => zoomToFit());
+
   window.addEventListener("beforeunload", (ev) => {
+    saveViewport();
     if (!state.dirty && !state.publicVariablesDirty && !state.schedulesDirty) return;
     ev.preventDefault();
     ev.returnValue = "";
@@ -6881,20 +7074,19 @@ function bindGlobalEvents() {
     }
 
     if (state.pan) {
-      const boardScroller = el("flowBoardScroller");
-      if (!boardScroller) return;
-
       const dx = ev.clientX - state.pan.startX;
       const dy = ev.clientY - state.pan.startY;
 
-      boardScroller.scrollLeft = state.pan.scrollLeft - dx;
-      boardScroller.scrollTop = state.pan.scrollTop - dy;
+      state.panX = state.pan.startPanX + dx;
+      state.panY = state.pan.startPanY + dy;
+      applyTransform();
 
       if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
         state.pan.moved = true;
       }
 
       drawEdges();
+      saveViewportDebounced();
       return;
     }
 
@@ -6903,8 +7095,8 @@ function bindGlobalEvents() {
       if (board) {
         const rect = board.getBoundingClientRect();
         state.connectionCursor = {
-          x: ev.clientX - rect.left,
-          y: ev.clientY - rect.top,
+          x: (ev.clientX - rect.left) / state.zoom,
+          y: (ev.clientY - rect.top) / state.zoom,
         };
         drawEdges();
       }
@@ -6916,10 +7108,10 @@ function bindGlobalEvents() {
     const node = flow?.nodes.find((item) => item.id === state.drag.nodeId);
     if (!node) return;
 
-    const dx = ev.clientX - state.drag.startX;
-    const dy = ev.clientY - state.drag.startY;
-    node.x = Math.max(20, state.drag.originX + dx);
-    node.y = Math.max(20, state.drag.originY + dy);
+    const dx = (ev.clientX - state.drag.startX) / state.zoom;
+    const dy = (ev.clientY - state.drag.startY) / state.zoom;
+    node.x = state.drag.originX + dx;
+    node.y = state.drag.originY + dy;
 
     markDirty();
     renderCanvas();
@@ -6929,6 +7121,8 @@ function bindGlobalEvents() {
 async function init() {
   loadSidebarSectionState();
   bindGlobalEvents();
+  _zoomTarget = state.zoom;
+  applyZoom(state.zoom);
 
   try {
     const catalog = await api("/api/flows/catalog");
@@ -6953,7 +7147,7 @@ async function init() {
     clearTestResult();
     renderPalette();
     renderAll();
-    window.requestAnimationFrame(centerBoardViewport);
+    window.requestAnimationFrame(restoreOrFitViewport);
   } catch (err) {
     setStatus(err.message || String(err), true);
     if (el("inspectorBody")) {

@@ -1118,24 +1118,13 @@ body.flowsPage {
   border: 1px solid #2a2a2a;
   border-radius: var(--r-md);
   overflow: hidden;
-  background:
-    linear-gradient(var(--flow-grid-major) 1px, transparent 1px),
-    linear-gradient(90deg, var(--flow-grid-major) 1px, transparent 1px),
-    linear-gradient(var(--flow-grid-minor) 1px, transparent 1px),
-    linear-gradient(90deg, var(--flow-grid-minor) 1px, transparent 1px),
-    #0d0d0d;
-  background-size:
-    72px 72px,
-    72px 72px,
-    18px 18px,
-    18px 18px,
-    cover;
+  background: #0d0d0d;
 }
 
 .flowsPage .flowBoardScroller {
   width: 100%;
   height: 100%;
-  overflow: auto;
+  overflow: hidden;
   cursor: grab;
   user-select: none;
 }
@@ -1149,16 +1138,23 @@ body.flowsPage {
 }
 
 .flowsPage .flowBoard {
-  position: relative;
-  width: 2800px;
-  height: 1800px;
-  min-width: 100%;
-  min-height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 .flowsPage .flowNodes {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
   z-index: 2;
   pointer-events: none;
 }
@@ -1456,9 +1452,10 @@ body.flowsPage {
 }
 
 .flowsPage .emptyBoardHint {
-  position: sticky;
-  left: 16px;
-  top: 16px;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   width: fit-content;
   padding: 6px 10px;
   border: 1px dashed rgba(255, 255, 255, 0.14);
@@ -1467,6 +1464,7 @@ body.flowsPage {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.3;
+  z-index: 5;
 }
 
 /* Right inspector */
@@ -1899,11 +1897,12 @@ body.flowsPage {
 
 .flowsPage .flowEdges {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
   overflow: visible;
-  pointer-events: auto;
+  pointer-events: none;
   z-index: 1;
 }
 
@@ -1947,25 +1946,73 @@ body.flowsPage {
 /* Scrollbars */
 .flowsPage .flowsSidebar::-webkit-scrollbar,
 .flowsPage .inspectorBody::-webkit-scrollbar,
-.flowsPage .testResult::-webkit-scrollbar,
-.flowsPage .flowBoardScroller::-webkit-scrollbar {
+.flowsPage .testResult::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 .flowsPage .flowsSidebar::-webkit-scrollbar-thumb,
 .flowsPage .inspectorBody::-webkit-scrollbar-thumb,
-.flowsPage .testResult::-webkit-scrollbar-thumb,
-.flowsPage .flowBoardScroller::-webkit-scrollbar-thumb {
+.flowsPage .testResult::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.14);
   border-radius: 999px;
 }
 
 .flowsPage .flowsSidebar::-webkit-scrollbar-track,
 .flowsPage .inspectorBody::-webkit-scrollbar-track,
-.flowsPage .testResult::-webkit-scrollbar-track,
-.flowsPage .flowBoardScroller::-webkit-scrollbar-track {
+.flowsPage .testResult::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* ── Zoom bar ── */
+.flowsPage .flowZoomBar {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(24, 24, 24, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 2px;
+  z-index: 20;
+  backdrop-filter: blur(6px);
+  user-select: none;
+}
+
+.flowsPage .zoomBtn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: #ccc;
+  font-size: 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.flowsPage .zoomBtn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.flowsPage .zoomResetBtn {
+  font-size: 13px;
+  margin-left: 2px;
+}
+
+.flowsPage .zoomLabel {
+  font-size: 10px;
+  color: #999;
+  min-width: 34px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 1440px) {

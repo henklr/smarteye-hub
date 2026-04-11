@@ -91,12 +91,18 @@
       <section class="card flowsMain">
         <div class="flowBoardWrap">
           <div class="flowBoardScroller" id="flowBoardScroller">
-            <div class="flowBoard" id="flowBoard">
-              <svg id="flowEdges" class="flowEdges"></svg>
-              <div id="flowNodes" class="flowNodes"></div>
+              <div class="flowBoard" id="flowBoard">
+                <svg id="flowEdges" class="flowEdges"></svg>
+                <div id="flowNodes" class="flowNodes"></div>
+              </div>
               <div id="emptyBoardHint" class="emptyBoardHint hidden">Add blocks from the left palette to start building.
               </div>
-            </div>
+          </div>
+          <div class="flowZoomBar">
+            <button id="zoomOut" class="zoomBtn" title="Zoom out">−</button>
+            <span id="zoomLabel" class="zoomLabel">100%</span>
+            <button id="zoomIn" class="zoomBtn" title="Zoom in">+</button>
+            <button id="zoomReset" class="zoomBtn zoomResetBtn" title="Reset zoom">⊙</button>
           </div>
         </div>
 
