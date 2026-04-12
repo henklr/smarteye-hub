@@ -111,3 +111,41 @@ cloudConnectBtn?.addEventListener("click", async () => {
 });
 
 loadCloudConfig();
+
+// ── System actions ────────────────────────────────────────────────────────────
+
+const systemStatusEl = document.getElementById("systemStatus");
+const clearRecordingsBtn = document.getElementById("clearRecordingsBtn");
+const rebootBtn = document.getElementById("rebootBtn");
+
+function setSystemStatus(text) {
+  if (systemStatusEl) systemStatusEl.textContent = text;
+}
+
+clearRecordingsBtn?.addEventListener("click", async () => {
+  if (!window.confirm("Clear all recordings, generated clips, and playback markers? This cannot be undone.")) return;
+  clearRecordingsBtn.disabled = true;
+  setSystemStatus("Clearing recordings…");
+  try {
+    const result = await api("/api/playback/recordings", { method: "DELETE" });
+    const count = Number(result?.cleared_events || 0);
+    setSystemStatus(`Cleared ${count} marker${count === 1 ? "" : "s"}. Recording files are being removed in the background.`);
+  } catch (e) {
+    setSystemStatus(`Error: ${String(e.message || e)}`);
+  } finally {
+    clearRecordingsBtn.disabled = false;
+  }
+});
+
+rebootBtn?.addEventListener("click", async () => {
+  if (!window.confirm("Reboot the system now? All active streams and recordings will stop.")) return;
+  rebootBtn.disabled = true;
+  setSystemStatus("Rebooting…");
+  try {
+    await api("/api/system/reboot", { method: "POST" });
+    setSystemStatus("Reboot command sent. The system will restart shortly.");
+  } catch (e) {
+    setSystemStatus(`Error: ${String(e.message || e)}`);
+    rebootBtn.disabled = false;
+  }
+});

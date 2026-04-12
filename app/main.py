@@ -206,6 +206,13 @@ def settings_page():
     return (STATIC_DIR / "settings.html").read_text(encoding="utf-8")
 
 
+@app.post("/api/system/reboot")
+def system_reboot():
+    import subprocess as _sp
+    _sp.Popen(["sudo", "reboot"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    return {"ok": True, "message": "Reboot initiated"}
+
+
 @app.get("/health")
 def health():
     with _event_worker_lock:

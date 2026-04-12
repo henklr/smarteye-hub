@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -681,7 +682,7 @@ def _event_is_ready(event: Dict[str, Any]) -> bool:
 
 def _event_by_id(event_id: str) -> Dict[str, Any]:
     with _events_lock:
-        items = _load_events_normalized()
+        items = _load_events()
     event = next((item for item in items if str(item.get("id")) == event_id), None)
     if event is None:
         raise HTTPException(status_code=404, detail="Recording event not found")
@@ -801,7 +802,7 @@ def _prune_cached_clips() -> None:
     with _events_lock:
         active_event_ids = {
             str(item.get("id") or "").strip()
-            for item in _load_events_normalized()
+            for item in _load_events()
             if str(item.get("id") or "").strip()
         }
 
@@ -1171,21 +1172,21 @@ def _build_event_clip(event: Dict[str, Any]) -> Path:
 
 
 def _clear_directory_contents(root: Path) -> int:
-    deleted = 0
     if not root.exists():
-        return deleted
+        return 0
 
-    for path in sorted(root.rglob("*"), reverse=True):
-        try:
-            if path.is_file() or path.is_symlink():
-                path.unlink(missing_ok=True)
-                deleted += 1
-            elif path.is_dir():
-                path.rmdir()
-        except Exception:
-            continue
+    temp_dir = root.with_name(root.name + "_deleting_" + uuid.uuid4().hex[:8])
+    try:
+        root.rename(temp_dir)
+    except OSError:
+        return 0
+    root.mkdir(parents=True, exist_ok=True)
 
-    return deleted
+    def _background_delete() -> None:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    threading.Thread(target=_background_delete, name=f"cleanup-{root.name}", daemon=True).start()
+    return -1
 
 
 def clear_all_recordings() -> Dict[str, int]:
@@ -1200,10 +1201,14 @@ def clear_all_recordings() -> Dict[str, int]:
         for device_id in active_ids:
             _stop_recorder(device_id)
 
-        with _events_lock:
-            items = _load_events_normalized()
+        acquired = _events_lock.acquire(timeout=5)
+        try:
+            items = _load_events()
             cleared_events = len(items)
             _save_events([])
+        finally:
+            if acquired:
+                _events_lock.release()
 
         deleted_recording_files = _clear_directory_contents(RECORDINGS_DIR)
         deleted_clip_files = _clear_directory_contents(PLAYBACK_CLIPS_DIR)
@@ -1231,16 +1236,24 @@ def playback_timeline(device_id: str = Query(..., min_length=1), day: Optional[s
     segments = _segments_for_range(device_id, started_at, ended_at)
 
     with _events_lock:
-        events = []
-        for item in _load_events_normalized():
-            if str(item.get("device_id") or "").strip() != device_id:
-                continue
-            try:
-                event_started_at, event_ended_at = _event_clip_bounds(item)
-            except Exception:
-                continue
-            if event_started_at < ended_at and event_ended_at > started_at:
-                events.append(_serialize_event(item))
+        raw_items = _load_events()
+
+    normalized_items = []
+    for item in raw_items:
+        if str(item.get("device_id") or "").strip() != device_id:
+            continue
+        normalized_item, _ = _trim_event_to_available_coverage(item)
+        normalized_items.append(normalized_item)
+    merged_items, _, _ = _merge_overlapping_events(normalized_items)
+
+    events = []
+    for item in merged_items:
+        try:
+            event_started_at, event_ended_at = _event_clip_bounds(item)
+        except Exception:
+            continue
+        if event_started_at < ended_at and event_ended_at > started_at:
+            events.append(_serialize_event(item))
 
     events.sort(key=lambda item: str(item.get("triggered_at") or ""))
     return {

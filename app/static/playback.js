@@ -1698,40 +1698,7 @@ async function refreshAll() {
   }
 }
 
-async function clearAllRecordings() {
-  const confirmed = window.confirm("Clear all recordings, generated clips, and playback markers? This cannot be undone.");
-  if (!confirmed) return;
 
-  const button = el("playbackClearBtn");
-  if (button) button.disabled = true;
-
-  try {
-    clearForwardPlaybackBoundarySchedule();
-    stopPlaybackCursorLoop();
-    stopReversePlayback();
-    stopSimulatedForwardPlayback();
-    setPlaybackCursor(null);
-    showVideoEmpty("No clip selected", "Choose a colored marker from the timeline below to load a recording.");
-    updatePlaybackHeader(null);
-    state.selectedEventId = null;
-    syncPlaybackTransport();
-    setStatus("Clearing recordings…");
-
-    const result = await api("/api/playback/recordings", { method: "DELETE" });
-    state.timeline = { segments: [], events: [] };
-    renderTimeline();
-    await refreshAll();
-
-    const markerLabel = Number(result?.cleared_events || 0);
-    const recordingLabel = Number(result?.deleted_recording_files || 0);
-    const clipLabel = Number(result?.deleted_clip_files || 0);
-    setStatus(`Cleared ${recordingLabel} recording file${recordingLabel === 1 ? "" : "s"}, ${clipLabel} clip${clipLabel === 1 ? "" : "s"}, and ${markerLabel} marker${markerLabel === 1 ? "" : "s"}.`);
-  } catch (error) {
-    setStatus(error.message || String(error));
-  } finally {
-    if (button) button.disabled = false;
-  }
-}
 
 function bindUi() {
   const video = el("playbackVideo");
@@ -1900,7 +1867,7 @@ function bindUi() {
     await loadTimeline();
   });
 
-  el("playbackClearBtn")?.addEventListener("click", clearAllRecordings);
+
   el("playbackPlayPauseBtn")?.addEventListener("click", async () => {
     await togglePlayback();
   });
