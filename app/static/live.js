@@ -283,14 +283,42 @@ function chunkTilesEvenly(tiles, rows) {
   return out;
 }
 
-function getBalancedRowCount(tileCount) {
-  if (tileCount <= 0) return 0;
+function getOptimalRowCount(tiles, containerWidth, containerHeight, gap) {
+  const n = tiles.length;
+  if (n <= 0) return 0;
+  if (n === 1) return 1;
 
-  const isMobile = window.matchMedia("(max-width: 980px)").matches;
-  if (isMobile) return tileCount;
+  if (!containerWidth || !containerHeight) {
+    const cols = Math.ceil(Math.sqrt(n));
+    return Math.ceil(n / cols);
+  }
 
-  const sideBySide = Math.ceil(Math.sqrt(tileCount));
-  return Math.ceil(tileCount / sideBySide);
+  let bestRowCount = 1;
+  let bestMinHeight = 0;
+
+  for (let rowCount = 1; rowCount <= n; rowCount++) {
+    const rows = chunkTilesEvenly(tiles, rowCount);
+    const vertGaps = gap * Math.max(0, rows.length - 1);
+    const maxFromHeight = (containerHeight - vertGaps) / rows.length;
+
+    let worstRowHeight = Infinity;
+
+    for (const row of rows) {
+      const rowRatios = row.map(getTileAspectRatio);
+      const ratioSum = rowRatios.reduce((a, b) => a + b, 0);
+      const horzGaps = gap * Math.max(0, row.length - 1);
+      const fromWidth = (containerWidth - horzGaps) / ratioSum;
+      const rowHeight = Math.min(fromWidth, maxFromHeight);
+      if (rowHeight < worstRowHeight) worstRowHeight = rowHeight;
+    }
+
+    if (worstRowHeight > bestMinHeight) {
+      bestMinHeight = worstRowHeight;
+      bestRowCount = rowCount;
+    }
+  }
+
+  return bestRowCount;
 }
 
 function flattenVideoGridRows() {
@@ -331,8 +359,14 @@ function layoutTilesJustified() {
   const containerWidth = videoGrid.clientWidth;
   if (!containerWidth) return;
 
-  const rowCount = getBalancedRowCount(tiles.length);
+  const containerHeight = videoGrid.clientHeight;
+  const rowCount = getOptimalRowCount(tiles, containerWidth, containerHeight, gap);
   const rows = chunkTilesEvenly(tiles, rowCount);
+
+  const totalGapHeight = gap * Math.max(0, rows.length - 1);
+  const maxRowHeight = containerHeight
+    ? Math.floor((containerHeight - totalGapHeight) / rows.length)
+    : 420;
 
   const frag = document.createDocumentFragment();
 
@@ -345,7 +379,7 @@ function layoutTilesJustified() {
     const gapsWidth = gap * Math.max(0, row.length - 1);
 
     const naturalRowHeight = (containerWidth - gapsWidth) / ratioSum;
-    const rowHeight = Math.max(140, Math.min(420, naturalRowHeight));
+    const rowHeight = Math.min(maxRowHeight, naturalRowHeight);
 
     row.forEach((tile, i) => {
       const width = Math.round(rowHeight * rowRatios[i]);
