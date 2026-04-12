@@ -1,16 +1,16 @@
 :root {
-  --flow-trigger: #4f8cff;
-  --flow-condition: #e2b84e;
-  --flow-operator: #20c997;
-  --flow-action: #ff9a4d;
-  --flow-edge-color: rgba(198, 161, 75, 0.9);
+  --flow-trigger: #60a5fa;
+  --flow-condition: #fbbf24;
+  --flow-operator: #34d399;
+  --flow-action: #fb923c;
+  --flow-edge-color: rgba(212, 170, 79, 0.85);
 
   --flow-grid-major: rgba(255, 255, 255, 0.04);
   --flow-grid-minor: rgba(255, 255, 255, 0.02);
 
-  --flow-node-bg: #161616;
-  --flow-node-border: #2a2a2a;
-  --flow-node-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --flow-node-bg: #181818;
+  --flow-node-border: rgba(255, 255, 255, 0.08);
+  --flow-node-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 body.flowsPage {
@@ -19,14 +19,14 @@ body.flowsPage {
 
 .flowsPage .wrap.full {
   max-width: 100%;
-  padding-bottom: 10px;
+  padding: 0;
 }
 
 /* Main 3-column layout */
 .flowsPage .flowsShell {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr) 280px;
-  gap: 6px;
+  gap: 0;
   align-items: stretch;
   height: calc(100vh - 60px);
   min-height: 0;
@@ -44,18 +44,21 @@ body.flowsPage {
 .flowsPage .flowsSidebar {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding-right: 2px;
+  padding: 0;
+  border-right: 1px solid var(--stroke);
+  background: var(--panel);
 }
 
 .flowsPage .flowsSidebarBlock {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0;
   min-height: 0;
   overflow: visible;
+  border-bottom: 1px solid var(--stroke);
 }
 
 .flowsPage .flowsSidebarBlock.is-collapsed {
@@ -69,12 +72,21 @@ body.flowsPage {
   justify-content: space-between;
   gap: 12px;
   width: 100%;
-  padding: 0;
+  padding: 10px 12px;
   border: 0;
   background: transparent;
-  color: var(--text);
+  color: var(--muted);
   text-align: left;
   cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  transition: color 0.15s ease;
+}
+
+.flowsPage .flowsSidebarSectionToggle:hover {
+  color: var(--text);
 }
 
 .flowsPage .flowsSidebarSectionToggle:focus-visible {
@@ -88,6 +100,7 @@ body.flowsPage {
   flex-direction: column;
   gap: 4px;
   min-height: 0;
+  padding: 6px 12px 12px;
 }
 
 .flowsPage .flowsSidebarSectionControls {
@@ -166,40 +179,40 @@ body.flowsPage {
 .flowsPage .flowList {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   min-height: 0;
 }
 
 .flowsPage .flowListItem {
-  border: 1px solid var(--stroke);
+  border: 1px solid transparent;
   border-radius: var(--r-sm);
-  background: rgba(255, 255, 255, 0.03);
-  padding: 6px 8px;
+  background: transparent;
+  padding: 8px 10px;
   cursor: pointer;
   transition:
-    background 0.12s ease,
-    border-color 0.12s ease,
-    box-shadow 0.12s ease;
+    background 0.15s ease,
+    border-color 0.15s ease;
 }
 
 .flowsPage .flowListItem:hover {
-  background: rgba(255, 255, 255, 0.05);
-  border-color: var(--stroke-2);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--stroke);
 }
 
 .flowsPage .flowListItem.active {
-  border-color: rgba(198, 161, 75, 0.35);
-  box-shadow: 0 0 0 3px rgba(198, 161, 75, 0.08);
+  border-color: rgba(212, 170, 79, 0.2);
+  background: rgba(212, 170, 79, 0.06);
+  box-shadow: none;
 }
 
 .flowsPage .flowListCurrent {
-  background: linear-gradient(180deg, rgba(198, 161, 75, 0.08), rgba(255, 255, 255, 0.03));
+  background: rgba(198, 161, 75, 0.06);
   cursor: pointer;
 }
 
 .flowsPage .flowListCurrent:hover {
-  background: linear-gradient(180deg, rgba(198, 161, 75, 0.08), rgba(255, 255, 255, 0.03));
-  border-color: rgba(198, 161, 75, 0.35);
+  background: rgba(198, 161, 75, 0.08);
+  border-color: var(--stroke);
 }
 
 .flowsPage .flowListItemTop {
@@ -252,53 +265,53 @@ body.flowsPage {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 2px 6px;
+  padding: 2px 7px;
   border: 1px solid var(--stroke);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--surface);
   color: var(--muted);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .flowsPage .miniPill.enabled {
-  color: #e0e0e0;
-  background: rgba(76, 175, 80, 0.96);
-  border-color: rgba(76, 175, 80, 0.3);
+  color: #fff;
+  background: rgba(34, 197, 94, 0.9);
+  border-color: rgba(34, 197, 94, 0.3);
 }
 
 .flowsPage .miniPill.disabled {
-  color: #ffd3d8;
-  background: rgba(244, 67, 54, 0.12);
-  border-color: rgba(244, 67, 54, 0.25);
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.2);
 }
 
 /* Palette area */
 .flowsPage .paletteGroups {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   min-height: 0;
 }
 
 .flowsPage .publicVariableList {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   min-height: 0;
 }
 
 .flowsPage .recordingPresetList {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   min-height: 0;
 }
 
 .flowsPage .scheduleList {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   min-height: 0;
 }
 
@@ -337,7 +350,7 @@ body.flowsPage {
 .flowsPage .schedulePlannerMetaCard {
   flex: 0 0 auto;
   padding: 8px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02));
+  background: transparent;
 }
 
 .flowsPage .schedulePlannerTitle {
@@ -353,8 +366,8 @@ body.flowsPage {
 }
 
 .flowsPage .inspectorCard.is-active {
-  border-color: rgba(198, 161, 75, 0.42);
-  box-shadow: 0 0 0 1px rgba(198, 161, 75, 0.16);
+  border-color: var(--accent);
+  box-shadow: none;
 }
 
 .flowsPage .schedulePeriodGrid {
@@ -415,10 +428,10 @@ body.flowsPage {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  border: 1px solid #2a2a2a;
+  border: 1px solid var(--stroke);
   border-radius: var(--r-md);
-  padding: 6px;
-  background: #0d0d0d;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.2);
 }
 
 .flowsPage .schedulePlannerHeader,
@@ -603,7 +616,7 @@ body.flowsPage {
   background: linear-gradient(90deg, rgba(198, 161, 75, 0.9), rgba(108, 180, 234, 0.78));
   color: rgba(235, 245, 255, 0.96);
   text-align: left;
-  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.14);
   overflow: hidden;
   cursor: grab;
 }
@@ -616,7 +629,7 @@ body.flowsPage {
   border-color: rgba(144, 202, 249, 0.92);
   box-shadow:
     0 0 0 1px rgba(206, 230, 255, 0.55),
-    0 12px 28px rgba(0, 0, 0, 0.24);
+    0 2px 8px rgba(0, 0, 0, 0.18);
 }
 
 .flowsPage .scheduleBlock:active {
@@ -629,7 +642,7 @@ body.flowsPage {
   border-color: rgba(140, 200, 234, 0.75);
   box-shadow:
     0 0 0 1px rgba(196, 225, 255, 0.28),
-    0 12px 28px rgba(0, 0, 0, 0.22);
+    0 2px 8px rgba(0, 0, 0, 0.16);
 }
 
 .flowsPage .scheduleBlock.is-overnight,
@@ -708,10 +721,11 @@ body.flowsPage {
 }
 
 .flowsPage .scheduleCalendar {
-  padding: 8px;
-  border: 1px solid #2a2a2a;
-  border-radius: var(--r-sm);
-  background: #161616;
+  padding: 10px;
+  border: none;
+  border-bottom: 1px solid var(--stroke);
+  border-radius: 0;
+  background: transparent;
 }
 
 .flowsPage .scheduleCalendarHeader {
@@ -738,20 +752,21 @@ body.flowsPage {
 
 .flowsPage .scheduleCalendarTitleButton {
   min-height: 24px;
-  padding: 0 8px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--r-sm);
   background: rgba(255, 255, 255, 0.04);
   color: rgba(255, 255, 255, 0.9);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.01em;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
 
 .flowsPage .scheduleCalendarTitleButton:hover {
-  border-color: rgba(198, 161, 75, 0.24);
-  background: rgba(198, 161, 75, 0.08);
+  border-color: rgba(212, 170, 79, 0.2);
+  background: rgba(212, 170, 79, 0.06);
 }
 
 .flowsPage .scheduleCalendarTitleButton.is-active,
@@ -944,7 +959,7 @@ body.flowsPage {
   width: 18px;
   height: 18px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 2px;
   background: rgba(16, 16, 16, 0.28);
   padding: 0;
   cursor: pointer;
@@ -1020,28 +1035,31 @@ body.flowsPage {
 }
 
 .flowsPage .paletteGroup {
-  border: 1px solid var(--stroke);
-  border-radius: var(--r-sm);
-  background: rgba(255, 255, 255, 0.02);
+  border: none;
+  border-bottom: 1px solid var(--stroke);
+  border-radius: 0;
+  background: transparent;
   overflow: hidden;
   flex: 0 0 auto;
+  padding: 0 0 4px;
 }
 
 .flowsPage .paletteGroupHead {
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--stroke);
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--text);
+  padding: 6px 0;
+  border-bottom: none;
+  background: transparent;
+  color: var(--muted);
   font-size: 10px;
   font-weight: 700;
-  text-transform: capitalize;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .flowsPage .paletteGroupBody {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 4px;
+  gap: 0;
+  padding: 0;
 }
 
 .flowsPage .paletteItem {
@@ -1050,23 +1068,21 @@ body.flowsPage {
   flex-direction: column;
   gap: 2px;
   text-align: left;
-  padding: 4px 8px;
-  border: 1px solid var(--stroke);
+  padding: 6px 8px;
+  border: none;
   border-radius: var(--r-xs);
-  background: rgba(255, 255, 255, 0.03);
+  background: transparent;
   color: var(--text);
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
   transition:
-    background 0.12s ease,
-    border-color 0.12s ease,
-    transform 0.12s ease;
+    background 0.15s ease;
 }
 
 .flowsPage .paletteItem:hover {
   background: rgba(255, 255, 255, 0.05);
-  border-color: var(--stroke-2);
+  border-color: transparent;
 }
 
 .flowsPage .paletteItem:active {
@@ -1093,15 +1109,20 @@ body.flowsPage {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  background: #0f0f0f;
 }
 
 .flowsPage .flowsToolbar {
   display: flex;
   justify-content: flex-start;
-  gap: 6px;
+  gap: 10px;
   align-items: center;
   flex-wrap: wrap;
-  margin-bottom: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--stroke);
+  background: rgba(22, 22, 22, 0.8);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .flowsPage .flowHeading {
@@ -1115,10 +1136,10 @@ body.flowsPage {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
-  border: 1px solid #2a2a2a;
-  border-radius: var(--r-md);
+  border: none;
+  border-radius: 0;
   overflow: hidden;
-  background: #0d0d0d;
+  background: #0f0f0f;
 }
 
 .flowsPage .flowBoardScroller {
@@ -1163,7 +1184,7 @@ body.flowsPage {
   position: absolute;
   width: 190px;
   min-height: 60px;
-  padding: 6px 8px;
+  padding: 8px 10px;
   border: 1px solid var(--flow-node-border);
   border-radius: var(--r-md);
   background: var(--flow-node-bg);
@@ -1175,13 +1196,13 @@ body.flowsPage {
   z-index: 3;
   overflow: visible;
   transition:
-    border-color 0.12s ease,
-    box-shadow 0.12s ease,
-    transform 0.12s ease;
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .flowsPage .flowNode:hover {
-  border-color: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
 }
 
 .flowsPage .flowNode.dragging {
@@ -1190,10 +1211,8 @@ body.flowsPage {
 }
 
 .flowsPage .flowNode.selected {
-  border-color: rgba(198, 161, 75, 0.38);
-  box-shadow:
-    0 0 0 3px rgba(198, 161, 75, 0.12),
-    var(--flow-node-shadow);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(212, 170, 79, 0.15), 0 4px 16px rgba(0, 0, 0, 0.3);
 }
 
 .flowsPage .flowNode.trigger {
@@ -1262,8 +1281,8 @@ body.flowsPage {
   align-items: center;
   gap: 4px;
   max-width: 100%;
-  padding: 2px 6px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 2px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.04);
 }
@@ -1290,10 +1309,10 @@ body.flowsPage {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 2px 5px;
+  padding: 2px 6px;
   border-radius: 999px;
   font-size: 9px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   white-space: nowrap;
@@ -1431,7 +1450,7 @@ body.flowsPage {
   padding: 3px 8px;
   border-radius: 999px;
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.04em;
   line-height: 1;
   white-space: nowrap;
@@ -1457,13 +1476,14 @@ body.flowsPage {
   top: 50%;
   transform: translate(-50%, -50%);
   width: fit-content;
-  padding: 6px 10px;
-  border: 1px dashed rgba(255, 255, 255, 0.14);
-  border-radius: var(--r-sm);
-  background: rgba(16, 16, 16, 0.84);
+  padding: 10px 16px;
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  border-radius: var(--r-md);
+  background: rgba(22, 22, 22, 0.8);
+  backdrop-filter: blur(8px);
   color: var(--muted);
   font-size: 11px;
-  line-height: 1.3;
+  line-height: 1.4;
   z-index: 5;
 }
 
@@ -1471,50 +1491,56 @@ body.flowsPage {
 .flowsPage .flowsInspector {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
   overflow: hidden;
+  border-left: 1px solid var(--stroke);
+  background: var(--panel);
+  padding: 0;
 }
 
 .flowsPage .flowInspectorHeader {
+  padding: 12px 14px;
   margin-bottom: 0;
+  border-bottom: 1px solid var(--stroke);
 }
 
 .flowsPage .inspectorBody {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding-right: 2px;
+  padding: 0;
 }
 
 .flowsPage .inspectorCard {
-  border: 1px solid var(--stroke);
-  border-radius: var(--r-sm);
-  padding: 6px 8px;
-  background: rgba(255, 255, 255, 0.025);
+  border: none;
+  border-bottom: 1px solid var(--stroke);
+  border-radius: 0;
+  padding: 12px 14px;
+  background: transparent;
 }
 
 .flowsPage .inspectorActionsCard {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.02));
-  border-color: rgba(255, 255, 255, 0.1);
+  background: transparent;
+  border-color: var(--stroke);
 }
 
 .flowsPage .inspectorActionsCard--danger {
-  background: linear-gradient(180deg, rgba(244, 67, 54, 0.06), rgba(255, 255, 255, 0.02));
-  border-color: rgba(244, 67, 54, 0.2);
+  background: transparent;
+  border-color: var(--stroke);
 }
 
 .flowsPage .inspectorTitle {
   font-size: 11px;
   font-weight: 700;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
 .flowsPage .inspectorActionHeader {
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
 .flowsPage .inspectorActionHeader .inspectorTitle {
@@ -1524,7 +1550,7 @@ body.flowsPage {
 .flowsPage .inspectorActionGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-  gap: 4px;
+  gap: 6px;
 }
 
 .flowsPage .inspectorActionGrid--twoUp {
@@ -1547,7 +1573,7 @@ body.flowsPage {
 .flowsPage .inspectorRow {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 4px;
+  gap: 6px;
 }
 
 .flowsPage .fieldGrid > .full,
@@ -1559,64 +1585,64 @@ body.flowsPage {
 .flowsPage textarea {
   width: 100%;
   min-height: 52px;
-  padding: 5px 8px;
+  padding: 6px 10px;
   border: 1px solid var(--stroke);
-  border-radius: var(--r-xs);
-  background: rgba(13, 13, 13, 0.72);
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--text);
   outline: none;
   resize: vertical;
   font-size: 12px;
   transition:
-    border-color 0.12s ease,
-    box-shadow 0.12s ease,
-    background 0.12s ease;
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    background 0.15s ease;
 }
 
 .flowsPage textarea:hover {
-  background: rgba(16, 16, 16, 0.82);
+  border-color: var(--stroke-2);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .flowsPage textarea:focus {
-  border-color: rgba(198, 161, 75, 0.42);
-  box-shadow: 0 0 0 3px rgba(198, 161, 75, 0.12);
+  border-color: rgba(212, 170, 79, 0.5);
+  box-shadow: 0 0 0 3px rgba(212, 170, 79, 0.1);
 }
 
 .flowsPage .variableList,
 .flowsPage .varList {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 
 .flowsPage .variableRow,
 .flowsPage .varCard {
-  border: 1px solid var(--stroke);
+  border: 1px solid transparent;
   border-radius: var(--r-sm);
-  padding: 5px 6px;
-  background: rgba(255, 255, 255, 0.02);
+  padding: 6px 8px;
+  background: transparent;
 }
 
 .flowsPage .varCard.is-preview {
   appearance: none;
   width: 100%;
-  padding: 5px 8px;
+  padding: 6px 6px;
   font: inherit;
   color: inherit;
   text-align: left;
   cursor: pointer;
-  border: 1px solid var(--stroke);
+  border: 1px solid transparent;
   border-radius: var(--r-sm);
-  background: rgba(255, 255, 255, 0.03);
+  background: transparent;
   transition:
-    background 0.12s ease,
-    border-color 0.12s ease,
-    box-shadow 0.12s ease;
+    background 0.15s ease,
+    border-color 0.15s ease;
 }
 
 .flowsPage .varCard.is-preview:hover {
-  background: rgba(255, 255, 255, 0.05);
-  border-color: var(--stroke-2);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--stroke);
 }
 
 .flowsPage .varCard.is-preview:focus-visible {
@@ -1625,19 +1651,19 @@ body.flowsPage {
 }
 
 .flowsPage .varCard.is-preview.active {
-  border-color: rgba(198, 161, 75, 0.35);
-  box-shadow: 0 0 0 3px rgba(198, 161, 75, 0.08);
-  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(212, 170, 79, 0.2);
+  box-shadow: none;
+  background: rgba(212, 170, 79, 0.06);
 }
 
 .flowsPage .varCardCurrent {
   cursor: default;
-  background: linear-gradient(180deg, rgba(198, 161, 75, 0.08), rgba(255, 255, 255, 0.03));
+  background: rgba(198, 161, 75, 0.06);
 }
 
 .flowsPage .varCardCurrent:hover {
-  background: linear-gradient(180deg, rgba(198, 161, 75, 0.08), rgba(255, 255, 255, 0.03));
-  border-color: rgba(198, 161, 75, 0.35);
+  background: rgba(198, 161, 75, 0.06);
+  border-color: var(--stroke);
 }
 
 .flowsPage .varCardActionsOnly {
@@ -1654,9 +1680,9 @@ body.flowsPage {
 .flowsPage .varCardTop {
   display: flex;
   justify-content: space-between;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
 .flowsPage .variableLabel,
@@ -1747,10 +1773,11 @@ body.flowsPage {
 }
 
 .flowsPage .setVariableTemplateHelp {
-  padding: 6px 8px;
-  border: 1px solid rgba(198, 161, 75, 0.18);
-  border-radius: var(--r-sm);
-  background: linear-gradient(180deg, rgba(198, 161, 75, 0.08), rgba(255, 255, 255, 0.02));
+  padding: 8px 0;
+  border: none;
+  border-top: 1px solid var(--stroke);
+  border-radius: 0;
+  background: transparent;
 }
 
 .flowsPage .setVariableTemplateHelpTitle {
@@ -1777,12 +1804,13 @@ body.flowsPage {
   display: inline-flex;
   align-items: center;
   max-width: 100%;
-  padding: 5px 9px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 999px;
-  background: rgba(13, 13, 13, 0.62);
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.2);
   color: rgba(255, 255, 255, 0.9);
   font-size: 11px;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
   line-height: 1;
   white-space: nowrap;
 }
@@ -1867,21 +1895,23 @@ body.flowsPage {
   margin-top: 0;
   max-height: 160px;
   overflow: auto;
-  padding: 6px 8px;
-  border: 1px solid var(--stroke);
-  border-radius: var(--r-sm);
-  background: rgba(0, 0, 0, 0.22);
+  padding: 8px;
+  border: none;
+  border-top: 1px solid var(--stroke);
+  border-radius: 0;
+  background: rgba(0, 0, 0, 0.2);
   color: rgba(255, 255, 255, 0.9);
   font-size: 10px;
-  line-height: 1.35;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  line-height: 1.4;
 }
 
 .flowsPage .emptyState {
-  padding: 6px 8px;
+  padding: 10px 12px;
   font-size: 11px;
   color: var(--muted);
-  border: 1px dashed rgba(255, 255, 255, 0.12);
-  border-radius: var(--r-xs);
+  border: 1px dashed rgba(255, 255, 255, 0.08);
+  border-radius: var(--r-md);
   background: rgba(255, 255, 255, 0.02);
   text-align: center;
   line-height: 1.45;
@@ -1967,38 +1997,41 @@ body.flowsPage {
 /* ── Zoom bar ── */
 .flowsPage .flowZoomBar {
   position: absolute;
-  bottom: 8px;
-  right: 8px;
+  bottom: 10px;
+  right: 10px;
   display: flex;
   align-items: center;
   gap: 2px;
-  background: rgba(24, 24, 24, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  padding: 2px;
+  background: rgba(22, 22, 22, 0.85);
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-md);
+  padding: 3px;
   z-index: 20;
-  backdrop-filter: blur(6px);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   user-select: none;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
 }
 
 .flowsPage .zoomBtn {
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: transparent;
   border: none;
-  color: #ccc;
+  color: #aaa;
   font-size: 14px;
-  border-radius: 3px;
+  border-radius: var(--r-xs);
   cursor: pointer;
   padding: 0;
   line-height: 1;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
 .flowsPage .zoomBtn:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.08);
   color: #fff;
 }
 
@@ -2184,22 +2217,21 @@ body.flowsPage {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 4px 8px;
-  border: 1px solid var(--stroke);
+  padding: 6px 6px;
+  border: 1px solid transparent;
   border-radius: var(--r-sm);
-  background: rgba(255, 255, 255, 0.03);
+  background: transparent;
   color: var(--text);
   text-align: left;
   cursor: pointer;
   transition:
-    border-color 0.12s ease,
-    background 0.12s ease,
-    box-shadow 0.12s ease;
+    background 0.15s ease,
+    border-color 0.15s ease;
 }
 
 .flowsPage .topicPickerItem:hover {
-  background: rgba(255, 255, 255, 0.05);
-  border-color: var(--stroke-2);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--stroke);
 }
 
 .flowsPage .topicPickerItem:focus-visible {
@@ -2208,9 +2240,9 @@ body.flowsPage {
 }
 
 .flowsPage .topicPickerItem.active {
-  border-color: rgba(198, 161, 75, 0.35);
-  box-shadow: 0 0 0 3px rgba(198, 161, 75, 0.08);
-  background: linear-gradient(180deg, rgba(198, 161, 75, 0.08), rgba(255, 255, 255, 0.03));
+  border-color: rgba(212, 170, 79, 0.2);
+  box-shadow: none;
+  background: rgba(212, 170, 79, 0.06);
 }
 
 .flowsPage .topicPickerItemTop {
