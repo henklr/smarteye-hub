@@ -66,6 +66,18 @@
             </div>
           </div>
 
+          <div class="grid overlayFormGrid" style="margin-top:14px;">
+            <div data-full>
+              <label for="retentionDaysInput">Recording retention (days)</label>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <input id="retentionDaysInput" type="number" min="0" max="365" step="1" placeholder="0" style="width:80px;" />
+                <button class="btn" id="retentionSaveBtn" type="button">Save</button>
+                <span id="retentionStatus" class="muted" style="font-size:0.85em;"></span>
+              </div>
+              <div class="listSub" style="margin-top:4px;">Set to 0 to disable automatic deletion.</div>
+            </div>
+          </div>
+
           <div class="row2" style="margin-top:14px;">
             <button class="btn btn-danger" id="clearRecordingsBtn" type="button">Clear all recordings</button>
             <button class="btn btn-danger" id="rebootBtn" type="button">Reboot system</button>

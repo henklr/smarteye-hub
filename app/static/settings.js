@@ -117,10 +117,50 @@ loadCloudConfig();
 const systemStatusEl = document.getElementById("systemStatus");
 const clearRecordingsBtn = document.getElementById("clearRecordingsBtn");
 const rebootBtn = document.getElementById("rebootBtn");
+const retentionDaysInput = document.getElementById("retentionDaysInput");
+const retentionSaveBtn = document.getElementById("retentionSaveBtn");
+const retentionStatusEl = document.getElementById("retentionStatus");
 
 function setSystemStatus(text) {
   if (systemStatusEl) systemStatusEl.textContent = text;
 }
+
+function setRetentionStatus(text) {
+  if (retentionStatusEl) retentionStatusEl.textContent = text;
+}
+
+async function loadRetention() {
+  try {
+    const data = await api("/api/settings/retention");
+    if (retentionDaysInput) retentionDaysInput.value = data.retention_days || 0;
+  } catch (e) {
+    setRetentionStatus(`Error: ${e.message || e}`);
+  }
+}
+
+retentionSaveBtn?.addEventListener("click", async () => {
+  const days = parseInt(retentionDaysInput?.value || "0", 10);
+  if (isNaN(days) || days < 0) {
+    setRetentionStatus("Enter a valid number (0 = disabled).");
+    return;
+  }
+  retentionSaveBtn.disabled = true;
+  setRetentionStatus("Saving…");
+  try {
+    await api("/api/settings/retention", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ retention_days: days }),
+    });
+    setRetentionStatus(days > 0 ? `Saved. Recordings older than ${days} day${days === 1 ? "" : "s"} will be deleted.` : "Saved. Auto-deletion disabled.");
+  } catch (e) {
+    setRetentionStatus(`Error: ${e.message || e}`);
+  } finally {
+    retentionSaveBtn.disabled = false;
+  }
+});
+
+loadRetention();
 
 clearRecordingsBtn?.addEventListener("click", async () => {
   if (!window.confirm("Clear all recordings, generated clips, and playback markers? This cannot be undone.")) return;

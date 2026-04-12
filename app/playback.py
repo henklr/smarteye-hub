@@ -31,7 +31,30 @@ RECORDING_EVENTS_JSON = DATA_DIR / "recording_events.json"
 
 MEDIAMTX_RTSP_BASE = os.getenv("MEDIAMTX_RTSP_BASE", "rtsp://mediamtx:8554").rstrip("/")
 RECORDING_SEGMENT_SECONDS = max(15, int(os.getenv("RECORDING_SEGMENT_SECONDS", "60") or "60"))
-RECORDING_RETENTION_DAYS = max(1, int(os.getenv("RECORDING_RETENTION_DAYS", "7") or "7"))
+SETTINGS_JSON = DATA_DIR / "settings.json"
+
+def _load_settings() -> Dict[str, Any]:
+    try:
+        return json.loads(SETTINGS_JSON.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def _save_settings(settings: Dict[str, Any]) -> None:
+    SETTINGS_JSON.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+def get_retention_days() -> int:
+    value = _load_settings().get("retention_days", 0)
+    try:
+        return max(0, int(value))
+    except Exception:
+        return 0
+
+def set_retention_days(days: int) -> int:
+    days = max(0, int(days))
+    settings = _load_settings()
+    settings["retention_days"] = days
+    _save_settings(settings)
+    return days
 RECORDER_POLL_SECONDS = max(2.0, float(os.getenv("RECORDER_POLL_SECONDS", "5") or "5"))
 PLAYBACK_RECORDING_SCOPE = str(os.getenv("PLAYBACK_RECORDING_SCOPE", "flow_cameras") or "flow_cameras").strip().lower()
 PLAYBACK_CLIP_MODE = str(os.getenv("PLAYBACK_CLIP_MODE", "copy-first") or "copy-first").strip().lower()
@@ -828,7 +851,10 @@ def _prune_cached_clips() -> None:
 
 
 def _prune_old_recordings() -> None:
-    cutoff = _utc_now() - timedelta(days=RECORDING_RETENTION_DAYS)
+    days = get_retention_days()
+    if days <= 0:
+        return
+    cutoff = _utc_now() - timedelta(days=days)
     for device_dir in RECORDINGS_DIR.iterdir() if RECORDINGS_DIR.exists() else []:
         if not device_dir.is_dir():
             continue
@@ -1222,6 +1248,22 @@ def clear_all_recordings() -> Dict[str, int]:
         "deleted_clip_files": deleted_clip_files,
         "cleared_events": cleared_events,
     }
+
+
+@router.get("/api/settings/retention")
+def get_retention() -> Dict[str, Any]:
+    return {"retention_days": get_retention_days()}
+
+
+@router.put("/api/settings/retention")
+def put_retention(body: Dict[str, Any]) -> Dict[str, Any]:
+    days = body.get("retention_days", 0)
+    try:
+        days = max(0, int(days))
+    except (TypeError, ValueError):
+        days = 0
+    set_retention_days(days)
+    return {"ok": True, "retention_days": days}
 
 
 @router.get("/playback", response_class=HTMLResponse)
