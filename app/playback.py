@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
@@ -32,6 +33,13 @@ RECORDING_EVENTS_JSON = DATA_DIR / "recording_events.json"
 MEDIAMTX_RTSP_BASE = os.getenv("MEDIAMTX_RTSP_BASE", "rtsp://mediamtx:8554").rstrip("/")
 RECORDING_SEGMENT_SECONDS = max(15, int(os.getenv("RECORDING_SEGMENT_SECONDS", "60") or "60"))
 SETTINGS_JSON = DATA_DIR / "settings.json"
+
+def _system_tz() -> ZoneInfo:
+    try:
+        tz_name = _load_settings().get("timezone", "UTC") or "UTC"
+        return ZoneInfo(tz_name)
+    except Exception:
+        return ZoneInfo("UTC")
 
 def _load_settings() -> Dict[str, Any]:
     try:
@@ -813,6 +821,7 @@ def _start_recorder(device_id: str) -> None:
         _recording_ffmpeg_command(device_id),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env={**os.environ, "TZ": "UTC"},
     )
     with _recorders_lock:
         _recorders[device_id] = proc
@@ -1014,17 +1023,35 @@ def stop_recording_marker(*, device_id: str) -> Dict[str, Any]:
     raise LookupError(f"No active recording found for device {normalized_device_id}")
 
 
+def _to_local(dt_utc: datetime) -> str:
+    try:
+        return dt_utc.astimezone(_system_tz()).isoformat()
+    except Exception:
+        return dt_utc.isoformat()
+
+
 def _serialize_segment(segment: RecordingSegment) -> Dict[str, Any]:
     return {
         "path": segment.path.name,
-        "started_at": segment.started_at.isoformat(),
-        "ended_at": segment.ended_at.isoformat(),
+        "started_at": _to_local(segment.started_at),
+        "ended_at": _to_local(segment.ended_at),
         "finalized": bool(segment.finalized),
     }
 
 
 def _serialize_event(event: Dict[str, Any]) -> Dict[str, Any]:
     state = _event_state(event)
+    raw_tags = _event_tag_segments(event)
+    local_tags = []
+    for tag in raw_tags:
+        t = dict(tag)
+        for k in ("clip_start", "clip_end", "triggered_at"):
+            if t.get(k):
+                try:
+                    t[k] = _to_local(_parse_iso(t[k]))
+                except Exception:
+                    pass
+        local_tags.append(t)
     return {
         "id": event.get("id"),
         "device_id": event.get("device_id"),
@@ -1032,29 +1059,30 @@ def _serialize_event(event: Dict[str, Any]) -> Dict[str, Any]:
         "color": _clamp_color(event.get("color")),
         "preset_key": _event_preset_key(event),
         "preset_name": _event_preset_name(event),
-        "triggered_at": event.get("triggered_at"),
-        "clip_start": event.get("clip_start"),
-        "clip_end": event.get("clip_end"),
+        "triggered_at": _to_local(_parse_iso(event.get("triggered_at"))) if event.get("triggered_at") else None,
+        "clip_start": _to_local(_parse_iso(event.get("clip_start"))) if event.get("clip_start") else None,
+        "clip_end": _to_local(_parse_iso(event.get("clip_end"))) if event.get("clip_end") else None,
         "before_seconds": float(event.get("before_seconds") or 0),
         "after_seconds": float(event.get("after_seconds") or 0),
         "flow_id": event.get("flow_id"),
         "flow_name": event.get("flow_name"),
         "node_id": event.get("node_id"),
-        "tag_segments": _event_tag_segments(event),
+        "tag_segments": local_tags,
         "state": state,
         "ready": state == "ready",
     }
 
 
 def _timeline_day_bounds(day_value: Optional[str]) -> Tuple[date, datetime, datetime]:
+    tz = _system_tz()
     if day_value:
         try:
             selected_day = date.fromisoformat(day_value)
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid day")
     else:
-        selected_day = _utc_now().date()
-    start = datetime.combine(selected_day, datetime_time.min, tzinfo=timezone.utc)
+        selected_day = _utc_now().astimezone(tz).date()
+    start = datetime.combine(selected_day, datetime_time.min, tzinfo=tz).astimezone(timezone.utc)
     end = start + timedelta(days=1)
     return selected_day, start, end
 

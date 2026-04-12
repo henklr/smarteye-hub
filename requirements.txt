@@ -3,4 +3,5 @@ uvicorn[standard]
 onvif-zeep
 automationhat
 holidays
+ntplib
 websockets>=12.0

@@ -61,6 +61,49 @@
         <section class="card settingsCard">
           <div class="listHeader compact">
             <div>
+              <div class="listTitle small">Date &amp; time</div>
+              <div class="listSub">Set the system clock manually or sync via NTP.</div>
+            </div>
+          </div>
+
+          <div class="grid overlayFormGrid" style="margin-top:14px;">
+            <div data-full>
+              <label for="timezoneSelect">Timezone</label>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <select id="timezoneSelect" style="flex:1;max-width:300px;"></select>
+                <button class="btn" id="timezoneSaveBtn" type="button">Save</button>
+              </div>
+            </div>
+
+            <div data-full>
+              <label for="manualDatetime">Manual date &amp; time</label>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <input id="manualDatetime" type="datetime-local" step="1" style="flex:1;max-width:260px;" />
+                <button class="btn" id="manualDatetimeSaveBtn" type="button">Set</button>
+                <button class="btn" id="browserTimeSyncBtn" type="button">Set from browser</button>
+              </div>
+            </div>
+
+            <div data-full>
+              <label for="ntpServerInput">NTP server</label>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <input id="ntpServerInput" type="text" placeholder="pool.ntp.org" style="flex:1;max-width:260px;" />
+                <button class="btn btn-primary" id="ntpSyncBtn" type="button">Sync now</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="statusLine compact" style="margin-top:12px;">
+            <strong>System time:</strong>&nbsp;<span id="currentUtcTime" class="muted">Loading…</span>
+          </div>
+          <div class="statusLine compact" style="margin-top:4px;">
+            <span id="datetimeStatus" class="muted"></span>
+          </div>
+        </section>
+
+        <section class="card settingsCard">
+          <div class="listHeader compact">
+            <div>
               <div class="listTitle small">System</div>
               <div class="listSub">Manage recordings and system power.</div>
             </div>

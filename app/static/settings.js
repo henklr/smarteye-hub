@@ -112,6 +112,178 @@ cloudConnectBtn?.addEventListener("click", async () => {
 
 loadCloudConfig();
 
+// ── Date & Time ───────────────────────────────────────────────────────────────
+
+const timezoneSelect = document.getElementById("timezoneSelect");
+const timezoneSaveBtn = document.getElementById("timezoneSaveBtn");
+const manualDatetime = document.getElementById("manualDatetime");
+const manualDatetimeSaveBtn = document.getElementById("manualDatetimeSaveBtn");
+const browserTimeSyncBtn = document.getElementById("browserTimeSyncBtn");
+const ntpServerInput = document.getElementById("ntpServerInput");
+const ntpSyncBtn = document.getElementById("ntpSyncBtn");
+const currentUtcTimeEl = document.getElementById("currentUtcTime");
+const datetimeStatusEl = document.getElementById("datetimeStatus");
+
+function setDatetimeStatus(text) {
+  if (datetimeStatusEl) datetimeStatusEl.textContent = text;
+}
+
+let _currentTimezone = "UTC";
+let _lastUtcEpoch = null;   // ms since epoch when time was last set
+let _lastSetAt = null;       // performance.now() when time was last set
+let _clockTimer = null;
+
+function _formatLocal(utcEpoch) {
+  try {
+    const d = new Date(utcEpoch);
+    return d.toLocaleString("sv-SE", { timeZone: _currentTimezone }).replace("T", " ");
+  } catch {
+    return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
+  }
+}
+
+function _renderClock() {
+  if (!currentUtcTimeEl || _lastUtcEpoch == null) return;
+  const elapsed = performance.now() - _lastSetAt;
+  const nowEpoch = _lastUtcEpoch + elapsed;
+  const display = _formatLocal(nowEpoch);
+  const label = _currentTimezone || "UTC";
+  currentUtcTimeEl.textContent = `${display} (${label})`;
+}
+
+function updateCurrentTime(utcIso, localStr, tz) {
+  if (tz) _currentTimezone = tz;
+  _lastUtcEpoch = new Date(utcIso).getTime();
+  _lastSetAt = performance.now();
+  _renderClock();
+  if (!_clockTimer) {
+    _clockTimer = setInterval(_renderClock, 1000);
+  }
+}
+
+async function loadDatetime() {
+  try {
+    const data = await api("/api/system/datetime");
+    updateCurrentTime(data.utc, data.local, data.timezone);
+    if (timezoneSelect) {
+      const tzData = await api("/api/system/timezones");
+      timezoneSelect.innerHTML = "";
+      for (const tz of tzData.timezones) {
+        const opt = document.createElement("option");
+        opt.value = tz;
+        opt.textContent = tz;
+        if (tz === data.timezone) opt.selected = true;
+        timezoneSelect.appendChild(opt);
+      }
+    }
+    const ntpData = await api("/api/system/ntp");
+    if (ntpServerInput) ntpServerInput.value = ntpData.ntp_server || "pool.ntp.org";
+    if (manualDatetime && data.local) {
+      manualDatetime.value = data.local.replace(" ", "T");
+    }
+  } catch (e) {
+    setDatetimeStatus(`Error: ${e.message || e}`);
+  }
+}
+
+timezoneSaveBtn?.addEventListener("click", async () => {
+  const tz = timezoneSelect?.value;
+  if (!tz) return;
+  timezoneSaveBtn.disabled = true;
+  setDatetimeStatus("Setting timezone…");
+  try {
+    await api("/api/system/timezone", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ timezone: tz }),
+    });
+    setDatetimeStatus(`Timezone set to ${tz}.`);
+    const dtData = await api("/api/system/datetime");
+    updateCurrentTime(dtData.utc, dtData.local, dtData.timezone);
+  } catch (e) {
+    setDatetimeStatus(`Error: ${e.message || e}`);
+  } finally {
+    timezoneSaveBtn.disabled = false;
+  }
+});
+
+manualDatetimeSaveBtn?.addEventListener("click", async () => {
+  const val = manualDatetime?.value;
+  if (!val) { setDatetimeStatus("Enter a date and time."); return; }
+  manualDatetimeSaveBtn.disabled = true;
+  setDatetimeStatus("Setting date…");
+  try {
+    const result = await api("/api/system/datetime", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ datetime: val }),
+    });
+    updateCurrentTime(result.utc, result.local, result.timezone);
+    setDatetimeStatus("Date and time updated.");
+  } catch (e) {
+    setDatetimeStatus(`Error: ${e.message || e}`);
+  } finally {
+    manualDatetimeSaveBtn.disabled = false;
+  }
+});
+
+browserTimeSyncBtn?.addEventListener("click", async () => {
+  browserTimeSyncBtn.disabled = true;
+  setDatetimeStatus("Setting time and timezone from browser…");
+  try {
+    const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (browserTz) {
+      try {
+        await api("/api/system/timezone", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ timezone: browserTz }),
+        });
+        if (timezoneSelect) {
+          for (const opt of timezoneSelect.options) {
+            opt.selected = opt.value === browserTz;
+          }
+        }
+      } catch {}
+    }
+    const now = new Date();
+    const isoUtc = now.toISOString();
+    const result = await api("/api/system/datetime", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ datetime: isoUtc }),
+    });
+    updateCurrentTime(result.utc, result.local, result.timezone);
+    if (manualDatetime && result.local) manualDatetime.value = result.local.replace(" ", "T");
+    setDatetimeStatus(`Clock and timezone set from browser (${browserTz || "time only"}).`);
+  } catch (e) {
+    setDatetimeStatus(`Error: ${e.message || e}`);
+  } finally {
+    browserTimeSyncBtn.disabled = false;
+  }
+});
+
+ntpSyncBtn?.addEventListener("click", async () => {
+  const server = (ntpServerInput?.value || "").trim() || "pool.ntp.org";
+  ntpSyncBtn.disabled = true;
+  setDatetimeStatus(`Syncing with ${server}…`);
+  try {
+    const result = await api("/api/system/ntp-sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server }),
+    });
+    updateCurrentTime(result.utc, result.local, result.timezone);
+    setDatetimeStatus(`Synced with ${result.server}. Time updated.`);
+  } catch (e) {
+    setDatetimeStatus(`Error: ${e.message || e}`);
+  } finally {
+    ntpSyncBtn.disabled = false;
+  }
+});
+
+loadDatetime();
+
 // ── System actions ────────────────────────────────────────────────────────────
 
 const systemStatusEl = document.getElementById("systemStatus");

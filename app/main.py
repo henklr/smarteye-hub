@@ -18,6 +18,7 @@ from urllib.parse import urlsplit, urlunsplit
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, StreamingResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 from onvif import ONVIFCamera
 from dataclasses import dataclass
@@ -40,6 +41,15 @@ from playback import (
 from physical_io import start_physical_io_monitor, stop_physical_io_monitor
 
 app = FastAPI()
+
+class NoCacheStaticMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
+
+app.add_middleware(NoCacheStaticMiddleware)
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -211,6 +221,191 @@ def system_reboot():
     import subprocess as _sp
     _sp.Popen(["sh", "-c", "sync; echo b > /proc/sysrq-trigger"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
     return {"ok": True, "message": "Reboot initiated"}
+
+
+# ── Date / Time / NTP / Timezone ───────────────────────────────────────────────
+
+_ZONEINFO_DIR = Path("/usr/share/zoneinfo")
+_SETTINGS_JSON = Path(os.getenv("DATA_DIR", "/app/data")) / "settings.json"
+
+def _load_settings_json() -> dict:
+    try:
+        return json.loads(_SETTINGS_JSON.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def _save_settings_json(settings: dict) -> None:
+    _SETTINGS_JSON.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+def _current_timezone() -> str:
+    link = Path("/etc/localtime")
+    if link.is_symlink():
+        target = str(link.resolve())
+        zoneinfo_prefix = str(_ZONEINFO_DIR) + "/"
+        if target.startswith(zoneinfo_prefix):
+            return target[len(zoneinfo_prefix):]
+    settings = _load_settings_json()
+    return settings.get("timezone") or "UTC"
+
+def _restore_timezone() -> None:
+    settings = _load_settings_json()
+    tz_name = settings.get("timezone") or ""
+    if not tz_name:
+        return
+    tz_path = _ZONEINFO_DIR / tz_name
+    if not tz_path.is_file():
+        return
+    localtime = Path("/etc/localtime")
+    try:
+        if localtime.exists() or localtime.is_symlink():
+            localtime.unlink()
+        localtime.symlink_to(tz_path)
+        os.environ["TZ"] = tz_name
+        if hasattr(time, "tzset"):
+            time.tzset()
+    except Exception:
+        pass
+
+def _list_timezones() -> list:
+    zones = []
+    if not _ZONEINFO_DIR.exists():
+        return zones
+    skip = {"posix", "right", "__pycache__"}
+    for root, dirs, files in os.walk(str(_ZONEINFO_DIR)):
+        dirs[:] = [d for d in dirs if d not in skip]
+        rel = os.path.relpath(root, str(_ZONEINFO_DIR))
+        for f in files:
+            full = os.path.join(rel, f) if rel != "." else f
+            if "/" in full and not full.startswith("."):
+                zones.append(full)
+    return sorted(zones)
+
+
+@app.get("/api/system/datetime")
+def get_datetime():
+    from datetime import datetime as dt, timezone as tz
+    now = dt.now(tz.utc)
+    tz_name = _current_timezone()
+    try:
+        import zoneinfo
+        local_now = now.astimezone(zoneinfo.ZoneInfo(tz_name))
+        local_str = local_now.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        local_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "utc": now.isoformat(),
+        "local": local_str,
+        "timezone": tz_name,
+    }
+
+
+@app.put("/api/system/datetime")
+def set_datetime(body: Dict[str, Any]):
+    import subprocess as _sp
+    date_str = str(body.get("datetime") or "").strip()
+    if not date_str:
+        raise HTTPException(status_code=400, detail="datetime is required (ISO 8601 format)")
+    try:
+        from datetime import datetime as dt, timezone as tz
+        import zoneinfo as _zi
+        parsed = dt.fromisoformat(date_str)
+        if parsed.tzinfo is None:
+            try:
+                local_tz = _zi.ZoneInfo(_current_timezone())
+            except Exception:
+                local_tz = tz.utc
+            parsed = parsed.replace(tzinfo=local_tz)
+        formatted = parsed.astimezone(tz.utc).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid datetime format. Use ISO 8601 (e.g. 2026-04-12T15:30:00)")
+    result = _sp.run(["date", "-u", "-s", formatted], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"Failed to set date: {result.stderr.strip()}")
+    try:
+        _sp.run(["hwclock", "-w"], capture_output=True, text=True, timeout=5)
+    except Exception:
+        pass
+    from datetime import datetime as dt2, timezone as tz2
+    now = dt2.now(tz2.utc)
+    tz_name = _current_timezone()
+    try:
+        import zoneinfo
+        local_now = now.astimezone(zoneinfo.ZoneInfo(tz_name))
+        local_str = local_now.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        local_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    return {"ok": True, "utc": now.isoformat(), "local": local_str, "timezone": tz_name}
+
+
+@app.get("/api/system/timezones")
+def list_timezones():
+    return {"timezones": _list_timezones()}
+
+
+@app.put("/api/system/timezone")
+def set_timezone(body: Dict[str, Any]):
+    tz_name = str(body.get("timezone") or "").strip()
+    if not tz_name:
+        raise HTTPException(status_code=400, detail="timezone is required")
+    tz_path = _ZONEINFO_DIR / tz_name
+    if not tz_path.is_file() or ".." in tz_name:
+        raise HTTPException(status_code=400, detail=f"Unknown timezone: {tz_name}")
+    localtime = Path("/etc/localtime")
+    try:
+        if localtime.exists() or localtime.is_symlink():
+            localtime.unlink()
+        localtime.symlink_to(tz_path)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to set timezone: {e}")
+    os.environ["TZ"] = tz_name
+    time.tzset() if hasattr(time, "tzset") else None
+    settings = _load_settings_json()
+    settings["timezone"] = tz_name
+    _save_settings_json(settings)
+    return {"ok": True, "timezone": tz_name}
+
+
+@app.post("/api/system/ntp-sync")
+def ntp_sync(body: Dict[str, Any] = None):
+    import ntplib
+    import subprocess as _sp
+    from datetime import datetime as dt, timezone as tz
+    body = body or {}
+    server = str(body.get("server") or "pool.ntp.org").strip()
+    if not server:
+        server = "pool.ntp.org"
+    try:
+        client = ntplib.NTPClient()
+        response = client.request(server, version=3, timeout=5)
+        ntp_time = dt.fromtimestamp(response.tx_time, tz=tz.utc)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"NTP sync failed: {e}")
+    formatted = ntp_time.strftime("%Y-%m-%d %H:%M:%S")
+    result = _sp.run(["date", "-u", "-s", formatted], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"Failed to set date: {result.stderr.strip()}")
+    try:
+        _sp.run(["hwclock", "-w"], capture_output=True, text=True, timeout=5)
+    except Exception:
+        pass
+    settings = _load_settings_json()
+    settings["ntp_server"] = server
+    _save_settings_json(settings)
+    now = dt.now(tz.utc)
+    tz_name = _current_timezone()
+    try:
+        import zoneinfo
+        local_now = now.astimezone(zoneinfo.ZoneInfo(tz_name))
+        local_str = local_now.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        local_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    return {"ok": True, "utc": now.isoformat(), "local": local_str, "timezone": tz_name, "server": server}
+
+
+@app.get("/api/system/ntp")
+def get_ntp_settings():
+    settings = _load_settings_json()
+    return {"ntp_server": settings.get("ntp_server") or "pool.ntp.org"}
 
 
 @app.get("/health")
@@ -2470,6 +2665,11 @@ async def ptz_stop(device_id: str):
 
 @app.on_event("startup")
 def _on_startup():
+    try:
+        _restore_timezone()
+    except Exception:
+        pass
+
     devs = _load_devices()
 
     try:

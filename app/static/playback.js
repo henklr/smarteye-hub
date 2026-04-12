@@ -188,9 +188,9 @@ function showVideoEmpty(title, text, options = {}) {
 
 function todayString() {
   const now = new Date();
-  const year = now.getUTCFullYear();
-  const month = String(now.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(now.getUTCDate()).padStart(2, "0");
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
 
@@ -277,17 +277,32 @@ function playbackRestoreState() {
   return saved;
 }
 
+let _tzOffsetMs = 0; // offset from UTC in ms for the system timezone
+
+function _extractTzOffset(isoStr) {
+  const m = String(isoStr || "").match(/([+-])(\d{2}):(\d{2})$/);
+  if (m) {
+    const sign = m[1] === "+" ? 1 : -1;
+    _tzOffsetMs = sign * (Number(m[2]) * 3600000 + Number(m[3]) * 60000);
+  }
+}
+
+function _localParts(value) {
+  const s = String(value || "");
+  const m = s.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+  if (m) {
+    _extractTzOffset(s);
+    return { h: Number(m[4]), m: Number(m[5]), s: Number(m[6]) };
+  }
+  // For epoch ms, apply stored timezone offset
+  const d = new Date(typeof value === "number" ? value + _tzOffsetMs : value);
+  return { h: d.getUTCHours(), m: d.getUTCMinutes(), s: d.getUTCSeconds() };
+}
+
 function clockLabel(value) {
   try {
-    const date = new Date(value);
-    if (!Number.isFinite(date.getTime())) {
-      return String(value || "");
-    }
-
-    const hours = String(date.getUTCHours()).padStart(2, "0");
-    const minutes = String(date.getUTCMinutes()).padStart(2, "0");
-    const seconds = String(date.getUTCSeconds()).padStart(2, "0");
-    return `${hours}:${minutes}:${seconds}`;
+    const p = _localParts(value);
+    return `${String(p.h).padStart(2,"0")}:${String(p.m).padStart(2,"0")}:${String(p.s).padStart(2,"0")}`;
   } catch {
     return String(value || "");
   }
@@ -360,8 +375,8 @@ function scheduleTimelineAutoRefresh() {
 }
 
 function minutesIntoDay(value) {
-  const date = new Date(value);
-  return (date.getUTCHours() * 60) + date.getUTCMinutes() + (date.getUTCSeconds() / 60);
+  const p = _localParts(value);
+  return (p.h * 60) + p.m + (p.s / 60);
 }
 
 function minuteLabel(totalMinutes) {
@@ -1428,6 +1443,10 @@ function applyTimelineData(data, options = {}) {
     segments: Array.isArray(data?.segments) ? data.segments : [],
     events: Array.isArray(data?.events) ? data.events : [],
   };
+
+  // Extract timezone offset from the first available timestamp
+  const firstSeg = state.timeline.segments[0] || state.timeline.events[0];
+  if (firstSeg) _extractTzOffset(firstSeg.started_at || firstSeg.clip_start || firstSeg.triggered_at);
 
   const hiddenPresetKeys = Array.isArray(options.hiddenPresetKeys)
     ? options.hiddenPresetKeys

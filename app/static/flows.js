@@ -3009,9 +3009,12 @@ function renderCanvas() {
   nodesBox.querySelectorAll(".flowNodeRunBtn").forEach((button) => {
     button.addEventListener("click", async (ev) => {
       ev.stopPropagation();
+      button.disabled = true;
+      setStatus(`Running manual trigger…`);
       try {
         await triggerManualNode(button.dataset.runNodeId);
       } catch { }
+      button.disabled = false;
     });
 
     button.addEventListener("mousedown", (ev) => {
@@ -5619,6 +5622,9 @@ function renderNodeInspector(node) {
             <div class="full row2 mt-0">
               <button class="btn btn-primary" id="btnRunManualNode" type="button">Run manual trigger</button>
             </div>
+            <div class="full">
+              <span id="manualTriggerStatus" class="muted" style="font-size:0.85em;"></span>
+            </div>
           </div>
         </div>
       `;
@@ -6026,9 +6032,22 @@ function bindNodeInspector(node) {
 
   if (node.type === "trigger.manual") {
     document.getElementById("btnRunManualNode")?.addEventListener("click", async () => {
+      const statusEl = document.getElementById("manualTriggerStatus");
+      const btn = document.getElementById("btnRunManualNode");
+      if (btn) btn.disabled = true;
+      if (statusEl) { statusEl.textContent = "Running…"; statusEl.style.color = "var(--muted)"; }
+      setStatus(`Running manual trigger "${node.label}"…`);
       try {
         await triggerManualNode(node.id);
-      } catch { }
+        const doneEl = document.getElementById("manualTriggerStatus");
+        if (doneEl) { doneEl.textContent = "Trigger executed successfully."; doneEl.style.color = "var(--success, #4caf50)"; }
+      } catch (err) {
+        const doneEl = document.getElementById("manualTriggerStatus");
+        if (doneEl) { doneEl.textContent = err.message || String(err); doneEl.style.color = "var(--danger)"; }
+      } finally {
+        const doneBtn = document.getElementById("btnRunManualNode");
+        if (doneBtn) doneBtn.disabled = false;
+      }
     });
   }
 
