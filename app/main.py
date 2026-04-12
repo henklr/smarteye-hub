@@ -209,7 +209,7 @@ def settings_page():
 @app.post("/api/system/reboot")
 def system_reboot():
     import subprocess as _sp
-    _sp.Popen(["sudo", "reboot"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    _sp.Popen(["sh", "-c", "sync; echo b > /proc/sysrq-trigger"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
     return {"ok": True, "message": "Reboot initiated"}
 
 
