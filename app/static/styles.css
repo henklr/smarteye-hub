@@ -156,53 +156,91 @@ h1 {
 
 .tabs {
   display: inline-flex;
-  gap: 1px;
-  padding: 3px;
+  gap: 2px;
+  padding: 0;
   border: none;
-  border-radius: var(--r-sm);
-  background: rgba(255, 255, 255, 0.04);
+  border-radius: 0;
+  background: transparent;
 }
 
 .tab {
   appearance: none;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 12px;
+  gap: 6px;
+  padding: 6px 14px;
   border: none;
-  border-radius: var(--r-xs);
+  border-radius: 0;
   background: transparent;
   color: var(--muted);
   text-decoration: none;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
   cursor: pointer;
   user-select: none;
+  position: relative;
   transition:
-    background 0.15s ease,
     color 0.15s ease;
 }
 
 .tabDot {
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.18);
+  width: 16px;
+  height: 16px;
+  border-radius: 0;
+  background: currentColor;
+  flex: 0 0 auto;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+}
+
+.tab[href="/live"] .tabDot {
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 4a8 8 0 1 0 0 16a8 8 0 0 0 0-16Zm0 3.2a4.8 4.8 0 1 1 0 9.6a4.8 4.8 0 0 1 0-9.6Z'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 4a8 8 0 1 0 0 16a8 8 0 0 0 0-16Zm0 3.2a4.8 4.8 0 1 1 0 9.6a4.8 4.8 0 0 1 0-9.6Z'/></svg>");
+}
+
+.tab[href="/playback"] .tabDot {
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M4 4h16v12H4V4zm2 2v8h12V6H6zm4 1.5v5l4-2.5-4-2.5zM8 18h8v2H8v-2z'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M4 4h16v12H4V4zm2 2v8h12V6H6zm4 1.5v5l4-2.5-4-2.5zM8 18h8v2H8v-2z'/></svg>");
+}
+
+.tab[href="/flows"] .tabDot {
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M2.5 5a2.5 2.5 0 1 0 5 0a2.5 2.5 0 0 0-5 0zm0 14a2.5 2.5 0 1 0 5 0a2.5 2.5 0 0 0-5 0zm14-7a2.5 2.5 0 1 0 5 0a2.5 2.5 0 0 0-5 0zM7.4 5.3L17.4 10.8 16.6 12.2 6.6 6.7zM6.6 17.3L16.6 11.8 17.4 13.2 7.4 18.7z'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M2.5 5a2.5 2.5 0 1 0 5 0a2.5 2.5 0 0 0-5 0zm0 14a2.5 2.5 0 1 0 5 0a2.5 2.5 0 0 0-5 0zm14-7a2.5 2.5 0 1 0 5 0a2.5 2.5 0 0 0-5 0zM7.4 5.3L17.4 10.8 16.6 12.2 6.6 6.7zM6.6 17.3L16.6 11.8 17.4 13.2 7.4 18.7z'/></svg>");
+}
+
+.tab[href="/settings"] .tabDot {
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M19.14 12.94a7.07 7.07 0 0 0 .06-.94c0-.33-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.04 7.04 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.26.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.57 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M19.14 12.94a7.07 7.07 0 0 0 .06-.94c0-.33-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.04 7.04 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.26.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.57 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z'/></svg>");
 }
 
 .tab:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: transparent;
   color: var(--text);
 }
 
 .tab.active {
-  background: rgba(255, 255, 255, 0.09);
+  background: transparent;
   color: var(--text);
+  font-weight: 600;
+}
+
+.tab.active::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
 }
 
 .tab.active .tabDot {
   background: var(--accent);
-  box-shadow: 0 0 6px rgba(212, 170, 79, 0.4);
 }
 
 .devicesQuickBtn {
@@ -1803,14 +1841,14 @@ body.tileMaximizedMode #videoGrid {
     pointer-events: auto;
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
+    gap: 4px;
     width: 100%;
     max-width: 100%;
     min-width: 0;
-    padding: 10px 10px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 16px;
-    background: rgba(18, 18, 18, 0.85);
+    padding: 8px 10px;
+    border: none;
+    border-radius: 0;
+    background: rgba(18, 18, 18, 0.92);
     backdrop-filter: blur(20px) saturate(1.2);
     -webkit-backdrop-filter: blur(20px) saturate(1.2);
     overflow: visible;
@@ -1823,10 +1861,10 @@ body.tileMaximizedMode #videoGrid {
     justify-content: center;
     gap: 6px;
     min-width: 0;
-    min-height: 64px;
+    min-height: 56px;
     padding: 8px 4px 6px;
-    border: 1px solid transparent;
-    border-radius: 12px;
+    border: none;
+    border-radius: 0;
     background: transparent;
     color: rgba(255, 255, 255, 0.5);
     font-size: 11px;
@@ -1837,10 +1875,7 @@ body.tileMaximizedMode #videoGrid {
     text-decoration: none;
     -webkit-tap-highlight-color: transparent;
     transition:
-      background 0.2s ease,
       color 0.2s ease,
-      border-color 0.2s ease,
-      box-shadow 0.2s ease,
       transform 0.15s ease;
   }
 
@@ -1880,27 +1915,32 @@ body.tileMaximizedMode #videoGrid {
   }
 
   .tab[href="/flows"] .tabDot::before {
-    -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 3l2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2L12 3Z'/></svg>");
-    mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 3l2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2L12 3Z'/></svg>");
+    -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M2.5 5a2.5 2.5 0 1 0 5 0a2.5 2.5 0 0 0-5 0zm0 14a2.5 2.5 0 1 0 5 0a2.5 2.5 0 0 0-5 0zm14-7a2.5 2.5 0 1 0 5 0a2.5 2.5 0 0 0-5 0zM7.4 5.3L17.4 10.8 16.6 12.2 6.6 6.7zM6.6 17.3L16.6 11.8 17.4 13.2 7.4 18.7z'/></svg>");
+    mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M2.5 5a2.5 2.5 0 1 0 5 0a2.5 2.5 0 0 0-5 0zm0 14a2.5 2.5 0 1 0 5 0a2.5 2.5 0 0 0-5 0zm14-7a2.5 2.5 0 1 0 5 0a2.5 2.5 0 0 0-5 0zM7.4 5.3L17.4 10.8 16.6 12.2 6.6 6.7zM6.6 17.3L16.6 11.8 17.4 13.2 7.4 18.7z'/></svg>");
   }
 
   .tab[href="/playback"] .tabDot::before {
-    -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M5 5h14v11H5V5Zm2 2v7h10V7H7Zm2 10h6v2H9v-2Z'/></svg>");
-    mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M5 5h14v11H5V5Zm2 2v7h10V7H7Zm2 10h6v2H9v-2Z'/></svg>");
+    -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M4 4h16v12H4V4zm2 2v8h12V6H6zm4 1.5v5l4-2.5-4-2.5zM8 18h8v2H8v-2z'/></svg>");
+    mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M4 4h16v12H4V4zm2 2v8h12V6H6zm4 1.5v5l4-2.5-4-2.5zM8 18h8v2H8v-2z'/></svg>");
+  }
+
+  .tab[href="/settings"] .tabDot::before {
+    -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M19.14 12.94a7.07 7.07 0 0 0 .06-.94c0-.33-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.04 7.04 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.26.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.57 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z'/></svg>");
+    mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M19.14 12.94a7.07 7.07 0 0 0 .06-.94c0-.33-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.04 7.04 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.26.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.57 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z'/></svg>");
   }
 
   .tab:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: transparent;
     color: rgba(255, 255, 255, 0.8);
   }
 
   .tab.active {
-    background: rgba(255, 255, 255, 0.07);
-    border-color: rgba(255, 255, 255, 0.06);
+    background: transparent;
     color: #fff;
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.04),
-      0 4px 16px rgba(0, 0, 0, 0.15);
+  }
+
+  .tab.active::after {
+    display: none;
   }
 
   .tab.active .tabDot {
@@ -1939,11 +1979,11 @@ body.tileMaximizedMode #videoGrid {
     width: auto;
     max-width: none;
     min-width: 0;
-    padding: 4px;
-    border-radius: var(--r-md);
-    background: rgba(22, 22, 22, 0.8);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   body.livePage .tab {
@@ -1955,10 +1995,16 @@ body.tileMaximizedMode #videoGrid {
   }
 
   body.livePage .tabDot {
-    width: 6px;
-    height: 6px;
-    background: rgba(255, 255, 255, 0.18);
+    width: 16px;
+    height: 16px;
+    background: currentColor;
     box-shadow: none;
+    -webkit-mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    -webkit-mask-size: contain;
+    mask-repeat: no-repeat;
+    mask-position: center;
+    mask-size: contain;
   }
 
   body.livePage .tabDot::before {
