@@ -348,6 +348,61 @@ def auth_logout():
     return response
 
 
+@app.post("/api/auth/change-password")
+def auth_change_password(body: Dict[str, Any], request: Request):
+    username = getattr(request.state, "user", None)
+    if not username:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    current_password = str(body.get("current_password") or "")
+    new_password = str(body.get("new_password") or "")
+
+    if not current_password or not new_password:
+        raise HTTPException(status_code=400, detail="Current and new passwords are required")
+
+    if len(new_password) < 4:
+        raise HTTPException(status_code=400, detail="New password must be at least 4 characters")
+
+    # Verify current password
+    if not pam_authenticate(username, current_password):
+        raise HTTPException(status_code=403, detail="Current password is incorrect")
+
+    # Change the password on the host via nsenter (shadow is mounted read-only,
+    # so we must write through the host's PID-1 namespace).
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "chpasswd"],
+            input=f"{username}:{new_password}\n",
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode != 0:
+            _log_system.error("chpasswd failed: %s", proc.stderr.strip())
+            raise HTTPException(status_code=500, detail="Failed to change password")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="Password change timed out")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="nsenter/chpasswd utility not available")
+
+    # chpasswd replaces /etc/shadow (new inode), making the bind-mount stale.
+    # Remount rw, copy the host's updated shadow into the bind-mount, then
+    # leave it rw (remount ro while open fails with EBUSY).
+    try:
+        subprocess.run(["mount", "-o", "remount,rw", "/etc/shadow"],
+                        capture_output=True, timeout=5)
+        subprocess.run(
+            "nsenter -t 1 -m -- cat /etc/shadow > /etc/shadow",
+            shell=True, capture_output=True, timeout=5,
+        )
+    except Exception as exc:
+        _log_system.warning("Shadow sync error: %s", exc)
+
+    _log_system.info("User '%s' changed their password", username)
+    return {"ok": True}
+
+
 @app.get("/api/auth/me")
 def auth_me(request: Request):
     username = getattr(request.state, "user", None)

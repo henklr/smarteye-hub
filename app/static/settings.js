@@ -32,6 +32,50 @@ function initTheme() {
 
 initTheme();
 
+// ── Change Password ───────────────────────────────────────────────────────────
+
+const currentPasswordEl  = document.getElementById("currentPassword");
+const newPasswordEl      = document.getElementById("newPassword");
+const confirmPasswordEl  = document.getElementById("confirmPassword");
+const changePasswordBtn  = document.getElementById("changePasswordBtn");
+const passwordStatusEl   = document.getElementById("passwordStatus");
+
+function setPasswordStatus(text, isError) {
+  if (!passwordStatusEl) return;
+  passwordStatusEl.textContent = text;
+  passwordStatusEl.style.color = isError ? "var(--clr-danger, #e74c3c)" : "";
+}
+
+changePasswordBtn?.addEventListener("click", async () => {
+  const current = currentPasswordEl?.value || "";
+  const newPwd  = newPasswordEl?.value || "";
+  const confirm = confirmPasswordEl?.value || "";
+
+  if (!current) { setPasswordStatus("Enter your current password.", true); return; }
+  if (!newPwd)  { setPasswordStatus("Enter a new password.", true); return; }
+  if (newPwd.length < 4) { setPasswordStatus("New password must be at least 4 characters.", true); return; }
+  if (newPwd !== confirm) { setPasswordStatus("New passwords do not match.", true); return; }
+
+  changePasswordBtn.disabled = true;
+  setPasswordStatus("Changing password…", false);
+
+  try {
+    await api("/api/auth/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ current_password: current, new_password: newPwd }),
+    });
+    setPasswordStatus("Password changed successfully.", false);
+    currentPasswordEl.value = "";
+    newPasswordEl.value = "";
+    confirmPasswordEl.value = "";
+  } catch (e) {
+    setPasswordStatus(`Error: ${e.message || e}`, true);
+  } finally {
+    changePasswordBtn.disabled = false;
+  }
+});
+
 const cloudWsUrlEl   = document.getElementById("cloudWsUrl");
 const cloudTokenEl   = document.getElementById("cloudToken");
 const cloudDeviceIdEl = document.getElementById("cloudDeviceId");

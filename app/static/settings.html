@@ -57,6 +57,38 @@
         <section class="settingsCard">
           <div class="listHeader compact">
             <div>
+              <div class="listTitle small">Change password</div>
+              <div class="listSub">Update the password for your current system account.</div>
+            </div>
+          </div>
+
+          <div class="grid overlayFormGrid" style="margin-top:14px;">
+            <div data-full>
+              <label for="currentPassword">Current password</label>
+              <input id="currentPassword" type="password" autocomplete="current-password" />
+            </div>
+            <div data-full>
+              <label for="newPassword">New password</label>
+              <input id="newPassword" type="password" autocomplete="new-password" />
+            </div>
+            <div data-full>
+              <label for="confirmPassword">Confirm new password</label>
+              <input id="confirmPassword" type="password" autocomplete="new-password" />
+            </div>
+          </div>
+
+          <div class="row2" style="margin-top:14px;">
+            <button class="btn btn-primary" id="changePasswordBtn" type="button">Change password</button>
+          </div>
+
+          <div class="statusLine compact" style="margin-top:12px;">
+            <span id="passwordStatus" class="muted"></span>
+          </div>
+        </section>
+
+        <section class="settingsCard">
+          <div class="listHeader compact">
+            <div>
               <div class="listTitle small">Cloud connection</div>
               <div class="listSub">Paste the pairing key from Cloud Dashboard → Add Device, then connect this hub to the cloud relay.</div>
             </div>
