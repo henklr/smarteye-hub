@@ -112,17 +112,30 @@ def _parse_iso(value: Any) -> datetime:
     return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
+_SAFE_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
+
+def _validate_id(value: str, label: str = "ID") -> str:
+    """Validate that an ID is safe for use in file paths."""
+    value = value.strip()
+    if not _SAFE_ID_RE.match(value):
+        raise HTTPException(status_code=400, detail=f"Invalid {label}")
+    return value
+
+
 def _path_for(device_id: str) -> str:
-    return f"cam-{device_id.strip()}"
+    device_id = _validate_id(device_id, "device_id")
+    return f"cam-{device_id}"
 
 
 def _recordings_dir_for_device(device_id: str) -> Path:
-    path = RECORDINGS_DIR / device_id.strip()
+    device_id = _validate_id(device_id, "device_id")
+    path = RECORDINGS_DIR / device_id
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _clip_path_for_event(event_id: str) -> Path:
+    event_id = _validate_id(event_id, "event_id")
     return PLAYBACK_CLIPS_DIR / f"{event_id}.mp4"
 
 

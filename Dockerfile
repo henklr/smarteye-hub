@@ -9,6 +9,7 @@ RUN apt-get update \
     gcc \
     g++ \
     make \
+    libpam0g \
   && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

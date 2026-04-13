@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import json
+import re as _re
 import uuid
 import importlib
 import threading
@@ -17,12 +18,24 @@ from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 from onvif import ONVIFCamera
 from dataclasses import dataclass
 from datetime import datetime, timezone
+
+from auth import (
+    AuthMiddleware,
+    pam_authenticate,
+    _create_session_cookie,
+    _verify_session_cookie,
+    _check_rate_limit,
+    _record_attempt,
+    get_client_ip,
+    AUTH_COOKIE_NAME,
+    SESSION_MAX_AGE,
+)
 
 from flows import (
     router as flows_router,
@@ -42,6 +55,30 @@ from physical_io import start_physical_io_monitor, stop_physical_io_monitor
 
 app = FastAPI()
 
+
+# ── Security headers middleware ────────────────────────────────────────────────
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=(self)"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        host = request.headers.get("host", "").split(":")[0] or "localhost"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; "
+            f"connect-src 'self' ws: wss: http://{host}:8889 https://{host}:8889; "
+            "media-src 'self' blob:; "
+            "frame-src 'self'"
+        )
+        return response
+
+
 class NoCacheStaticMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
@@ -49,7 +86,10 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
 
+# Middleware is applied in reverse order (last added = first executed)
 app.add_middleware(NoCacheStaticMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(AuthMiddleware)
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -255,6 +295,65 @@ def _ptz_watchdog_stop(device_id: str) -> None:
     _ptz_stop(device_id, reason="watchdog")
 
 
+# ── Authentication endpoints ──────────────────────────────────────────────────
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page():
+    return (STATIC_DIR / "login.html").read_text(encoding="utf-8")
+
+
+@app.post("/api/auth/login")
+def auth_login(body: Dict[str, Any], request: Request):
+    client_ip = get_client_ip(request)
+
+    if not _check_rate_limit(client_ip):
+        _log_system.warning("Login rate-limited for %s", client_ip)
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
+
+    username = str(body.get("username") or "").strip()
+    password = str(body.get("password") or "")
+
+    if not username or not password:
+        _record_attempt(client_ip)
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # Validate username format (prevent injection)
+    if not _re.match(r'^[a-zA-Z0-9._-]{1,64}$', username):
+        _record_attempt(client_ip)
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not pam_authenticate(username, password):
+        _record_attempt(client_ip)
+        _log_system.warning("Failed login attempt for user '%s' from %s", username, client_ip)
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    _log_system.info("User '%s' logged in from %s", username, client_ip)
+    cookie_value = _create_session_cookie(username)
+    response = JSONResponse(content={"ok": True, "user": username})
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=cookie_value,
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+def auth_logout():
+    response = JSONResponse(content={"ok": True})
+    response.delete_cookie(key=AUTH_COOKIE_NAME, path="/")
+    return response
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request):
+    username = getattr(request.state, "user", None)
+    return {"user": username}
+
+
 @app.get("/", response_class=HTMLResponse)
 def index_page():
     return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
@@ -279,7 +378,12 @@ def settings_page():
 def system_reboot():
     _log_system.warning("System reboot initiated")
     import subprocess as _sp
-    _sp.Popen(["sh", "-c", "sync; echo b > /proc/sysrq-trigger"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    _sp.run(["sync"], timeout=5)
+    try:
+        with open("/proc/sysrq-trigger", "w") as f:
+            f.write("b")
+    except Exception:
+        _sp.Popen(["/sbin/reboot"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
     return {"ok": True, "message": "Reboot initiated"}
 
 
@@ -435,9 +539,11 @@ def set_timezone(body: Dict[str, Any]):
     tz_name = str(body.get("timezone") or "").strip()
     if not tz_name:
         raise HTTPException(status_code=400, detail="timezone is required")
-    tz_path = _ZONEINFO_DIR / tz_name
-    if not tz_path.is_file() or ".." in tz_name:
+    # Whitelist validation: must be in the known timezones list
+    allowed = _list_timezones()
+    if tz_name not in allowed:
         raise HTTPException(status_code=400, detail=f"Unknown timezone: {tz_name}")
+    tz_path = _ZONEINFO_DIR / tz_name
     localtime = Path("/etc/localtime")
     try:
         if localtime.exists() or localtime.is_symlink():
@@ -464,6 +570,9 @@ def ntp_sync(body: Dict[str, Any] = None):
     server = str(body.get("server") or "pool.ntp.org").strip()
     if not server:
         server = "pool.ntp.org"
+    # Validate NTP server: must be a valid hostname or IP
+    if not _re.match(r'^[a-zA-Z0-9._-]{1,253}$', server):
+        raise HTTPException(status_code=400, detail="Invalid NTP server hostname")
     try:
         client = ntplib.NTPClient()
         response = client.request(server, version=3, timeout=5)

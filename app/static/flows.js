@@ -109,6 +109,7 @@ async function api(path, opts = {}) {
     headers: { "Content-Type": "application/json" },
     ...opts,
   });
+  if (res.status === 401) { window.location.href = "/login"; return; }
 
   const txt = await res.text();
   let data = null;

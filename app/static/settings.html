@@ -17,6 +17,9 @@
         <a class="tab" href="/flows"><span class="tabDot"></span>Flows</a>
         <a class="tab active" href="/settings"><span class="tabDot"></span>System</a>
       </div>
+      <div class="topbarActions">
+        <button class="btn logoutBtn" id="logoutBtn" type="button" title="Sign out">Logout</button>
+      </div>
     </div>
 
     <div class="settingsShell">
@@ -170,6 +173,12 @@
     </div>
   </div>
 
+  <script>
+    document.getElementById("logoutBtn")?.addEventListener("click", async () => {
+      await fetch("/api/auth/logout", { method: "POST" });
+      window.location.href = "/login";
+    });
+  </script>
   <script src="/static/settings.js"></script>
 </body>
 

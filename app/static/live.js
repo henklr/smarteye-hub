@@ -62,6 +62,7 @@ function getWhepUrl(deviceId) {
 
 async function api(url, opts) {
   const res = await fetch(url, opts);
+  if (res.status === 401) { window.location.href = "/login"; return; }
   const text = await res.text();
   let data = null;
 

@@ -8,8 +8,8 @@ services:
     environment:
       - PORT=80
       - MEDIAMTX_API_URL=http://mediamtx:9997
-      - MEDIAMTX_API_USER=apiuser
-      - MEDIAMTX_API_PASS=apipass
+      - MEDIAMTX_API_USER=${MEDIAMTX_API_USER:-apiuser}
+      - MEDIAMTX_API_PASS=${MEDIAMTX_API_PASS:-apipass}
       - PLAYBACK_RECORDING_SCOPE=flow_cameras
       - PLAYBACK_CLIP_MODE=copy-first
       - PLAYBACK_CLIP_PRESET=ultrafast
@@ -22,6 +22,13 @@ services:
     volumes:
       - ./data:/app/data
       - /sys/firmware/devicetree/base:/sys/firmware/devicetree/base:ro
+      # PAM auth: mount host user database (read-only)
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/shadow:/etc/shadow:ro
+      - /etc/group:/etc/group:ro
+      - /etc/pam.d:/etc/pam.d:ro
+      - /etc/nsswitch.conf:/etc/nsswitch.conf:ro
+      - /lib/aarch64-linux-gnu/security:/lib/aarch64-linux-gnu/security:ro
     depends_on:
       - mediamtx
 
@@ -34,7 +41,8 @@ services:
       - "8889:8889"
       - "8189:8189/udp"
       - "8189:8189/tcp"
-      - "9997:9997"
+    expose:
+      - "9997"
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
     environment:

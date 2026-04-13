@@ -163,6 +163,22 @@ h1 {
   flex: 0 0 auto;
 }
 
+.logoutBtn {
+  background: transparent;
+  border: 1px solid var(--stroke-2);
+  color: var(--muted);
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.logoutBtn:hover {
+  color: var(--text);
+  border-color: var(--stroke-strong);
+}
+
 .tabs {
   display: inline-flex;
   gap: 2px;
