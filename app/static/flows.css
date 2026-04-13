@@ -2684,3 +2684,63 @@ body.flowsPage {
 [data-theme="light"] .flowsPage .compareTriggerPathGroupTitle {
   color: rgba(0, 0, 0, 0.45);
 }
+
+/* ── Snapshot device list (Generate event inspector) ───────────────────────── */
+
+.snapshotDeviceRow {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.flowsPage .inspectorCard .snapshotDeviceRow select {
+  width: auto;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.snapshotSecsWrap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.flowsPage .inspectorCard .snapshotSecsWrap input {
+  width: 44px;
+  text-align: center;
+  padding-left: 2px;
+  padding-right: 2px;
+}
+
+.snapshotSecsLabel {
+  font-size: 0.78em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.snapshotDeviceRow .snapshotDeviceRemove {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: var(--danger, #c0392b);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.85;
+  transition: opacity 0.15s;
+}
+
+.snapshotDeviceRow .snapshotDeviceRemove:hover {
+  opacity: 1;
+}

@@ -1434,6 +1434,24 @@ function deviceOptionsHtml(selected = "") {
   return options.join("");
 }
 
+function renderSnapshotDeviceList(entries = []) {
+  if (!entries.length) return `<div class="inlineMeta">No cameras selected. Snapshots are optional.</div>`;
+  return entries.map((entry, i) => {
+    const did = typeof entry === "string" ? entry : (entry.device_id || "");
+    const sa = typeof entry === "object" ? (entry.seconds_ago ?? 0) : 0;
+    return `
+      <div class="snapshotDeviceRow" data-index="${i}">
+        <select class="snapshotDeviceSelect" data-index="${i}">${deviceOptionsHtml(did)}</select>
+        <div class="snapshotSecsWrap">
+          <input class="snapshotSecsInput" data-index="${i}" type="number" min="0" step="1" value="${escapeHtml(sa)}" title="Seconds ago" />
+          <span class="snapshotSecsLabel">s&nbsp;ago</span>
+        </div>
+        <button class="snapshotDeviceRemove" data-index="${i}" type="button" title="Remove camera">&times;</button>
+      </div>
+    `;
+  }).join("");
+}
+
 function variableKeyOptionsHtml(selected = "", { includePhysical = true } = {}) {
   const vars = currentPublicVariables().filter((variable) => includePhysical || normalizeVariableSource(variable.source) !== "physical_input");
   const options = [`<option value="">Select variable</option>`];
@@ -5987,6 +6005,34 @@ function renderNodeInspector(node) {
       `;
       break;
 
+    case "action.generate_event":
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Generate event</div>
+          <div class="inspectorHint">Creates an event visible on the Events page with an optional snapshot from one or more cameras.</div>
+          <div class="fieldGrid">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+            <div class="full">
+              <label>Message</label>
+              <textarea id="cfg_message" rows="4">${escapeHtml(cfg.message || "")}</textarea>
+              <div class="inlineMeta">Supports templates like {{flow.name}}, {{trigger.path}}, {{variables.key}}.</div>
+            </div>
+            <div class="full">
+              <label>Snapshot cameras</label>
+              <div id="cfg_snapshot_devices" class="snapshotDeviceList">
+                ${renderSnapshotDeviceList(cfg.snapshot_entries || [])}
+              </div>
+              <div class="inlineMeta mt-6">Each camera can capture a frame from a different point in time. Set seconds ago to 0 for the most recent frame. Requires the camera to be recording.</div>
+              <button class="btn mt-6" id="btnAddSnapshotDevice" type="button">Add camera</button>
+            </div>
+          </div>
+        </div>
+      `;
+      break;
+
     default:
       body = `<div class="inspectorCard"><div class="inspectorHint">No editor available for this node yet.</div></div>`;
       break;
@@ -6208,6 +6254,45 @@ function bindNodeInspector(node) {
       renderInspector();
     });
   }
+
+  if (node.type === "action.generate_event") {
+    document.getElementById("btnAddSnapshotDevice")?.addEventListener("click", () => {
+      if (!node.config.snapshot_entries) node.config.snapshot_entries = [];
+      node.config.snapshot_entries.push({ device_id: "", seconds_ago: 0 });
+      markDirty();
+      renderInspector();
+    });
+
+    document.querySelectorAll(".snapshotDeviceRemove").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const idx = parseInt(btn.dataset.index, 10);
+        node.config.snapshot_entries.splice(idx, 1);
+        markDirty();
+        renderInspector();
+      });
+    });
+
+    document.querySelectorAll(".snapshotDeviceSelect").forEach(sel => {
+      sel.addEventListener("change", () => {
+        const idx = parseInt(sel.dataset.index, 10);
+        if (node.config.snapshot_entries[idx]) {
+          node.config.snapshot_entries[idx].device_id = sel.value;
+        }
+        markDirty();
+        renderCanvas();
+      });
+    });
+
+    document.querySelectorAll(".snapshotSecsInput").forEach(inp => {
+      inp.addEventListener("input", () => {
+        const idx = parseInt(inp.dataset.index, 10);
+        if (node.config.snapshot_entries[idx]) {
+          node.config.snapshot_entries[idx].seconds_ago = parseFloat(inp.value) || 0;
+        }
+        markDirty();
+      });
+    });
+  }
 }
 
 function applyNodeInspector(node) {
@@ -6334,6 +6419,21 @@ function applyNodeInspector(node) {
     case "action.log_message":
       set("name");
       set("message");
+      break;
+    case "action.generate_event":
+      set("name");
+      set("message");
+      cfg.snapshot_entries = Array.from(document.querySelectorAll(".snapshotDeviceRow")).map(row => {
+        const idx = parseInt(row.dataset.index, 10);
+        const sel = row.querySelector(".snapshotDeviceSelect");
+        const inp = row.querySelector(".snapshotSecsInput");
+        return {
+          device_id: sel ? sel.value : "",
+          seconds_ago: inp ? (parseFloat(inp.value) || 0) : 0,
+        };
+      }).filter(e => e.device_id);
+      delete cfg.snapshot_device_ids;
+      delete cfg.seconds_ago;
       break;
   }
 

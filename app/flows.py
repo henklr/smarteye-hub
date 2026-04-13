@@ -412,6 +412,15 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "ports": {"inputs": ["in"], "outputs": ["out"]},
         "defaults": {"message": "Flow {{flow.name}} ran.", "name": ""},
     },
+    {
+        "type": "action.generate_event",
+        "category": "action",
+        "label": "Generate event",
+        "description": "Creates an event with a message and optional camera snapshots, visible on the Events page.",
+        "color": "#ff8c42",
+        "ports": {"inputs": ["in"], "outputs": ["out"]},
+        "defaults": {"message": "", "snapshot_entries": [], "name": ""},
+    },
 ]
 
 NODE_LIBRARY_BY_TYPE = {item["type"]: item for item in NODE_LIBRARY}
@@ -1780,6 +1789,37 @@ def _normalize_node_config(
         cfg["message"] = str(cfg.get("message") or "")
         return cfg
 
+    if node_type == "action.generate_event":
+        cfg["message"] = str(cfg.get("message") or "")
+        # Migrate legacy snapshot_device_ids + seconds_ago to snapshot_entries
+        entries = cfg.get("snapshot_entries")
+        if entries is None:
+            legacy_ids = cfg.get("snapshot_device_ids") or []
+            if isinstance(legacy_ids, str):
+                legacy_ids = [s.strip() for s in legacy_ids.split(",") if s.strip()]
+            legacy_secs = 0
+            try:
+                legacy_secs = max(0, float(cfg.get("seconds_ago") or 0))
+            except Exception:
+                pass
+            entries = [{"device_id": str(s).strip(), "seconds_ago": legacy_secs} for s in legacy_ids if str(s).strip()]
+        out: list = []
+        for entry in (entries if isinstance(entries, list) else []):
+            if not isinstance(entry, dict):
+                continue
+            did = str(entry.get("device_id") or "").strip()
+            if not did:
+                continue
+            try:
+                sa = max(0, float(entry.get("seconds_ago") or 0))
+            except Exception:
+                sa = 0
+            out.append({"device_id": did, "seconds_ago": sa})
+        cfg["snapshot_entries"] = out
+        cfg.pop("snapshot_device_ids", None)
+        cfg.pop("seconds_ago", None)
+        return cfg
+
     return cfg
 
 
@@ -2768,6 +2808,41 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
 
     if node_type == "action.log_message":
         result["message"] = _render_template(str(cfg.get("message") or ""), context)
+        result["next_handles"] = ["out"]
+        return result
+
+    if node_type == "action.generate_event":
+        from main import create_event, _grab_snapshot
+        rendered_message = _render_template(str(cfg.get("message") or ""), context)
+        entries = cfg.get("snapshot_entries") or []
+        snapshots = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            did = str(entry.get("device_id") or "").strip()
+            if not did:
+                continue
+            try:
+                sa = max(0, float(entry.get("seconds_ago") or 0))
+            except Exception:
+                sa = 0
+            data_uri = _grab_snapshot(did, seconds_ago=sa)
+            snapshots.append({"device_id": did, "snapshot": data_uri})
+        try:
+            evt = create_event(
+                message=rendered_message,
+                snapshots=snapshots,
+                flow_id=str((context.get("flow") or {}).get("id") or "").strip() or None,
+                flow_name=str((context.get("flow") or {}).get("name") or "").strip() or None,
+                node_id=str(node.get("id") or "").strip() or None,
+            )
+            result["message"] = f"Event created: {rendered_message}"
+            result["event_id"] = evt.get("id")
+            result["snapshot_count"] = len(snapshots)
+        except Exception as exc:
+            result["ok"] = False
+            result["error"] = str(exc)
+            _log_flows.warning("Generate event failed in flow: %s", exc)
         result["next_handles"] = ["out"]
         return result
 

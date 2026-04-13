@@ -6,6 +6,8 @@ import json
 import re as _re
 import uuid
 import importlib
+import subprocess
+import tempfile
 import threading
 import asyncio
 import time
@@ -23,7 +25,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 from onvif import ONVIFCamera
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from auth import (
     AuthMiddleware,
@@ -50,6 +52,8 @@ from playback import (
     set_recording_path_refresher,
     start_recording_service,
     stop_recording_service,
+    _list_segments as _playback_list_segments,
+    _recordings_dir_for_device as _playback_recordings_dir,
 )
 from physical_io import start_physical_io_monitor, stop_physical_io_monitor
 
@@ -429,6 +433,11 @@ def settings_page():
     return (STATIC_DIR / "settings.html").read_text(encoding="utf-8")
 
 
+@app.get("/events", response_class=HTMLResponse)
+def events_page():
+    return (STATIC_DIR / "events.html").read_text(encoding="utf-8")
+
+
 @app.post("/api/system/reboot")
 def system_reboot():
     _log_system.warning("System reboot initiated")
@@ -452,6 +461,7 @@ _DEFAULT_FILES = {
     "flow_state.json":        '{}',
     "recording_events.json":  '[]',
     "public_variables.json":  '{}',
+    "events.json":            '{"items": []}',
 }
 
 
@@ -2986,6 +2996,201 @@ async def ptz_stop(device_id: str):
         return await asyncio.to_thread(_ptz_stop, device_id, "api_stop")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"PTZ stop failed: {e}")
+
+
+# ── Events (operator events) ───────────────────────────────────────────────────
+
+EVENTS_JSON = DATA_DIR / "events.json"
+_events_lock = threading.RLock()
+_MAX_EVENTS = 500
+
+_log_events = logging.getLogger("events")
+
+_event_page_subscribers: List[asyncio.Queue] = []
+_event_page_sub_lock = threading.RLock()
+
+
+def _load_events() -> List[Dict[str, Any]]:
+    try:
+        if not EVENTS_JSON.exists():
+            return []
+        payload = json.loads(EVENTS_JSON.read_text(encoding="utf-8"))
+        items = payload.get("items") if isinstance(payload, dict) else []
+        return list(items) if isinstance(items, list) else []
+    except Exception:
+        return []
+
+
+def _save_events(items: List[Dict[str, Any]]) -> None:
+    items = items[-_MAX_EVENTS:]
+    tmp = EVENTS_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"items": items}, indent=2), encoding="utf-8")
+    tmp.replace(EVENTS_JSON)
+
+
+def _broadcast_page_event(event: Dict[str, Any]) -> None:
+    with _event_page_sub_lock:
+        for q in _event_page_subscribers:
+            try:
+                q.put_nowait(event)
+            except Exception:
+                pass
+
+
+def create_event(message: str, snapshots: Optional[List[Dict[str, Any]]] = None,
+                 flow_id: Optional[str] = None, flow_name: Optional[str] = None,
+                 node_id: Optional[str] = None) -> Dict[str, Any]:
+    event = {
+        "id": uuid.uuid4().hex[:12],
+        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "message": message,
+        "snapshots": snapshots or [],
+        "flow_id": flow_id,
+        "flow_name": flow_name,
+        "node_id": node_id,
+        "acknowledged": False,
+    }
+    with _events_lock:
+        items = _load_events()
+        items.append(event)
+        _save_events(items)
+    _log_events.info("Event created: %s", message)
+    _broadcast_page_event(event)
+    return event
+
+
+def _grab_snapshot(device_id: str, seconds_ago: float = 0) -> Optional[str]:
+    """Extract a JPEG frame from recorded .ts segments.
+
+    If *seconds_ago* > 0 the frame is taken from that many seconds in the
+    past.  When 0 (default) the most recent available frame is used.
+    Returns a ``data:image/jpeg;base64,...`` string or *None* on failure.
+    """
+    try:
+        target_time = datetime.now(timezone.utc) - timedelta(seconds=max(0, seconds_ago))
+        segments = _playback_list_segments(device_id)
+        if not segments:
+            _log_events.warning("No recorded segments for device %s", device_id)
+            return None
+
+        # Find the segment that contains the target time
+        chosen = None
+        for seg in segments:
+            if seg.started_at <= target_time < seg.ended_at:
+                chosen = seg
+                break
+
+        # Fall back to the most recent segment
+        if chosen is None:
+            chosen = segments[-1]
+            target_time = max(chosen.started_at, chosen.ended_at - timedelta(seconds=1))
+
+        offset = max(0.0, (target_time - chosen.started_at).total_seconds())
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            cmd = [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-ss", f"{offset:.3f}",
+                "-i", str(chosen.path),
+                "-frames:v", "1",
+                "-pix_fmt", "yuvj420p",
+                "-q:v", "2",
+                tmp_path,
+            ]
+            subprocess.run(cmd, check=True, timeout=15)
+
+            img_bytes = Path(tmp_path).read_bytes()
+            if not img_bytes:
+                return None
+            b64 = base64.b64encode(img_bytes).decode("ascii")
+            return f"data:image/jpeg;base64,{b64}"
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+    except Exception as exc:
+        _log_events.warning("Snapshot failed for device %s (seconds_ago=%s): %s", device_id, seconds_ago, exc)
+        return None
+
+
+@app.get("/api/events")
+def api_events_list():
+    items = _load_events()
+    return {"items": items}
+
+
+@app.post("/api/events/{event_id}/acknowledge")
+def api_event_acknowledge(event_id: str):
+    with _events_lock:
+        items = _load_events()
+        for item in items:
+            if item.get("id") == event_id:
+                item["acknowledged"] = True
+                _save_events(items)
+                return {"ok": True}
+    raise HTTPException(status_code=404, detail="Event not found")
+
+
+@app.post("/api/events/acknowledge-all")
+def api_events_acknowledge_all():
+    with _events_lock:
+        items = _load_events()
+        for item in items:
+            item["acknowledged"] = True
+        _save_events(items)
+    return {"ok": True}
+
+
+@app.delete("/api/events/{event_id}")
+def api_event_delete(event_id: str):
+    with _events_lock:
+        items = _load_events()
+        before = len(items)
+        items = [item for item in items if item.get("id") != event_id]
+        if len(items) == before:
+            raise HTTPException(status_code=404, detail="Event not found")
+        _save_events(items)
+    return {"ok": True}
+
+
+@app.delete("/api/events")
+def api_events_clear():
+    with _events_lock:
+        _save_events([])
+    return {"ok": True}
+
+
+@app.get("/api/events/stream")
+async def api_events_stream():
+    queue: asyncio.Queue = asyncio.Queue()
+    with _event_page_sub_lock:
+        _event_page_subscribers.append(queue)
+    async def generate():
+        try:
+            while True:
+                event = await queue.get()
+                yield f"data: {json.dumps(event)}\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            with _event_page_sub_lock:
+                try:
+                    _event_page_subscribers.remove(queue)
+                except ValueError:
+                    pass
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.get("/api/devices/{device_id}/snapshot")
+def api_device_snapshot(device_id: str, seconds_ago: float = 0):
+    data_uri = _grab_snapshot(device_id, seconds_ago=seconds_ago)
+    if not data_uri:
+        raise HTTPException(status_code=502, detail="Could not capture snapshot")
+    return {"snapshot": data_uri, "device_id": device_id}
 
 
 @app.on_event("startup")

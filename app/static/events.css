@@ -1,0 +1,223 @@
+.eventsShell {
+  display: flex;
+  justify-content: center;
+  padding: 24px var(--page-pad-x) 48px;
+}
+
+.eventsContent {
+  width: 100%;
+  max-width: var(--page-max-wide);
+}
+
+.eventsCard {
+  background: var(--bg-elevated);
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-md);
+  padding: 20px 24px 24px;
+}
+
+.eventsHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.eventsHeaderActions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.eventsListWrap {
+  margin-top: 16px;
+}
+
+.eventsList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.eventsEmpty {
+  text-align: center;
+  padding: 48px 16px;
+  color: var(--muted);
+}
+
+.eventsEmptyText {
+  font-size: 1.1em;
+  margin-bottom: 4px;
+}
+
+.eventsEmptyHint {
+  font-size: 0.9em;
+  color: var(--muted-2);
+}
+
+/* ── Event row ─────────────────────────────────────────────────────────────── */
+
+.eventRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-sm);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.eventRow:hover {
+  background: var(--surface-2);
+}
+
+.eventRow.unacknowledged {
+  border-left: 3px solid var(--accent);
+}
+
+.eventIndicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+
+.eventRow.acknowledged .eventIndicator {
+  background: var(--muted-2);
+}
+
+.eventBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.eventMessage {
+  font-size: 1em;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.eventMeta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: 0.85em;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.eventMetaSep {
+  color: var(--muted-2);
+}
+
+.eventSnapshots {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.eventSnapshotThumb {
+  width: 120px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--stroke);
+  cursor: pointer;
+  transition: opacity 0.15s, border-color 0.15s;
+}
+
+.eventSnapshotThumb:hover {
+  opacity: 0.85;
+  border-color: var(--accent);
+}
+
+.eventSnapshotMissing {
+  width: 120px;
+  height: 72px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--stroke);
+  background: var(--surface-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75em;
+  color: var(--muted-2);
+}
+
+.eventActions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  align-items: flex-start;
+}
+
+.eventActions .btn {
+  font-size: 0.85em;
+  padding: 4px 10px;
+}
+
+/* ── Lightbox ──────────────────────────────────────────────────────────────── */
+
+.eventsLightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.eventsLightbox.hidden {
+  display: none;
+}
+
+.eventsLightboxBackdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+}
+
+.eventsLightboxContent {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+
+.eventsLightboxImg {
+  max-width: 90vw;
+  max-height: 80vh;
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow);
+}
+
+.eventsLightboxClose {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+/* ── Snapshot device list in inspector ─────────────────────────────────────── */
+
+/* Snapshot inspector styles are in flows.css (used by the flow editor inspector) */
+
+/* ── New event flash animation ─────────────────────────────────────────────── */
+
+@keyframes eventFlash {
+  0% { background: var(--accent-2); }
+  100% { background: var(--surface); }
+}
+
+.eventRow.flash {
+  animation: eventFlash 1.5s ease-out;
+}
