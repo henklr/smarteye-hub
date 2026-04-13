@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     privileged: true
     pid: host
+    env_file:
+      - ./secrets/openai.env
     environment:
       - PORT=80
       - MEDIAMTX_API_URL=http://mediamtx:9997
@@ -22,6 +24,7 @@ services:
       - "${PORT:-80}:80"
     volumes:
       - ./data:/app/data
+      - ./secrets:/app/secrets
       - /sys/firmware/devicetree/base:/sys/firmware/devicetree/base:ro
       # PAM auth: mount host user database (read-only)
       - /etc/passwd:/etc/passwd:ro

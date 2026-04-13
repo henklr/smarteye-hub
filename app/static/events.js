@@ -29,35 +29,80 @@
   function renderEventRow(event) {
     const acked = event.acknowledged;
     const cls = acked ? "eventRow acknowledged" : "eventRow unacknowledged";
+    const name = event.name || event.message || "Event";
 
+    // Meta line: flow name + scenario badge + timestamp
+    let metaParts = [];
+    if (event.flow_name) {
+      metaParts.push(`<span>${escapeHtml(event.flow_name)}</span>`);
+    }
+    if (event.scenario_name) {
+      metaParts.push(`<span class="eventBadge">${escapeHtml(event.scenario_name)}</span>`);
+    }
+    metaParts.push(`<span>${escapeHtml(formatTimestamp(event.ts))}</span>`);
+
+    // Trigger info
+    let triggerHtml = "";
+    if (event.trigger_info) {
+      triggerHtml = `<div class="eventTrigger"><strong>Trigger:</strong> ${escapeHtml(event.trigger_info)}</div>`;
+    }
+
+    // AI Analysis
+    let analysisHtml = "";
+    if (event.analysis) {
+      const trimmedAnalysis = event.analysis.trim();
+      const isError = trimmedAnalysis.startsWith("[Error:");
+      analysisHtml = `
+        <div class="eventAnalysis${isError ? " is-error" : ""}">
+          <div class="eventAnalysisLabel">${isError ? "Error" : "AI Analysis"}</div>
+          <div class="eventAnalysisBody">${escapeHtml(trimmedAnalysis)}</div>
+        </div>
+      `;
+    }
+
+    // Snapshots
     let snapshotsHtml = "";
     if (event.snapshots && event.snapshots.length) {
       const thumbs = event.snapshots.map((snap) => {
+        const label = snap.device_name || snap.device_id || "";
         if (snap.snapshot) {
-          return `<img class="eventSnapshotThumb" src="${escapeHtml(snap.snapshot)}" data-full="${escapeHtml(snap.snapshot)}" alt="Snapshot" />`;
+          return `<img class="eventSnapshotThumb" src="${escapeHtml(snap.snapshot)}" data-full="${escapeHtml(snap.snapshot)}" alt="Snapshot from ${escapeHtml(label)}" title="${escapeHtml(label)}" />`;
         }
-        return `<div class="eventSnapshotMissing">No snapshot</div>`;
+        return `<div class="eventSnapshotMissing" title="${escapeHtml(label)}">No snapshot</div>`;
       }).join("");
       snapshotsHtml = `<div class="eventSnapshots">${thumbs}</div>`;
     }
 
-    const flowInfo = event.flow_name ? `<span>${escapeHtml(event.flow_name)}</span><span class="eventMetaSep">·</span>` : "";
+    // Recording references
+    let recordingsHtml = "";
+    if (event.recording_refs && event.recording_refs.length) {
+      const links = event.recording_refs.map((ref) => {
+        const label = ref.device_name || ref.device_id || "Camera";
+        const ts = ref.timestamp ? `&t=${encodeURIComponent(ref.timestamp)}` : "";
+        return `<a class="eventRecordingLink" href="/playback?device=${encodeURIComponent(ref.device_id)}${ts}" title="View recording for ${escapeHtml(label)}">&#9654; ${escapeHtml(label)}</a>`;
+      }).join("");
+      recordingsHtml = `<div class="eventRecordings">${links}</div>`;
+    }
 
     return `
       <div class="${cls}" data-event-id="${escapeHtml(event.id)}">
-        <div class="eventIndicator"></div>
-        <div class="eventBody">
-          <div class="eventMessage">${escapeHtml(event.message)}</div>
-          <div class="eventMeta">
-            ${flowInfo}
-            <span>${escapeHtml(formatTimestamp(event.ts))}</span>
+        <div class="eventHeader">
+          <div class="eventIndicator"></div>
+          <div class="eventHeaderBody">
+            <div class="eventName">${escapeHtml(name)}</div>
+            <div class="eventMeta">
+              ${metaParts.join('<span class="eventMetaSep">&middot;</span>')}
+            </div>
           </div>
-          ${snapshotsHtml}
+          <div class="eventActions">
+            ${!acked ? `<button class="btn btnAck" data-event-id="${escapeHtml(event.id)}" type="button">Ack</button>` : ""}
+            <button class="btn btn-danger btnDelete" data-event-id="${escapeHtml(event.id)}" type="button">Delete</button>
+          </div>
         </div>
-        <div class="eventActions">
-          ${!acked ? `<button class="btn btnAck" data-event-id="${escapeHtml(event.id)}" type="button">Ack</button>` : ""}
-          <button class="btn btn-danger btnDelete" data-event-id="${escapeHtml(event.id)}" type="button">Delete</button>
-        </div>
+        ${triggerHtml}
+        ${analysisHtml}
+        ${snapshotsHtml}
+        ${recordingsHtml}
       </div>
     `;
   }
@@ -158,11 +203,11 @@
     if (!sub) return;
     const unacked = allEvents.filter((e) => !e.acknowledged).length;
     if (unacked > 0) {
-      sub.textContent = `${unacked} unacknowledged event${unacked !== 1 ? "s" : ""} · ${allEvents.length} total`;
+      sub.textContent = `${unacked} unacknowledged event${unacked !== 1 ? "s" : ""} \u00b7 ${allEvents.length} total`;
     } else if (allEvents.length > 0) {
       sub.textContent = `${allEvents.length} event${allEvents.length !== 1 ? "s" : ""}, all acknowledged.`;
     } else {
-      sub.textContent = "Overview of site events generated by flows.";
+      sub.textContent = "AI-analyzed security events from your flows.";
     }
   }
 

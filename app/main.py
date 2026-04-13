@@ -462,6 +462,7 @@ _DEFAULT_FILES = {
     "recording_events.json":  '[]',
     "public_variables.json":  '{}',
     "events.json":            '{"items": []}',
+    "scenarios.json":          '{"items": []}',
 }
 
 
@@ -2998,6 +2999,154 @@ async def ptz_stop(device_id: str):
         raise HTTPException(status_code=400, detail=f"PTZ stop failed: {e}")
 
 
+# ── Scenarios (AI analysis presets) ─────────────────────────────────────────────
+
+SCENARIOS_JSON = DATA_DIR / "scenarios.json"
+_scenarios_lock = threading.RLock()
+
+
+def _load_scenarios() -> List[Dict[str, Any]]:
+    try:
+        if not SCENARIOS_JSON.exists():
+            return []
+        payload = json.loads(SCENARIOS_JSON.read_text(encoding="utf-8"))
+        items = payload.get("items") if isinstance(payload, dict) else []
+        return list(items) if isinstance(items, list) else []
+    except Exception:
+        return []
+
+
+def _save_scenarios(items: List[Dict[str, Any]]) -> None:
+    tmp = SCENARIOS_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"items": items}, indent=2), encoding="utf-8")
+    tmp.replace(SCENARIOS_JSON)
+
+
+def _get_scenario(scenario_id: str) -> Optional[Dict[str, Any]]:
+    for s in _load_scenarios():
+        if s.get("id") == scenario_id:
+            return s
+    return None
+
+
+@app.get("/api/scenarios")
+def api_scenarios_list():
+    return {"items": _load_scenarios()}
+
+
+@app.post("/api/scenarios")
+def api_scenario_create(body: dict):
+    name = str(body.get("name") or "").strip()
+    prompt = str(body.get("prompt") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required")
+    scenario = {
+        "id": uuid.uuid4().hex[:12],
+        "name": name,
+        "prompt": prompt,
+    }
+    with _scenarios_lock:
+        items = _load_scenarios()
+        items.append(scenario)
+        _save_scenarios(items)
+    return scenario
+
+
+@app.put("/api/scenarios/{scenario_id}")
+def api_scenario_update(scenario_id: str, body: dict):
+    name = str(body.get("name") or "").strip()
+    prompt = str(body.get("prompt") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required")
+    with _scenarios_lock:
+        items = _load_scenarios()
+        for item in items:
+            if item.get("id") == scenario_id:
+                item["name"] = name
+                item["prompt"] = prompt
+                _save_scenarios(items)
+                return item
+    raise HTTPException(status_code=404, detail="Scenario not found")
+
+
+@app.delete("/api/scenarios/{scenario_id}")
+def api_scenario_delete(scenario_id: str):
+    with _scenarios_lock:
+        items = _load_scenarios()
+        before = len(items)
+        items = [s for s in items if s.get("id") != scenario_id]
+        if len(items) == before:
+            raise HTTPException(status_code=404, detail="Scenario not found")
+        _save_scenarios(items)
+    return {"ok": True}
+
+
+# ── OpenAI API key management ─────────────────────────────────────────────────
+
+OPENAI_ENV_PATH = Path("/app/secrets/openai.env")
+
+
+@app.get("/api/settings/openai-key")
+async def get_openai_key():
+    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not key or key == "your_openai_api_key_here":
+        return {"configured": False, "masked_key": ""}
+    masked = key[:3] + "…" + key[-4:] if len(key) > 10 else "***"
+    return {"configured": True, "masked_key": masked}
+
+
+@app.put("/api/settings/openai-key")
+async def set_openai_key(req: Request):
+    body = await req.json()
+    key = str(body.get("key") or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="API key is required")
+
+    # Persist to env file
+    try:
+        OPENAI_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        OPENAI_ENV_PATH.write_text(f"OPENAI_API_KEY={key}\n", encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to write key file: {exc}")
+
+    # Update in-process so it takes effect immediately
+    os.environ["OPENAI_API_KEY"] = key
+    return {"ok": True, "configured": True}
+
+
+# ── GPT vision analysis ───────────────────────────────────────────────────────
+
+def _analyze_with_gpt(prompt: str, snapshot_data_uris: List[str]) -> str:
+    """Send prompt + base64 images to GPT-4o for analysis. Returns the response text."""
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key or api_key == "your_openai_api_key_here":
+        _log_events.warning("OpenAI API key not configured – skipping AI analysis")
+        return "[Error: OpenAI API key is not configured. Add your key to secrets/openai.env and restart.]"
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        content: list = [{"type": "text", "text": prompt}]
+        for uri in snapshot_data_uris:
+            if uri:
+                content.append({"type": "image_url", "image_url": {"url": uri}})
+        resp = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": content}],
+            max_tokens=1024,
+        )
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as exc:
+        _log_events.warning("GPT analysis failed: %s", exc)
+        exc_msg = str(exc)
+        if "auth" in exc_msg.lower() or "api key" in exc_msg.lower() or "invalid" in exc_msg.lower():
+            return "[Error: OpenAI API key is invalid. Check your key in secrets/openai.env and restart.]"
+        return f"[Error: AI analysis failed — {exc_msg}]"
+
+
 # ── Events (operator events) ───────────────────────────────────────────────────
 
 EVENTS_JSON = DATA_DIR / "events.json"
@@ -3037,14 +3186,29 @@ def _broadcast_page_event(event: Dict[str, Any]) -> None:
                 pass
 
 
-def create_event(message: str, snapshots: Optional[List[Dict[str, Any]]] = None,
-                 flow_id: Optional[str] = None, flow_name: Optional[str] = None,
-                 node_id: Optional[str] = None) -> Dict[str, Any]:
+def create_event(
+    *,
+    name: str = "",
+    trigger_info: str = "",
+    scenario_name: str = "",
+    scenario_prompt: str = "",
+    analysis: str = "",
+    snapshots: Optional[List[Dict[str, Any]]] = None,
+    recording_refs: Optional[List[Dict[str, Any]]] = None,
+    flow_id: Optional[str] = None,
+    flow_name: Optional[str] = None,
+    node_id: Optional[str] = None,
+) -> Dict[str, Any]:
     event = {
         "id": uuid.uuid4().hex[:12],
         "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "message": message,
+        "name": name or "Event",
+        "trigger_info": trigger_info,
+        "scenario_name": scenario_name,
+        "scenario_prompt": scenario_prompt,
+        "analysis": analysis,
         "snapshots": snapshots or [],
+        "recording_refs": recording_refs or [],
         "flow_id": flow_id,
         "flow_name": flow_name,
         "node_id": node_id,
@@ -3054,7 +3218,7 @@ def create_event(message: str, snapshots: Optional[List[Dict[str, Any]]] = None,
         items = _load_events()
         items.append(event)
         _save_events(items)
-    _log_events.info("Event created: %s", message)
+    _log_events.info("Event created: %s", name)
     _broadcast_page_event(event)
     return event
 

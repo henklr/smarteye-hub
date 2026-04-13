@@ -37,7 +37,7 @@
 .eventsList {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .eventsEmpty {
@@ -56,13 +56,10 @@
   color: var(--muted-2);
 }
 
-/* ── Event row ─────────────────────────────────────────────────────────────── */
+/* ── Event card ────────────────────────────────────────────────────────────── */
 
 .eventRow {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  padding: 14px 16px;
+  padding: 16px 18px;
   background: var(--surface);
   border: 1px solid var(--stroke);
   border-radius: var(--r-sm);
@@ -75,6 +72,13 @@
 
 .eventRow.unacknowledged {
   border-left: 3px solid var(--accent);
+}
+
+/* Header: indicator dot + name + actions */
+.eventHeader {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
 }
 
 .eventIndicator {
@@ -90,23 +94,24 @@
   background: var(--muted-2);
 }
 
-.eventBody {
+.eventHeaderBody {
   flex: 1;
   min-width: 0;
 }
 
-.eventMessage {
-  font-size: 1em;
-  line-height: 1.5;
+.eventName {
+  font-size: 1.05em;
+  font-weight: 600;
+  line-height: 1.4;
   word-break: break-word;
 }
 
 .eventMeta {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-top: 4px;
-  font-size: 0.85em;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 0.82em;
   color: var(--muted);
   flex-wrap: wrap;
 }
@@ -115,6 +120,74 @@
   color: var(--muted-2);
 }
 
+.eventBadge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 0.78em;
+  font-weight: 500;
+  background: var(--accent-2, rgba(0, 122, 255, 0.12));
+  color: var(--accent, #007aff);
+}
+
+.eventActions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  align-items: flex-start;
+}
+
+.eventActions .btn {
+  font-size: 0.82em;
+  padding: 3px 9px;
+}
+
+/* Trigger info */
+.eventTrigger {
+  margin-top: 8px;
+  font-size: 0.85em;
+  color: var(--muted);
+  padding: 6px 10px;
+  background: var(--surface-2, rgba(255,255,255,0.03));
+  border-radius: var(--r-xs);
+}
+
+.eventTrigger strong {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+/* AI Analysis */
+.eventAnalysis {
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: var(--surface-2, rgba(255,255,255,0.03));
+  border-radius: var(--r-sm);
+  border-left: 3px solid var(--accent);
+  font-size: 0.88em;
+  line-height: 1.45;
+}
+
+.eventAnalysisBody {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.eventAnalysisLabel {
+  font-size: 0.78em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.eventAnalysis.is-error {
+  border-left-color: var(--clr-danger, #e74c3c);
+  color: var(--clr-danger, #e74c3c);
+}
+
+/* Snapshots */
 .eventSnapshots {
   display: flex;
   gap: 8px;
@@ -123,8 +196,8 @@
 }
 
 .eventSnapshotThumb {
-  width: 120px;
-  height: 72px;
+  width: 140px;
+  height: 84px;
   object-fit: cover;
   border-radius: var(--r-xs);
   border: 1px solid var(--stroke);
@@ -138,28 +211,40 @@
 }
 
 .eventSnapshotMissing {
-  width: 120px;
-  height: 72px;
+  width: 100px;
+  height: 60px;
   border-radius: var(--r-xs);
   border: 1px solid var(--stroke);
   background: var(--surface-2);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.75em;
+  font-size: 0.72em;
   color: var(--muted-2);
 }
 
-.eventActions {
+/* Recording references */
+.eventRecordings {
+  margin-top: 8px;
   display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-.eventActions .btn {
-  font-size: 0.85em;
-  padding: 4px 10px;
+.eventRecordingLink {
+  font-size: 0.82em;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 3px 8px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+  transition: background 0.15s;
+}
+
+.eventRecordingLink:hover {
+  background: var(--surface);
+  text-decoration: underline;
 }
 
 /* ── Lightbox ──────────────────────────────────────────────────────────────── */

@@ -416,10 +416,10 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "type": "action.generate_event",
         "category": "action",
         "label": "Generate event",
-        "description": "Creates an event with a message and optional camera snapshots, visible on the Events page.",
+        "description": "Analyzes camera snapshots with an AI scenario and creates a rich event on the Events page.",
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
-        "defaults": {"message": "", "snapshot_entries": [], "name": ""},
+        "defaults": {"name": "", "scenario_id": "", "snapshot_entries": [], "include_recording": False},
     },
 ]
 
@@ -1790,7 +1790,9 @@ def _normalize_node_config(
         return cfg
 
     if node_type == "action.generate_event":
-        cfg["message"] = str(cfg.get("message") or "")
+        cfg["name"] = str(cfg.get("name") or "")
+        cfg["scenario_id"] = str(cfg.get("scenario_id") or "")
+        cfg["include_recording"] = bool(cfg.get("include_recording"))
         # Migrate legacy snapshot_device_ids + seconds_ago to snapshot_entries
         entries = cfg.get("snapshot_entries")
         if entries is None:
@@ -1816,8 +1818,10 @@ def _normalize_node_config(
                 sa = 0
             out.append({"device_id": did, "seconds_ago": sa})
         cfg["snapshot_entries"] = out
+        # Clean up legacy keys
         cfg.pop("snapshot_device_ids", None)
         cfg.pop("seconds_ago", None)
+        cfg.pop("message", None)
         return cfg
 
     return cfg
@@ -2812,9 +2816,21 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         return result
 
     if node_type == "action.generate_event":
-        from main import create_event, _grab_snapshot
-        rendered_message = _render_template(str(cfg.get("message") or ""), context)
+        from main import create_event, _grab_snapshot, _get_scenario, _analyze_with_gpt, _load_devices
+        rendered_name = _render_template(str(cfg.get("name") or ""), context) or "Event"
+
+        # Build trigger info string from context
+        trigger = context.get("trigger") or {}
+        trigger_info = ""
+        if trigger.get("path"):
+            trigger_info = str(trigger["path"])
+            if trigger.get("device_name"):
+                trigger_info += f" ({trigger['device_name']})"
+
+        # Collect snapshots
         entries = cfg.get("snapshot_entries") or []
+        devices = _load_devices()
+        device_map = {d.id: d.name for d in devices}
         snapshots = []
         for entry in entries:
             if not isinstance(entry, dict):
@@ -2827,18 +2843,59 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
             except Exception:
                 sa = 0
             data_uri = _grab_snapshot(did, seconds_ago=sa)
-            snapshots.append({"device_id": did, "snapshot": data_uri})
+            snapshots.append({
+                "device_id": did,
+                "device_name": device_map.get(did, did),
+                "snapshot": data_uri,
+            })
+
+        # Build recording references
+        recording_refs = []
+        if cfg.get("include_recording"):
+            now_iso = _utc_now_iso()
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                did = str(entry.get("device_id") or "").strip()
+                if did:
+                    recording_refs.append({
+                        "device_id": did,
+                        "device_name": device_map.get(did, did),
+                        "timestamp": now_iso,
+                    })
+
+        # Run AI analysis if a scenario is selected
+        scenario_name = ""
+        scenario_prompt = ""
+        analysis = ""
+        scenario_id = str(cfg.get("scenario_id") or "").strip()
+        if scenario_id:
+            scenario = _get_scenario(scenario_id)
+            if scenario:
+                scenario_name = scenario.get("name", "")
+                raw_prompt = scenario.get("prompt", "")
+                scenario_prompt = _render_template(raw_prompt, context)
+                image_uris = [s["snapshot"] for s in snapshots if s.get("snapshot")]
+                if scenario_prompt:
+                    analysis = _analyze_with_gpt(scenario_prompt, image_uris)
+
         try:
             evt = create_event(
-                message=rendered_message,
+                name=rendered_name,
+                trigger_info=trigger_info,
+                scenario_name=scenario_name,
+                scenario_prompt=scenario_prompt,
+                analysis=analysis,
                 snapshots=snapshots,
+                recording_refs=recording_refs,
                 flow_id=str((context.get("flow") or {}).get("id") or "").strip() or None,
                 flow_name=str((context.get("flow") or {}).get("name") or "").strip() or None,
                 node_id=str(node.get("id") or "").strip() or None,
             )
-            result["message"] = f"Event created: {rendered_message}"
+            result["message"] = f"Event created: {rendered_name}"
             result["event_id"] = evt.get("id")
             result["snapshot_count"] = len(snapshots)
+            result["has_analysis"] = bool(analysis)
         except Exception as exc:
             result["ok"] = False
             result["error"] = str(exc)

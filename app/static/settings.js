@@ -633,3 +633,53 @@ logAutoUpdateBtn?.addEventListener("click", () => {
 
 _updateAutoBtn();
 _startLogPoll();
+
+// ── OpenAI API key ────────────────────────────────────────────────────────────
+
+const openaiKeyInput = document.getElementById("openaiKeyInput");
+const openaiKeySaveBtn = document.getElementById("openaiKeySaveBtn");
+const openaiKeyStatusEl = document.getElementById("openaiKeyStatus");
+
+function setOpenaiStatus(text) {
+  if (openaiKeyStatusEl) openaiKeyStatusEl.textContent = text;
+}
+
+async function loadOpenaiKey() {
+  try {
+    const data = await api("/api/settings/openai-key");
+    if (data.configured) {
+      setOpenaiStatus(`Key configured: ${data.masked_key}`);
+      if (openaiKeyInput) openaiKeyInput.placeholder = data.masked_key;
+    } else {
+      setOpenaiStatus("No API key configured.");
+    }
+  } catch (e) {
+    setOpenaiStatus(`Error: ${e.message || e}`);
+  }
+}
+
+openaiKeySaveBtn?.addEventListener("click", async () => {
+  const key = (openaiKeyInput?.value || "").trim();
+  if (!key) {
+    setOpenaiStatus("Enter an API key.");
+    return;
+  }
+  openaiKeySaveBtn.disabled = true;
+  setOpenaiStatus("Saving…");
+  try {
+    await api("/api/settings/openai-key", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    });
+    if (openaiKeyInput) openaiKeyInput.value = "";
+    setOpenaiStatus("Key saved. AI analysis is now active.");
+    await loadOpenaiKey();
+  } catch (e) {
+    setOpenaiStatus(`Error: ${e.message || e}`);
+  } finally {
+    openaiKeySaveBtn.disabled = false;
+  }
+});
+
+loadOpenaiKey();

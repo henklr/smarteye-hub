@@ -2537,3 +2537,50 @@ body.settingsPage .topbar {
     color: #1a1a1a;
   }
 }
+
+/* ── Scenarios management ──────────────────────────────────────────────────── */
+
+.scenarioRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-sm);
+  margin-bottom: 6px;
+}
+
+.scenarioRow:hover {
+  background: var(--surface-2);
+}
+
+.scenarioInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.scenarioName {
+  font-weight: 600;
+  font-size: 0.95em;
+}
+
+.scenarioPromptPreview {
+  font-size: 0.82em;
+  color: var(--muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scenarioActions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.scenarioActions .btn {
+  font-size: 0.85em;
+  padding: 4px 10px;
+}

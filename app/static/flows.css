@@ -150,6 +150,10 @@ body.flowsPage {
   flex: 0 0 auto;
 }
 
+.flowsPage .flowsSidebarScenarios {
+  flex: 0 0 auto;
+}
+
 .flowsPage .flowsSidebarSchedules {
   flex: 0 0 auto;
 }
@@ -2683,6 +2687,27 @@ body.flowsPage {
 }
 [data-theme="light"] .flowsPage .compareTriggerPathGroupTitle {
   color: rgba(0, 0, 0, 0.45);
+}
+
+/* ── Scenario sidebar cards ────────────────────────────────────────────────── */
+
+.flowsPage .scenarioList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+
+.flowsPage .scenarioSidebarPrompt {
+  font-size: 0.78em;
+  color: var(--muted);
+  line-height: 1.35;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 /* ── Snapshot device list (Generate event inspector) ───────────────────────── */

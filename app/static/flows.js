@@ -10,6 +10,7 @@ const state = {
     presets: { expanded: true, touched: false },
     schedules: { expanded: true, touched: false },
     variables: { expanded: true, touched: false },
+    scenarios: { expanded: true, touched: false },
     palette: { expanded: true, touched: false },
   },
   recordingPresets: [],
@@ -39,6 +40,7 @@ const state = {
   selectedRecordingPresetIndex: null,
   selectedScheduleIndex: null,
   selectedPublicVariableIndex: null,
+  selectedScenarioIndex: null,
   dirty: false,
   connecting: null,
   connectionCursor: null,
@@ -253,6 +255,12 @@ function currentSelectedPublicVariable() {
   return currentPublicVariables()[idx] || null;
 }
 
+function currentSelectedScenario() {
+  const idx = state.selectedScenarioIndex;
+  if (!Number.isInteger(idx) || idx < 0) return null;
+  return _scenariosCache[idx] || null;
+}
+
 function clearEditorSelection() {
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
@@ -261,9 +269,11 @@ function clearEditorSelection() {
   state.selectedScheduleDay = null;
   state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
+  state.selectedScenarioIndex = null;
   renderRecordingPresetSidebar();
   renderScheduleSidebar();
   renderPublicVariablesSidebar();
+  renderScenarioSidebar();
 }
 
 function selectNode(nodeId) {
@@ -274,9 +284,11 @@ function selectNode(nodeId) {
   state.selectedScheduleDay = null;
   state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
+  state.selectedScenarioIndex = null;
   renderRecordingPresetSidebar();
   renderScheduleSidebar();
   renderPublicVariablesSidebar();
+  renderScenarioSidebar();
 }
 
 function selectEdge(edgeId) {
@@ -287,9 +299,11 @@ function selectEdge(edgeId) {
   state.selectedScheduleDay = null;
   state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
+  state.selectedScenarioIndex = null;
   renderRecordingPresetSidebar();
   renderScheduleSidebar();
   renderPublicVariablesSidebar();
+  renderScenarioSidebar();
 }
 
 function selectRecordingPreset(index) {
@@ -300,6 +314,7 @@ function selectRecordingPreset(index) {
   state.selectedScheduleDay = null;
   state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
+  state.selectedScenarioIndex = null;
   state.connecting = null;
   state.connectionCursor = null;
 }
@@ -315,6 +330,7 @@ function selectSchedule(index) {
   state.selectedEdgeId = null;
   state.selectedRecordingPresetIndex = null;
   state.selectedPublicVariableIndex = null;
+  state.selectedScenarioIndex = null;
   state.connecting = null;
   state.connectionCursor = null;
 }
@@ -351,6 +367,20 @@ function selectPublicVariable(index) {
   state.selectedScheduleIndex = null;
   state.selectedScheduleDay = null;
   state.selectedSchedulePeriod = null;
+  state.selectedScenarioIndex = null;
+  state.connecting = null;
+  state.connectionCursor = null;
+}
+
+function selectScenario(index) {
+  state.selectedScenarioIndex = Number.isInteger(index) && index >= 0 ? index : null;
+  state.selectedNodeId = null;
+  state.selectedEdgeId = null;
+  state.selectedRecordingPresetIndex = null;
+  state.selectedScheduleIndex = null;
+  state.selectedScheduleDay = null;
+  state.selectedSchedulePeriod = null;
+  state.selectedPublicVariableIndex = null;
   state.connecting = null;
   state.connectionCursor = null;
 }
@@ -1422,6 +1452,265 @@ function recordNodeTag(node) {
 
 function makeId(prefix) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+let _scenariosCache = [];
+let _scenariosCacheTs = 0;
+
+async function loadScenarios(force = false) {
+  if (!force && Date.now() - _scenariosCacheTs < 5000 && _scenariosCache.length) return _scenariosCache;
+  try {
+    const resp = await fetch("/api/scenarios");
+    if (!resp.ok) return _scenariosCache;
+    const data = await resp.json();
+    _scenariosCache = data.items || [];
+    _scenariosCacheTs = Date.now();
+  } catch {}
+  return _scenariosCache;
+}
+
+function scenarioOptionsHtml(selected = "") {
+  const options = [`<option value="">No scenario (basic event)</option>`];
+  for (const s of _scenariosCache) {
+    options.push(
+      `<option value="${escapeHtml(s.id)}" ${s.id === selected ? "selected" : ""}>${escapeHtml(s.name)}</option>`
+    );
+  }
+  return options.join("");
+}
+
+function addScenario() {
+  const newScenario = { id: "", name: "New scenario", prompt: "", _isNew: true };
+  _scenariosCache.push(newScenario);
+  if (el("scenarioSearch")) {
+    el("scenarioSearch").value = "";
+  }
+  selectScenario(_scenariosCache.length - 1);
+  setSidebarSectionExpanded("scenarios", true);
+  renderScenarioSidebar();
+  renderInspector();
+}
+
+async function saveScenario() {
+  const scenario = currentSelectedScenario();
+  if (!scenario) return;
+
+  const name = (scenario.name || "").trim();
+  const prompt = (scenario.prompt || "").trim();
+  if (!name) throw new Error("Scenario name is required.");
+  if (!prompt) throw new Error("Scenario prompt is required.");
+
+  if (scenario._isNew || !scenario.id) {
+    const out = await api("/api/scenarios", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, prompt }),
+    });
+    await loadScenarios(true);
+    const saved = _scenariosCache.find(s => s.name === name);
+    state.selectedScenarioIndex = saved ? _scenariosCache.indexOf(saved) : null;
+  } else {
+    await api(`/api/scenarios/${encodeURIComponent(scenario.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, prompt }),
+    });
+    await loadScenarios(true);
+    const saved = _scenariosCache.find(s => s.id === scenario.id);
+    state.selectedScenarioIndex = saved ? _scenariosCache.indexOf(saved) : null;
+  }
+
+  renderScenarioSidebar();
+  renderInspector();
+  setStatus(`Scenario saved: ${name}.`);
+}
+
+async function deleteScenario() {
+  const scenario = currentSelectedScenario();
+  if (!scenario) return;
+
+  if (scenario._isNew || !scenario.id) {
+    _scenariosCache.splice(state.selectedScenarioIndex, 1);
+  } else {
+    await api(`/api/scenarios/${encodeURIComponent(scenario.id)}`, { method: "DELETE" });
+    await loadScenarios(true);
+  }
+
+  if (!_scenariosCache.length) {
+    state.selectedScenarioIndex = null;
+  } else {
+    state.selectedScenarioIndex = Math.min(state.selectedScenarioIndex ?? 0, _scenariosCache.length - 1);
+  }
+
+  renderScenarioSidebar();
+  renderInspector();
+  setStatus(`Scenario deleted: ${scenario.name}.`);
+}
+
+function bindScenarioActionButtons() {
+  el("btnAddScenario")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    addScenario();
+  });
+
+  el("btnSaveScenario")?.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    try {
+      await saveScenario();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+
+  el("btnDeleteScenario")?.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    try {
+      await deleteScenario();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+}
+
+function renderScenarioSidebar() {
+  const box = el("scenarioList");
+  if (!box) return;
+
+  const q = (el("scenarioSearch")?.value || "").trim().toLowerCase();
+  const selectedScenario = currentSelectedScenario();
+  const items = _scenariosCache
+    .map((scenario, idx) => ({ scenario, idx }))
+    .filter(({ scenario }) => {
+      if (!q) return true;
+      return [scenario.name, scenario.prompt].join(" ").toLowerCase().includes(q);
+    });
+
+  syncSidebarSection("scenarios", _scenariosCache.length > 0);
+
+  const currentCard = !selectedScenario ? `
+    <div class="varCard varCardActionsOnly">
+      <div class="sidebarCardActions is-standalone">
+        <button class="btn btn-primary btn-compact" id="btnAddScenario" type="button">New</button>
+        <button class="btn btn-compact" id="btnSaveScenario" type="button">Save</button>
+        <button class="btn btn-danger btn-compact" id="btnDeleteScenario" type="button">Delete</button>
+      </div>
+    </div>` : "";
+
+  box.innerHTML = `
+    ${currentCard}
+    ${_scenariosCache.length ? "" : `<div class="emptyState">No scenarios yet.</div>`}
+    ${items.length ? items.map(({ scenario, idx }) => {
+      const isActive = idx === state.selectedScenarioIndex;
+      return `
+        <${isActive ? "div" : "button"} class="varCard is-preview ${isActive ? "active varCardCurrent" : ""}" ${isActive ? "" : 'type="button"'} data-scenario-index="${idx}" aria-pressed="${isActive ? "true" : "false"}">
+          <div class="varCardTop">
+            <div class="varCardName">${escapeHtml(scenario.name)}</div>
+          </div>
+          <div class="scenarioSidebarPrompt">${escapeHtml((scenario.prompt || "").substring(0, 80))}${(scenario.prompt || "").length > 80 ? "\u2026" : ""}</div>
+          ${isActive ? `
+          <div class="sidebarCardActions">
+            <button class="btn btn-primary btn-compact" id="btnAddScenario" type="button">New</button>
+            <button class="btn btn-compact" id="btnSaveScenario" type="button">Save</button>
+            <button class="btn btn-danger btn-compact" id="btnDeleteScenario" type="button">Delete</button>
+          </div>` : ""}
+        </${isActive ? "div" : "button"}>
+      `;
+    }).join("") : ""}
+  `;
+
+  bindScenarioActionButtons();
+
+  box.querySelectorAll("[data-scenario-index]").forEach((card) => {
+    if (card.classList.contains("varCardCurrent")) return;
+    card.addEventListener("click", () => {
+      const index = Number(card.dataset.scenarioIndex || -1);
+      if (!_scenariosCache[index]) return;
+      selectScenario(index);
+      renderScenarioSidebar();
+      renderInspector();
+      renderCanvas();
+      drawEdges();
+    });
+  });
+}
+
+function renderScenarioInspector(scenario, index) {
+  return `
+    <div class="inspectorCard">
+      <div class="rowSplit">
+        <div>
+          <div class="inspectorTitle scenarioInspectorName" style="margin-bottom:4px;">${escapeHtml(scenario.name || `scenario_${index + 1}`)}</div>
+          <div class="inspectorHint">AI analysis scenario</div>
+        </div>
+      </div>
+      <div id="scenarioInspectorBody" class="fieldGrid mt-10" data-scenario-index="${index}">
+        <div class="full">
+          <label>Name</label>
+          <input id="scenarioNameInput" value="${escapeHtml(scenario.name || "")}" placeholder="e.g. Perimeter Security" />
+        </div>
+        <div class="full">
+          <label>Prompt</label>
+          <textarea id="scenarioPromptInput" rows="6" placeholder="Describe the rules for the AI to evaluate.">${escapeHtml(scenario.prompt || "")}</textarea>
+        </div>
+        <div class="full inlineMeta">The prompt is sent to GPT-4o along with camera snapshots. You can reference flow templates like {{trigger.path}}, {{variables.key}}.</div>
+      </div>
+    </div>
+    <div class="inspectorCard inspectorActionsCard">
+      <div class="inspectorActionHeader">
+        <div class="inspectorTitle">Scenario actions</div>
+        <div class="inspectorHint">Create, save, or remove the selected scenario.</div>
+      </div>
+      <div class="inspectorActionGrid">
+        <button class="btn btn-primary" id="btnInspectorAddScenario" type="button">New</button>
+        <button class="btn" id="btnInspectorSaveScenario" type="button">Save</button>
+        <button class="btn btn-danger" id="btnInspectorDeleteScenario" type="button">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
+function bindScenarioInspector(index) {
+  const getScenario = () => _scenariosCache[index];
+
+  document.getElementById("btnInspectorAddScenario")?.addEventListener("click", () => {
+    addScenario();
+  });
+
+  document.getElementById("btnInspectorSaveScenario")?.addEventListener("click", async () => {
+    try {
+      await saveScenario();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+
+  document.getElementById("btnInspectorDeleteScenario")?.addEventListener("click", async () => {
+    try {
+      await deleteScenario();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+
+  document.getElementById("scenarioNameInput")?.addEventListener("input", (ev) => {
+    const scenario = getScenario();
+    if (!scenario) return;
+    scenario.name = ev.target.value.trim();
+    renderScenarioSidebar();
+
+    const title = document.querySelector(".scenarioInspectorName");
+    if (title) title.textContent = scenario.name || `scenario_${index + 1}`;
+    if (el("inspectorSubtext")) {
+      el("inspectorSubtext").textContent = `${scenario.name || "scenario"} settings`;
+    }
+  });
+
+  document.getElementById("scenarioPromptInput")?.addEventListener("input", (ev) => {
+    const scenario = getScenario();
+    if (!scenario) return;
+    scenario.prompt = ev.target.value;
+    renderScenarioSidebar();
+  });
 }
 
 function deviceOptionsHtml(selected = "") {
@@ -3418,6 +3707,24 @@ function renderInspector() {
     box.innerHTML = renderPublicVariableInspector(variable, state.selectedPublicVariableIndex);
     bindPublicVariableInspector(state.selectedPublicVariableIndex);
     refreshPublicVariableRuntimeUi();
+    restoreInspectorFocusState(focusState);
+    return;
+  }
+
+  if (state.selectedScenarioIndex != null) {
+    const scenario = currentSelectedScenario();
+    if (!scenario) {
+      state.selectedScenarioIndex = null;
+      renderInspector();
+      return;
+    }
+
+    if (el("inspectorSubtext")) {
+      el("inspectorSubtext").textContent = `${scenario.name || "scenario"} settings`;
+    }
+
+    box.innerHTML = renderScenarioInspector(scenario, state.selectedScenarioIndex);
+    bindScenarioInspector(state.selectedScenarioIndex);
     restoreInspectorFocusState(focusState);
     return;
   }
@@ -6009,24 +6316,32 @@ function renderNodeInspector(node) {
       body = `
         <div class="inspectorCard">
           <div class="inspectorTitle">Generate event</div>
-          <div class="inspectorHint">Creates an event visible on the Events page with an optional snapshot from one or more cameras.</div>
+          <div class="inspectorHint">Creates an event on the Events page. Optionally analyzes camera snapshots with an AI scenario.</div>
           <div class="fieldGrid">
             <div class="full">
-              <label>Name</label>
-              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+              <label>Event name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="e.g. Intrusion alert" />
+              <div class="inlineMeta">Supports templates: {{flow.name}}, {{trigger.path}}, {{variables.key}}</div>
             </div>
             <div class="full">
-              <label>Message</label>
-              <textarea id="cfg_message" rows="4">${escapeHtml(cfg.message || "")}</textarea>
-              <div class="inlineMeta">Supports templates like {{flow.name}}, {{trigger.path}}, {{variables.key}}.</div>
+              <label>Scenario</label>
+              <select id="cfg_scenario_id">${scenarioOptionsHtml(cfg.scenario_id || "")}</select>
+              <div class="inlineMeta">Select an AI scenario to analyze the snapshots. Manage scenarios on the System page.</div>
             </div>
             <div class="full">
               <label>Snapshot cameras</label>
               <div id="cfg_snapshot_devices" class="snapshotDeviceList">
                 ${renderSnapshotDeviceList(cfg.snapshot_entries || [])}
               </div>
-              <div class="inlineMeta mt-6">Each camera can capture a frame from a different point in time. Set seconds ago to 0 for the most recent frame. Requires the camera to be recording.</div>
+              <div class="inlineMeta mt-6">Snapshots are sent to the AI scenario for analysis and included in the event. Set seconds ago to 0 for the most recent frame.</div>
               <button class="btn mt-6" id="btnAddSnapshotDevice" type="button">Add camera</button>
+            </div>
+            <div class="full">
+              <label class="enableRow">
+                <input type="checkbox" id="cfg_include_recording" ${cfg.include_recording ? "checked" : ""} />
+                Include recording reference
+              </label>
+              <div class="inlineMeta">Adds a link to the recording around the event time for each camera.</div>
             </div>
           </div>
         </div>
@@ -6422,9 +6737,9 @@ function applyNodeInspector(node) {
       break;
     case "action.generate_event":
       set("name");
-      set("message");
+      set("scenario_id");
+      cfg.include_recording = !!document.getElementById("cfg_include_recording")?.checked;
       cfg.snapshot_entries = Array.from(document.querySelectorAll(".snapshotDeviceRow")).map(row => {
-        const idx = parseInt(row.dataset.index, 10);
         const sel = row.querySelector(".snapshotDeviceSelect");
         const inp = row.querySelector(".snapshotSecsInput");
         return {
@@ -6434,6 +6749,7 @@ function applyNodeInspector(node) {
       }).filter(e => e.device_id);
       delete cfg.snapshot_device_ids;
       delete cfg.seconds_ago;
+      delete cfg.message;
       break;
   }
 
@@ -7086,6 +7402,7 @@ function bindGlobalEvents() {
   el("presetSearch")?.addEventListener("input", renderRecordingPresetSidebar);
   el("scheduleSearch")?.addEventListener("input", renderScheduleSidebar);
   el("variableSearch")?.addEventListener("input", renderPublicVariablesSidebar);
+  el("scenarioSearch")?.addEventListener("input", renderScenarioSidebar);
   el("paletteSearch")?.addEventListener("input", renderPalette);
 
   const boardScroller = el("flowBoardScroller");
@@ -7287,6 +7604,7 @@ async function init() {
     state.catalog = catalog;
     state.devices = Array.isArray(catalog?.devices) ? catalog.devices : [];
 
+    await loadScenarios();
     await refreshFlows();
     await refreshRecordingPresets(true);
     await refreshSchedules(true);
@@ -7295,6 +7613,7 @@ async function init() {
     startSchedulesPolling();
     startPublicVariablesPolling();
     startPhysicalStatePolling();
+    renderScenarioSidebar();
 
     state.draft = state.flows.length ? deepClone(state.flows[0]) : starterFlow();
     state.selectedSavedFlowId = state.draft.id || null;

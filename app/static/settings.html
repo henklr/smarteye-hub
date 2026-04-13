@@ -126,6 +126,29 @@
         <section class="settingsCard">
           <div class="listHeader compact">
             <div>
+              <div class="listTitle small">OpenAI API key</div>
+              <div class="listSub">Required for AI scenario analysis in flows. Your key is stored locally and never shared.</div>
+            </div>
+          </div>
+
+          <div class="grid overlayFormGrid" style="margin-top:14px;">
+            <div data-full>
+              <label for="openaiKeyInput">API key</label>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <input id="openaiKeyInput" type="password" placeholder="sk-…" autocomplete="off" style="flex:1;min-width:200px;max-width:400px;" />
+                <button class="btn btn-primary" id="openaiKeySaveBtn" type="button">Save</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="statusLine compact" style="margin-top:12px;">
+            <span id="openaiKeyStatus" class="muted">Loading…</span>
+          </div>
+        </section>
+
+        <section class="settingsCard">
+          <div class="listHeader compact">
+            <div>
               <div class="listTitle small">Date &amp; time</div>
               <div class="listSub">Set the system clock manually or sync via NTP.</div>
             </div>
