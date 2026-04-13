@@ -8,10 +8,10 @@
   --panel: #0e0e0e;
   --panel-2: #0a0a0a;
 
-  --glass: rgba(14, 14, 14, 0.55);
-  --glass-strong: rgba(18, 18, 18, 0.72);
-  --glass-panel: rgba(10, 10, 10, 0.38);
-  --glass-blur: blur(24px) saturate(1.3);
+  --glass: rgba(14, 14, 14, 0.28);
+  --glass-strong: rgba(18, 18, 18, 0.42);
+  --glass-panel: rgba(10, 10, 10, 0.22);
+  --glass-blur: blur(12px);
 
   --stroke: rgba(255, 255, 255, 0.06);
   --stroke-2: rgba(255, 255, 255, 0.09);
@@ -1039,7 +1039,6 @@ code {
   border: none;
   border-top: 1px solid var(--stroke);
   border-radius: 0;
-  background: rgba(22, 22, 22, 0.9);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   padding: 12px 0;
@@ -1153,9 +1152,9 @@ code {
 .overlayBackdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(12px) saturate(0.7);
-  -webkit-backdrop-filter: blur(12px) saturate(0.7);
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 .overlayPanel {
@@ -1687,8 +1686,8 @@ code {
   height: 112px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 999px;
-  background: rgba(16, 16, 16, 0.6);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  background: rgba(16, 16, 16, 0.4);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   touch-action: none;
@@ -1749,7 +1748,7 @@ code {
   padding: 0;
   border-color: rgba(255, 255, 255, 0.1);
   border-radius: var(--r-sm);
-  background: rgba(16, 16, 16, 0.6);
+  background: rgba(16, 16, 16, 0.4);
   font-size: 18px;
   line-height: 1;
   backdrop-filter: blur(12px);
@@ -1943,9 +1942,9 @@ body.tileMaximizedMode #videoGrid {
     padding: 8px 10px;
     border: none;
     border-radius: 0;
-    background: rgba(18, 18, 18, 0.92);
-    backdrop-filter: blur(20px) saturate(1.2);
-    -webkit-backdrop-filter: blur(20px) saturate(1.2);
+    background: rgba(18, 18, 18, 0.5);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     overflow: visible;
   }
 
@@ -2199,15 +2198,15 @@ body.settingsPage .topbar {
   margin-top: 12px;
   max-height: 420px;
   overflow-y: auto;
-  background: rgba(0, 0, 0, 0.3);
+  background: rgba(0, 0, 0, 0.35);
   border: 1px solid var(--stroke);
   border-radius: var(--r-sm);
   font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
   font-size: 11px;
   line-height: 1.55;
   padding: 8px 0;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .logLine {
@@ -2277,4 +2276,262 @@ body.settingsPage .topbar {
   color: var(--muted);
   min-width: 80px;
   font-size: .85em;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   LIGHT THEME
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+[data-theme="light"] {
+  --bg: #f4f4f5;
+  --bg-elevated: #ffffff;
+  --surface: rgba(0, 0, 0, 0.02);
+  --surface-2: rgba(0, 0, 0, 0.03);
+  --surface-3: rgba(0, 0, 0, 0.05);
+
+  --panel: #ffffff;
+  --panel-2: #f0f0f0;
+
+  --glass: rgba(255, 255, 255, 0.32);
+  --glass-strong: rgba(255, 255, 255, 0.48);
+  --glass-panel: rgba(255, 255, 255, 0.26);
+
+  --stroke: rgba(0, 0, 0, 0.09);
+  --stroke-2: rgba(0, 0, 0, 0.13);
+  --stroke-strong: rgba(0, 0, 0, 0.20);
+
+  --text: #1a1a1a;
+  --muted: #666666;
+  --muted-2: #999999;
+
+  --accent: #a07d22;
+  --accent-strong: #876916;
+  --accent-2: rgba(160, 125, 34, 0.10);
+  --accent-3: rgba(160, 125, 34, 0.18);
+  --accent-glow: 0 0 20px rgba(160, 125, 34, 0.08);
+
+  --danger: #dc2626;
+  --danger-2: rgba(220, 38, 38, 0.08);
+
+  --warn: #d97706;
+  --warn-2: rgba(217, 119, 6, 0.08);
+
+  --ok: #16a34a;
+  --ok-2: rgba(22, 163, 74, 0.08);
+
+  --shadow: 0 2px 6px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.04);
+  --shadow-soft: 0 4px 16px rgba(0, 0, 0, 0.05);
+}
+
+/* ── Scrollbars ── */
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+}
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
+
+/* ── Selection ── */
+[data-theme="light"] ::selection {
+  background: rgba(160, 125, 34, 0.22);
+  color: #000;
+}
+
+/* ── Logo ── */
+[data-theme="light"] .topbarLogo[src*="smarteye-light"] {
+  display: none;
+}
+[data-theme="light"] .topbarLogoDark {
+  display: inline-block !important;
+}
+.topbarLogoDark {
+  display: none;
+  height: 18px;
+  opacity: 0.85;
+  flex: 0 0 auto;
+  transition: opacity 0.2s ease;
+}
+.topbarLogoDark:hover {
+  opacity: 1;
+}
+
+/* ── Inputs & selects ── */
+[data-theme="light"] input:not([type="range"]),
+[data-theme="light"] select {
+  background: rgba(0, 0, 0, 0.02);
+}
+[data-theme="light"] input:not([type="range"]):hover,
+[data-theme="light"] select:hover {
+  border-color: var(--stroke-2);
+  background: rgba(0, 0, 0, 0.035);
+}
+[data-theme="light"] input:not([type="range"]):focus,
+[data-theme="light"] select:focus {
+  background: rgba(0, 0, 0, 0.02);
+}
+[data-theme="light"] input::placeholder {
+  color: #b0b0b0;
+}
+
+/* ── Buttons ── */
+[data-theme="light"] .btn {
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme="light"] .btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+[data-theme="light"] .btn-primary {
+  background: rgba(160, 125, 34, 0.08);
+  border-color: rgba(160, 125, 34, 0.25);
+}
+[data-theme="light"] .btn-primary:hover {
+  background: rgba(160, 125, 34, 0.14);
+  border-color: rgba(160, 125, 34, 0.4);
+}
+[data-theme="light"] .btn-danger {
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.06);
+  border-color: rgba(220, 38, 38, 0.15);
+}
+[data-theme="light"] .btn-danger:hover {
+  background: rgba(220, 38, 38, 0.10);
+  border-color: rgba(220, 38, 38, 0.25);
+}
+[data-theme="light"] .logoutBtn {
+  border-color: rgba(160, 125, 34, 0.15);
+}
+[data-theme="light"] .logoutBtn:hover {
+  border-color: rgba(160, 125, 34, 0.35);
+}
+
+/* ── Cards & panels ── */
+[data-theme="light"] .overlayPanel {
+  box-shadow: 0 16px 60px rgba(0, 0, 0, 0.10), 0 0 0 1px rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .overlayBackdrop {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* ── Tables ── */
+[data-theme="light"] .table th,
+[data-theme="light"] .table td {
+  border-bottom-color: rgba(0, 0, 0, 0.07);
+}
+[data-theme="light"] .table tbody tr:hover td {
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme="light"] .table tbody tr.active td {
+  background: rgba(160, 125, 34, 0.06);
+}
+[data-theme="light"] .table tbody tr.active {
+  outline-color: rgba(160, 125, 34, 0.2);
+}
+
+/* ── Code blocks ── */
+[data-theme="light"] code {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* ── Cam items ── */
+[data-theme="light"] .camItem:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .camDragHandle {
+  color: rgba(0, 0, 0, 0.3);
+}
+[data-theme="light"] .camItem:hover .camDragHandle {
+  color: rgba(0, 0, 0, 0.55);
+}
+[data-theme="light"] .camMiniBtn:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .camItem.active,
+[data-theme="light"] .camItem.is-editing {
+  background: rgba(160, 125, 34, 0.06);
+  border-color: rgba(160, 125, 34, 0.18);
+}
+
+/* ── Empty states & previews ── */
+[data-theme="light"] .actionsPage .emptyState {
+  border-color: rgba(0, 0, 0, 0.10);
+  background: rgba(0, 0, 0, 0.02);
+}
+[data-theme="light"] .actionsPage .itemPreview {
+  border-color: rgba(0, 0, 0, 0.10);
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme="light"] .actionsPage .topicList {
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme="light"] .actionsPage .topicItem {
+  border-bottom-color: rgba(0, 0, 0, 0.06);
+}
+[data-theme="light"] .actionsPage .topicItem:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .actionsPage .ruleItem:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .actionsPage .collapseBtn:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme="light"] .actionsPage .itemCollapseBtn:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme="light"] .actionsPage .formSticky {
+  background: linear-gradient(to bottom, rgba(244, 244, 245, 0), rgba(244, 244, 245, 0.96) 30%);
+}
+[data-theme="light"] .actionsPage .formStickyInner {
+  background: rgba(244, 244, 245, 0.9);
+}
+
+/* ── Tiles (video stays dark) ── */
+[data-theme="light"] .tile {
+  border-color: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .tile:hover {
+  border-color: rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+}
+[data-theme="light"] #videoGrid:empty::before {
+  color: rgba(0, 0, 0, 0.25);
+}
+
+/* ── Log viewer ── */
+[data-theme="light"] .logViewer {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+/* ── Mobile nav ── */
+@media (max-width: 560px) {
+  [data-theme="light"] .topbar::before {
+    background: linear-gradient(
+      to top,
+      rgba(244, 244, 245, 0.82) 0%,
+      rgba(244, 244, 245, 0.48) 42%,
+      rgba(244, 244, 245, 0.16) 72%,
+      rgba(244, 244, 245, 0) 100%
+    );
+  }
+
+  [data-theme="light"] .tabs {
+    background: rgba(240, 240, 242, 0.92);
+  }
+
+  [data-theme="light"] .tab {
+    color: rgba(0, 0, 0, 0.45);
+  }
+
+  [data-theme="light"] .tabDot::before {
+    background: rgba(0, 0, 0, 0.4);
+  }
+
+  [data-theme="light"] .tab:hover {
+    color: rgba(0, 0, 0, 0.7);
+  }
+
+  [data-theme="light"] .tab.active {
+    color: #1a1a1a;
+  }
 }

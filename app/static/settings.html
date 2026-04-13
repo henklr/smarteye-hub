@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="en">
+<script>(function(){var d=document.documentElement,m=matchMedia('(prefers-color-scheme:light)');function a(){var t=localStorage.getItem('theme')||'dark';d.setAttribute('data-theme',t==='system'?(m.matches?'light':'dark'):t)}a();m.addEventListener('change',a)})()</script>
 
 <head>
   <meta charset="utf-8" />
@@ -13,6 +14,7 @@
     <div class="topbar">
       <div class="topbarLeft">
         <img src="/static/smarteye-light.png" alt="SmartEye" class="topbarLogo">
+        <img src="/static/smarteye-dark.png" alt="SmartEye" class="topbarLogoDark">
       </div>
       <div class="topbarCenter">
         <div class="tabs">
@@ -29,6 +31,28 @@
 
     <div class="settingsShell">
       <div class="settingsContent">
+
+        <section class="settingsCard">
+          <div class="listHeader compact">
+            <div>
+              <div class="listTitle small">Appearance</div>
+              <div class="listSub">Choose your preferred colour scheme.</div>
+            </div>
+          </div>
+
+          <div class="grid overlayFormGrid" style="margin-top:14px;">
+            <div data-full>
+              <label for="themeSelect">Theme</label>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <select id="themeSelect" style="max-width:200px;">
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
+                  <option value="system">System</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </section>
 
         <section class="settingsCard">
           <div class="listHeader compact">

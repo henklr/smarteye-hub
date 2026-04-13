@@ -60,8 +60,8 @@ body.flowsPage {
   padding: 0;
   border-right: 1px solid rgba(255, 255, 255, 0.08);
   background: var(--glass-panel);
-  backdrop-filter: blur(32px) saturate(1.4);
-  -webkit-backdrop-filter: blur(32px) saturate(1.4);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .flowsPage .flowsSidebarBlock {
@@ -1133,7 +1133,7 @@ body.flowsPage {
   margin: 0;
   padding: 6px 14px;
   border-top: 1px solid var(--stroke);
-  background: rgba(10, 10, 10, 0.6);
+  background: rgba(10, 10, 10, 0.30);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
@@ -1148,9 +1148,9 @@ body.flowsPage {
   flex-wrap: wrap;
   padding: 8px 14px 8px 274px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(10, 10, 10, 0.42);
-  backdrop-filter: blur(28px) saturate(1.3);
-  -webkit-backdrop-filter: blur(28px) saturate(1.3);
+  background: rgba(10, 10, 10, 0.30);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .flowsPage .flowHeading {
@@ -1216,8 +1216,8 @@ body.flowsPage {
   border: 1px solid var(--flow-node-border);
   border-radius: var(--r-md);
   background: var(--flow-node-bg);
-  backdrop-filter: blur(20px) saturate(1.2);
-  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   box-shadow: var(--flow-node-shadow);
   color: var(--text);
   cursor: grab;
@@ -1530,9 +1530,9 @@ body.flowsPage {
   padding: 10px 16px;
   border: 1px dashed rgba(255, 255, 255, 0.1);
   border-radius: var(--r-md);
-  background: rgba(10, 10, 10, 0.4);
-  backdrop-filter: blur(20px) saturate(1.2);
-  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  background: rgba(10, 10, 10, 0.22);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   color: var(--muted);
   font-size: 11px;
   line-height: 1.4;
@@ -1553,8 +1553,8 @@ body.flowsPage {
   overflow: hidden;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
   background: var(--glass-panel);
-  backdrop-filter: blur(32px) saturate(1.4);
-  -webkit-backdrop-filter: blur(32px) saturate(1.4);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   padding: 0;
 }
 
@@ -2062,15 +2062,15 @@ body.flowsPage {
   display: flex;
   align-items: center;
   gap: 2px;
-  background: rgba(12, 12, 12, 0.45);
+  background: rgba(12, 12, 12, 0.30);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: var(--r-md);
   padding: 3px;
   z-index: 15;
-  backdrop-filter: blur(24px) saturate(1.3);
-  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   user-select: none;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
 }
 
 .flowsPage .zoomBtn {
@@ -2432,4 +2432,249 @@ body.flowsPage {
   .flowsPage .topicPickerList {
     max-height: 260px;
   }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   LIGHT THEME — Flows
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+[data-theme="light"] {
+  --flow-grid-major: rgba(0, 0, 0, 0.06);
+  --flow-grid-minor: rgba(0, 0, 0, 0.03);
+  --flow-node-bg: rgba(255, 255, 255, 0.08);
+  --flow-node-border: rgba(0, 0, 0, 0.12);
+  --flow-node-shadow: 0 4px 20px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  --flow-edge-color: rgba(160, 125, 34, 0.85);
+}
+
+/* ── Chart area ── */
+[data-theme="light"] .flowsPage .flowsMain {
+  background: #eaeaeb;
+}
+[data-theme="light"] .flowsPage .flowBoardWrap {
+  background: #eaeaeb;
+}
+[data-theme="light"] .flowsPage .flowsMain > .statusLine {
+  background: rgba(244, 244, 245, 0.06);
+}
+
+/* ── Toolbar ── */
+[data-theme="light"] .flowsPage .flowsToolbar {
+  background: rgba(244, 244, 245, 0.06);
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+
+/* ── Sidebar ── */
+[data-theme="light"] .flowsPage .flowsSidebar {
+  border-right-color: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .flowsPage .flowsSidebarBlock {
+  border-bottom-color: rgba(0, 0, 0, 0.06);
+}
+[data-theme="light"] .flowsPage .flowListItem:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .flowsPage .flowListActions {
+  border-top-color: rgba(0, 0, 0, 0.08);
+}
+
+/* ── Inspector ── */
+[data-theme="light"] .flowsPage .flowsInspector {
+  border-left-color: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .flowsPage .flowInspectorHeader {
+  border-bottom-color: rgba(0, 0, 0, 0.06);
+}
+[data-theme="light"] .flowsPage .inspectorCard {
+  border-bottom-color: rgba(0, 0, 0, 0.05);
+}
+[data-theme="light"] .flowsPage .sidebarCardActions {
+  border-top-color: rgba(0, 0, 0, 0.08);
+}
+
+/* ── Nodes ── */
+[data-theme="light"] .flowsPage .flowNode:hover {
+  border-color: rgba(0, 0, 0, 0.18);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+[data-theme="light"] .flowsPage .flowNode.selected {
+  box-shadow: 0 0 0 2px var(--accent), 0 6px 24px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+[data-theme="light"] .flowsPage .flowNodeTagChip {
+  border-color: rgba(0, 0, 0, 0.10);
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .flowsPage .flowPort {
+  border-color: rgba(244, 244, 245, 0.92);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.08);
+}
+
+/* ── Branch labels ── */
+[data-theme="light"] .flowsPage .flowBranchLabel {
+  color: rgba(0, 0, 0, 0.88);
+  background: rgba(0, 0, 0, 0.07);
+}
+[data-theme="light"] .flowsPage .flowBranchLabel.neutral {
+  background: rgba(0, 0, 0, 0.07);
+}
+
+/* ── Palette ── */
+[data-theme="light"] .flowsPage .paletteItem:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+/* ── Empty board ── */
+[data-theme="light"] .flowsPage .emptyBoardHint {
+  border-color: rgba(0, 0, 0, 0.12);
+  background: rgba(244, 244, 245, 0.05);
+}
+[data-theme="light"] .flowsPage .emptyState {
+  border-color: rgba(0, 0, 0, 0.10);
+  background: rgba(0, 0, 0, 0.02);
+}
+
+/* ── Zoom bar ── */
+[data-theme="light"] .flowsPage .flowZoomBar {
+  background: rgba(244, 244, 245, 0.08);
+  border-color: rgba(0, 0, 0, 0.12);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+}
+[data-theme="light"] .flowsPage .zoomBtn {
+  color: #666;
+}
+[data-theme="light"] .flowsPage .zoomBtn:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: #1a1a1a;
+}
+[data-theme="light"] .flowsPage .zoomLabel {
+  color: #888;
+}
+
+/* ── Textarea ── */
+[data-theme="light"] .flowsPage textarea {
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .flowsPage textarea:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* ── Test result ── */
+[data-theme="light"] .flowsPage .testResult {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* ── Template chips ── */
+[data-theme="light"] .flowsPage .setVariableTemplateChip {
+  border-color: rgba(0, 0, 0, 0.10);
+  background: rgba(0, 0, 0, 0.04);
+  color: rgba(0, 0, 0, 0.8);
+}
+
+/* ── Variable cards ── */
+[data-theme="light"] .flowsPage .varCard.is-preview:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .flowsPage .varCardActionsOnly {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+/* ── Recording tag swatches ── */
+[data-theme="light"] .flowsPage .recordingPresetSwatch,
+[data-theme="light"] .flowsPage .recordingTagColorPreview,
+[data-theme="light"] .flowsPage .recordingTagColorSwatch {
+  border-color: rgba(0, 0, 0, 0.15);
+}
+[data-theme="light"] .flowsPage .recordingTagColorPreview {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+/* ── Scrollbars ── */
+[data-theme="light"] .flowsPage .flowsSidebar::-webkit-scrollbar-thumb,
+[data-theme="light"] .flowsPage .flowsInspector::-webkit-scrollbar-thumb,
+[data-theme="light"] .flowsPage .testResult::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+/* ── Schedule planner ── */
+[data-theme="light"] .flowsPage .schedulePlannerViewport {
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme="light"] .flowsPage .schedulePlannerHeader,
+[data-theme="light"] .flowsPage .scheduleDayRow {
+  border-color: rgba(0, 0, 0, 0.06);
+  background: rgba(0, 0, 0, 0.02);
+}
+[data-theme="light"] .flowsPage .schedulePlannerCorner {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(244, 244, 245, 0.06);
+}
+[data-theme="light"] .flowsPage .schedulePlannerHeader {
+  background: linear-gradient(to right, rgba(244, 244, 245, 0.06) 28px, rgba(244, 244, 245, 0.04));
+}
+[data-theme="light"] .flowsPage .scheduleTimeHeader {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: linear-gradient(to bottom, rgba(244, 244, 245, 0.06), rgba(244, 244, 245, 0.04));
+}
+[data-theme="light"] .flowsPage .scheduleTimeLabel {
+  color: rgba(0, 0, 0, 0.5);
+}
+[data-theme="light"] .flowsPage .scheduleDayLabel {
+  color: rgba(0, 0, 0, 0.85);
+}
+[data-theme="light"] .flowsPage .scheduleDayTrack {
+  border-color: rgba(0, 0, 0, 0.1);
+}
+[data-theme="light"] .flowsPage .scheduleDayEditItem {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.02);
+}
+
+/* ── Calendar ── */
+[data-theme="light"] .flowsPage .scheduleCalendarTitleButton {
+  border-color: rgba(0, 0, 0, 0.06);
+  background: rgba(0, 0, 0, 0.04);
+  color: rgba(0, 0, 0, 0.85);
+}
+[data-theme="light"] .flowsPage .scheduleCalendarPickerButton {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: linear-gradient(to bottom, rgba(244, 244, 245, 0.06), rgba(244, 244, 245, 0.03));
+  color: rgba(0, 0, 0, 0.85);
+}
+[data-theme="light"] .flowsPage .scheduleCalendarDay {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: linear-gradient(to bottom, rgba(244, 244, 245, 0.06), rgba(244, 244, 245, 0.03));
+  color: rgba(0, 0, 0, 0.85);
+}
+[data-theme="light"] .flowsPage .scheduleCalendarDay.is-disabled {
+  border-color: rgba(0, 0, 0, 0.05);
+  background: rgba(0, 0, 0, 0.02);
+  color: rgba(0, 0, 0, 0.3);
+}
+[data-theme="light"] .flowsPage .scheduleCalendarDay.is-outside {
+  border-color: rgba(0, 0, 0, 0.04);
+  background: rgba(0, 0, 0, 0.01);
+  color: rgba(0, 0, 0, 0.2);
+}
+[data-theme="light"] .flowsPage .scheduleCalendarSelection {
+  border-top-color: rgba(0, 0, 0, 0.06);
+}
+[data-theme="light"] .flowsPage .scheduleBlockDelete {
+  background: rgba(244, 244, 245, 0.06);
+  color: rgba(0, 0, 0, 0.85);
+}
+[data-theme="light"] .flowsPage .scheduleBlockDelete:hover {
+  background: rgba(244, 244, 245, 0.12);
+  color: rgba(0, 0, 0, 1);
+}
+[data-theme="light"] .flowsPage .scheduleBlockBadge {
+  color: rgba(0, 0, 0, 0.7);
+}
+[data-theme="light"] .flowsPage .schedulePlannerViewport::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.16);
+}
+[data-theme="light"] .flowsPage .scheduleTimeInput::-webkit-calendar-picker-indicator {
+  filter: none;
+}
+[data-theme="light"] .flowsPage .compareTriggerPathGroupTitle {
+  color: rgba(0, 0, 0, 0.45);
 }

@@ -1,5 +1,37 @@
 // settings.js — SmartEye Pi Settings page
 
+/* ── Theme ── */
+const themeSelectEl = document.getElementById("themeSelect");
+
+function applyTheme(pref) {
+  let resolved = pref;
+  if (pref === "system") {
+    resolved = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  }
+  document.documentElement.setAttribute("data-theme", resolved);
+}
+
+function initTheme() {
+  const stored = localStorage.getItem("theme") || "dark";
+  if (themeSelectEl) themeSelectEl.value = stored;
+  applyTheme(stored);
+
+  themeSelectEl?.addEventListener("change", () => {
+    const val = themeSelectEl.value;
+    localStorage.setItem("theme", val);
+    applyTheme(val);
+  });
+
+  // Listen for OS theme changes when "system" is selected
+  matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+    if (localStorage.getItem("theme") === "system") {
+      applyTheme("system");
+    }
+  });
+}
+
+initTheme();
+
 const cloudWsUrlEl   = document.getElementById("cloudWsUrl");
 const cloudTokenEl   = document.getElementById("cloudToken");
 const cloudDeviceIdEl = document.getElementById("cloudDeviceId");

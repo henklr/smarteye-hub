@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="en">
+<script>(function(){var d=document.documentElement,m=matchMedia('(prefers-color-scheme:light)');function a(){var t=localStorage.getItem('theme')||'dark';d.setAttribute('data-theme',t==='system'?(m.matches?'light':'dark'):t)}a();m.addEventListener('change',a)})()</script>
 
 <head>
   <meta charset="utf-8" />
@@ -54,12 +55,6 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      animation: fadeIn 1s ease-out both;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; transform: scale(0.96); }
-      to   { opacity: 1; transform: scale(1); }
     }
 
     /* ── Wordmark ── */
@@ -82,13 +77,13 @@
       width: 320px;
       padding: 32px 28px 26px;
       border-radius: 20px;
-      background: rgba(255,255,255,0.03);
-      backdrop-filter: blur(40px) saturate(1.3);
-      -webkit-backdrop-filter: blur(40px) saturate(1.3);
-      border: 1px solid rgba(255,255,255,0.07);
+      background: rgba(255,255,255,0.02);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      border: 1px solid rgba(255,255,255,0.06);
       box-shadow:
-        0 24px 80px rgba(0,0,0,0.5),
-        inset 0 1px 0 rgba(255,255,255,0.04);
+        0 16px 48px rgba(0,0,0,0.15),
+        inset 0 1px 0 rgba(255,255,255,0.03);
     }
 
     /* ── Input rows ── */
@@ -206,6 +201,37 @@
     .corner--tr { top: 24px; right: 24px; border-top: 1px solid var(--accent); border-right: 1px solid var(--accent); }
     .corner--bl { bottom: 24px; left: 24px; border-bottom: 1px solid var(--accent); border-left: 1px solid var(--accent); }
     .corner--br { bottom: 24px; right: 24px; border-bottom: 1px solid var(--accent); border-right: 1px solid var(--accent); }
+
+    /* ── Light theme overrides ── */
+    [data-theme="light"] .loginWordmark[src*="smarteye-light"] {
+      display: none;
+    }
+    [data-theme="light"] .loginWordmarkDark {
+      display: inline-block !important;
+    }
+    .loginWordmarkDark {
+      display: none;
+      height: 22px;
+      margin-bottom: 6px;
+      opacity: 0.88;
+    }
+    [data-theme="light"] .glassCard {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(0, 0, 0, 0.06);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+    }
+    [data-theme="light"] .fieldRow input {
+      border-bottom-color: rgba(0, 0, 0, 0.15);
+    }
+    [data-theme="light"] .eyeBg {
+      opacity: 0.08;
+    }
+    [data-theme="light"] .ring {
+      border-color: rgba(160, 125, 34, 0.08);
+    }
+    [data-theme="light"] .ring--3 {
+      border-color: rgba(160, 125, 34, 0.12);
+    }
   </style>
 </head>
 
@@ -228,6 +254,7 @@
     <!-- Login content -->
     <div class="loginOverlay">
       <img src="/static/smarteye-light.png" alt="SmartEye" class="loginWordmark" />
+      <img src="/static/smarteye-dark.png" alt="SmartEye" class="loginWordmarkDark" />
       <div class="loginTagline">Surveillance Hub</div>
 
       <div class="glassCard">
