@@ -2074,8 +2074,8 @@ body.flowsPage {
 }
 
 .flowsPage .zoomBtn {
-  width: 26px;
-  height: 26px;
+  width: 34px;
+  height: 34px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2193,6 +2193,12 @@ body.flowsPage {
 
   .flowsPage .schedulePlannerViewport {
     min-height: 70vh;
+  }
+}
+
+@media (max-width: 560px) {
+  .flowsPage .wrap {
+    padding-bottom: calc(126px + env(safe-area-inset-bottom, 0px));
   }
 }
 
