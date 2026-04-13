@@ -1063,8 +1063,9 @@ code {
 .liveLayout {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 60px);
+  height: calc(100vh - 60px - 24px);
   min-height: 0;
+  margin: 12px;
 }
 
 .liveMain {
@@ -1809,7 +1810,7 @@ body.tileMaximizedMode #videoGrid {
 
 @media (max-width: 560px) {
   body.livePage .liveLayout {
-    height: 100vh;
+    height: calc(100vh - 24px);
   }
 
   .wrap {
