@@ -7,128 +7,250 @@
   <title>Login — SmartEye Hub</title>
   <link rel="stylesheet" href="/static/styles.css" />
   <style>
-    .loginWrap {
+    body { overflow: hidden; margin: 0; }
+
+    /* ── Full-screen eye background ── */
+    .loginScene {
+      position: fixed;
+      inset: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      min-height: 100vh;
-      padding: 24px;
     }
 
-    .loginCard {
-      width: 100%;
-      max-width: 380px;
-      padding: 36px 32px 28px;
-      border-radius: 16px;
-      background: var(--panel);
-      border: 1px solid var(--stroke);
+    .eyeBg {
+      position: absolute;
+      width: min(90vmin, 700px);
+      height: min(90vmin, 700px);
+      opacity: 0.18;
+      filter: blur(2px) saturate(1.2);
+      animation: breathe 8s ease-in-out infinite alternate;
+      pointer-events: none;
+      user-select: none;
     }
 
-    .loginTitle {
-      font-size: 20px;
-      font-weight: 900;
-      margin: 0 0 4px;
-      color: var(--text);
+    @keyframes breathe {
+      0%   { opacity: 0.14; transform: scale(1); }
+      100% { opacity: 0.22; transform: scale(1.04); }
     }
 
-    .loginSub {
-      font-size: 13px;
-      color: var(--muted);
-      margin-bottom: 24px;
+    /* ── Concentric ring decorations ── */
+    .ring {
+      position: absolute;
+      border-radius: 50%;
+      border: 1px solid rgba(212,170,79,0.06);
+      pointer-events: none;
+    }
+    .ring--1 { width: 520px; height: 520px; animation: spin 60s linear infinite; }
+    .ring--2 { width: 380px; height: 380px; border-style: dashed; animation: spin 45s linear infinite reverse; }
+    .ring--3 { width: 240px; height: 240px; border-color: rgba(212,170,79,0.09); animation: spin 30s linear infinite; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Content layer ── */
+    .loginOverlay {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      animation: fadeIn 1s ease-out both;
     }
 
-    .loginField {
-      margin-bottom: 16px;
+    @keyframes fadeIn {
+      from { opacity: 0; transform: scale(0.96); }
+      to   { opacity: 1; transform: scale(1); }
     }
 
-    .loginField label {
-      display: block;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--muted);
+    /* ── Wordmark ── */
+    .loginWordmark {
+      height: 22px;
       margin-bottom: 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
+      opacity: 0.88;
     }
 
-    .loginField input {
+    .loginTagline {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.3em;
+      color: rgba(212,170,79,0.5);
+      margin-bottom: 40px;
+    }
+
+    /* ── Glass form card ── */
+    .glassCard {
+      width: 320px;
+      padding: 32px 28px 26px;
+      border-radius: 20px;
+      background: rgba(255,255,255,0.03);
+      backdrop-filter: blur(40px) saturate(1.3);
+      -webkit-backdrop-filter: blur(40px) saturate(1.3);
+      border: 1px solid rgba(255,255,255,0.07);
+      box-shadow:
+        0 24px 80px rgba(0,0,0,0.5),
+        inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+
+    /* ── Input rows ── */
+    .fieldRow {
+      position: relative;
+      margin-bottom: 20px;
+    }
+
+    .fieldRow input {
       width: 100%;
-      padding: 10px 14px;
-      border-radius: 8px;
-      border: 1px solid var(--stroke-2);
-      background: var(--surface-2);
+      padding: 14px 16px 6px;
+      border: none;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+      background: transparent;
       color: var(--text);
-      font-size: 14px;
+      font-size: 15px;
       font-family: inherit;
       outline: none;
-      transition: border-color 0.15s;
       box-sizing: border-box;
+      transition: border-color 0.3s;
     }
 
-    .loginField input:focus {
-      border-color: var(--accent);
+    .fieldRow input:focus {
+      border-bottom-color: var(--accent);
     }
 
+    .fieldRow label {
+      position: absolute;
+      left: 16px;
+      top: 10px;
+      font-size: 13px;
+      color: var(--muted);
+      pointer-events: none;
+      transition: all 0.2s ease;
+    }
+
+    .fieldRow input:focus + label,
+    .fieldRow input:not(:placeholder-shown) + label {
+      top: -2px;
+      font-size: 9px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    /* ── Button ── */
     .loginBtn {
       width: 100%;
-      padding: 12px;
-      border: none;
-      border-radius: 10px;
-      background: var(--accent);
-      color: #000;
-      font-size: 14px;
+      padding: 13px;
+      border: 1px solid rgba(212,170,79,0.3);
+      border-radius: 12px;
+      background: rgba(212,170,79,0.08);
+      color: var(--accent-strong);
+      font-size: 13px;
       font-weight: 700;
+      font-family: inherit;
       cursor: pointer;
-      margin-top: 8px;
-      transition: opacity 0.15s;
+      margin-top: 4px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      transition: all 0.25s;
     }
 
     .loginBtn:hover {
-      opacity: 0.9;
+      background: rgba(212,170,79,0.16);
+      border-color: rgba(212,170,79,0.5);
+      box-shadow: 0 0 24px rgba(212,170,79,0.12);
+    }
+
+    .loginBtn:active {
+      transform: scale(0.98);
     }
 
     .loginBtn:disabled {
-      opacity: 0.5;
+      opacity: 0.35;
       cursor: not-allowed;
+      transform: none;
     }
 
+    /* ── Error ── */
     .loginError {
-      background: var(--danger-2);
-      color: var(--danger);
+      background: rgba(239,68,68,0.08);
+      border: 1px solid rgba(239,68,68,0.15);
+      color: #f87171;
       padding: 10px 14px;
-      border-radius: 8px;
+      border-radius: 10px;
       font-size: 13px;
-      margin-bottom: 16px;
+      margin-bottom: 18px;
       display: none;
+      backdrop-filter: blur(10px);
     }
 
     .loginError.visible {
       display: block;
     }
+
+    /* ── Footer ── */
+    .loginFooter {
+      margin-top: 32px;
+      font-size: 10px;
+      color: var(--muted-2);
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+    }
+
+    /* ── Corner accents ── */
+    .corner {
+      position: fixed;
+      width: 60px;
+      height: 60px;
+      pointer-events: none;
+      opacity: 0.12;
+    }
+    .corner--tl { top: 24px; left: 24px; border-top: 1px solid var(--accent); border-left: 1px solid var(--accent); }
+    .corner--tr { top: 24px; right: 24px; border-top: 1px solid var(--accent); border-right: 1px solid var(--accent); }
+    .corner--bl { bottom: 24px; left: 24px; border-bottom: 1px solid var(--accent); border-left: 1px solid var(--accent); }
+    .corner--br { bottom: 24px; right: 24px; border-bottom: 1px solid var(--accent); border-right: 1px solid var(--accent); }
   </style>
 </head>
 
 <body>
-  <div class="loginWrap">
-    <div class="loginCard">
-      <div class="loginTitle">SmartEye Hub</div>
-      <div class="loginSub">Sign in with your system credentials</div>
+  <!-- Corner accents -->
+  <div class="corner corner--tl"></div>
+  <div class="corner corner--tr"></div>
+  <div class="corner corner--bl"></div>
+  <div class="corner corner--br"></div>
 
-      <div class="loginError" id="loginError"></div>
+  <div class="loginScene">
+    <!-- Large eye as background -->
+    <img src="/static/smarteye-logo.png" alt="" class="eyeBg" />
 
-      <form id="loginForm" autocomplete="on">
-        <div class="loginField">
-          <label for="username">Username</label>
-          <input id="username" name="username" type="text" autocomplete="username" required autofocus />
-        </div>
+    <!-- Subtle rotating rings -->
+    <div class="ring ring--1"></div>
+    <div class="ring ring--2"></div>
+    <div class="ring ring--3"></div>
 
-        <div class="loginField">
-          <label for="password">Password</label>
-          <input id="password" name="password" type="password" autocomplete="current-password" required />
-        </div>
+    <!-- Login content -->
+    <div class="loginOverlay">
+      <img src="/static/smarteye-light.png" alt="SmartEye" class="loginWordmark" />
+      <div class="loginTagline">Surveillance Hub</div>
 
-        <button class="loginBtn" type="submit" id="loginBtn">Sign in</button>
-      </form>
+      <div class="glassCard">
+        <div class="loginError" id="loginError"></div>
+
+        <form id="loginForm" autocomplete="on">
+          <div class="fieldRow">
+            <input id="username" name="username" type="text" autocomplete="username" required autofocus
+                   placeholder=" " />
+            <label for="username">Username</label>
+          </div>
+
+          <div class="fieldRow">
+            <input id="password" name="password" type="password" autocomplete="current-password" required
+                   placeholder=" " />
+            <label for="password">Password</label>
+          </div>
+
+          <button class="loginBtn" type="submit" id="loginBtn">Authenticate</button>
+        </form>
+      </div>
+
+      <div class="loginFooter">SmartEye &middot; Denmark</div>
     </div>
   </div>
 
