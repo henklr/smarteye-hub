@@ -223,6 +223,32 @@ def system_reboot():
     return {"ok": True, "message": "Reboot initiated"}
 
 
+_DEFAULT_FILES = {
+    "settings.json":          '{\n  "retention_days": 0,\n  "timezone": "UTC",\n  "ntp_server": "pool.ntp.org"\n}',
+    "devices.json":           '{\n  "devices": []\n}',
+    "cloud_connector.json":   '{}',
+    "flows.json":             '{\n  "items": []\n}',
+    "schedules.json":         '{\n  "items": []\n}',
+    "recording_presets.json":  '{}',
+    "flow_state.json":        '{}',
+    "recording_events.json":  '[]',
+    "public_variables.json":  '{}',
+}
+
+
+@app.post("/api/system/restore-defaults")
+def restore_defaults():
+    import shutil
+    for fname, content in _DEFAULT_FILES.items():
+        (DATA_DIR / fname).write_text(content, encoding="utf-8")
+    for subdir in ("recordings", "playback_clips"):
+        p = DATA_DIR / subdir
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+            p.mkdir(parents=True, exist_ok=True)
+    return {"ok": True, "message": "All settings restored to defaults. Please reboot."}
+
+
 # ── Date / Time / NTP / Timezone ───────────────────────────────────────────────
 
 _ZONEINFO_DIR = Path("/usr/share/zoneinfo")

@@ -361,3 +361,25 @@ rebootBtn?.addEventListener("click", async () => {
     rebootBtn.disabled = false;
   }
 });
+
+const restoreDefaultsBtn = document.getElementById("restoreDefaultsBtn");
+
+restoreDefaultsBtn?.addEventListener("click", async () => {
+  if (!window.confirm("Restore all settings to factory defaults?\n\nThis will erase all devices, flows, schedules, recordings, and cloud configuration. This cannot be undone.")) return;
+  restoreDefaultsBtn.disabled = true;
+  setSystemStatus("Restoring defaults…");
+  try {
+    const result = await api("/api/system/restore-defaults", { method: "POST" });
+    setSystemStatus(result.message || "Defaults restored.");
+    if (window.confirm("Defaults restored. Reboot now to apply changes?")) {
+      setSystemStatus("Rebooting…");
+      await api("/api/system/reboot", { method: "POST" });
+      setSystemStatus("Reboot command sent. The system will restart shortly.");
+      return;
+    }
+  } catch (e) {
+    setSystemStatus(`Error: ${String(e.message || e)}`);
+  } finally {
+    restoreDefaultsBtn.disabled = false;
+  }
+});

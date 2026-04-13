@@ -1965,6 +1965,42 @@ function portUiLabel(nodeId, kind, handle) {
   return displayPortLabel(node, kind, handle) || handle;
 }
 
+function isNodeInvalid(node) {
+  const cfg = node.config || {};
+  const deviceIds = new Set(state.devices.map((d) => d.id));
+  const variableKeys = new Set(currentPublicVariables().map((v) => v.key));
+  const scheduleKeys = new Set(currentSchedules().map((s) => s.key));
+
+  switch (node.type) {
+    case "trigger.onvif_event":
+    case "trigger.device_offline":
+    case "trigger.device_back_online":
+    case "trigger.ptz_manual_control_started":
+    case "trigger.ptz_manual_control_stopped":
+    case "action.record":
+    case "action.stop_recording":
+      if (cfg.device_id && !deviceIds.has(cfg.device_id)) return "Unknown device";
+      break;
+    case "trigger.schedule_active":
+    case "trigger.schedule_inactive":
+    case "condition.schedule_active":
+      if (cfg.schedule_key && !scheduleKeys.has(cfg.schedule_key)) return "Unknown schedule";
+      break;
+    case "condition.compare":
+      if (cfg.left_source === "variable" && cfg.left_value && !variableKeys.has(cfg.left_value)) return "Unknown variable";
+      if (cfg.right_source === "variable" && cfg.right_value && !variableKeys.has(cfg.right_value)) return "Unknown variable";
+      break;
+    case "operator.set_variable":
+      if (cfg.variable_key && !variableKeys.has(cfg.variable_key)) return "Unknown variable";
+      if (cfg.value_source === "variable" && cfg.value && !variableKeys.has(cfg.value)) return "Unknown variable";
+      break;
+    case "operator.template":
+      if (cfg.variable_key && !variableKeys.has(cfg.variable_key)) return "Unknown variable";
+      break;
+  }
+  return null;
+}
+
 function nodePreview(node) {
   const cfg = node.config || {};
 
@@ -2821,14 +2857,16 @@ function renderCanvas() {
     const ports = def?.ports || { inputs: [], outputs: [] };
     const meta = CATEGORY_META[node.category] || CATEGORY_META.action;
     const tag = recordNodeTag(node);
+    const invalidReason = isNodeInvalid(node);
 
     return `
-      <div class="flowNode ${node.category} ${node.id === state.selectedNodeId ? "selected" : ""}" data-node-id="${escapeHtml(node.id)}" style="left:${Number(node.x) || 0}px; top:${Number(node.y) || 0}px;">
+      <div class="flowNode ${node.category} ${node.id === state.selectedNodeId ? "selected" : ""} ${invalidReason ? "invalid" : ""}" data-node-id="${escapeHtml(node.id)}" style="left:${Number(node.x) || 0}px; top:${Number(node.y) || 0}px;">
         <div class="flowNodeTop">
           <div>
             <div class="flowNodeLabel">${escapeHtml(displayNodeTitle(node) || node.label)}</div>
             <div class="flowNodeType">${escapeHtml(meta.label)}</div>
           </div>
+          ${invalidReason ? `<span class="nodeBadge invalidBadge" title="${escapeHtml(invalidReason)}">⚠</span>` : ""}
           <span class="nodeBadge">${escapeHtml(meta.label)}</span>
         </div>
 

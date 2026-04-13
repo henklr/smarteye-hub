@@ -1608,8 +1608,6 @@ def _normalize_node_config(
         cfg["schedule_key"] = str(cfg.get("schedule_key") or "").strip()
         if not cfg["schedule_key"]:
             raise HTTPException(status_code=400, detail="Schedule trigger needs a schedule")
-        if cfg["schedule_key"] not in schedule_keys:
-            raise HTTPException(status_code=400, detail=f"Unknown schedule key: {cfg['schedule_key']}")
         return cfg
 
     if node_type == "trigger.digital_input_changed":
@@ -1640,32 +1638,18 @@ def _normalize_node_config(
         cfg["right_input_kind"] = _normalize_physical_value_kind(cfg.get("right_input_kind"))
         cfg["left_channel"] = str(cfg.get("left_channel") or "1").strip() or "1"
         cfg["right_channel"] = str(cfg.get("right_channel") or "1").strip() or "1"
-        if cfg["left_source"] == "variable" and cfg["left_value"] and cfg["left_value"] not in variable_keys:
-            raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['left_value']}")
-        if cfg["right_source"] == "variable" and cfg["right_value"] and cfg["right_value"] not in variable_keys:
-            raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['right_value']}")
         if cfg["left_source"] == "physical_input":
             cfg["left_channel"] = _normalize_physical_channel(cfg.get("left_channel"), cfg["left_input_kind"])
             cfg["left_value"] = f"{cfg['left_input_kind']}:{cfg['left_channel']}"
         if cfg["right_source"] == "physical_input":
             cfg["right_channel"] = _normalize_physical_channel(cfg.get("right_channel"), cfg["right_input_kind"])
             cfg["right_value"] = f"{cfg['right_input_kind']}:{cfg['right_channel']}"
-        if cfg["left_source"] == "variable" and cfg["right_source"] == "literal":
-            variable_definition = variable_definitions.get(cfg["left_value"]) or {}
-            if variable_definition.get("type") == "schedule" and cfg["right_value"] and cfg["right_value"] not in schedule_keys:
-                raise HTTPException(status_code=400, detail=f"Unknown schedule key: {cfg['right_value']}")
-        if cfg["right_source"] == "variable" and cfg["left_source"] == "literal":
-            variable_definition = variable_definitions.get(cfg["right_value"]) or {}
-            if variable_definition.get("type") == "schedule" and cfg["left_value"] and cfg["left_value"] not in schedule_keys:
-                raise HTTPException(status_code=400, detail=f"Unknown schedule key: {cfg['left_value']}")
         return cfg
 
     if node_type == "condition.schedule_active":
         cfg["schedule_key"] = str(cfg.get("schedule_key") or "").strip()
         if not cfg["schedule_key"]:
             raise HTTPException(status_code=400, detail="Schedule condition needs a schedule")
-        if cfg["schedule_key"] not in schedule_keys:
-            raise HTTPException(status_code=400, detail=f"Unknown schedule key: {cfg['schedule_key']}")
         return cfg
 
     if node_type == "operator.delay":
@@ -1689,17 +1673,8 @@ def _normalize_node_config(
         cfg["value_channel"] = str(cfg.get("value_channel") or "1").strip() or "1"
         if not cfg["variable_key"]:
             raise HTTPException(status_code=400, detail="Set variable needs a variable key")
-        if cfg["variable_key"] not in variable_keys:
-            raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['variable_key']}")
-        if cfg["value_source"] == "variable" and cfg["value"] and cfg["value"] not in variable_keys:
-            raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['value']}")
         if cfg["value_source"] == "physical_input":
             cfg["value_channel"] = _normalize_physical_channel(cfg.get("value_channel"), cfg["value_input_kind"])
-        target_definition = variable_definitions.get(cfg["variable_key"]) or {}
-        if target_definition.get("type") == "schedule" and cfg["value_source"] == "literal":
-            literal_value = str(cfg.get("value") or "").strip()
-            if literal_value and literal_value not in schedule_keys:
-                raise HTTPException(status_code=400, detail=f"Unknown schedule key: {literal_value}")
         return cfg
 
     if node_type == "operator.template":
@@ -1707,8 +1682,6 @@ def _normalize_node_config(
         cfg["template"] = str(cfg.get("template") or "")
         if not cfg["variable_key"]:
             raise HTTPException(status_code=400, detail="Template node needs a variable key")
-        if cfg["variable_key"] not in variable_keys:
-            raise HTTPException(status_code=400, detail=f"Unknown variable key: {cfg['variable_key']}")
         return cfg
 
     if node_type == "action.send_http_request":
@@ -1749,8 +1722,6 @@ def _normalize_node_config(
         cfg["device_id"] = str(cfg.get("device_id") or "").strip()
         if not cfg["device_id"]:
             raise HTTPException(status_code=400, detail="Record action needs a device")
-        if cfg["device_id"] not in {item["id"] for item in _load_devices()}:
-            raise HTTPException(status_code=400, detail=f"Unknown device id: {cfg['device_id']}")
         cfg["preset_name"] = str(cfg.get("preset_name") or "").strip()
         cfg["name"] = str(cfg.get("name") or cfg.get("preset_name") or "").strip()
         try:
@@ -1796,8 +1767,6 @@ def _normalize_node_config(
         cfg["device_id"] = str(cfg.get("device_id") or "").strip()
         if not cfg["device_id"]:
             raise HTTPException(status_code=400, detail="Stop recording action needs a device")
-        if cfg["device_id"] not in {item["id"] for item in _load_devices()}:
-            raise HTTPException(status_code=400, detail=f"Unknown device id: {cfg['device_id']}")
         return cfg
 
     if node_type == "action.log_message":
@@ -2020,15 +1989,7 @@ def _normalize_variable_items(items: Any) -> List[Dict[str, Any]]:
 
 
 def _validate_schedule_variable_values(items: List[Dict[str, Any]]) -> None:
-    schedule_keys = {item["key"] for item in _load_schedule_definitions()}
-    for item in items:
-        if item.get("source") != "manual":
-            continue
-        if str(item.get("type") or "") != "schedule":
-            continue
-        value = str(item.get("value") or "").strip()
-        if value and value not in schedule_keys:
-            raise HTTPException(status_code=400, detail=f"Unknown schedule key: {value}")
+    pass
 
 
 
