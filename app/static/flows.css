@@ -26,7 +26,7 @@ body.flowsPage {
 .flowsPage .flowsShell {
   position: relative;
   display: block;
-  height: calc(100vh - 60px);
+  height: calc(100vh - 48px);
   min-height: 0;
   overflow: hidden;
 }
@@ -1124,6 +1124,20 @@ body.flowsPage {
   background: #0a0a0a;
 }
 
+.flowsPage .flowsMain > .statusLine {
+  position: absolute;
+  bottom: 0;
+  left: 260px;
+  right: 280px;
+  z-index: 5;
+  margin: 0;
+  padding: 6px 14px;
+  border-top: 1px solid var(--stroke);
+  background: rgba(10, 10, 10, 0.6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
 .flowsPage .flowsToolbar {
   position: relative;
   z-index: 11;
@@ -2043,8 +2057,8 @@ body.flowsPage {
 /* ── Zoom bar ── */
 .flowsPage .flowZoomBar {
   position: absolute;
-  bottom: 10px;
-  right: 10px;
+  bottom: 40px;
+  right: 290px;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -2052,7 +2066,7 @@ body.flowsPage {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: var(--r-md);
   padding: 3px;
-  z-index: 20;
+  z-index: 15;
   backdrop-filter: blur(24px) saturate(1.3);
   -webkit-backdrop-filter: blur(24px) saturate(1.3);
   user-select: none;
@@ -2106,6 +2120,15 @@ body.flowsPage {
   .flowsPage .flowsToolbar {
     padding-left: 254px;
   }
+
+  .flowsPage .flowZoomBar {
+    right: 270px;
+  }
+
+  .flowsPage .flowsMain > .statusLine {
+    left: 240px;
+    right: 260px;
+  }
 }
 
 @media (max-width: 1140px) {
@@ -2144,6 +2167,19 @@ body.flowsPage {
 
   .flowsPage .flowsToolbar {
     padding-left: 14px;
+  }
+
+  .flowsPage .flowZoomBar {
+    right: 10px;
+  }
+
+  .flowsPage .flowsMain > .statusLine {
+    position: static;
+    left: auto;
+    right: auto;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: transparent;
   }
 
   .flowsPage .flowBoardWrap {

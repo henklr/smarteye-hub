@@ -11,7 +11,7 @@ body.playbackPage {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   gap: 0;
-  height: calc(100vh - 60px);
+  height: calc(100vh - 48px);
   min-height: 0;
 }
 

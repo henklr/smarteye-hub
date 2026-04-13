@@ -12,12 +12,16 @@
 <body class="flowsPage">
   <div class="wrap full">
     <div class="topbar">
-      <img src="/static/smarteye-light.png" alt="SmartEye" class="topbarLogo">
-      <div class="tabs">
-        <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
-        <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
-        <a class="tab active" href="/flows"><span class="tabDot"></span>Flows</a>
-        <a class="tab" href="/settings"><span class="tabDot"></span>System</a>
+      <div class="topbarLeft">
+        <img src="/static/smarteye-light.png" alt="SmartEye" class="topbarLogo">
+      </div>
+      <div class="topbarCenter">
+        <div class="tabs">
+          <a class="tab" href="/live"><span class="tabDot"></span>Live</a>
+          <a class="tab" href="/playback"><span class="tabDot"></span>Playback</a>
+          <a class="tab active" href="/flows"><span class="tabDot"></span>Flows</a>
+          <a class="tab" href="/settings"><span class="tabDot"></span>System</a>
+        </div>
       </div>
       <div class="topbarActions">
         <button class="btn logoutBtn" id="logoutBtn" type="button" title="Sign out">Logout</button>
@@ -102,12 +106,6 @@
               <div id="emptyBoardHint" class="emptyBoardHint hidden">Add blocks from the left palette to start building.
               </div>
           </div>
-          <div class="flowZoomBar">
-            <button id="zoomOut" class="zoomBtn" title="Zoom out">−</button>
-            <span id="zoomLabel" class="zoomLabel">100%</span>
-            <button id="zoomIn" class="zoomBtn" title="Zoom in">+</button>
-            <button id="zoomReset" class="zoomBtn zoomResetBtn" title="Reset zoom">⊙</button>
-          </div>
         </div>
 
         <div id="scheduleWorkspace" class="scheduleWorkspace hidden"></div>
@@ -125,6 +123,13 @@
 
         <div id="inspectorBody" class="inspectorBody"></div>
       </aside>
+
+      <div class="flowZoomBar">
+        <button id="zoomOut" class="zoomBtn" title="Zoom out">−</button>
+        <span id="zoomLabel" class="zoomLabel">100%</span>
+        <button id="zoomIn" class="zoomBtn" title="Zoom in">+</button>
+        <button id="zoomReset" class="zoomBtn zoomResetBtn" title="Reset zoom">⊙</button>
+      </div>
     </div>
   </div>
 

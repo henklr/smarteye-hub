@@ -150,6 +150,9 @@ h1 {
 }
 
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -161,6 +164,23 @@ h1 {
   background: var(--glass);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
+}
+
+.topbarLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.topbarCenter {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  pointer-events: auto;
 }
 
 .topbarLogo {
@@ -277,15 +297,7 @@ h1 {
 }
 
 .tab.active::after {
-  content: "";
-  position: absolute;
-  left: 14px;
-  right: 14px;
-  bottom: 0;
-  height: 1px;
-  border-radius: 0;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  box-shadow: 0 0 8px rgba(212, 170, 79, 0.3);
+  display: none;
 }
 
 .tab.active .tabDot {
@@ -1112,7 +1124,7 @@ code {
 .liveLayout {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 60px - 24px);
+  height: calc(100vh - 48px - 24px);
   min-height: 0;
   margin: 12px;
 }
@@ -1891,6 +1903,11 @@ body.tileMaximizedMode #videoGrid {
     pointer-events: none;
   }
 
+  .topbarLeft,
+  .topbarCenter {
+    display: none;
+  }
+
   .topbarLogo {
     display: none;
   }
@@ -2132,10 +2149,29 @@ body.tileMaximizedMode #videoGrid {
 
 /* ── Settings page ─────────────────────────────────────────────────────────── */
 
+body.settingsPage {
+  overflow: hidden;
+}
+
+body.settingsPage .wrap.full {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 100%;
+  padding: 0;
+}
+
+body.settingsPage .topbar {
+  flex: 0 0 48px;
+}
+
 .settingsShell {
   display: flex;
   justify-content: center;
   padding: 20px 16px 40px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .settingsContent {
