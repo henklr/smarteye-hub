@@ -17,6 +17,10 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 
+import logging
+
+_log_recording = logging.getLogger("recording")
+_log_playback  = logging.getLogger("playback")
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -802,7 +806,9 @@ def _stop_recorder(device_id: str) -> None:
     try:
         proc.terminate()
         proc.wait(timeout=5)
+        _log_recording.info("Stopped ffmpeg recorder for device %s", device_id)
     except Exception:
+        _log_recording.warning("Failed to stop recorder for %s, killing", device_id)
         try:
             proc.kill()
         except Exception:
@@ -823,6 +829,7 @@ def _start_recorder(device_id: str) -> None:
         stderr=subprocess.DEVNULL,
         env={**os.environ, "TZ": "UTC"},
     )
+    _log_recording.info("Started ffmpeg recorder for device %s", device_id)
     with _recorders_lock:
         _recorders[device_id] = proc
 
@@ -988,7 +995,9 @@ def create_recording_marker(
         _delete_clip_cache(invalidated_clip_ids)
         merged_event = _find_matching_event(items, event)
 
-    return merged_event or event
+    final = merged_event or event
+    _log_recording.info("Recording marker created: device=%s, title=%s, id=%s", final.get("device_id"), final.get("title"), final.get("id"))
+    return final
 
 
 def stop_recording_marker(*, device_id: str) -> Dict[str, Any]:
@@ -1018,8 +1027,11 @@ def stop_recording_marker(*, device_id: str) -> Dict[str, Any]:
             invalidated_clip_ids.add(str(event.get("id") or "").strip())
             _save_events(items)
             _delete_clip_cache(invalidated_clip_ids)
-            return _find_matching_event(items, event) or event
+            stopped = _find_matching_event(items, event) or event
+            _log_recording.info("Recording marker stopped: device=%s, id=%s", stopped.get("device_id"), stopped.get("id"))
+            return stopped
 
+    _log_recording.warning("No active recording found for device %s", normalized_device_id)
     raise LookupError(f"No active recording found for device {normalized_device_id}")
 
 
@@ -1123,7 +1135,10 @@ def _build_event_clip(event: Dict[str, Any]) -> Path:
 
     segments = _segments_for_range(device_id, started_at, ended_at)
     if not segments:
+        _log_playback.warning("No recorded video found for event %s", event_id)
         raise HTTPException(status_code=404, detail="No recorded video found for this event")
+
+    _log_playback.info("Building playback clip for event %s (%d segments)", event_id, len(segments))
 
     first_start = segments[0].started_at
     offset_seconds = max(0.0, (started_at - first_start).total_seconds())
@@ -1196,8 +1211,10 @@ def _build_event_clip(event: Dict[str, Any]) -> Path:
                 subprocess.run(copy_cmd, check=True)
                 temp_clip_path.replace(clip_path)
                 _prune_cached_clips()
+                _log_playback.info("Clip generated (copy mode) for event %s", event_id)
                 return clip_path
             except subprocess.CalledProcessError as exc:
+                _log_playback.warning("Copy-mode clip failed for event %s, falling back to transcode", event_id)
                 last_error = exc
                 try:
                     temp_clip_path.unlink(missing_ok=True)
@@ -1209,8 +1226,10 @@ def _build_event_clip(event: Dict[str, Any]) -> Path:
         try:
             subprocess.run(transcode_cmd, check=True)
             temp_clip_path.replace(clip_path)
+            _log_playback.info("Clip generated (transcode) for event %s", event_id)
             _prune_cached_clips()
         except subprocess.CalledProcessError as exc:
+            _log_playback.error("Clip generation failed for event %s: %s", event_id, exc)
             raise HTTPException(status_code=500, detail=f"Clip generation failed: {exc if exc else last_error}")
     finally:
         try:
@@ -1244,6 +1263,7 @@ def _clear_directory_contents(root: Path) -> int:
 
 
 def clear_all_recordings() -> Dict[str, int]:
+    _log_recording.warning("Clearing all recordings and playback clips")
     deleted_recording_files = 0
     deleted_clip_files = 0
     cleared_events = 0

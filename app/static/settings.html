@@ -132,6 +132,40 @@
           </div>
         </section>
 
+        <section class="settingsCard">
+          <div class="listHeader compact">
+            <div>
+              <div class="listTitle small">System logs</div>
+              <div class="listSub">Live application and server log output.</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex:0 0 auto;">
+              <button class="btn btn-mini" id="logAutoUpdateBtn" type="button">Auto-update: ON</button>
+              <button class="btn btn-mini" id="logRefreshBtn" type="button">Refresh</button>
+              <button class="btn btn-mini btn-danger" id="logClearBtn" type="button">Clear</button>
+            </div>
+          </div>
+
+          <div class="logFilters" style="margin-top:10px;display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+            <select id="logLevelFilter" class="logFilterSelect">
+              <option value="">All levels</option>
+              <option value="DEBUG">DEBUG</option>
+              <option value="INFO">INFO</option>
+              <option value="WARNING">WARNING</option>
+              <option value="ERROR">ERROR</option>
+            </select>
+            <select id="logCatFilter" class="logFilterSelect">
+              <option value="">All categories</option>
+            </select>
+            <input id="logSearchInput" type="text" class="logFilterInput" placeholder="Search messages…" />
+            <select id="logSortOrder" class="logFilterSelect">
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+            </select>
+          </div>
+
+          <div class="logViewer" id="logViewer"></div>
+        </section>
+
       </div>
     </div>
   </div>

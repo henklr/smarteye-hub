@@ -76,6 +76,65 @@ PATH_PROGRESS_POLL_SEC = float(os.getenv("PATH_PROGRESS_POLL_SEC", "1.0"))
 
 _VALID_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 
+# ── System log ring buffer ─────────────────────────────────────────────────────
+
+import logging
+import collections
+
+_LOG_BUFFER_SIZE = int(os.getenv("LOG_BUFFER_SIZE", "500"))
+_log_buffer: collections.deque = collections.deque(maxlen=_LOG_BUFFER_SIZE)
+
+
+_LOG_CATEGORIES = {
+    "system", "devices", "streams", "onvif", "ptz", "cloud",
+    "flows", "recording", "playback", "physical_io", "schedule",
+    "uvicorn", "uvicorn.error", "uvicorn.access", "cloud_connector",
+}
+
+
+def _category_from_logger_name(name: str) -> str:
+    if name.startswith("uvicorn"):
+        return "server"
+    return name
+
+
+class _RingBufferHandler(logging.Handler):
+    """Captures log records into an in-memory ring buffer."""
+
+    _IGNORED_LOGGERS = {"uvicorn.access"}
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.name in self._IGNORED_LOGGERS:
+            return
+        try:
+            entry = {
+                "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+                "level": record.levelname,
+                "cat": _category_from_logger_name(record.name),
+                "message": self.format(record),
+            }
+            _log_buffer.append(entry)
+        except Exception:
+            pass
+
+
+_ring_handler = _RingBufferHandler()
+_ring_handler.setLevel(logging.DEBUG)
+_ring_handler.setFormatter(logging.Formatter("%(message)s"))
+
+# Attach to root logger so all app + uvicorn messages are captured
+logging.getLogger().addHandler(_ring_handler)
+logging.getLogger().setLevel(logging.INFO)
+
+# ── Named loggers for main.py ──────────────────────────────────────────────────
+
+_log_system    = logging.getLogger("system")
+_log_devices   = logging.getLogger("devices")
+_log_streams   = logging.getLogger("streams")
+_log_onvif     = logging.getLogger("onvif")
+_log_ptz       = logging.getLogger("ptz")
+_log_cloud     = logging.getLogger("cloud")
+
 
 def _dump(model) -> dict:
     if hasattr(model, "model_dump"):
@@ -218,6 +277,7 @@ def settings_page():
 
 @app.post("/api/system/reboot")
 def system_reboot():
+    _log_system.warning("System reboot initiated")
     import subprocess as _sp
     _sp.Popen(["sh", "-c", "sync; echo b > /proc/sysrq-trigger"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
     return {"ok": True, "message": "Reboot initiated"}
@@ -238,6 +298,7 @@ _DEFAULT_FILES = {
 
 @app.post("/api/system/restore-defaults")
 def restore_defaults():
+    _log_system.warning("Restoring all settings to factory defaults")
     import shutil
     for fname, content in _DEFAULT_FILES.items():
         (DATA_DIR / fname).write_text(content, encoding="utf-8")
@@ -246,6 +307,7 @@ def restore_defaults():
         if p.is_dir():
             shutil.rmtree(p, ignore_errors=True)
             p.mkdir(parents=True, exist_ok=True)
+    _log_system.warning("All settings restored to defaults")
     return {"ok": True, "message": "All settings restored to defaults. Please reboot."}
 
 
@@ -382,12 +444,14 @@ def set_timezone(body: Dict[str, Any]):
             localtime.unlink()
         localtime.symlink_to(tz_path)
     except OSError as e:
+        _log_system.error("Failed to set timezone to %s: %s", tz_name, e)
         raise HTTPException(status_code=500, detail=f"Failed to set timezone: {e}")
     os.environ["TZ"] = tz_name
     time.tzset() if hasattr(time, "tzset") else None
     settings = _load_settings_json()
     settings["timezone"] = tz_name
     _save_settings_json(settings)
+    _log_system.info("Timezone changed to %s", tz_name)
     return {"ok": True, "timezone": tz_name}
 
 
@@ -405,11 +469,14 @@ def ntp_sync(body: Dict[str, Any] = None):
         response = client.request(server, version=3, timeout=5)
         ntp_time = dt.fromtimestamp(response.tx_time, tz=tz.utc)
     except Exception as e:
+        _log_system.error("NTP sync failed from %s: %s", server, e)
         raise HTTPException(status_code=502, detail=f"NTP sync failed: {e}")
     formatted = ntp_time.strftime("%Y-%m-%d %H:%M:%S")
     result = _sp.run(["date", "-u", "-s", formatted], capture_output=True, text=True)
     if result.returncode != 0:
+        _log_system.error("Failed to set date after NTP sync: %s", result.stderr.strip())
         raise HTTPException(status_code=500, detail=f"Failed to set date: {result.stderr.strip()}")
+    _log_system.info("NTP sync from %s: set time to %s", server, formatted)
     try:
         _sp.run(["hwclock", "-w"], capture_output=True, text=True, timeout=5)
     except Exception:
@@ -432,6 +499,56 @@ def ntp_sync(body: Dict[str, Any] = None):
 def get_ntp_settings():
     settings = _load_settings_json()
     return {"ntp_server": settings.get("ntp_server") or "pool.ntp.org"}
+
+
+@app.get("/api/system/logs")
+def get_system_logs(limit: int = 500, level: str = "", cat: str = ""):
+    """Return the most recent system log entries from the ring buffer."""
+    limit = max(1, min(limit, _LOG_BUFFER_SIZE))
+    entries = list(_log_buffer)
+
+    level_filter = {l.strip().upper() for l in level.split(",") if l.strip()} if level else set()
+    cat_filter = {c.strip().lower() for c in cat.split(",") if c.strip()} if cat else set()
+
+    if level_filter or cat_filter:
+        filtered = []
+        for e in entries:
+            if level_filter and e.get("level", "") not in level_filter:
+                continue
+            if cat_filter and e.get("cat", "") not in cat_filter:
+                continue
+            filtered.append(e)
+        entries = filtered
+
+    if len(entries) > limit:
+        entries = entries[-limit:]
+
+    tz_name = _current_timezone()
+    local_tz = None
+    try:
+        import zoneinfo
+        local_tz = zoneinfo.ZoneInfo(tz_name)
+    except Exception:
+        pass
+
+    if local_tz:
+        for e in entries:
+            try:
+                utc_dt = datetime.fromisoformat(e["ts"])
+                local_dt = utc_dt.astimezone(local_tz)
+                e["ts"] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+
+    categories = sorted({e.get("cat", "") for e in list(_log_buffer) if e.get("cat")})
+    return {"entries": entries, "categories": categories}
+
+
+@app.post("/api/system/logs/clear")
+def clear_system_logs():
+    """Clear all buffered log entries."""
+    _log_buffer.clear()
+    return {"ok": True}
 
 
 @app.get("/health")
@@ -644,6 +761,7 @@ def _update_device(device_id: str, dev_in: DeviceIn) -> Device:
         if d.id == device_id:
             devs[i] = Device(id=device_id, **_dump(dev_in))
             _save_devices(devs)
+            _log_devices.info("Device updated: %s (%s)", devs[i].name, device_id)
             _invalidate_ptz_cache(device_id)
             req = EventsStartRequest(
                 device_id=device_id,
@@ -1047,6 +1165,7 @@ def _poll_device_state_changes() -> None:
                         "message": "Device offline",
                         "status": st,
                     }
+                    _log_devices.info("Device offline: %s", d.id)
                     dispatch_flow_trigger(trigger)
 
                 elif (not prev) and curr:
@@ -1068,6 +1187,7 @@ def _poll_device_state_changes() -> None:
                         "message": "Device back online",
                         "status": st,
                     }
+                    _log_devices.info("Device back online: %s", d.id)
                     dispatch_flow_trigger(trigger)
 
         except Exception as e:
@@ -1420,6 +1540,7 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, stop_flag: threading.Eve
                 try:
                     events.CreatePullPointSubscription(payload)
                     pullpoint = cam.create_pullpoint_service()
+                    _log_onvif.info("Subscribed to ONVIF events for device %s", device_id)
                     _emit_event(
                         device_id,
                         "ok",
@@ -1625,13 +1746,16 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, stop_flag: threading.Eve
                         )
 
                         if should_resubscribe:
+                            _log_onvif.warning("PullMessages lost subscription for %s: %s", device_id, e)
                             _emit_event(device_id, "warn", f"PullMessages lost pull-point subscription: {e}")
                             break
 
+                        _log_onvif.warning("PullMessages error for %s: %s", device_id, e)
                         _emit_event(device_id, "warn", f"PullMessages error: {e}")
                         time.sleep(0.5)
 
             except Exception as e:
+                _log_onvif.error("Event subscription failed for %s: %s", device_id, e)
                 _emit_event(device_id, "bad", f"Event subscription failed: {e}")
 
             if stop_flag.wait(retry_delay):
@@ -1639,12 +1763,14 @@ def _onvif_event_worker(device_id: str, req: OnvifBase, stop_flag: threading.Eve
             retry_delay = min(retry_delay * 1.5, 10.0)
 
     except Exception as e:
+        _log_onvif.error("Event subscription failed for %s: %s", device_id, e)
         _emit_event(device_id, "bad", f"Event subscription failed: {e}")
     finally:
         with _event_worker_lock:
             cur = _event_workers.get(device_id)
             if cur and cur.fingerprint == fingerprint:
                 _event_workers.pop(device_id, None)
+        _log_onvif.info("ONVIF event worker stopped for %s", device_id)
         _emit_event(device_id, "warn", "Event worker stopped.")
 
 
@@ -1676,8 +1802,10 @@ def _start_event_worker(device_id: str, req: OnvifBase) -> None:
         )
         _event_workers[device_id] = worker
         thread.start()
+        _log_onvif.info("ONVIF event worker started for %s", device_id)
 
     if old_worker:
+        _log_onvif.info("Restarted event worker for %s (settings changed)", device_id)
         _emit_event(device_id, "warn", "Restarted event worker due to device settings change.")
 
 
@@ -2394,6 +2522,7 @@ def cloud_config_get():
 def cloud_config_save(req: CloudConnectorConfigIn):
     cfg = _normalize_cloud_connector_config(_dump(req))
     _save_cloud_connector_config(cfg)
+    _log_cloud.info("Cloud connector config saved")
 
     running = False
     try:
@@ -2416,6 +2545,7 @@ def cloud_connect(req: CloudConnectorConfigIn):
         hub_device_id=cfg["hub_device_id"],
     )
     module.start_cloud_connector()
+    _log_cloud.info("Cloud connector started with URL %s", cfg["cloud_ws_url"])
 
     return {"ok": True, **cfg, "running": bool(module.is_connector_running())}
 
@@ -2432,6 +2562,7 @@ def create_device(dev: DeviceIn):
     new = Device(id=uuid.uuid4().hex[:12], **_dump(dev))
     devs.append(new)
     _save_devices(devs)
+    _log_devices.info("Device added: %s (%s)", new.name, new.id)
     _invalidate_ptz_cache(new.id)
 
     req = EventsStartRequest(
@@ -2477,6 +2608,7 @@ def delete_device(device_id: str):
         raise HTTPException(status_code=404, detail="Device not found")
 
     _save_devices(new_devs)
+    _log_devices.info("Device deleted: %s", device_id)
     _invalidate_ptz_cache(device_id)
     _stop_event_worker(device_id)
 
@@ -2574,6 +2706,7 @@ async def start(req: StartRequest):
         raise HTTPException(status_code=400, detail=f"ONVIF profile check failed: {e}")
 
     if (encoding or "").upper() != "H264":
+        _log_streams.warning("Profile uses %s (not H264) for device %s", encoding or "unknown", device_id)
         raise HTTPException(
             status_code=400,
             detail=(
@@ -2598,8 +2731,10 @@ async def start(req: StartRequest):
         )
         request_recorders_refresh()
     except Exception as e:
+        _log_streams.error("MediaMTX path setup failed for %s: %s", device_id, e)
         raise HTTPException(status_code=500, detail=f"MediaMTX path setup failed: {e}")
 
+    _log_streams.info("Started stream for device %s", device_id)
     return {"ok": True, "device_id": device_id, "path": _path_for(device_id)}
 
 
@@ -2691,18 +2826,22 @@ async def ptz_stop(device_id: str):
 
 @app.on_event("startup")
 def _on_startup():
+    _log_system.info("SmartEye Hub starting up")
     try:
         _restore_timezone()
-    except Exception:
-        pass
+        _log_system.info("Restored timezone: %s", _current_timezone())
+    except Exception as e:
+        _log_system.warning("Failed to restore timezone: %s", e)
 
     devs = _load_devices()
+    _log_system.info("Loaded %d device(s)", len(devs))
 
     try:
         set_recording_path_refresher(_refresh_device_stream)
         start_recording_service()
-    except Exception:
-        pass
+        _log_system.info("Recording service started")
+    except Exception as e:
+        _log_system.error("Failed to start recording service: %s", e)
 
     try:
         global _flow_monitor_thread
@@ -2713,23 +2852,27 @@ def _on_startup():
             name="flow-monitor",
         )
         _flow_monitor_thread.start()
-    except Exception:
-        pass
+        _log_system.info("Flow monitor thread started")
+    except Exception as e:
+        _log_system.error("Failed to start flow monitor: %s", e)
 
     try:
         start_schedule_monitor()
-    except Exception:
-        pass
+        _log_system.info("Schedule monitor started")
+    except Exception as e:
+        _log_system.error("Failed to start schedule monitor: %s", e)
 
     try:
         start_physical_io_monitor(dispatch_flow_trigger)
-    except Exception:
-        pass
+        _log_system.info("Physical I/O monitor started")
+    except Exception as e:
+        _log_system.error("Failed to start physical I/O monitor: %s", e)
 
     try:
         _ensure_event_workers(devs)
-    except Exception:
-        pass
+        _log_system.info("Event workers initialized for %d device(s)", len(devs))
+    except Exception as e:
+        _log_system.error("Failed to initialize event workers: %s", e)
 
     for d in devs:
         try:
@@ -2742,9 +2885,11 @@ def _on_startup():
 
 @app.on_event("shutdown")
 def _on_shutdown():
+    _log_system.info("SmartEye Hub shutting down")
     with _event_worker_lock:
         workers = list(_event_workers.values())
         _event_workers.clear()
+    _log_system.info("Stopping %d event worker(s)", len(workers))
 
     for w in workers:
         try:

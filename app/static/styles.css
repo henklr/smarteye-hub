@@ -2099,3 +2099,87 @@ body.tileMaximizedMode #videoGrid {
     padding: 14px 10px;
   }
 }
+
+/* ── System log viewer ───────────────────────────────────────────────────── */
+
+.logViewer {
+  margin-top: 12px;
+  max-height: 420px;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-sm);
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  padding: 8px 0;
+}
+
+.logLine {
+  display: flex;
+  gap: 8px;
+  padding: 1px 10px;
+  white-space: nowrap;
+}
+
+.logLine:hover {
+  background: var(--surface-2);
+}
+
+.logTs {
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.logLevel {
+  flex: 0 0 52px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.logMsg {
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-all;
+  flex: 1;
+}
+
+.logError .logLevel { color: var(--danger); }
+.logError .logMsg   { color: var(--danger); }
+.logWarn  .logLevel { color: var(--warn); }
+.logDebug .logLevel { color: var(--muted-2); }
+.logDebug .logMsg   { color: var(--muted); }
+
+/* ── Log filter bar ── */
+.logFilterBar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.logFilterSelect,
+.logFilterInput {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: .85rem;
+  outline: none;
+}
+.logFilterSelect:focus,
+.logFilterInput:focus {
+  border-color: var(--accent);
+}
+.logFilterInput {
+  flex: 1;
+  min-width: 120px;
+}
+
+/* ── Category column ── */
+.logCat {
+  color: var(--muted);
+  min-width: 80px;
+  font-size: .85em;
+}

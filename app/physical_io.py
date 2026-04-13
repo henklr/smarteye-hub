@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+_log_pio = logging.getLogger("physical_io")
 
 try:
     import automationhat  # type: ignore
@@ -438,6 +440,7 @@ def activate_physical_output(channel: int, mode: str, pulse_seconds: float) -> D
     }
     if normalized_mode == "pulse":
         result["scheduled_off_at"] = _future_iso(float(pulse_seconds))
+    _log_pio.info("Output %d set to %s", channel, normalized_mode)
     return result
 
 
@@ -480,6 +483,7 @@ def activate_physical_relay(channel: int, mode: str, pulse_seconds: float) -> Di
     }
     if normalized_mode == "pulse":
         result["scheduled_off_at"] = _future_iso(float(pulse_seconds))
+    _log_pio.info("Relay %d set to %s", channel, normalized_mode)
     return result
 
 
@@ -617,6 +621,7 @@ def start_physical_io_monitor(dispatch_trigger: Callable[[Dict[str, Any]], int])
     refresh_physical_io_state()
 
     if automationhat is None:
+        _log_pio.info("Physical I/O monitor skipped: automationhat not available")
         return
 
     global _monitor_thread
@@ -631,6 +636,7 @@ def start_physical_io_monitor(dispatch_trigger: Callable[[Dict[str, Any]], int])
         name="physical-io-monitor",
     )
     _monitor_thread.start()
+    _log_pio.info("Physical I/O monitor started")
 
 
 def stop_physical_io_monitor() -> None:

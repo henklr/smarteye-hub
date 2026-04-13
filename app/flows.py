@@ -27,6 +27,10 @@ from physical_io import (
     read_physical_value,
 )
 
+import logging
+
+_log_flows    = logging.getLogger("flows")
+_log_schedule = logging.getLogger("schedule")
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -594,6 +598,7 @@ def create_flow(req: FlowIn) -> Dict[str, Any]:
         items.append(item)
         _save_flows(items)
         _merge_recording_presets(_collect_recording_presets_from_flows(items))
+    _log_flows.info("Flow created: '%s' (%s)", item.get("name"), item.get("id"))
     return {"ok": True, "item": item}
 
 
@@ -610,6 +615,7 @@ def update_flow(flow_id: str, req: FlowIn) -> Dict[str, Any]:
                 )
                 _save_flows(items)
                 _merge_recording_presets(_collect_recording_presets_from_flows(items))
+                _log_flows.info("Flow updated: '%s' (%s)", items[idx].get("name"), flow_id)
                 return {"ok": True, "item": items[idx]}
     raise HTTPException(status_code=404, detail="Flow not found")
 
@@ -624,6 +630,7 @@ def delete_flow(flow_id: str) -> Dict[str, Any]:
         _save_flows(new_items)
         _merge_recording_presets(_collect_recording_presets_from_flows(new_items))
         _delete_runtime_state_for_flow(flow_id)
+    _log_flows.info("Flow deleted: %s", flow_id)
     return {"ok": True}
 
 
@@ -2391,6 +2398,8 @@ def dispatch_flow_trigger(trigger: Dict[str, Any]) -> int:
                 break
         if flow_matched:
             continue
+    if matched:
+        _log_flows.info("Flow trigger dispatched: kind=%s, matched %d flow(s)", trigger.get("kind"), matched)
     return matched
 
 
@@ -2417,6 +2426,7 @@ def _scan_schedule_state_changes(emit_transitions: bool) -> None:
         if previous is None or previous == active:
             continue
 
+        _log_schedule.info("Schedule '%s' became %s", str(schedule.get("name") or key).strip() or key, "active" if active else "inactive")
         dispatch_flow_trigger(
             {
                 "kind": "schedule_active_changed",
@@ -2441,7 +2451,8 @@ def _poll_schedule_state_changes() -> None:
     while not _schedule_monitor_stop.wait(_SCHEDULE_POLL_SEC):
         try:
             _scan_schedule_state_changes(emit_transitions=True)
-        except Exception:
+        except Exception as e:
+            _log_schedule.error("Schedule poll error: %s", e)
             continue
 
 
@@ -2527,6 +2538,8 @@ def _run_flow_from_trigger(
         "started_at": _utc_now_iso(),
     }
 
+    _log_flows.info("Running flow '%s' (%s) from trigger %s", flow.get("name"), flow.get("id"), trigger.get("kind"))
+
     while queue and steps < _MAX_RUN_STEPS:
         node_id, incoming_handle = queue.pop(0)
         node = nodes_by_id.get(node_id)
@@ -2553,6 +2566,9 @@ def _run_flow_from_trigger(
         "truncated": steps >= _MAX_RUN_STEPS,
         "finished_at": _utc_now_iso(),
     }
+
+    if steps >= _MAX_RUN_STEPS:
+        _log_flows.warning("Flow '%s' truncated after %d steps", flow.get("name"), steps)
 
     if append_log:
         _append_flow_log(flow, trigger, summary)
@@ -2715,9 +2731,11 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
             except Exception:
                 result["response_preview"] = ""
             result["error"] = f"HTTP {exc.code}"
+            _log_flows.warning("HTTP request failed in flow: %s %s → HTTP %d", method, url, exc.code)
         except Exception as exc:
             result["ok"] = False
             result["error"] = str(exc)
+            _log_flows.warning("HTTP request failed in flow: %s %s: %s", method, url, exc)
         result["request"] = {"method": method, "url": url, "headers": headers, "body": body}
         result["next_handles"] = ["out"]
         return result
@@ -2744,6 +2762,7 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         except Exception as exc:
             result["ok"] = False
             result["error"] = str(exc)
+            _log_flows.warning("Physical output action failed in flow: %s", exc)
         result["next_handles"] = ["out"]
         return result
 
@@ -2785,6 +2804,7 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         except Exception as exc:
             result["ok"] = False
             result["error"] = str(exc)
+            _log_flows.warning("Record action failed in flow: %s", exc)
         result["next_handles"] = ["out"]
         return result
 
@@ -2799,6 +2819,7 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         except Exception as exc:
             result["ok"] = False
             result["error"] = str(exc)
+            _log_flows.warning("Stop recording action failed in flow: %s", exc)
         result["next_handles"] = ["out"]
         return result
 

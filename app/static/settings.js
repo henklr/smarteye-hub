@@ -383,3 +383,176 @@ restoreDefaultsBtn?.addEventListener("click", async () => {
     restoreDefaultsBtn.disabled = false;
   }
 });
+
+// ── System logs ───────────────────────────────────────────────────────────────
+
+const logViewer = document.getElementById("logViewer");
+const logRefreshBtn = document.getElementById("logRefreshBtn");
+const logClearBtn = document.getElementById("logClearBtn");
+const logAutoUpdateBtn = document.getElementById("logAutoUpdateBtn");
+const logLevelFilter = document.getElementById("logLevelFilter");
+const logCatFilter = document.getElementById("logCatFilter");
+const logSearchInput = document.getElementById("logSearchInput");
+const logSortOrder = document.getElementById("logSortOrder");
+
+let _logPollTimer = null;
+let _logAutoUpdate = true;
+let _logRawEntries = [];
+let _logKnownCategories = new Set();
+
+function _levelClass(level) {
+  switch (level) {
+    case "ERROR":
+    case "CRITICAL":
+      return "logError";
+    case "WARNING":
+      return "logWarn";
+    case "DEBUG":
+      return "logDebug";
+    default:
+      return "";
+  }
+}
+
+function _applyLogFilters(entries) {
+  const levelVal = logLevelFilter?.value || "";
+  const catVal = logCatFilter?.value || "";
+  const searchVal = (logSearchInput?.value || "").trim().toLowerCase();
+  const sortVal = logSortOrder?.value || "newest";
+
+  let filtered = entries;
+
+  if (levelVal) {
+    filtered = filtered.filter(e => e.level === levelVal);
+  }
+
+  if (catVal) {
+    filtered = filtered.filter(e => e.cat === catVal);
+  }
+
+  if (searchVal) {
+    filtered = filtered.filter(e =>
+      (e.message || "").toLowerCase().includes(searchVal) ||
+      (e.cat || "").toLowerCase().includes(searchVal)
+    );
+  }
+
+  if (sortVal === "oldest") {
+    filtered = [...filtered];
+  } else {
+    filtered = [...filtered].reverse();
+  }
+
+  return filtered;
+}
+
+function _updateCategoryDropdown(categories) {
+  if (!logCatFilter) return;
+  for (const cat of categories) {
+    if (_logKnownCategories.has(cat)) continue;
+    _logKnownCategories.add(cat);
+    const opt = document.createElement("option");
+    opt.value = cat;
+    opt.textContent = cat;
+    logCatFilter.appendChild(opt);
+  }
+}
+
+function renderLogs(entries) {
+  if (!logViewer) return;
+  const filtered = _applyLogFilters(entries);
+  const frag = document.createDocumentFragment();
+  for (const e of filtered) {
+    const line = document.createElement("div");
+    line.className = "logLine " + _levelClass(e.level);
+    const ts = document.createElement("span");
+    ts.className = "logTs";
+    ts.textContent = (e.ts || "").replace("T", " ").replace(/\+.*$/, "");
+    const cat = document.createElement("span");
+    cat.className = "logCat";
+    cat.textContent = e.cat || "";
+    const lvl = document.createElement("span");
+    lvl.className = "logLevel";
+    lvl.textContent = e.level;
+    const msg = document.createElement("span");
+    msg.className = "logMsg";
+    msg.textContent = e.message;
+    line.appendChild(ts);
+    line.appendChild(cat);
+    line.appendChild(lvl);
+    line.appendChild(msg);
+    frag.appendChild(line);
+  }
+  logViewer.innerHTML = "";
+  logViewer.appendChild(frag);
+  if (_logAutoUpdate && (logSortOrder?.value || "newest") === "newest") {
+    logViewer.scrollTop = 0;
+  } else if (_logAutoUpdate) {
+    logViewer.scrollTop = logViewer.scrollHeight;
+  }
+}
+
+async function loadLogs() {
+  try {
+    const data = await api("/api/system/logs?limit=500");
+    _logRawEntries = data.entries || [];
+    if (data.categories) _updateCategoryDropdown(data.categories);
+    renderLogs(_logRawEntries);
+  } catch (e) {
+    if (logViewer) logViewer.textContent = "Error loading logs: " + (e.message || e);
+  }
+}
+
+function _rerender() {
+  renderLogs(_logRawEntries);
+}
+
+logLevelFilter?.addEventListener("change", _rerender);
+logCatFilter?.addEventListener("change", _rerender);
+logSearchInput?.addEventListener("input", _rerender);
+logSortOrder?.addEventListener("change", _rerender);
+
+logRefreshBtn?.addEventListener("click", loadLogs);
+
+logClearBtn?.addEventListener("click", async () => {
+  if (!window.confirm("Clear all buffered log entries?")) return;
+  try {
+    await api("/api/system/logs/clear", { method: "POST" });
+    _logRawEntries = [];
+    if (logViewer) logViewer.innerHTML = "";
+  } catch (e) {
+    if (logViewer) logViewer.textContent = "Error: " + (e.message || e);
+  }
+});
+
+function _startLogPoll() {
+  if (_logPollTimer) return;
+  loadLogs();
+  _logPollTimer = setInterval(loadLogs, 3000);
+}
+
+function _stopLogPoll() {
+  if (_logPollTimer) {
+    clearInterval(_logPollTimer);
+    _logPollTimer = null;
+  }
+}
+
+function _updateAutoBtn() {
+  if (!logAutoUpdateBtn) return;
+  logAutoUpdateBtn.textContent = _logAutoUpdate ? "Auto-update: ON" : "Auto-update: OFF";
+  logAutoUpdateBtn.classList.toggle("btn-primary", _logAutoUpdate);
+}
+
+logAutoUpdateBtn?.addEventListener("click", () => {
+  _logAutoUpdate = !_logAutoUpdate;
+  _updateAutoBtn();
+  if (_logAutoUpdate) {
+    _startLogPoll();
+  } else {
+    _stopLogPoll();
+  }
+});
+
+_updateAutoBtn();
+_startLogPoll();
