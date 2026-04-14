@@ -1525,6 +1525,10 @@ body.flowsPage {
   background: rgba(255, 140, 66, 0.18);
 }
 
+.flowsPage .flowBranchLabel.ready {
+  background: rgba(52, 152, 219, 0.22);
+}
+
 .flowsPage .emptyBoardHint {
   position: absolute;
   left: 50%;
@@ -2725,26 +2729,6 @@ body.flowsPage {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.snapshotSecsWrap {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-.flowsPage .inspectorCard .snapshotSecsWrap input {
-  width: 44px;
-  text-align: center;
-  padding-left: 2px;
-  padding-right: 2px;
-}
-
-.snapshotSecsLabel {
-  font-size: 0.78em;
-  color: var(--muted);
-  white-space: nowrap;
 }
 
 .snapshotDeviceRow .snapshotDeviceRemove {

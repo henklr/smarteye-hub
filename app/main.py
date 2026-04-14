@@ -18,7 +18,7 @@ import base64
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -765,6 +765,7 @@ class DeviceIn(BaseModel):
     profile_label: Optional[str] = None
     profile_encoding: Optional[str] = None
     preload_stream: bool = True
+    snapshot_uri: Optional[str] = None
 
 
 class Device(DeviceIn):
@@ -3219,72 +3220,182 @@ def create_event(
         items.append(event)
         _save_events(items)
     _log_events.info("Event created: %s", name)
-    _broadcast_page_event(event)
+    # Broadcast a lightweight version (no base64 snapshot data) over SSE
+    light_event = {k: v for k, v in event.items() if k != "snapshots"}
+    light_event["snapshots"] = []
+    for idx, snap in enumerate(event.get("snapshots") or []):
+        s = {k: v for k, v in snap.items() if k != "snapshot"}
+        if snap.get("snapshot"):
+            s["snapshot"] = f"/api/events/{event['id']}/snapshot/{idx}"
+        else:
+            s["snapshot"] = None
+        light_event["snapshots"].append(s)
+    _broadcast_page_event(light_event)
     return event
 
 
-def _grab_snapshot(device_id: str, seconds_ago: float = 0) -> Optional[str]:
-    """Extract a JPEG frame from recorded .ts segments.
+# ── Camera snapshot via HTTP ──────────────────────────────────────────────────
 
-    If *seconds_ago* > 0 the frame is taken from that many seconds in the
-    past.  When 0 (default) the most recent available frame is used.
+_snapshot_uri_cache: Dict[str, str] = {}
+
+
+def _discover_snapshot_uri(device: Device) -> Optional[str]:
+    """Use ONVIF GetSnapshotUri to discover the camera's snapshot endpoint."""
+    profile_token = device.profile_token
+    if not profile_token:
+        return None
+    try:
+        req = _device_req(device)
+        cam = _cam(req)
+        media = cam.create_media_service()
+        resp = media.GetSnapshotUri({"ProfileToken": profile_token})
+        uri = getattr(resp, "Uri", None)
+        if uri:
+            return str(uri)
+    except Exception as exc:
+        _log_events.warning("GetSnapshotUri failed for %s: %s", device.id, exc)
+    return None
+
+
+def _resolve_snapshot_uri(device: Device) -> Optional[str]:
+    """Return the snapshot URI for a device, discovering via ONVIF if needed."""
+    # Check in-memory cache first
+    cached = _snapshot_uri_cache.get(device.id)
+    if cached:
+        return cached
+
+    # Check persisted value on device
+    if device.snapshot_uri:
+        _snapshot_uri_cache[device.id] = device.snapshot_uri
+        return device.snapshot_uri
+
+    # Discover via ONVIF
+    uri = _discover_snapshot_uri(device)
+    if uri:
+        _snapshot_uri_cache[device.id] = uri
+        # Persist to device so we don't re-discover every restart
+        try:
+            devs = _load_devices()
+            for d in devs:
+                if d.id == device.id:
+                    d.snapshot_uri = uri
+                    break
+            _save_devices(devs)
+        except Exception as exc:
+            _log_events.warning("Failed to persist snapshot_uri for %s: %s", device.id, exc)
+        return uri
+
+    return None
+
+
+def _fetch_snapshot_image(uri: str, username: str, password: str) -> Optional[bytes]:
+    """Fetch a JPEG image from a camera snapshot URI with digest/basic auth."""
+    import ssl
+    # Local cameras typically use self-signed certs
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    # Try digest auth first (handles 401 challenge automatically), then basic
+    for attempt in range(2):
+        try:
+            if attempt == 0:
+                # Digest auth — the handler automatically responds to 401 challenges
+                pwd_mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+                pwd_mgr.add_password(None, uri, username, password)
+                digest_handler = urllib.request.HTTPDigestAuthHandler(pwd_mgr)
+                basic_handler = urllib.request.HTTPBasicAuthHandler(pwd_mgr)
+                opener = urllib.request.build_opener(
+                    urllib.request.HTTPSHandler(context=ctx),
+                    digest_handler,
+                    basic_handler,
+                )
+                req = urllib.request.Request(uri)
+                with opener.open(req, timeout=10) as resp:
+                    return resp.read()
+            else:
+                # Explicit basic auth header (some cameras don't send WWW-Authenticate)
+                auth_raw = f"{username}:{password}".encode("utf-8")
+                auth_b64 = base64.b64encode(auth_raw).decode("ascii")
+                req = urllib.request.Request(uri, headers={"Authorization": f"Basic {auth_b64}"})
+                with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                    return resp.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and attempt < 1:
+                continue
+            _log_events.warning("Snapshot HTTP %d from %s", e.code, uri)
+            return None
+        except Exception as exc:
+            if attempt < 1:
+                continue
+            _log_events.warning("Snapshot fetch failed from %s: %s", uri, exc)
+            return None
+    return None
+
+
+def _grab_snapshot(device_id: str) -> Optional[str]:
+    """Fetch a live JPEG snapshot directly from the camera's HTTP API.
+
+    The snapshot URI is discovered via ONVIF GetSnapshotUri and cached.
     Returns a ``data:image/jpeg;base64,...`` string or *None* on failure.
     """
     try:
-        target_time = datetime.now(timezone.utc) - timedelta(seconds=max(0, seconds_ago))
-        segments = _playback_list_segments(device_id)
-        if not segments:
-            _log_events.warning("No recorded segments for device %s", device_id)
-            return None
-
-        # Find the segment that contains the target time
-        chosen = None
-        for seg in segments:
-            if seg.started_at <= target_time < seg.ended_at:
-                chosen = seg
-                break
-
-        # Fall back to the most recent segment
-        if chosen is None:
-            chosen = segments[-1]
-            target_time = max(chosen.started_at, chosen.ended_at - timedelta(seconds=1))
-
-        offset = max(0.0, (target_time - chosen.started_at).total_seconds())
-
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-            tmp_path = tmp.name
-
-        try:
-            cmd = [
-                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                "-ss", f"{offset:.3f}",
-                "-i", str(chosen.path),
-                "-frames:v", "1",
-                "-pix_fmt", "yuvj420p",
-                "-q:v", "2",
-                tmp_path,
-            ]
-            subprocess.run(cmd, check=True, timeout=15)
-
-            img_bytes = Path(tmp_path).read_bytes()
-            if not img_bytes:
-                return None
-            b64 = base64.b64encode(img_bytes).decode("ascii")
-            return f"data:image/jpeg;base64,{b64}"
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-    except Exception as exc:
-        _log_events.warning("Snapshot failed for device %s (seconds_ago=%s): %s", device_id, seconds_ago, exc)
+        device = _get_device(device_id)
+    except HTTPException:
+        _log_events.warning("Snapshot failed: device %s not found", device_id)
         return None
+
+    uri = _resolve_snapshot_uri(device)
+    if not uri:
+        _log_events.warning("No snapshot URI available for device %s", device_id)
+        return None
+
+    img_bytes = _fetch_snapshot_image(uri, device.username, device.password)
+    if not img_bytes:
+        return None
+
+    b64 = base64.b64encode(img_bytes).decode("ascii")
+    return f"data:image/jpeg;base64,{b64}"
 
 
 @app.get("/api/events")
 def api_events_list():
     items = _load_events()
-    return {"items": items}
+    # Strip heavy base64 snapshot data from the list response;
+    # the frontend loads snapshots lazily via /api/events/{id}/snapshot/{idx}
+    light_items = []
+    for item in items:
+        ev = {k: v for k, v in item.items() if k != "snapshots"}
+        snaps = item.get("snapshots") or []
+        ev["snapshots"] = []
+        for idx, snap in enumerate(snaps):
+            s = {k: v for k, v in snap.items() if k != "snapshot"}
+            if snap.get("snapshot"):
+                s["snapshot"] = f"/api/events/{item['id']}/snapshot/{idx}"
+            else:
+                s["snapshot"] = None
+            ev["snapshots"].append(s)
+        light_items.append(ev)
+    return {"items": light_items}
+
+
+@app.get("/api/events/{event_id}/snapshot/{index}")
+def api_event_snapshot(event_id: str, index: int):
+    items = _load_events()
+    for item in items:
+        if item.get("id") == event_id:
+            snaps = item.get("snapshots") or []
+            if 0 <= index < len(snaps):
+                data_uri = snaps[index].get("snapshot")
+                if data_uri and data_uri.startswith("data:image/"):
+                    # Parse "data:image/jpeg;base64,<payload>"
+                    header, b64 = data_uri.split(",", 1)
+                    media = header.split(";")[0].split(":")[1]
+                    img_bytes = base64.b64decode(b64)
+                    return Response(content=img_bytes, media_type=media,
+                                    headers={"Cache-Control": "public, max-age=86400"})
+            raise HTTPException(status_code=404, detail="Snapshot not found")
+    raise HTTPException(status_code=404, detail="Event not found")
 
 
 @app.post("/api/events/{event_id}/acknowledge")
@@ -3350,8 +3461,8 @@ async def api_events_stream():
 
 
 @app.get("/api/devices/{device_id}/snapshot")
-def api_device_snapshot(device_id: str, seconds_ago: float = 0):
-    data_uri = _grab_snapshot(device_id, seconds_ago=seconds_ago)
+def api_device_snapshot(device_id: str):
+    data_uri = _grab_snapshot(device_id)
     if not data_uri:
         raise HTTPException(status_code=502, detail="Could not capture snapshot")
     return {"snapshot": data_uri, "device_id": device_id}

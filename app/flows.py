@@ -44,6 +44,124 @@ FLOW_STATE_JSON = DATA_DIR / "flow_state.json"
 FLOW_LOG_FILE = Path(os.getenv("FLOW_LOG_FILE", str(DATA_DIR / "flows.log")))
 FLOW_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
+# ── Prompt buffer (in-memory, keyed by prompt_key) ────────────────────────────
+_prompt_buffers: Dict[str, Dict[str, Any]] = {}
+_prompt_buffers_lock = threading.RLock()
+_PROMPT_BUFFER_TTL = 600  # 10 minutes
+
+
+def _get_prompt_buffer(key: str) -> Dict[str, Any]:
+    """Return or create a prompt buffer entry, pruning expired ones."""
+    now = time.time()
+    with _prompt_buffers_lock:
+        # Prune expired
+        expired = [k for k, v in _prompt_buffers.items() if now - v.get("ts", 0) > _PROMPT_BUFFER_TTL]
+        for k in expired:
+            del _prompt_buffers[k]
+        if key not in _prompt_buffers:
+            _prompt_buffers[key] = {"texts": [], "images": [], "snapshots": [], "ts": now}
+        buf = _prompt_buffers[key]
+        buf["ts"] = now
+        return buf
+
+
+def _clear_prompt_buffer(key: str) -> None:
+    with _prompt_buffers_lock:
+        _prompt_buffers.pop(key, None)
+
+
+def _consume_prompt_buffer(key: str) -> Dict[str, Any]:
+    """Return and remove a prompt buffer. Returns empty structure if not found."""
+    with _prompt_buffers_lock:
+        return _prompt_buffers.pop(key, {"texts": [], "images": [], "snapshots": []})
+
+
+# ── Prompt buffer timers (fire "ready" after max_wait) ────────────────────────
+_prompt_buffer_timers: Dict[str, threading.Timer] = {}
+
+
+def _cancel_prompt_timer(key: str) -> None:
+    timer = _prompt_buffer_timers.pop(key, None)
+    if timer is not None:
+        timer.cancel()
+
+
+def _schedule_prompt_timer(key: str, max_wait: float, flow_id: str, node_id: str) -> None:
+    """Schedule a background timer that fires the 'ready' path after max_wait seconds."""
+    _cancel_prompt_timer(key)
+
+    def _on_timeout():
+        _prompt_buffer_timers.pop(key, None)
+        with _prompt_buffers_lock:
+            if key not in _prompt_buffers:
+                return  # already consumed
+        _log_flows.info("Prompt buffer '%s' max_wait expired, firing ready path", key)
+        _fire_ready_path(flow_id, node_id, key)
+
+    timer = threading.Timer(max_wait, _on_timeout)
+    timer.daemon = True
+    _prompt_buffer_timers[key] = timer
+    timer.start()
+
+
+def _fire_ready_path(flow_id: str, node_id: str, prompt_key: str) -> None:
+    """Execute the downstream 'ready' edges from a build_prompt node."""
+    try:
+        flow = _find_flow(flow_id)
+        if flow is None:
+            _log_flows.warning("Timer fire: flow %s not found", flow_id)
+            return
+        adjacency = _build_adjacency(flow)
+        ready_edges = adjacency.get(node_id, {}).get("ready", [])
+        if not ready_edges:
+            return
+        nodes_by_id = {n["id"]: n for n in flow.get("nodes", [])}
+        variables = _get_runtime_variables(flow)
+        variable_definitions = _public_variable_definitions_by_key()
+        node_results: List[Dict[str, Any]] = []
+        context: Dict[str, Any] = {
+            "flow": flow,
+            "trigger": {"kind": "prompt_buffer_timeout", "prompt_key": prompt_key},
+            "variables": variables,
+            "variable_definitions": variable_definitions,
+            "changed_variables": set(),
+            "results": node_results,
+            "manual": False,
+            "started_at": _utc_now_iso(),
+        }
+        queue: List[Tuple[str, str]] = []
+        for edge in ready_edges:
+            queue.append((edge["target"], edge.get("target_handle") or "in"))
+        steps = 0
+        while queue and steps < _MAX_RUN_STEPS:
+            nid, incoming_handle = queue.pop(0)
+            n = nodes_by_id.get(nid)
+            if n is None:
+                continue
+            r = _execute_node(n, incoming_handle, context)
+            node_results.append(r)
+            steps += 1
+            for next_handle in r.get("next_handles") or []:
+                for edge in adjacency.get(nid, {}).get(next_handle, []):
+                    queue.append((edge["target"], edge.get("target_handle") or "in"))
+        changed_variables = context.get("changed_variables") or set()
+        if changed_variables:
+            _save_runtime_variables(flow, variables, changed_keys=changed_variables)
+        trigger = context["trigger"]
+        summary = {
+            "flow_id": flow["id"],
+            "flow_name": flow.get("name"),
+            "matched": True,
+            "manual": False,
+            "steps": node_results,
+            "variables": variables,
+            "truncated": steps >= _MAX_RUN_STEPS,
+            "finished_at": _utc_now_iso(),
+        }
+        _append_flow_log(flow, trigger, summary)
+    except Exception as exc:
+        _log_flows.error("Prompt buffer timer ready-path failed: %s", exc)
+
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 _VALID_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
@@ -413,13 +531,22 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "defaults": {"message": "Flow {{flow.name}} ran.", "name": ""},
     },
     {
+        "type": "action.build_prompt",
+        "category": "action",
+        "label": "Build prompt",
+        "description": "Accumulates text and camera snapshots into a named prompt buffer for later AI analysis.",
+        "color": "#ff8c42",
+        "ports": {"inputs": ["in"], "outputs": ["out", "ready"]},
+        "defaults": {"prompt_key": "", "text": "", "snapshot_entries": [], "clear_first": False, "min_count": 1, "max_wait": 0, "name": ""},
+    },
+    {
         "type": "action.generate_event",
         "category": "action",
         "label": "Generate event",
         "description": "Analyzes camera snapshots with an AI scenario and creates a rich event on the Events page.",
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
-        "defaults": {"name": "", "scenario_id": "", "snapshot_entries": [], "include_recording": False},
+        "defaults": {"name": "", "scenario_id": "", "snapshot_entries": [], "include_recording": False, "prompt_key": ""},
     },
 ]
 
@@ -1789,22 +1916,19 @@ def _normalize_node_config(
         cfg["message"] = str(cfg.get("message") or "")
         return cfg
 
-    if node_type == "action.generate_event":
-        cfg["name"] = str(cfg.get("name") or "")
-        cfg["scenario_id"] = str(cfg.get("scenario_id") or "")
-        cfg["include_recording"] = bool(cfg.get("include_recording"))
-        # Migrate legacy snapshot_device_ids + seconds_ago to snapshot_entries
+    if node_type == "action.build_prompt":
+        cfg["prompt_key"] = str(cfg.get("prompt_key") or "")
+        cfg["text"] = str(cfg.get("text") or "")
+        cfg["clear_first"] = bool(cfg.get("clear_first"))
+        try:
+            cfg["min_count"] = max(1, int(cfg.get("min_count") or 1))
+        except (ValueError, TypeError):
+            cfg["min_count"] = 1
+        try:
+            cfg["max_wait"] = max(0.0, float(cfg.get("max_wait") or 0))
+        except (ValueError, TypeError):
+            cfg["max_wait"] = 0.0
         entries = cfg.get("snapshot_entries")
-        if entries is None:
-            legacy_ids = cfg.get("snapshot_device_ids") or []
-            if isinstance(legacy_ids, str):
-                legacy_ids = [s.strip() for s in legacy_ids.split(",") if s.strip()]
-            legacy_secs = 0
-            try:
-                legacy_secs = max(0, float(cfg.get("seconds_ago") or 0))
-            except Exception:
-                pass
-            entries = [{"device_id": str(s).strip(), "seconds_ago": legacy_secs} for s in legacy_ids if str(s).strip()]
         out: list = []
         for entry in (entries if isinstance(entries, list) else []):
             if not isinstance(entry, dict):
@@ -1812,11 +1936,30 @@ def _normalize_node_config(
             did = str(entry.get("device_id") or "").strip()
             if not did:
                 continue
-            try:
-                sa = max(0, float(entry.get("seconds_ago") or 0))
-            except Exception:
-                sa = 0
-            out.append({"device_id": did, "seconds_ago": sa})
+            out.append({"device_id": did})
+        cfg["snapshot_entries"] = out
+        return cfg
+
+    if node_type == "action.generate_event":
+        cfg["name"] = str(cfg.get("name") or "")
+        cfg["scenario_id"] = str(cfg.get("scenario_id") or "")
+        cfg["include_recording"] = bool(cfg.get("include_recording"))
+        cfg["prompt_key"] = str(cfg.get("prompt_key") or "")
+        # Migrate legacy snapshot_device_ids to snapshot_entries
+        entries = cfg.get("snapshot_entries")
+        if entries is None:
+            legacy_ids = cfg.get("snapshot_device_ids") or []
+            if isinstance(legacy_ids, str):
+                legacy_ids = [s.strip() for s in legacy_ids.split(",") if s.strip()]
+            entries = [{"device_id": str(s).strip()} for s in legacy_ids if str(s).strip()]
+        out: list = []
+        for entry in (entries if isinstance(entries, list) else []):
+            if not isinstance(entry, dict):
+                continue
+            did = str(entry.get("device_id") or "").strip()
+            if not did:
+                continue
+            out.append({"device_id": did})
         cfg["snapshot_entries"] = out
         # Clean up legacy keys
         cfg.pop("snapshot_device_ids", None)
@@ -2815,6 +2958,69 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         result["next_handles"] = ["out"]
         return result
 
+    if node_type == "action.build_prompt":
+        from main import _grab_snapshot, _load_devices
+        prompt_key = _render_template(str(cfg.get("prompt_key") or ""), context).strip() or "default"
+
+        clear_first = bool(cfg.get("clear_first"))
+        if clear_first:
+            _clear_prompt_buffer(prompt_key)
+
+        buf = _get_prompt_buffer(prompt_key)
+
+        # Append text
+        text = _render_template(str(cfg.get("text") or ""), context).strip()
+        if text:
+            buf["texts"].append(text)
+
+        # Collect and append snapshots
+        entries = cfg.get("snapshot_entries") or []
+        devices = _load_devices()
+        device_map = {d.id: d.name for d in devices}
+        snap_count = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            did = str(entry.get("device_id") or "").strip()
+            if not did:
+                continue
+            data_uri = _grab_snapshot(did)
+            if data_uri:
+                buf["images"].append(data_uri)
+                buf["snapshots"].append({
+                    "device_id": did,
+                    "device_name": device_map.get(did, did),
+                    "snapshot": data_uri,
+                })
+                snap_count += 1
+
+        result["prompt_key"] = prompt_key
+        result["texts_count"] = len(buf["texts"])
+        result["images_count"] = len(buf["images"])
+        result["message"] = f"Prompt buffer '{prompt_key}': {len(buf['texts'])} text(s), {len(buf['images'])} image(s)"
+
+        # Check ready conditions
+        min_count = max(1, int(cfg.get("min_count") or 1))
+        max_wait = max(0.0, float(cfg.get("max_wait") or 0))
+        image_count = len(buf["images"])
+
+        if image_count >= min_count:
+            # Threshold reached — fire "ready" and cancel any pending timer
+            _cancel_prompt_timer(prompt_key)
+            result["next_handles"] = ["out", "ready"]
+            result["message"] += f" — ready ({image_count}/{min_count})"
+        else:
+            result["next_handles"] = ["out"]
+            # Start timer on first contribution if max_wait is set
+            if max_wait > 0 and prompt_key not in _prompt_buffer_timers:
+                flow_id = str((context.get("flow") or {}).get("id") or "")
+                _schedule_prompt_timer(prompt_key, max_wait, flow_id, node["id"])
+                result["message"] += f" — waiting ({image_count}/{min_count}, timeout {max_wait}s)"
+            else:
+                result["message"] += f" — waiting ({image_count}/{min_count})"
+
+        return result
+
     if node_type == "action.generate_event":
         from main import create_event, _grab_snapshot, _get_scenario, _analyze_with_gpt, _load_devices
         rendered_name = _render_template(str(cfg.get("name") or ""), context) or "Event"
@@ -2827,22 +3033,30 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
             if trigger.get("device_name"):
                 trigger_info += f" ({trigger['device_name']})"
 
-        # Collect snapshots
+        # Consume prompt buffer
+        prompt_key = _render_template(str(cfg.get("prompt_key") or ""), context).strip() or "default"
+        buffer_texts: list = []
+        buffer_images: list = []
+        buffer_snapshots: list = []
+        if prompt_key:
+            _cancel_prompt_timer(prompt_key)
+            buf = _consume_prompt_buffer(prompt_key)
+            buffer_texts = buf.get("texts") or []
+            buffer_images = buf.get("images") or []
+            buffer_snapshots = buf.get("snapshots") or []
+
+        # Collect direct snapshots from this node
         entries = cfg.get("snapshot_entries") or []
         devices = _load_devices()
         device_map = {d.id: d.name for d in devices}
-        snapshots = []
+        snapshots = list(buffer_snapshots)  # start with buffer snapshots
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
             did = str(entry.get("device_id") or "").strip()
             if not did:
                 continue
-            try:
-                sa = max(0, float(entry.get("seconds_ago") or 0))
-            except Exception:
-                sa = 0
-            data_uri = _grab_snapshot(did, seconds_ago=sa)
+            data_uri = _grab_snapshot(did)
             snapshots.append({
                 "device_id": did,
                 "device_name": device_map.get(did, did),
@@ -2875,9 +3089,19 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
                 scenario_name = scenario.get("name", "")
                 raw_prompt = scenario.get("prompt", "")
                 scenario_prompt = _render_template(raw_prompt, context)
-                image_uris = [s["snapshot"] for s in snapshots if s.get("snapshot")]
+                # Merge buffer texts into the prompt
+                if buffer_texts:
+                    combined_extra = "\n\n".join(buffer_texts)
+                    scenario_prompt = f"{scenario_prompt}\n\n{combined_extra}" if scenario_prompt else combined_extra
+                # Merge all image URIs: buffer images + direct snapshots
+                image_uris = list(buffer_images) + [s["snapshot"] for s in snapshots if s.get("snapshot") and s["snapshot"] not in buffer_images]
                 if scenario_prompt:
                     analysis = _analyze_with_gpt(scenario_prompt, image_uris)
+        elif buffer_texts:
+            # No scenario but we have buffer text — use it as the prompt
+            scenario_prompt = "\n\n".join(buffer_texts)
+            image_uris = list(buffer_images) + [s["snapshot"] for s in snapshots if s.get("snapshot") and s["snapshot"] not in buffer_images]
+            analysis = _analyze_with_gpt(scenario_prompt, image_uris)
 
         try:
             evt = create_event(

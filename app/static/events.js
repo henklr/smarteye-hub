@@ -107,9 +107,21 @@
     `;
   }
 
+  function sortEvents(events) {
+    return [...events].sort((a, b) => {
+      if (!a.acknowledged && b.acknowledged) return -1;
+      if (a.acknowledged && !b.acknowledged) return 1;
+      return (b.ts || "").localeCompare(a.ts || "");
+    });
+  }
+
+  let _renderAbort = null;
+
   function renderEvents(events) {
     const list = el("eventsList");
     const empty = el("eventsEmpty");
+
+    if (_renderAbort) { _renderAbort.abort = true; _renderAbort = null; }
 
     if (!events.length) {
       list.innerHTML = "";
@@ -120,15 +132,93 @@
 
     if (empty) empty.style.display = "none";
 
-    const sorted = [...events].sort((a, b) => {
-      if (!a.acknowledged && b.acknowledged) return -1;
-      if (a.acknowledged && !b.acknowledged) return 1;
-      return (b.ts || "").localeCompare(a.ts || "");
-    });
-
+    const sorted = sortEvents(events);
     list.innerHTML = sorted.map(renderEventRow).join("");
     bindEventActions();
     bindSnapshotThumbs();
+  }
+
+  function renderEventsProgressive(events) {
+    const list = el("eventsList");
+    const empty = el("eventsEmpty");
+
+    if (_renderAbort) { _renderAbort.abort = true; }
+    const token = { abort: false };
+    _renderAbort = token;
+
+    if (!events.length) {
+      list.innerHTML = "";
+      list.appendChild(empty);
+      empty.style.display = "";
+      return;
+    }
+
+    if (empty) empty.style.display = "none";
+    list.innerHTML = "";
+
+    const sorted = sortEvents(events);
+    const loading = document.createElement("div");
+    loading.className = "eventsLoadingBar";
+    loading.innerHTML = '<div class="eventsLoadingSpinner"></div><span>Loading events\u2026</span>';
+    list.appendChild(loading);
+
+    let i = 0;
+    function renderNext() {
+      if (token.abort) return;
+      if (i >= sorted.length) {
+        loading.remove();
+        _renderAbort = null;
+        return;
+      }
+      const tmp = document.createElement("div");
+      tmp.innerHTML = renderEventRow(sorted[i]);
+      const row = tmp.firstElementChild;
+      row.classList.add("fadeIn");
+      list.insertBefore(row, loading);
+      i++;
+      loading.querySelector("span").textContent = `Loading events\u2026 (${i}/${sorted.length})`;
+      bindSingleRowActions(row);
+      requestAnimationFrame(() => setTimeout(renderNext, 30));
+    }
+    renderNext();
+  }
+
+  function bindSingleRowActions(row) {
+    row.querySelectorAll(".btnAck").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const eventId = btn.dataset.eventId;
+        try {
+          await fetch(`/api/events/${encodeURIComponent(eventId)}/acknowledge`, { method: "POST" });
+          await loadEvents();
+        } catch (err) {
+          console.error("Acknowledge failed:", err);
+        }
+      });
+    });
+    row.querySelectorAll(".btnDelete").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const eventId = btn.dataset.eventId;
+        try {
+          await fetch(`/api/events/${encodeURIComponent(eventId)}`, { method: "DELETE" });
+          await loadEvents();
+        } catch (err) {
+          console.error("Delete failed:", err);
+        }
+      });
+    });
+    row.querySelectorAll(".eventSnapshotThumb").forEach((img) => {
+      img.addEventListener("click", () => {
+        const fullSrc = img.dataset.full;
+        if (!fullSrc) return;
+        const lightbox = el("eventsLightbox");
+        const lbImg = el("eventsLightboxImg");
+        if (lightbox && lbImg) {
+          lbImg.src = fullSrc;
+          lightbox.classList.remove("hidden");
+          lightbox.setAttribute("aria-hidden", "false");
+        }
+      });
+    });
   }
 
   function bindEventActions() {
@@ -186,12 +276,17 @@
   let allEvents = [];
 
   async function loadEvents() {
+    const list = el("eventsList");
+    const empty = el("eventsEmpty");
+    if (empty) empty.style.display = "none";
+    if (_renderAbort) { _renderAbort.abort = true; _renderAbort = null; }
+    list.innerHTML = '<div class="eventsLoadingBar"><div class="eventsLoadingSpinner"></div><span>Loading events\u2026</span></div>';
     try {
       const resp = await fetch("/api/events");
       if (!resp.ok) return;
       const data = await resp.json();
       allEvents = data.items || [];
-      renderEvents(allEvents);
+      renderEventsProgressive(allEvents);
       updateHeaderSub();
     } catch (err) {
       console.error("Failed to load events:", err);

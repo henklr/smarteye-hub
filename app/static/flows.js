@@ -1727,14 +1727,9 @@ function renderSnapshotDeviceList(entries = []) {
   if (!entries.length) return `<div class="inlineMeta">No cameras selected. Snapshots are optional.</div>`;
   return entries.map((entry, i) => {
     const did = typeof entry === "string" ? entry : (entry.device_id || "");
-    const sa = typeof entry === "object" ? (entry.seconds_ago ?? 0) : 0;
     return `
       <div class="snapshotDeviceRow" data-index="${i}">
         <select class="snapshotDeviceSelect" data-index="${i}">${deviceOptionsHtml(did)}</select>
-        <div class="snapshotSecsWrap">
-          <input class="snapshotSecsInput" data-index="${i}" type="number" min="0" step="1" value="${escapeHtml(sa)}" title="Seconds ago" />
-          <span class="snapshotSecsLabel">s&nbsp;ago</span>
-        </div>
         <button class="snapshotDeviceRemove" data-index="${i}" type="button" title="Remove camera">&times;</button>
       </div>
     `;
@@ -2263,6 +2258,10 @@ function displayPortLabel(node, kind, port) {
   if ((node?.type === "condition.compare" || node?.type === "condition.schedule_active") && kind === "output") {
     if (port === "true") return "THEN";
     if (port === "false") return "ELSE";
+  }
+
+  if (node?.type === "action.build_prompt" && kind === "output") {
+    if (port === "ready") return "READY";
   }
 
   return "";
@@ -3211,7 +3210,7 @@ function renderCanvas() {
             ${ports.outputs.map((port) => `
               <div class="flowPortRow output">
                 ${displayPortLabel(node, "output", port) ? `
-                  <span class="flowBranchLabel ${port === "true" ? "then" : port === "false" ? "else" : "neutral"}">
+                  <span class="flowBranchLabel ${port === "true" ? "then" : port === "false" ? "else" : port === "ready" ? "ready" : "neutral"}">
                     ${escapeHtml(displayPortLabel(node, "output", port))}
                   </span>
                 ` : ""}
@@ -6312,6 +6311,52 @@ function renderNodeInspector(node) {
       `;
       break;
 
+    case "action.build_prompt":
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Build prompt</div>
+          <div class="inspectorHint">Accumulates text and camera snapshots into a named prompt buffer. Use a Generate event node with the same Prompt key to consume the buffer and run AI analysis.</div>
+          <div class="fieldGrid">
+            <div class="full">
+              <label>Prompt key</label>
+              <input id="cfg_prompt_key" value="${escapeHtml(cfg.prompt_key || "")}" placeholder="default" />
+              <div class="inlineMeta">A unique name for this prompt buffer. Defaults to "default" if left empty. Supports templates.</div>
+            </div>
+            <div class="full">
+              <label>Text <span class="labelMeta">(optional)</span></label>
+              <textarea id="cfg_text" rows="4" placeholder="Text to append to the prompt buffer...">${escapeHtml(cfg.text || "")}</textarea>
+              <div class="inlineMeta">This text is appended to the buffer. Supports templates: {{trigger.path}}, {{variables.key}}</div>
+            </div>
+            <div class="full">
+              <label>Snapshot cameras <span class="labelMeta">(optional)</span></label>
+              <div id="cfg_snapshot_devices" class="snapshotDeviceList">
+                ${renderSnapshotDeviceList(cfg.snapshot_entries || [])}
+              </div>
+              <div class="inlineMeta mt-6">Snapshots are added to the prompt buffer and sent to the AI when consumed.</div>
+              <button class="btn mt-6" id="btnAddSnapshotDevice" type="button">Add camera</button>
+            </div>
+            <div class="full">
+              <label class="enableRow">
+                <input type="checkbox" id="cfg_clear_first" ${cfg.clear_first ? "checked" : ""} />
+                Clear buffer before adding
+              </label>
+              <div class="inlineMeta">Empties the prompt buffer before appending new content. Useful at the start of a sequence.</div>
+            </div>
+            <div class="full">
+              <label>Minimum contributions</label>
+              <input id="cfg_min_count" type="number" min="1" step="1" value="${escapeHtml(cfg.min_count ?? 1)}" />
+              <div class="inlineMeta">The READY output fires only when the buffer has at least this many images. Until then, only the OUT output fires.</div>
+            </div>
+            <div class="full">
+              <label>Max wait <span class="labelMeta">(seconds, optional)</span></label>
+              <input id="cfg_max_wait" type="number" min="0" step="1" value="${escapeHtml(cfg.max_wait ?? 0)}" />
+              <div class="inlineMeta">If set, the READY output fires after this many seconds even if min contributions haven't been reached. Set to 0 to disable.</div>
+            </div>
+          </div>
+        </div>
+      `;
+      break;
+
     case "action.generate_event":
       body = `
         <div class="inspectorCard">
@@ -6324,6 +6369,11 @@ function renderNodeInspector(node) {
               <div class="inlineMeta">Supports templates: {{flow.name}}, {{trigger.path}}, {{variables.key}}</div>
             </div>
             <div class="full">
+              <label>Prompt key <span class="labelMeta">(optional)</span></label>
+              <input id="cfg_prompt_key" value="${escapeHtml(cfg.prompt_key || "")}" placeholder="default" />
+              <div class="inlineMeta">Consumes text and images from Build prompt nodes with the same key. Defaults to "default". Supports templates.</div>
+            </div>
+            <div class="full">
               <label>Scenario</label>
               <select id="cfg_scenario_id">${scenarioOptionsHtml(cfg.scenario_id || "")}</select>
               <div class="inlineMeta">Select an AI scenario to analyze the snapshots. Manage scenarios on the System page.</div>
@@ -6333,7 +6383,7 @@ function renderNodeInspector(node) {
               <div id="cfg_snapshot_devices" class="snapshotDeviceList">
                 ${renderSnapshotDeviceList(cfg.snapshot_entries || [])}
               </div>
-              <div class="inlineMeta mt-6">Snapshots are sent to the AI scenario for analysis and included in the event. Set seconds ago to 0 for the most recent frame.</div>
+              <div class="inlineMeta mt-6">Snapshots are fetched live from the camera and sent to the AI scenario for analysis.</div>
               <button class="btn mt-6" id="btnAddSnapshotDevice" type="button">Add camera</button>
             </div>
             <div class="full">
@@ -6570,7 +6620,7 @@ function bindNodeInspector(node) {
     });
   }
 
-  if (node.type === "action.generate_event") {
+  if (node.type === "action.generate_event" || node.type === "action.build_prompt") {
     document.getElementById("btnAddSnapshotDevice")?.addEventListener("click", () => {
       if (!node.config.snapshot_entries) node.config.snapshot_entries = [];
       node.config.snapshot_entries.push({ device_id: "", seconds_ago: 0 });
@@ -6598,15 +6648,6 @@ function bindNodeInspector(node) {
       });
     });
 
-    document.querySelectorAll(".snapshotSecsInput").forEach(inp => {
-      inp.addEventListener("input", () => {
-        const idx = parseInt(inp.dataset.index, 10);
-        if (node.config.snapshot_entries[idx]) {
-          node.config.snapshot_entries[idx].seconds_ago = parseFloat(inp.value) || 0;
-        }
-        markDirty();
-      });
-    });
   }
 }
 
@@ -6735,17 +6776,26 @@ function applyNodeInspector(node) {
       set("name");
       set("message");
       break;
+    case "action.build_prompt":
+      set("name");
+      set("prompt_key");
+      set("text");
+      cfg.clear_first = !!document.getElementById("cfg_clear_first")?.checked;
+      cfg.min_count = Math.max(1, parseInt(document.getElementById("cfg_min_count")?.value) || 1);
+      cfg.max_wait = Math.max(0, parseFloat(document.getElementById("cfg_max_wait")?.value) || 0);
+      cfg.snapshot_entries = Array.from(document.querySelectorAll(".snapshotDeviceRow")).map(row => {
+        const sel = row.querySelector(".snapshotDeviceSelect");
+        return { device_id: sel ? sel.value : "" };
+      }).filter(e => e.device_id);
+      break;
     case "action.generate_event":
       set("name");
       set("scenario_id");
+      set("prompt_key");
       cfg.include_recording = !!document.getElementById("cfg_include_recording")?.checked;
       cfg.snapshot_entries = Array.from(document.querySelectorAll(".snapshotDeviceRow")).map(row => {
         const sel = row.querySelector(".snapshotDeviceSelect");
-        const inp = row.querySelector(".snapshotSecsInput");
-        return {
-          device_id: sel ? sel.value : "",
-          seconds_ago: inp ? (parseFloat(inp.value) || 0) : 0,
-        };
+        return { device_id: sel ? sel.value : "" };
       }).filter(e => e.device_id);
       delete cfg.snapshot_device_ids;
       delete cfg.seconds_ago;
