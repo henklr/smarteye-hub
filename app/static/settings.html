@@ -228,6 +228,26 @@
         <section class="settingsCard">
           <div class="listHeader compact">
             <div>
+              <div class="listTitle small">Storage</div>
+              <div class="listSub">Manage NVMe solid-state drives connected via the M.2 slot.</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex:0 0 auto;">
+              <button class="btn btn-mini" id="storageRefreshBtn" type="button">Refresh</button>
+            </div>
+          </div>
+
+          <div id="storageContent" style="margin-top:14px;">
+            <span class="muted">Scanning for drives…</span>
+          </div>
+
+          <div class="statusLine compact" style="margin-top:12px;">
+            <span id="storageStatus" class="muted"></span>
+          </div>
+        </section>
+
+        <section class="settingsCard">
+          <div class="listHeader compact">
+            <div>
               <div class="listTitle small">System logs</div>
               <div class="listSub">Live application and server log output.</div>
             </div>

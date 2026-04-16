@@ -726,6 +726,162 @@ def clear_system_logs():
     return {"ok": True}
 
 
+# ── Storage (NVMe) ─────────────────────────────────────────────────────────────
+
+def _host_cmd(args: list[str], *, timeout: int = 30, input_data: str | None = None) -> subprocess.CompletedProcess:
+    """Run a command on the host via nsenter."""
+    return subprocess.run(
+        ["nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--"] + args,
+        capture_output=True, text=True, timeout=timeout,
+        input=input_data,
+    )
+
+def _parse_lsblk_json() -> list[dict]:
+    proc = _host_cmd(["lsblk", "-J", "-b", "-o", "NAME,SIZE,FSTYPE,MOUNTPOINT,TYPE,MODEL,SERIAL"])
+    if proc.returncode != 0:
+        return []
+    try:
+        return json.loads(proc.stdout).get("blockdevices", [])
+    except Exception:
+        return []
+
+def _find_nvme_devices() -> list[dict]:
+    """Return list of NVMe block devices from lsblk."""
+    devices = _parse_lsblk_json()
+    nvme = []
+    for dev in devices:
+        if dev.get("type") == "disk" and (dev.get("name") or "").startswith("nvme"):
+            parts = []
+            for child in dev.get("children", []):
+                parts.append({
+                    "name": child.get("name"),
+                    "size": int(child.get("size") or 0),
+                    "fstype": child.get("fstype"),
+                    "mountpoint": child.get("mountpoint"),
+                })
+            nvme.append({
+                "name": dev.get("name"),
+                "size": int(dev.get("size") or 0),
+                "model": (dev.get("model") or "").strip(),
+                "serial": (dev.get("serial") or "").strip(),
+                "partitions": parts,
+            })
+    return nvme
+
+
+@app.get("/api/storage/devices")
+def storage_devices():
+    """List NVMe storage devices and their partitions."""
+    return {"devices": _find_nvme_devices()}
+
+
+@app.post("/api/storage/format")
+def storage_format(request: Request, body: dict = None):
+    """Wipe an NVMe device, create a single ext4 partition, and mount it."""
+    if body is None:
+        body = {}
+    device = str(body.get("device") or "")
+    mount_path = str(body.get("mount_path") or "/mnt/nvme")
+
+    # Validate device name strictly
+    if not _re.fullmatch(r"nvme\d+n\d+", device):
+        raise HTTPException(status_code=400, detail="Invalid device name")
+
+    dev_path = f"/dev/{device}"
+
+    # Verify the device actually exists
+    check = _host_cmd(["test", "-b", dev_path])
+    if check.returncode != 0:
+        raise HTTPException(status_code=404, detail=f"Device {dev_path} not found")
+
+    # Validate mount_path
+    if not _re.fullmatch(r"/[a-zA-Z0-9_/\-]+", mount_path):
+        raise HTTPException(status_code=400, detail="Invalid mount path")
+
+    _log_system.warning("Formatting %s and mounting to %s", dev_path, mount_path)
+
+    # Unmount any existing partitions
+    devs = _find_nvme_devices()
+    for d in devs:
+        if d["name"] == device:
+            for p in d["partitions"]:
+                if p["mountpoint"]:
+                    _host_cmd(["umount", f"/dev/{p['name']}"])
+
+    # Create partition table + single partition
+    fdisk_input = "o\nn\np\n1\n\n\nw\n"
+    proc = _host_cmd(["fdisk", dev_path], input_data=fdisk_input, timeout=30)
+    if proc.returncode not in (0, 1):  # fdisk may return 1 with re-read warning
+        _log_system.error("fdisk failed: %s", proc.stderr)
+        raise HTTPException(status_code=500, detail=f"Partitioning failed: {proc.stderr.strip()}")
+
+    # Wait for kernel to re-read partition table
+    _host_cmd(["partprobe", dev_path], timeout=10)
+    import time as _time
+    _time.sleep(2)
+
+    part_path = f"{dev_path}p1"
+
+    # Format as ext4
+    proc = _host_cmd(["mkfs.ext4", "-F", part_path], timeout=120)
+    if proc.returncode != 0:
+        _log_system.error("mkfs.ext4 failed: %s", proc.stderr)
+        raise HTTPException(status_code=500, detail=f"Formatting failed: {proc.stderr.strip()}")
+
+    # Create mount point and mount
+    _host_cmd(["mkdir", "-p", mount_path])
+    proc = _host_cmd(["mount", part_path, mount_path])
+    if proc.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"Mount failed: {proc.stderr.strip()}")
+
+    # Add to fstab if not already present
+    fstab_check = _host_cmd(["grep", "-q", part_path, "/etc/fstab"])
+    if fstab_check.returncode != 0:
+        fstab_line = f"\n{part_path}  {mount_path}  ext4  defaults,nofail  0  2\n"
+        _host_cmd(["sh", "-c", f"echo '{fstab_line}' >> /etc/fstab"])
+
+    _log_system.info("NVMe %s formatted and mounted at %s", device, mount_path)
+    return {"ok": True, "device": device, "partition": f"{device}p1", "mount_path": mount_path}
+
+
+@app.post("/api/storage/mount")
+def storage_mount(body: dict = None):
+    """Mount an existing NVMe partition."""
+    if body is None:
+        body = {}
+    partition = str(body.get("partition") or "")
+    mount_path = str(body.get("mount_path") or "/mnt/nvme")
+
+    if not _re.fullmatch(r"nvme\d+n\d+p\d+", partition):
+        raise HTTPException(status_code=400, detail="Invalid partition name")
+    if not _re.fullmatch(r"/[a-zA-Z0-9_/\-]+", mount_path):
+        raise HTTPException(status_code=400, detail="Invalid mount path")
+
+    part_path = f"/dev/{partition}"
+    _host_cmd(["mkdir", "-p", mount_path])
+    proc = _host_cmd(["mount", part_path, mount_path])
+    if proc.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"Mount failed: {proc.stderr.strip()}")
+
+    return {"ok": True, "partition": partition, "mount_path": mount_path}
+
+
+@app.post("/api/storage/unmount")
+def storage_unmount(body: dict = None):
+    """Unmount an NVMe partition."""
+    if body is None:
+        body = {}
+    mount_path = str(body.get("mount_path") or "")
+    if not mount_path or not _re.fullmatch(r"/[a-zA-Z0-9_/\-]+", mount_path):
+        raise HTTPException(status_code=400, detail="Invalid mount path")
+
+    proc = _host_cmd(["umount", mount_path])
+    if proc.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"Unmount failed: {proc.stderr.strip()}")
+
+    return {"ok": True, "mount_path": mount_path}
+
+
 @app.get("/health")
 def health():
     with _event_worker_lock:

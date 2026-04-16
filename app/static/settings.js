@@ -683,3 +683,143 @@ openaiKeySaveBtn?.addEventListener("click", async () => {
 });
 
 loadOpenaiKey();
+
+// ── Storage (NVMe) ────────────────────────────────────────────────────────────
+
+const storageContent = document.getElementById("storageContent");
+const storageStatusEl = document.getElementById("storageStatus");
+const storageRefreshBtn = document.getElementById("storageRefreshBtn");
+
+function setStorageStatus(text, isError, spinning) {
+  if (!storageStatusEl) return;
+  const spin = spinning ? '<span class="storageSpinner"></span> ' : '';
+  storageStatusEl.innerHTML = spin + text;
+  storageStatusEl.style.color = isError ? "var(--clr-danger, #e74c3c)" : "";
+}
+
+function _formatSize(bytes) {
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  let size = bytes;
+  while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
+  return size.toFixed(i > 0 ? 1 : 0) + " " + units[i];
+}
+
+function _renderStorageDevices(devices) {
+  if (!storageContent) return;
+  if (!devices.length) {
+    storageContent.innerHTML = '<span class="muted">No NVMe drives detected.</span>';
+    return;
+  }
+
+  let html = "";
+  for (const dev of devices) {
+    const model = dev.model || dev.name;
+    const size = _formatSize(dev.size);
+    html += `<div style="border:1px solid var(--clr-border, #333);border-radius:8px;padding:14px;margin-bottom:12px;">`;
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">`;
+    html += `<div><strong>${model}</strong> <span class="muted">(${dev.name}, ${size})</span></div>`;
+    html += `</div>`;
+
+    if (dev.partitions.length) {
+      html += `<div style="margin-top:10px;">`;
+      for (const p of dev.partitions) {
+        const pSize = _formatSize(p.size);
+        const fs = p.fstype || "unformatted";
+        const mp = p.mountpoint;
+        html += `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px;">`;
+        html += `<span>/dev/${p.name}</span>`;
+        html += `<span class="muted">${pSize}, ${fs}</span>`;
+        if (mp) {
+          html += `<span style="color:var(--clr-ok, #27ae60);">mounted at ${mp}</span>`;
+          html += `<button class="btn btn-mini" onclick="_storageUnmount('${mp}')">Unmount</button>`;
+        } else {
+          html += `<span class="muted">not mounted</span>`;
+          html += `<button class="btn btn-mini" onclick="_storageMount('${p.name}')">Mount</button>`;
+        }
+        html += `</div>`;
+      }
+      html += `</div>`;
+    } else {
+      html += `<div class="muted" style="margin-top:8px;">No partitions. Format this drive to use it.</div>`;
+    }
+
+    html += `<div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">`;
+    html += `<label style="margin:0;">Mount path:</label>`;
+    html += `<input type="text" id="mountPath_${dev.name}" value="/mnt/nvme" style="width:160px;" />`;
+    html += `<button class="btn btn-danger btn-mini" onclick="_storageFormat('${dev.name}')">Format &amp; mount</button>`;
+    html += `</div>`;
+
+    html += `</div>`;
+  }
+  storageContent.innerHTML = html;
+}
+
+async function loadStorageDevices() {
+  if (storageContent) storageContent.innerHTML = '<span class="muted"><span class="storageSpinner"></span> Scanning for drives…</span>';
+  setStorageStatus("", false);
+  try {
+    const data = await api("/api/storage/devices");
+    _renderStorageDevices(data.devices || []);
+  } catch (e) {
+    if (storageContent) storageContent.innerHTML = '<span class="muted">Error loading storage info.</span>';
+    setStorageStatus(`Error: ${e.message || e}`, true);
+  }
+}
+
+window._storageFormat = async function(device) {
+  const mountInput = document.getElementById("mountPath_" + device);
+  const mountPath = (mountInput?.value || "/mnt/nvme").trim();
+  if (!confirm(`Format /dev/${device}? This will ERASE ALL DATA on the drive and create a single ext4 partition mounted at ${mountPath}.`)) return;
+  setStorageStatus("Formatting… this may take a moment", false, true);
+  try {
+    await api("/api/storage/format", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device, mount_path: mountPath }),
+    });
+    setStorageStatus("Drive formatted and mounted successfully.", false);
+    await loadStorageDevices();
+  } catch (e) {
+    setStorageStatus(`Error: ${e.message || e}`, true);
+  }
+};
+
+window._storageMount = async function(partition) {
+  const devName = partition.replace(/p\d+$/, "");
+  const mountInput = document.getElementById("mountPath_" + devName);
+  const mountPath = (mountInput?.value || "/mnt/nvme").trim();
+  setStorageStatus("Mounting…", false, true);
+  try {
+    await api("/api/storage/mount", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ partition, mount_path: mountPath }),
+    });
+    setStorageStatus("Partition mounted.", false);
+    await loadStorageDevices();
+  } catch (e) {
+    setStorageStatus(`Error: ${e.message || e}`, true);
+  }
+};
+
+window._storageUnmount = async function(mountPath) {
+  if (!confirm(`Unmount ${mountPath}?`)) return;
+  setStorageStatus("Unmounting…", false, true);
+  try {
+    await api("/api/storage/unmount", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mount_path: mountPath }),
+    });
+    setStorageStatus("Partition unmounted.", false);
+    await loadStorageDevices();
+  } catch (e) {
+    setStorageStatus(`Error: ${e.message || e}`, true);
+  }
+};
+
+storageRefreshBtn?.addEventListener("click", loadStorageDevices);
+
+loadStorageDevices();
