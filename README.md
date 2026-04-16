@@ -5,13 +5,13 @@ Fresh Raspberry Pi 5 install:
 curl -fsSL https://raw.githubusercontent.com/henklr/smarteye-hub/main/install.sh | bash
 
 If the repository is private, create a GitHub Personal Access Token (classic) with
-`repo` scope at https://github.com/settings/tokens and use it for both the download
-and the clone:
+`repo` scope at https://github.com/settings/tokens and run:
 
-GH_TOKEN=YOUR_TOKEN
-curl -fsSL -H "Authorization: token $GH_TOKEN" \
-  https://raw.githubusercontent.com/henklr/smarteye-hub/main/install.sh \
-  | GH_TOKEN="$GH_TOKEN" bash
+GH_TOKEN=YOUR_TOKEN curl -fsSL -H "Authorization: token $GH_TOKEN" \
+  https://raw.githubusercontent.com/henklr/smarteye-hub/main/install.sh | GH_TOKEN="$GH_TOKEN" bash
+
+If you omit `GH_TOKEN` from the `bash` part, the installer will prompt you for it
+interactively when the clone fails.
 
 The installer will:
 

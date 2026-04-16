@@ -24,7 +24,7 @@ repo_url() {
 }
 
 prompt_for_token() {
-  if [[ ! -t 0 ]]; then
+  if [[ ! -e /dev/tty ]]; then
     err "Repository is private and no GH_TOKEN was provided."
     err "Re-run with: GH_TOKEN=<your-token> bash install.sh"
     exit 1
@@ -34,7 +34,7 @@ prompt_for_token() {
   log  "You need a GitHub Personal Access Token (classic) with 'repo' scope."
   log  "Create one at: https://github.com/settings/tokens/new"
   echo
-  read -r -s -p "Paste your GitHub token (input hidden): " GH_TOKEN
+  read -r -s -p "Paste your GitHub token (input hidden): " GH_TOKEN </dev/tty
   echo
   if [[ -z "$GH_TOKEN" ]]; then
     err "No token provided. Aborting."
