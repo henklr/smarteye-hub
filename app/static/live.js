@@ -3,8 +3,6 @@ const sidebarListStatus = document.getElementById("sidebarListStatus");
 const deviceFormStatus = document.getElementById("deviceFormStatus");
 const deviceFormTitle = document.getElementById("deviceFormTitle");
 const refreshDevicesBtn = document.getElementById("overlayRefreshDevices");
-const startAllBtn = document.getElementById("startAll");
-const stopAllBtn = document.getElementById("stopAll");
 
 const nameEl = document.getElementById("name");
 const ipEl = document.getElementById("ip");
@@ -24,6 +22,11 @@ const devicesOverlay = document.getElementById("devicesOverlay");
 const devicesOverlayBackdrop = document.getElementById("devicesOverlayBackdrop");
 
 const videoGrid = document.getElementById("videoGrid");
+
+const liveSidebarList = document.getElementById("liveSidebarList");
+const openDevicesBtn2 = document.getElementById("openDevicesBtn2");
+const sidebarStartAll = document.getElementById("sidebarStartAll");
+const sidebarStopAll = document.getElementById("sidebarStopAll");
 
 const LS_GRID_KEY = "live.gridState";
 const LS_DEVICE_ORDER_KEY = "live.deviceOrder";
@@ -142,9 +145,7 @@ function closeDevicesOverlay() {
 }
 
 function ensureDevicesVisibleWhenNoStreams() {
-  if (streams.size === 0) {
-    openDevicesOverlay();
-  }
+  // no-op: sidebar is always visible, no need to auto-open the overlay
 }
 
 function getTileOrder() {
@@ -483,7 +484,7 @@ function getVisualState(entry, ready) {
   if (!entry) {
     return {
       className: "",
-      badge: ready ? "READY" : "SETUP",
+      badge: "ONLINE",
       subtitle: ready ? null : "Not ready (fetch and save a profile)",
     };
   }
@@ -491,7 +492,7 @@ function getVisualState(entry, ready) {
   if (entry.state === STREAM_STATE.LIVE) {
     return {
       className: "is-live",
-      badge: "LIVE",
+      badge: "ONLINE",
       subtitle: "Streaming",
     };
   }
@@ -499,7 +500,7 @@ function getVisualState(entry, ready) {
   if (entry.state === STREAM_STATE.STARTING) {
     return {
       className: "is-starting",
-      badge: entry.retryCount > 0 ? "RETRYING" : "STARTING",
+      badge: "ONLINE",
       subtitle: entry.retryCount > 0 ? "Retrying…" : "Starting…",
     };
   }
@@ -516,7 +517,7 @@ function getVisualState(entry, ready) {
 
   return {
     className: "",
-    badge: ready ? "READY" : "SETUP",
+    badge: "ONLINE",
     subtitle: ready ? null : "Not ready (fetch and save a profile)",
   };
 }
@@ -540,36 +541,24 @@ function renderList() {
 
   camListEl.innerHTML = devices.map((d) => {
     const ready = profileReady(d);
-    const entry = getEntry(d.id);
-    const present = !!entry;
-    const visual = getVisualState(entry, ready);
-    const subtitleText = visual.subtitle ?? (d.profile_label || d.profile_token || "No saved profile");
+    const subtitleText = d.profile_label || d.profile_token || "No saved profile";
     const ipPart = d.ip ? `${d.ip} • ` : "";
 
     const cls = [
       "camItem",
       ready ? "ready" : "notReady",
-      present ? "active" : "",
-      visual.className,
       editingId === d.id ? "is-editing" : "",
     ].join(" ");
 
     return `
-      <div class="${cls}" data-id="${escapeHtml(d.id)}" draggable="true">
+      <div class="${cls}" data-id="${escapeHtml(d.id)}">
         <div class="camItemTop">
           <div class="camItemTitleRow">
-            <button
-              class="camDragHandle"
-              type="button"
-              draggable="false"
-              aria-label="Reorder device"
-              title="Drag to reorder"
-            >⋮⋮</button>
             <div class="camName">${escapeHtml(d.name || d.ip || d.id)}</div>
           </div>
 
           <div class="camItemTopActions">
-            <div class="camBadge">${escapeHtml(visual.badge)}</div>
+            <div class="camBadge">${escapeHtml(ready ? "ONLINE" : "SETUP")}</div>
             <button class="camMiniBtn" type="button" data-action="edit" draggable="false">Edit</button>
             <button class="camMiniBtn danger" type="button" data-action="delete" draggable="false">Delete</button>
           </div>
@@ -581,6 +570,36 @@ function renderList() {
   }).join("");
 
   updateListStatusSummary();
+  renderSidebar();
+}
+
+function renderSidebar() {
+  if (!liveSidebarList) return;
+
+  if (!devices.length) {
+    liveSidebarList.innerHTML = '<div class="liveSidebarEmpty">No devices configured</div>';
+    return;
+  }
+
+  liveSidebarList.innerHTML = devices.map((d) => {
+    const entry = getEntry(d.id);
+    const active = !!entry;
+    const stateClass = entry
+      ? (entry.state === STREAM_STATE.LIVE ? 'active'
+        : entry.state === STREAM_STATE.STARTING ? 'is-starting'
+        : entry.state === STREAM_STATE.ERROR ? 'is-error' : '')
+      : '';
+    const badge = entry
+      ? (entry.state === STREAM_STATE.LIVE ? 'LIVE'
+        : entry.state === STREAM_STATE.STARTING ? '…'
+        : entry.state === STREAM_STATE.ERROR ? '!' : '')
+      : '';
+
+    return `<div class="liveSidebarRow ${active ? 'active' : ''} ${stateClass}" data-id="${escapeHtml(d.id)}" draggable="true">
+      <button class="liveSidebarDragHandle" type="button" draggable="false" aria-label="Reorder" title="Drag to reorder">⋮⋮</button>
+      <span class="liveSidebarName">${escapeHtml(d.name || d.ip || d.id)}</span>
+    </div>`;
+  }).join('');
 }
 
 function clearProfilesUI(msg = "Fetch profiles first…") {
@@ -1717,6 +1736,11 @@ async function stopDevice(deviceId, { force = false } = {}) {
     tileEl?.remove?.();
   } catch {}
 
+  // Clean up empty videoRow wrappers so #videoGrid:empty works
+  videoGrid.querySelectorAll(".videoRow").forEach((row) => {
+    if (!row.children.length) row.remove();
+  });
+
   streams.delete(deviceId);
 
   recomputeGrid();
@@ -1864,8 +1888,6 @@ async function deleteDeviceById(deviceId) {
 }
 
 camListEl.addEventListener("click", async (ev) => {
-  if (Date.now() < suppressListClickUntil) return;
-
   const item = getListItemFromEventTarget(ev.target);
   if (!item) return;
 
@@ -1888,14 +1910,6 @@ camListEl.addEventListener("click", async (ev) => {
       await deleteDeviceById(d.id);
       return;
     }
-  }
-
-  if (ev.target.closest(".camDragHandle")) return;
-
-  if (isStreaming(d.id)) {
-    await stopDevice(d.id);
-  } else {
-    await startDevice(d);
   }
 });
 
@@ -1986,7 +2000,7 @@ refreshDevicesBtn?.addEventListener("click", async () => {
   await loadDevices();
 });
 
-startAllBtn.addEventListener("click", async () => {
+sidebarStartAll?.addEventListener("click", async () => {
   const ready = devices.filter(profileReady);
   const toStart = ready.filter((d) => !isStreaming(d.id));
   if (!toStart.length) return;
@@ -1999,7 +2013,7 @@ startAllBtn.addEventListener("click", async () => {
   saveGridState();
 });
 
-stopAllBtn.addEventListener("click", async () => {
+sidebarStopAll?.addEventListener("click", async () => {
   await Promise.allSettled(
     Array.from(streams.keys()).map((id) => stopDevice(id, { force: true }))
   );
@@ -2020,12 +2034,177 @@ devicesOverlayBackdrop?.addEventListener("click", () => {
   closeDevicesOverlay();
 });
 
+openDevicesBtn2?.addEventListener("click", () => {
+  openDevicesOverlay();
+});
+
+liveSidebarList?.addEventListener("click", async (ev) => {
+  if (Date.now() < suppressSidebarClickUntil) return;
+  if (ev.target.closest(".liveSidebarDragHandle")) return;
+
+  const row = ev.target.closest(".liveSidebarRow[data-id]");
+  if (!row) return;
+
+  const id = row.getAttribute("data-id");
+  const d = devices.find((x) => x.id === id);
+  if (!d) return;
+
+  if (isStreaming(d.id)) {
+    await stopDevice(d.id);
+  } else {
+    await startDevice(d);
+  }
+});
+
+// ── Sidebar DnD ──
+let draggedSidebarId = null;
+let lastSidebarDropId = null;
+let originalSidebarOrder = [];
+let suppressSidebarClickUntil = 0;
+
+function getSidebarRowFromTarget(target) {
+  return target?.closest?.(".liveSidebarRow[data-id]") || null;
+}
+
+function clearSidebarDropMarkers() {
+  liveSidebarList?.querySelectorAll(".liveSidebarRow.drop-before, .liveSidebarRow.drop-after").forEach((el) => {
+    el.classList.remove("drop-before", "drop-after");
+  });
+}
+
+function clearSidebarDraggingState() {
+  liveSidebarList?.querySelectorAll(".liveSidebarRow.is-list-dragging").forEach((el) => {
+    el.classList.remove("is-list-dragging");
+  });
+  clearSidebarDropMarkers();
+  draggedSidebarId = null;
+  lastSidebarDropId = null;
+}
+
+function getSidebarDropTarget(clientY, draggingEl) {
+  const items = Array.from(liveSidebarList.querySelectorAll(".liveSidebarRow[data-id]"))
+    .filter((el) => el !== draggingEl);
+  if (!items.length) return null;
+
+  let best = null;
+  let bestScore = Infinity;
+
+  for (const item of items) {
+    const rect = item.getBoundingClientRect();
+    const cy = rect.top + rect.height / 2;
+    const score = Math.abs(clientY - cy);
+    if (score < bestScore) {
+      bestScore = score;
+      best = { item, rect };
+    }
+  }
+
+  if (!best) return null;
+  const midY = best.rect.top + best.rect.height / 2;
+  return { item: best.item, before: clientY < midY };
+}
+
+function installSidebarDnD() {
+  if (!liveSidebarList) return;
+
+  liveSidebarList.addEventListener("dragstart", (ev) => {
+    const item = getSidebarRowFromTarget(ev.target);
+    if (!item) return;
+
+    draggedSidebarId = item.getAttribute("data-id");
+    lastSidebarDropId = draggedSidebarId;
+    originalSidebarOrder = devices.map((d) => d.id);
+    item.classList.add("is-list-dragging");
+
+    if (ev.dataTransfer) {
+      ev.dataTransfer.effectAllowed = "move";
+      ev.dataTransfer.setData("text/plain", draggedSidebarId || "");
+    }
+  });
+
+  liveSidebarList.addEventListener("dragover", (ev) => {
+    ev.preventDefault();
+    const draggingEl = liveSidebarList.querySelector(".liveSidebarRow.is-list-dragging");
+    if (!draggingEl) return;
+
+    const target = getSidebarDropTarget(ev.clientY, draggingEl);
+    if (!target) return;
+
+    clearSidebarDropMarkers();
+    target.item.classList.add(target.before ? "drop-before" : "drop-after");
+
+    const dragId = draggingEl.getAttribute("data-id");
+    const targetId = target.item.getAttribute("data-id");
+    if (!dragId || !targetId || dragId === targetId) return;
+
+    const sig = `${targetId}:${target.before ? "b" : "a"}`;
+    if (sig === lastSidebarDropId) return;
+
+    if (target.before) {
+      liveSidebarList.insertBefore(draggingEl, target.item);
+    } else {
+      liveSidebarList.insertBefore(draggingEl, target.item.nextSibling);
+    }
+
+    lastSidebarDropId = sig;
+
+    const orderedIds = Array.from(liveSidebarList.querySelectorAll(".liveSidebarRow[data-id]"))
+      .map((el) => el.getAttribute("data-id"))
+      .filter(Boolean);
+
+    if (orderedIds.length) {
+      applyDeviceOrder(orderedIds);
+      syncTileOrderToDeviceOrder(false);
+    }
+  });
+
+  liveSidebarList.addEventListener("drop", (ev) => {
+    ev.preventDefault();
+    const draggingEl = liveSidebarList.querySelector(".liveSidebarRow.is-list-dragging");
+    if (!draggingEl || !draggedSidebarId) {
+      clearSidebarDraggingState();
+      return;
+    }
+
+    const orderedIds = Array.from(liveSidebarList.querySelectorAll(".liveSidebarRow[data-id]"))
+      .map((el) => el.getAttribute("data-id"))
+      .filter(Boolean);
+
+    if (orderedIds.length) {
+      applyDeviceOrder(orderedIds);
+      saveDeviceOrder();
+      syncTileOrderToDeviceOrder(false);
+      saveGridState();
+    }
+
+    originalSidebarOrder = [];
+    suppressSidebarClickUntil = Date.now() + 250;
+    clearSidebarDraggingState();
+    renderList();
+  });
+
+  liveSidebarList.addEventListener("dragend", () => {
+    requestAnimationFrame(() => {
+      if (originalSidebarOrder.length) {
+        applyDeviceOrder(originalSidebarOrder);
+        renderList();
+        syncTileOrderToDeviceOrder(false);
+      }
+
+      originalSidebarOrder = [];
+      suppressSidebarClickUntil = Date.now() + 250;
+      clearSidebarDraggingState();
+    });
+  });
+}
+
 window.addEventListener("resize", () => {
   recomputeGrid();
 });
 
 recomputeGrid();
 installListDnD();
+installSidebarDnD();
 clearForm();
 
 (async function init() {

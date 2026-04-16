@@ -32,14 +32,24 @@
       </div>
 
       <div class="topbarActions">
-        <button class="btn devicesQuickBtn" id="openDevicesBtn" type="button">
-          Devices
-        </button>
         <button class="btn logoutBtn" id="logoutBtn" type="button" title="Sign out">Logout</button>
       </div>
     </div>
 
     <div class="liveLayout" id="liveLayout">
+      <div class="liveSidebar" id="liveSidebar">
+        <div class="liveSidebarHdr">Cameras</div>
+        <div class="liveSidebarList" id="liveSidebarList">
+          <div class="liveSidebarEmpty">Loading…</div>
+        </div>
+        <div class="liveSidebarFooter">
+          <div class="liveSidebarActions">
+            <button class="btn liveSidebarActionBtn" id="sidebarStartAll" type="button">Start All</button>
+            <button class="btn liveSidebarActionBtn" id="sidebarStopAll" type="button">Stop All</button>
+          </div>
+          <button class="btn liveSidebarManageBtn" id="openDevicesBtn2" type="button">Manage Devices</button>
+        </div>
+      </div>
       <div class="liveMain">
         <div class="videoGrid" id="videoGrid"></div>
       </div>
@@ -54,7 +64,7 @@
       <div class="overlayHeader">
         <div>
           <div class="listTitle" id="devicesOverlayTitle">Devices</div>
-          <div class="listSub">Manage devices, start and stop streams, and reorder tiles.</div>
+          <div class="listSub">Add, edit and delete camera devices.</div>
         </div>
 
         <div class="overlayHeaderActions">
@@ -65,12 +75,7 @@
 
       <div class="overlayBody">
         <section class="overlaySection">
-          <div class="row2" style="margin-top:0;">
-            <button class="btn btn-primary" id="startAll" type="button">Start All</button>
-            <button class="btn btn-danger" id="stopAll" type="button">Stop All</button>
-          </div>
-
-          <div class="statusLine compact" style="margin-top:12px;">
+          <div class="statusLine compact" style="margin-top:0;">
             <strong>Status:</strong> <span id="sidebarListStatus" class="muted">Loading devices…</span>
           </div>
         </section>
@@ -78,7 +83,7 @@
         <section class="overlaySection">
           <div class="sidebarSectionHead">
             <div>Saved devices</div>
-            <div class="sidebarSectionSub">Click a row to start or stop. Drag rows to reorder tile layout. Use Edit/Delete for device management.</div>
+            <div class="sidebarSectionSub">Use Edit/Delete to manage devices.</div>
           </div>
 
           <div id="camList" class="camList" style="margin-top:10px;">
