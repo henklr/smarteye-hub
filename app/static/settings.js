@@ -378,14 +378,88 @@ function setRetentionStatus(text) {
   if (retentionStatusEl) retentionStatusEl.textContent = text;
 }
 
+const recordingPathSelect = document.getElementById("recordingPathSelect");
+const recordingPathSaveBtn = document.getElementById("recordingPathSaveBtn");
+const recordingPathWarning = document.getElementById("recordingPathWarning");
+const recordingPathStatusEl = document.getElementById("recordingPathStatus");
+
+const _RECORDING_SUBDIR = "/recordings";
+
+function setRecordingPathStatus(text, isError) {
+  if (!recordingPathStatusEl) return;
+  recordingPathStatusEl.textContent = text;
+  recordingPathStatusEl.style.color = isError ? "var(--clr-danger, #e74c3c)" : "";
+}
+
+function _updateRecordingPathWarning(path) {
+  if (recordingPathWarning) {
+    recordingPathWarning.style.display = path ? "none" : "block";
+  }
+}
+
+async function _populateDriveDropdown(currentPath) {
+  if (!recordingPathSelect) return;
+  // Keep the "None" option, clear the rest
+  recordingPathSelect.innerHTML = '<option value="">None (recordings disabled)</option>';
+  try {
+    const data = await api("/api/storage/devices");
+    for (const dev of data.devices || []) {
+      const model = dev.model || dev.name;
+      for (const p of dev.partitions) {
+        if (!p.mountpoint) continue;
+        const recPath = p.mountpoint + _RECORDING_SUBDIR;
+        const size = _formatSize(p.size);
+        const opt = document.createElement("option");
+        opt.value = recPath;
+        opt.textContent = `${model} — ${p.mountpoint} (${size})`;
+        if (recPath === currentPath) opt.selected = true;
+        recordingPathSelect.appendChild(opt);
+      }
+    }
+  } catch {}
+  // If current path isn't "" and wasn't matched, add it as a custom entry
+  if (currentPath && !recordingPathSelect.value) {
+    const opt = document.createElement("option");
+    opt.value = currentPath;
+    opt.textContent = currentPath;
+    opt.selected = true;
+    recordingPathSelect.appendChild(opt);
+  }
+  _updateRecordingPathWarning(recordingPathSelect.value);
+}
+
 async function loadRetention() {
   try {
     const data = await api("/api/settings/retention");
     if (retentionDaysInput) retentionDaysInput.value = data.retention_days || 0;
+    await _populateDriveDropdown(data.recording_path || "");
   } catch (e) {
     setRetentionStatus(`Error: ${e.message || e}`);
   }
 }
+
+recordingPathSaveBtn?.addEventListener("click", async () => {
+  const path = recordingPathSelect?.value || "";
+  recordingPathSaveBtn.disabled = true;
+  setRecordingPathStatus("Saving…", false);
+  try {
+    await api("/api/settings/recording-path", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recording_path: path }),
+    });
+    _updateRecordingPathWarning(path);
+    setRecordingPathStatus(path ? `Recordings will be stored on ${path}` : "Storage cleared — recordings disabled.", !path);
+  } catch (e) {
+    setRecordingPathStatus(`Error: ${e.message || e}`, true);
+  } finally {
+    recordingPathSaveBtn.disabled = false;
+  }
+});
+
+recordingPathSelect?.addEventListener("change", () => {
+  _updateRecordingPathWarning(recordingPathSelect.value);
+});
 
 retentionSaveBtn?.addEventListener("click", async () => {
   const days = parseInt(retentionDaysInput?.value || "0", 10);
@@ -739,6 +813,22 @@ function _renderStorageDevices(devices) {
           html += `<button class="btn btn-mini" onclick="_storageMount('${p.name}')">Mount</button>`;
         }
         html += `</div>`;
+        if (mp && p.fsused != null && p.fsavail != null) {
+          const total = p.fsused + p.fsavail;
+          const pct = total > 0 ? Math.round((p.fsused / total) * 100) : 0;
+          const usedStr = _formatSize(p.fsused);
+          const availStr = _formatSize(p.fsavail);
+          const barColor = pct > 90 ? 'var(--clr-danger, #e74c3c)' : pct > 70 ? '#f39c12' : 'var(--clr-ok, #27ae60)';
+          html += `<div style="margin-top:6px;max-width:400px;">`;
+          html += `<div style="display:flex;justify-content:space-between;font-size:0.85em;margin-bottom:3px;">`;
+          html += `<span>${usedStr} used</span><span>${availStr} free</span>`;
+          html += `</div>`;
+          html += `<div style="height:8px;background:var(--clr-border, #333);border-radius:4px;overflow:hidden;">`;
+          html += `<div style="height:100%;width:${pct}%;background:${barColor};border-radius:4px;transition:width .3s;"></div>`;
+          html += `</div>`;
+          html += `<div class="muted" style="font-size:0.8em;margin-top:2px;">${pct}% used</div>`;
+          html += `</div>`;
+        }
       }
       html += `</div>`;
     } else {

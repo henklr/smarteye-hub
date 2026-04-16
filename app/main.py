@@ -737,7 +737,7 @@ def _host_cmd(args: list[str], *, timeout: int = 30, input_data: str | None = No
     )
 
 def _parse_lsblk_json() -> list[dict]:
-    proc = _host_cmd(["lsblk", "-J", "-b", "-o", "NAME,SIZE,FSTYPE,MOUNTPOINT,TYPE,MODEL,SERIAL"])
+    proc = _host_cmd(["lsblk", "-J", "-b", "-o", "NAME,SIZE,FSTYPE,FSUSED,FSAVAIL,MOUNTPOINT,TYPE,MODEL,SERIAL"])
     if proc.returncode != 0:
         return []
     try:
@@ -758,6 +758,8 @@ def _find_nvme_devices() -> list[dict]:
                     "size": int(child.get("size") or 0),
                     "fstype": child.get("fstype"),
                     "mountpoint": child.get("mountpoint"),
+                    "fsused": int(child.get("fsused") or 0) if child.get("fsused") is not None else None,
+                    "fsavail": int(child.get("fsavail") or 0) if child.get("fsavail") is not None else None,
                 })
             nvme.append({
                 "name": dev.get("name"),

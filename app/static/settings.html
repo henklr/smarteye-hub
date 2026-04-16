@@ -197,12 +197,31 @@
         <section class="settingsCard">
           <div class="listHeader compact">
             <div>
-              <div class="listTitle small">System</div>
-              <div class="listSub">Manage recordings and system power.</div>
+              <div class="listTitle small">Storage &amp; recordings</div>
+              <div class="listSub">Manage NVMe drives and recording settings.</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex:0 0 auto;">
+              <button class="btn btn-mini" id="storageRefreshBtn" type="button">Refresh</button>
             </div>
           </div>
 
+          <div id="storageContent" style="margin-top:14px;">
+            <span class="muted">Scanning for drives…</span>
+          </div>
+
           <div class="grid overlayFormGrid" style="margin-top:14px;">
+            <div data-full>
+              <label for="recordingPathSelect">Recording storage</label>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <select id="recordingPathSelect" style="flex:1;min-width:200px;max-width:360px;">
+                  <option value="">None (recordings disabled)</option>
+                </select>
+                <button class="btn" id="recordingPathSaveBtn" type="button">Save</button>
+              </div>
+              <div id="recordingPathWarning" class="listSub" style="margin-top:4px;color:var(--clr-danger, #e74c3c);display:none;">⚠ No storage path set — recordings are disabled.</div>
+              <div class="listSub" style="margin-top:4px;"><span id="recordingPathStatus" class="muted"></span></div>
+            </div>
+
             <div data-full>
               <label for="retentionDaysInput">Recording retention (days)</label>
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -216,32 +235,28 @@
 
           <div class="row2" style="margin-top:14px;">
             <button class="btn btn-danger" id="clearRecordingsBtn" type="button">Clear all recordings</button>
-            <button class="btn btn-danger" id="restoreDefaultsBtn" type="button">Restore to defaults</button>
-            <button class="btn btn-danger" id="rebootBtn" type="button">Reboot system</button>
           </div>
 
           <div class="statusLine compact" style="margin-top:12px;">
-            <span id="systemStatus" class="muted"></span>
+            <span id="storageStatus" class="muted"></span>
           </div>
         </section>
 
         <section class="settingsCard">
           <div class="listHeader compact">
             <div>
-              <div class="listTitle small">Storage</div>
-              <div class="listSub">Manage NVMe solid-state drives connected via the M.2 slot.</div>
-            </div>
-            <div style="display:flex;align-items:center;gap:8px;flex:0 0 auto;">
-              <button class="btn btn-mini" id="storageRefreshBtn" type="button">Refresh</button>
+              <div class="listTitle small">System</div>
+              <div class="listSub">Manage system power and reset options.</div>
             </div>
           </div>
 
-          <div id="storageContent" style="margin-top:14px;">
-            <span class="muted">Scanning for drives…</span>
+          <div class="grid overlayFormGrid" style="margin-top:14px;">
+            <button class="btn btn-danger" id="restoreDefaultsBtn" type="button">Restore to defaults</button>
+            <button class="btn btn-danger" id="rebootBtn" type="button">Reboot system</button>
           </div>
 
           <div class="statusLine compact" style="margin-top:12px;">
-            <span id="storageStatus" class="muted"></span>
+            <span id="systemStatus" class="muted"></span>
           </div>
         </section>
 

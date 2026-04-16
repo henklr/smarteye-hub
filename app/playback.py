@@ -28,8 +28,21 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DEVICES_JSON = DATA_DIR / "devices.json"
 FLOWS_JSON = DATA_DIR / "flows.json"
-RECORDINGS_DIR = DATA_DIR / "recordings"
-RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+_DEFAULT_RECORDINGS_DIR = DATA_DIR / "recordings"
+_DEFAULT_RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+
+def _get_recordings_dir() -> Path:
+    """Return the configured recording directory, or the default."""
+    settings = _load_settings()
+    custom = (settings.get("recording_path") or "").strip()
+    if custom:
+        p = Path(custom)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+    return _DEFAULT_RECORDINGS_DIR
+
+# Keep module-level reference for backward compat in clear_all_recordings
+RECORDINGS_DIR = _DEFAULT_RECORDINGS_DIR
 PLAYBACK_CLIPS_DIR = DATA_DIR / "playback_clips"
 PLAYBACK_CLIPS_DIR.mkdir(parents=True, exist_ok=True)
 RECORDING_EVENTS_JSON = DATA_DIR / "recording_events.json"
@@ -129,7 +142,7 @@ def _path_for(device_id: str) -> str:
 
 def _recordings_dir_for_device(device_id: str) -> Path:
     device_id = _validate_id(device_id, "device_id")
-    path = RECORDINGS_DIR / device_id
+    path = _get_recordings_dir() / device_id
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -884,7 +897,7 @@ def _prune_old_recordings() -> None:
     if days <= 0:
         return
     cutoff = _utc_now() - timedelta(days=days)
-    for device_dir in RECORDINGS_DIR.iterdir() if RECORDINGS_DIR.exists() else []:
+    for device_dir in _get_recordings_dir().iterdir() if _get_recordings_dir().exists() else []:
         if not device_dir.is_dir():
             continue
         for path in device_dir.iterdir():
@@ -1297,7 +1310,7 @@ def clear_all_recordings() -> Dict[str, int]:
             if acquired:
                 _events_lock.release()
 
-        deleted_recording_files = _clear_directory_contents(RECORDINGS_DIR)
+        deleted_recording_files = _clear_directory_contents(_get_recordings_dir())
         deleted_clip_files = _clear_directory_contents(PLAYBACK_CLIPS_DIR)
     finally:
         _recorder_pause.clear()
@@ -1313,7 +1326,11 @@ def clear_all_recordings() -> Dict[str, int]:
 
 @router.get("/api/settings/retention")
 def get_retention() -> Dict[str, Any]:
-    return {"retention_days": get_retention_days()}
+    settings = _load_settings()
+    return {
+        "retention_days": get_retention_days(),
+        "recording_path": settings.get("recording_path") or "",
+    }
 
 
 @router.put("/api/settings/retention")
@@ -1325,6 +1342,34 @@ def put_retention(body: Dict[str, Any]) -> Dict[str, Any]:
         days = 0
     set_retention_days(days)
     return {"ok": True, "retention_days": days}
+
+
+@router.get("/api/settings/recording-path")
+def get_recording_path() -> Dict[str, Any]:
+    settings = _load_settings()
+    return {"recording_path": settings.get("recording_path") or ""}
+
+
+@router.put("/api/settings/recording-path")
+def put_recording_path(body: Dict[str, Any]) -> Dict[str, Any]:
+    import re as _re
+    raw = str(body.get("recording_path") or "").strip()
+    if raw and not _re.fullmatch(r"/[a-zA-Z0-9_/\-]+", raw):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    # Verify path is writable
+    if raw:
+        test = Path(raw)
+        try:
+            test.mkdir(parents=True, exist_ok=True)
+            probe = test / ".smarteye_write_test"
+            probe.write_text("ok")
+            probe.unlink()
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Path {raw} is not writable")
+    settings = _load_settings()
+    settings["recording_path"] = raw
+    _save_settings(settings)
+    return {"ok": True, "recording_path": raw}
 
 
 @router.get("/playback", response_class=HTMLResponse)
