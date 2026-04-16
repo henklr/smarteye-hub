@@ -12,7 +12,12 @@ TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 TARGET_HOME="${TARGET_HOME:-$HOME}"
 
 APP_DIR="${APP_DIR:-$TARGET_HOME/smarteye-hub}"
-REPO_URL="https://github.com/henklr/smarteye-hub.git"
+GH_TOKEN="${GH_TOKEN:-}"
+if [[ -n "$GH_TOKEN" ]]; then
+  REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/henklr/smarteye-hub.git"
+else
+  REPO_URL="https://github.com/henklr/smarteye-hub.git"
+fi
 PORT="${PORT:-80}"
 REBOOT_RECOMMENDED=0
 
@@ -159,6 +164,9 @@ if [[ -d "$PWD/.git" && -f "$PWD/docker-compose.yml" && -f "$PWD/install.sh" ]];
   APP_DIR="$PWD"
   log "Using existing repository at $APP_DIR"
 elif [[ -d "$APP_DIR/.git" ]]; then
+  if [[ -n "$GH_TOKEN" ]]; then
+    git -C "$APP_DIR" remote set-url origin "$REPO_URL"
+  fi
   if git -C "$APP_DIR" diff --quiet && git -C "$APP_DIR" diff --cached --quiet; then
     log "Repository already exists at $APP_DIR. Pulling latest changes..."
     git -C "$APP_DIR" pull --ff-only

@@ -4,6 +4,15 @@ Fresh Raspberry Pi 5 install:
 
 curl -fsSL https://raw.githubusercontent.com/henklr/smarteye-hub/main/install.sh | bash
 
+If the repository is private, create a GitHub Personal Access Token (classic) with
+`repo` scope at https://github.com/settings/tokens and use it for both the download
+and the clone:
+
+GH_TOKEN=YOUR_TOKEN
+curl -fsSL -H "Authorization: token $GH_TOKEN" \
+  https://raw.githubusercontent.com/henklr/smarteye-hub/main/install.sh \
+  | GH_TOKEN="$GH_TOKEN" bash
+
 The installer will:
 
 - install Docker and the Docker Compose plugin if needed
