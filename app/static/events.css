@@ -292,6 +292,40 @@
   right: 8px;
 }
 
+.eventsLightboxArrow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  border: none;
+  font-size: 2.5rem;
+  line-height: 1;
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+
+.eventsLightboxArrow:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.eventsLightboxArrow:disabled {
+  opacity: 0.2;
+  cursor: default;
+}
+
+.eventsLightboxPrev {
+  left: 16px;
+}
+
+.eventsLightboxNext {
+  right: 16px;
+}
+
 /* ── Snapshot device list in inspector ─────────────────────────────────────── */
 
 /* Snapshot inspector styles are in flows.css (used by the flow editor inspector) */
@@ -339,4 +373,132 @@
 
 .eventRow.fadeIn {
   animation: eventFadeIn 0.2s ease-out both;
+}
+
+/* ── Priority badges ────────────────────────────────────────────────────────── */
+.priorityBadge {
+  display: inline-block;
+  font-size: 0.7em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+
+.priority-critical { background: #e53e3e; color: #fff; }
+.priority-high     { background: #dd6b20; color: #fff; }
+.priority-medium   { background: #d69e2e; color: #1a1a1a; }
+.priority-low      { background: #38a169; color: #fff; }
+.priority-info     { background: #3182ce; color: #fff; }
+
+.eventIndicator.priority-critical { background: #e53e3e; }
+.eventIndicator.priority-high     { background: #dd6b20; }
+.eventIndicator.priority-medium   { background: #d69e2e; }
+.eventIndicator.priority-low      { background: #38a169; }
+.eventIndicator.priority-info     { background: #3182ce; }
+
+/* ── Summary / Details / Contributions ──────────────────────────────────────── */
+.eventSummary {
+  font-size: 0.92em;
+  color: var(--text-primary);
+  margin: 6px 0 2px 24px;
+  font-weight: 500;
+}
+
+.eventDetails {
+  font-size: 0.85em;
+  color: var(--text-secondary, #888);
+  margin: 4px 0 2px 24px;
+  white-space: pre-wrap;
+}
+
+.eventContributions {
+  margin: 8px 0 4px 24px;
+  font-size: 0.85em;
+}
+
+.eventContributionsLabel {
+  font-weight: 600;
+  color: var(--text-secondary, #888);
+  margin-bottom: 4px;
+}
+
+.eventContributionsList {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary, #888);
+}
+
+.eventContributionsList li {
+  margin-bottom: 2px;
+}
+
+.eventContribImage {
+  max-width: 120px;
+  max-height: 90px;
+  border-radius: 6px;
+  object-fit: cover;
+  cursor: pointer;
+}
+
+/* ── Priority badges ────────────────────────────────────────────────────────── */
+.priorityBadge {
+  display: inline-block;
+  font-size: 0.7em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+
+.priority-critical { background: #e53e3e; color: #fff; }
+.priority-high     { background: #dd6b20; color: #fff; }
+.priority-medium   { background: #d69e2e; color: #1a1a1a; }
+.priority-low      { background: #38a169; color: #fff; }
+.priority-info     { background: #3182ce; color: #fff; }
+
+.eventIndicator.priority-critical { background: #e53e3e; }
+.eventIndicator.priority-high     { background: #dd6b20; }
+.eventIndicator.priority-medium   { background: #d69e2e; }
+.eventIndicator.priority-low      { background: #38a169; }
+.eventIndicator.priority-info     { background: #3182ce; }
+
+/* ── Summary / Details / Contributions ──────────────────────────────────────── */
+.eventSummary {
+  font-size: 0.92em;
+  color: var(--text-primary);
+  margin: 6px 0 2px 24px;
+  font-weight: 500;
+}
+
+.eventDetails {
+  font-size: 0.85em;
+  color: var(--text-secondary, #888);
+  margin: 4px 0 2px 24px;
+  white-space: pre-wrap;
+}
+
+.eventContributions {
+  margin: 8px 0 4px 24px;
+  font-size: 0.85em;
+}
+
+.eventContributionsLabel {
+  font-weight: 600;
+  color: var(--text-secondary, #888);
+  margin-bottom: 4px;
+}
+
+.eventContributionsList {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary, #888);
+}
+
+.eventContributionsList li {
+  margin-bottom: 2px;
 }

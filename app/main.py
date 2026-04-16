@@ -3249,6 +3249,30 @@ async def ptz_stop(device_id: str):
 SCENARIOS_JSON = DATA_DIR / "scenarios.json"
 _scenarios_lock = threading.RLock()
 
+_VALID_SCENARIO_RESPONSE_TYPES = {"boolean", "number", "text", "choice"}
+
+
+def _normalize_scenario(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize a scenario dict, ensuring all fields have valid defaults."""
+    response_type = str(raw.get("response_type") or "text").strip().lower()
+    if response_type not in _VALID_SCENARIO_RESPONSE_TYPES:
+        response_type = "text"
+    choices_raw = raw.get("choices") or []
+    choices = [str(c).strip() for c in choices_raw if str(c).strip()] if response_type == "choice" else []
+    return {
+        "id": str(raw.get("id") or "").strip(),
+        "name": str(raw.get("name") or "").strip(),
+        "prompt": str(raw.get("prompt") or "").strip(),
+        "response_type": response_type,
+        "choices": choices,
+        "result_variable": str(raw.get("result_variable") or "").strip(),
+        "max_contributions": max(0, int(raw.get("max_contributions") or 0)),
+        "max_seconds": max(0.0, float(raw.get("max_seconds") or 0)),
+        "auto_event_enabled": bool(raw.get("auto_event_enabled")),
+        "auto_event_priority": str(raw.get("auto_event_priority") or "medium").strip(),
+        "auto_event_on_result": str(raw.get("auto_event_on_result") or "true").strip(),
+    }
+
 
 def _load_scenarios() -> List[Dict[str, Any]]:
     try:
@@ -3256,7 +3280,7 @@ def _load_scenarios() -> List[Dict[str, Any]]:
             return []
         payload = json.loads(SCENARIOS_JSON.read_text(encoding="utf-8"))
         items = payload.get("items") if isinstance(payload, dict) else []
-        return list(items) if isinstance(items, list) else []
+        return [_normalize_scenario(s) for s in items if isinstance(s, dict)]
     except Exception:
         return []
 
@@ -3287,11 +3311,7 @@ def api_scenario_create(body: dict):
         raise HTTPException(status_code=400, detail="Name is required")
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt is required")
-    scenario = {
-        "id": uuid.uuid4().hex[:12],
-        "name": name,
-        "prompt": prompt,
-    }
+    scenario = _normalize_scenario({**body, "id": uuid.uuid4().hex[:12], "name": name, "prompt": prompt})
     with _scenarios_lock:
         items = _load_scenarios()
         items.append(scenario)
@@ -3309,12 +3329,11 @@ def api_scenario_update(scenario_id: str, body: dict):
         raise HTTPException(status_code=400, detail="Prompt is required")
     with _scenarios_lock:
         items = _load_scenarios()
-        for item in items:
+        for idx, item in enumerate(items):
             if item.get("id") == scenario_id:
-                item["name"] = name
-                item["prompt"] = prompt
+                items[idx] = _normalize_scenario({**body, "id": scenario_id, "name": name, "prompt": prompt})
                 _save_scenarios(items)
-                return item
+                return items[idx]
     raise HTTPException(status_code=404, detail="Scenario not found")
 
 
@@ -3327,6 +3346,98 @@ def api_scenario_delete(scenario_id: str):
         if len(items) == before:
             raise HTTPException(status_code=404, detail="Scenario not found")
         _save_scenarios(items)
+    return {"ok": True}
+
+
+# ── Event definitions (sidebar templates) ──────────────────────────────────────
+
+EVENT_DEFINITIONS_JSON = DATA_DIR / "event_definitions.json"
+_event_definitions_lock = threading.RLock()
+
+EVENT_PRIORITIES = ["critical", "high", "medium", "low", "info"]
+
+
+def _normalize_event_definition(raw: Dict[str, Any]) -> Dict[str, Any]:
+    priority = str(raw.get("priority") or "medium").strip().lower()
+    if priority not in EVENT_PRIORITIES:
+        priority = "medium"
+    return {
+        "id": str(raw.get("id") or "").strip(),
+        "name": str(raw.get("name") or "").strip(),
+        "priority": priority,
+        "summary": str(raw.get("summary") or "").strip(),
+        "details": str(raw.get("details") or "").strip(),
+        "max_contributions": max(0, int(raw.get("max_contributions") or 0)),
+        "max_seconds": max(0.0, float(raw.get("max_seconds") or 0)),
+    }
+
+
+def _load_event_definitions() -> List[Dict[str, Any]]:
+    try:
+        if not EVENT_DEFINITIONS_JSON.exists():
+            return []
+        payload = json.loads(EVENT_DEFINITIONS_JSON.read_text(encoding="utf-8"))
+        items = payload.get("items") if isinstance(payload, dict) else []
+        return [_normalize_event_definition(e) for e in items if isinstance(e, dict)]
+    except Exception:
+        return []
+
+
+def _save_event_definitions(items: List[Dict[str, Any]]) -> None:
+    tmp = EVENT_DEFINITIONS_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"items": items}, indent=2), encoding="utf-8")
+    tmp.replace(EVENT_DEFINITIONS_JSON)
+
+
+def _get_event_definition(definition_id: str) -> Optional[Dict[str, Any]]:
+    for e in _load_event_definitions():
+        if e.get("id") == definition_id:
+            return e
+    return None
+
+
+@app.get("/api/event-definitions")
+def api_event_definitions_list():
+    return {"items": _load_event_definitions()}
+
+
+@app.post("/api/event-definitions")
+def api_event_definition_create(body: dict):
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    defn = _normalize_event_definition({**body, "id": uuid.uuid4().hex[:12], "name": name})
+    with _event_definitions_lock:
+        items = _load_event_definitions()
+        items.append(defn)
+        _save_event_definitions(items)
+    return defn
+
+
+@app.put("/api/event-definitions/{definition_id}")
+def api_event_definition_update(definition_id: str, body: dict):
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    with _event_definitions_lock:
+        items = _load_event_definitions()
+        for idx, item in enumerate(items):
+            if item.get("id") == definition_id:
+                items[idx] = _normalize_event_definition({**body, "id": definition_id, "name": name})
+                _save_event_definitions(items)
+                return items[idx]
+    raise HTTPException(status_code=404, detail="Event definition not found")
+
+
+@app.delete("/api/event-definitions/{definition_id}")
+def api_event_definition_delete(definition_id: str):
+    with _event_definitions_lock:
+        items = _load_event_definitions()
+        before = len(items)
+        items = [e for e in items if e.get("id") != definition_id]
+        if len(items) == before:
+            raise HTTPException(status_code=404, detail="Event definition not found")
+        _save_event_definitions(items)
     return {"ok": True}
 
 
@@ -3363,6 +3474,23 @@ async def set_openai_key(req: Request):
     return {"ok": True, "configured": True}
 
 
+# ── Template rendering helper (no flow context needed) ─────────────────────────
+
+def _render_template_simple(template: str, context: Dict[str, Any] = None) -> str:
+    """Lightweight template renderer for contribution contexts.
+    Supports {{contributions.count}}, {{contributions.texts}}, etc.
+    """
+    out = str(template or "")
+    if not context:
+        return out
+    contributions = context.get("contributions") or {}
+    texts_list = contributions.get("texts") or []
+    out = out.replace("{{contributions.count}}", str(contributions.get("count", len(texts_list))))
+    out = out.replace("{{contributions.texts}}", "\n".join(texts_list))
+    out = out.replace("{{contributions.images_count}}", str(len(contributions.get("images") or [])))
+    return out
+
+
 # ── GPT vision analysis ───────────────────────────────────────────────────────
 
 def _analyze_with_gpt(prompt: str, snapshot_data_uris: List[str]) -> str:
@@ -3390,6 +3518,85 @@ def _analyze_with_gpt(prompt: str, snapshot_data_uris: List[str]) -> str:
         if "auth" in exc_msg.lower() or "api key" in exc_msg.lower() or "invalid" in exc_msg.lower():
             return "[Error: OpenAI API key is invalid. Check your key in secrets/openai.env and restart.]"
         return f"[Error: AI analysis failed — {exc_msg}]"
+
+
+def _build_structured_schema(response_type: str, choices: List[str]) -> Optional[Dict[str, Any]]:
+    """Build a JSON schema for structured GPT output based on response type."""
+    if response_type == "boolean":
+        result_schema = {"type": "boolean"}
+    elif response_type == "number":
+        result_schema = {"type": "number"}
+    elif response_type == "choice":
+        if not choices:
+            return None
+        result_schema = {"type": "string", "enum": choices}
+    elif response_type == "text":
+        result_schema = {"type": "string"}
+    else:
+        return None
+    return {
+        "type": "object",
+        "properties": {
+            "reasoning": {"type": "string", "description": "Brief explanation of your analysis"},
+            "result": result_schema,
+        },
+        "required": ["reasoning", "result"],
+        "additionalProperties": False,
+    }
+
+
+def _analyze_with_gpt_structured(
+    prompt: str,
+    snapshot_data_uris: List[str],
+    response_type: str,
+    choices: List[str],
+) -> Dict[str, Any]:
+    """Send prompt + images to GPT-4o with structured output. Returns {reasoning, result, raw, error}."""
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key or api_key == "your_openai_api_key_here":
+        _log_events.warning("OpenAI API key not configured – skipping AI analysis")
+        return {"reasoning": "", "result": None, "raw": "", "error": "OpenAI API key is not configured."}
+
+    schema = _build_structured_schema(response_type, choices)
+    if schema is None:
+        return {"reasoning": "", "result": None, "raw": "", "error": f"Invalid response type: {response_type}"}
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        content: list = [{"type": "text", "text": prompt}]
+        for uri in snapshot_data_uris:
+            if uri:
+                content.append({"type": "image_url", "image_url": {"url": uri}})
+
+        resp = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": content}],
+            max_tokens=1024,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "scenario_response",
+                    "strict": True,
+                    "schema": schema,
+                },
+            },
+        )
+        raw_text = (resp.choices[0].message.content or "").strip()
+        parsed = json.loads(raw_text)
+        return {
+            "reasoning": str(parsed.get("reasoning") or ""),
+            "result": parsed.get("result"),
+            "raw": raw_text,
+            "error": None,
+        }
+    except json.JSONDecodeError as exc:
+        _log_events.warning("GPT structured output parse failed: %s", exc)
+        return {"reasoning": "", "result": None, "raw": raw_text, "error": f"Failed to parse response: {exc}"}
+    except Exception as exc:
+        _log_events.warning("GPT structured analysis failed: %s", exc)
+        exc_msg = str(exc)
+        return {"reasoning": "", "result": None, "raw": "", "error": f"AI analysis failed: {exc_msg}"}
 
 
 # ── Events (operator events) ───────────────────────────────────────────────────
@@ -3434,29 +3641,41 @@ def _broadcast_page_event(event: Dict[str, Any]) -> None:
 def create_event(
     *,
     name: str = "",
+    priority: str = "medium",
+    summary: str = "",
+    details: str = "",
     trigger_info: str = "",
     scenario_name: str = "",
     scenario_prompt: str = "",
     analysis: str = "",
     snapshots: Optional[List[Dict[str, Any]]] = None,
     recording_refs: Optional[List[Dict[str, Any]]] = None,
+    contributions: Optional[List[str]] = None,
     flow_id: Optional[str] = None,
     flow_name: Optional[str] = None,
     node_id: Optional[str] = None,
+    event_definition_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    if priority not in EVENT_PRIORITIES:
+        priority = "medium"
     event = {
         "id": uuid.uuid4().hex[:12],
         "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "name": name or "Event",
+        "priority": priority,
+        "summary": summary,
+        "details": details,
         "trigger_info": trigger_info,
         "scenario_name": scenario_name,
         "scenario_prompt": scenario_prompt,
         "analysis": analysis,
         "snapshots": snapshots or [],
         "recording_refs": recording_refs or [],
+        "contributions": contributions or [],
         "flow_id": flow_id,
         "flow_name": flow_name,
         "node_id": node_id,
+        "event_definition_id": event_definition_id,
         "acknowledged": False,
     }
     with _events_lock:

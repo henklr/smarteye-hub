@@ -1398,6 +1398,7 @@ body.flowsPage {
   inset: 0;
   overflow: visible;
   pointer-events: none;
+  z-index: 5;
 }
 
 .flowsPage .portStack {
@@ -1514,19 +1515,20 @@ body.flowsPage {
 }
 
 .flowsPage .flowBranchLabel.neutral {
-  background: rgba(255, 255, 255, 0.08);
+  background: #b4b4b4;
+  color: #1a1a1a;
 }
 
 .flowsPage .flowBranchLabel.then {
-  background: rgba(23, 185, 120, 0.18);
+  background: #1d3d30;
 }
 
 .flowsPage .flowBranchLabel.else {
-  background: rgba(255, 140, 66, 0.18);
+  background: #3d2c1d;
 }
 
 .flowsPage .flowBranchLabel.ready {
-  background: rgba(52, 152, 219, 0.22);
+  background: #1d2e3d;
 }
 
 .flowsPage .emptyBoardHint {
@@ -2529,7 +2531,7 @@ body.flowsPage {
   background: rgba(0, 0, 0, 0.07);
 }
 [data-theme="light"] .flowsPage .flowBranchLabel.neutral {
-  background: rgba(0, 0, 0, 0.07);
+  background: rgba(0, 0, 0, 0.12);
 }
 
 /* ── Palette ── */
@@ -2753,3 +2755,22 @@ body.flowsPage {
 .snapshotDeviceRow .snapshotDeviceRemove:hover {
   opacity: 1;
 }
+
+/* ── Priority badges (sidebar) ──────────────────────────────────────────────── */
+.priorityBadge {
+  display: inline-block;
+  font-size: 0.65em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.priority-critical { background: #e53e3e; color: #fff; }
+.priority-high     { background: #dd6b20; color: #fff; }
+.priority-medium   { background: #d69e2e; color: #1a1a1a; }
+.priority-low      { background: #38a169; color: #fff; }
+.priority-info     { background: #3182ce; color: #fff; }

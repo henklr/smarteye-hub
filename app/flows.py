@@ -44,123 +44,113 @@ FLOW_STATE_JSON = DATA_DIR / "flow_state.json"
 FLOW_LOG_FILE = Path(os.getenv("FLOW_LOG_FILE", str(DATA_DIR / "flows.log")))
 FLOW_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-# ── Prompt buffer (in-memory, keyed by prompt_key) ────────────────────────────
-_prompt_buffers: Dict[str, Dict[str, Any]] = {}
-_prompt_buffers_lock = threading.RLock()
-_PROMPT_BUFFER_TTL = 600  # 10 minutes
+# ── Contribution buffer (in-memory, keyed by target entity id) ─────────────────
+_contribution_buffers: Dict[str, Dict[str, Any]] = {}
+_contribution_buffers_lock = threading.RLock()
+_CONTRIBUTION_BUFFER_TTL = 600  # 10 minutes
 
 
-def _get_prompt_buffer(key: str) -> Dict[str, Any]:
-    """Return or create a prompt buffer entry, pruning expired ones."""
+def _get_contribution_buffer(key: str) -> Dict[str, Any]:
+    """Return or create a contribution buffer entry, pruning expired ones."""
     now = time.time()
-    with _prompt_buffers_lock:
-        # Prune expired
-        expired = [k for k, v in _prompt_buffers.items() if now - v.get("ts", 0) > _PROMPT_BUFFER_TTL]
+    with _contribution_buffers_lock:
+        expired = [k for k, v in _contribution_buffers.items() if now - v.get("ts", 0) > _CONTRIBUTION_BUFFER_TTL]
         for k in expired:
-            del _prompt_buffers[k]
-        if key not in _prompt_buffers:
-            _prompt_buffers[key] = {"texts": [], "images": [], "snapshots": [], "ts": now}
-        buf = _prompt_buffers[key]
+            del _contribution_buffers[k]
+        if key not in _contribution_buffers:
+            _contribution_buffers[key] = {
+                "texts": [], "images": [], "snapshots": [],
+                "count": 0, "ts": now, "first_ts": 0,
+            }
+        buf = _contribution_buffers[key]
         buf["ts"] = now
         return buf
 
 
-def _clear_prompt_buffer(key: str) -> None:
-    with _prompt_buffers_lock:
-        _prompt_buffers.pop(key, None)
+def _flush_contribution_buffer(key: str) -> None:
+    with _contribution_buffers_lock:
+        _contribution_buffers.pop(key, None)
+    _cancel_contribution_timer(key)
 
 
-def _consume_prompt_buffer(key: str) -> Dict[str, Any]:
-    """Return and remove a prompt buffer. Returns empty structure if not found."""
-    with _prompt_buffers_lock:
-        return _prompt_buffers.pop(key, {"texts": [], "images": [], "snapshots": []})
+def _consume_contribution_buffer(key: str) -> Dict[str, Any]:
+    """Return and remove a contribution buffer. Returns empty structure if not found."""
+    _cancel_contribution_timer(key)
+    with _contribution_buffers_lock:
+        return _contribution_buffers.pop(
+            key,
+            {"texts": [], "images": [], "snapshots": [], "count": 0},
+        )
 
 
-# ── Prompt buffer timers (fire "ready" after max_wait) ────────────────────────
-_prompt_buffer_timers: Dict[str, threading.Timer] = {}
+# ── Contribution buffer timers (auto-fire after max_seconds) ──────────────────
+_contribution_timers: Dict[str, threading.Timer] = {}
 
 
-def _cancel_prompt_timer(key: str) -> None:
-    timer = _prompt_buffer_timers.pop(key, None)
+def _cancel_contribution_timer(key: str) -> None:
+    timer = _contribution_timers.pop(key, None)
     if timer is not None:
         timer.cancel()
 
 
-def _schedule_prompt_timer(key: str, max_wait: float, flow_id: str, node_id: str) -> None:
-    """Schedule a background timer that fires the 'ready' path after max_wait seconds."""
-    _cancel_prompt_timer(key)
+def _schedule_contribution_timer(
+    key: str,
+    max_seconds: float,
+    target_type: str,
+    target_id: str,
+) -> None:
+    """Schedule a background timer that auto-fires the event/scenario after max_seconds."""
+    _cancel_contribution_timer(key)
 
     def _on_timeout():
-        _prompt_buffer_timers.pop(key, None)
-        with _prompt_buffers_lock:
-            if key not in _prompt_buffers:
-                return  # already consumed
-        _log_flows.info("Prompt buffer '%s' max_wait expired, firing ready path", key)
-        _fire_ready_path(flow_id, node_id, key)
+        _contribution_timers.pop(key, None)
+        with _contribution_buffers_lock:
+            if key not in _contribution_buffers:
+                return
+        _log_flows.info("Contribution buffer '%s' max_seconds expired, auto-firing", key)
+        _auto_fire_target(target_type, target_id)
 
-    timer = threading.Timer(max_wait, _on_timeout)
+    timer = threading.Timer(max_seconds, _on_timeout)
     timer.daemon = True
-    _prompt_buffer_timers[key] = timer
+    _contribution_timers[key] = timer
     timer.start()
 
 
-def _fire_ready_path(flow_id: str, node_id: str, prompt_key: str) -> None:
-    """Execute the downstream 'ready' edges from a build_prompt node."""
+def _auto_fire_target(target_type: str, target_id: str) -> None:
+    """Auto-fire a scenario when max_seconds/max_contributions is reached."""
     try:
-        flow = _find_flow(flow_id)
-        if flow is None:
-            _log_flows.warning("Timer fire: flow %s not found", flow_id)
-            return
-        adjacency = _build_adjacency(flow)
-        ready_edges = adjacency.get(node_id, {}).get("ready", [])
-        if not ready_edges:
-            return
-        nodes_by_id = {n["id"]: n for n in flow.get("nodes", [])}
-        variables = _get_runtime_variables(flow)
-        variable_definitions = _public_variable_definitions_by_key()
-        node_results: List[Dict[str, Any]] = []
-        context: Dict[str, Any] = {
-            "flow": flow,
-            "trigger": {"kind": "prompt_buffer_timeout", "prompt_key": prompt_key},
-            "variables": variables,
-            "variable_definitions": variable_definitions,
-            "changed_variables": set(),
-            "results": node_results,
-            "manual": False,
-            "started_at": _utc_now_iso(),
-        }
-        queue: List[Tuple[str, str]] = []
-        for edge in ready_edges:
-            queue.append((edge["target"], edge.get("target_handle") or "in"))
-        steps = 0
-        while queue and steps < _MAX_RUN_STEPS:
-            nid, incoming_handle = queue.pop(0)
-            n = nodes_by_id.get(nid)
-            if n is None:
-                continue
-            r = _execute_node(n, incoming_handle, context)
-            node_results.append(r)
-            steps += 1
-            for next_handle in r.get("next_handles") or []:
-                for edge in adjacency.get(nid, {}).get(next_handle, []):
-                    queue.append((edge["target"], edge.get("target_handle") or "in"))
-        changed_variables = context.get("changed_variables") or set()
-        if changed_variables:
-            _save_runtime_variables(flow, variables, changed_keys=changed_variables)
-        trigger = context["trigger"]
-        summary = {
-            "flow_id": flow["id"],
-            "flow_name": flow.get("name"),
-            "matched": True,
-            "manual": False,
-            "steps": node_results,
-            "variables": variables,
-            "truncated": steps >= _MAX_RUN_STEPS,
-            "finished_at": _utc_now_iso(),
-        }
-        _append_flow_log(flow, trigger, summary)
+        _auto_fire_scenario(target_id)
     except Exception as exc:
-        _log_flows.error("Prompt buffer timer ready-path failed: %s", exc)
+        _log_flows.error("Auto-fire scenario %s failed: %s", target_id, exc)
+
+
+def _auto_fire_scenario(scenario_id: str) -> None:
+    """Fire a scenario from its definition using accumulated contributions."""
+    from main import (
+        _get_scenario, _analyze_with_gpt_structured, _render_template_simple,
+    )
+    scenario = _get_scenario(scenario_id)
+    if scenario is None:
+        _log_flows.warning("Auto-fire scenario: %s not found", scenario_id)
+        return
+    buf = _consume_contribution_buffer(scenario_id)
+    context = {"contributions": buf}
+    rendered_prompt = _render_template_simple(scenario.get("prompt", ""), context)
+    if buf.get("texts"):
+        extra = "\n\n".join(buf["texts"])
+        rendered_prompt = f"{rendered_prompt}\n\nAdditional context:\n{extra}" if rendered_prompt else extra
+    image_uris = list(buf.get("images") or [])
+    response_type = scenario.get("response_type", "text")
+    choices = scenario.get("choices") or []
+    gpt_result = _analyze_with_gpt_structured(rendered_prompt, image_uris, response_type, choices)
+    # Write result to variable if configured
+    result_variable = scenario.get("result_variable", "").strip()
+    if result_variable and gpt_result.get("result") is not None:
+        _set_public_variable_value(result_variable, gpt_result["result"])
+    _log_flows.info(
+        "Auto-fired scenario '%s': result=%s, reasoning=%s",
+        scenario.get("name"), gpt_result.get("result"), gpt_result.get("reasoning", "")[:100],
+    )
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -531,22 +521,31 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "defaults": {"message": "Flow {{flow.name}} ran.", "name": ""},
     },
     {
-        "type": "action.build_prompt",
+        "type": "action.contribute",
         "category": "action",
-        "label": "Build prompt",
-        "description": "Accumulates text and camera snapshots into a named prompt buffer for later AI analysis.",
-        "color": "#ff8c42",
-        "ports": {"inputs": ["in"], "outputs": ["out", "ready"]},
-        "defaults": {"prompt_key": "", "text": "", "snapshot_entries": [], "clear_first": False, "min_count": 1, "max_wait": 0, "name": ""},
-    },
-    {
-        "type": "action.generate_event",
-        "category": "action",
-        "label": "Generate event",
-        "description": "Analyzes camera snapshots with an AI scenario and creates a rich event on the Events page.",
+        "label": "Take Snapshot",
+        "description": "Takes camera snapshots and contributes them to a scenario's buffer.",
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
-        "defaults": {"name": "", "scenario_id": "", "snapshot_entries": [], "include_recording": False, "prompt_key": ""},
+        "defaults": {"target_id": "", "snapshot_entries": [], "name": ""},
+    },
+    {
+        "type": "action.fire",
+        "category": "action",
+        "label": "Analyse",
+        "description": "Sends the contribution buffer to the AI scenario for analysis.",
+        "color": "#ff8c42",
+        "ports": {"inputs": ["in"], "outputs": ["out"]},
+        "defaults": {"target_id": "", "name": ""},
+    },
+    {
+        "type": "action.flush",
+        "category": "action",
+        "label": "Flush",
+        "description": "Clears a scenario's contribution buffer without analysing.",
+        "color": "#ff8c42",
+        "ports": {"inputs": ["in"], "outputs": ["out"]},
+        "defaults": {"target_id": "", "name": ""},
     },
 ]
 
@@ -1916,18 +1915,12 @@ def _normalize_node_config(
         cfg["message"] = str(cfg.get("message") or "")
         return cfg
 
-    if node_type == "action.build_prompt":
-        cfg["prompt_key"] = str(cfg.get("prompt_key") or "")
+    if node_type == "action.contribute":
+        cfg["target_type"] = str(cfg.get("target_type") or "event").strip().lower()
+        if cfg["target_type"] not in {"event", "scenario"}:
+            cfg["target_type"] = "event"
+        cfg["target_id"] = str(cfg.get("target_id") or "").strip()
         cfg["text"] = str(cfg.get("text") or "")
-        cfg["clear_first"] = bool(cfg.get("clear_first"))
-        try:
-            cfg["min_count"] = max(1, int(cfg.get("min_count") or 1))
-        except (ValueError, TypeError):
-            cfg["min_count"] = 1
-        try:
-            cfg["max_wait"] = max(0.0, float(cfg.get("max_wait") or 0))
-        except (ValueError, TypeError):
-            cfg["max_wait"] = 0.0
         entries = cfg.get("snapshot_entries")
         out: list = []
         for entry in (entries if isinstance(entries, list) else []):
@@ -1940,31 +1933,18 @@ def _normalize_node_config(
         cfg["snapshot_entries"] = out
         return cfg
 
-    if node_type == "action.generate_event":
-        cfg["name"] = str(cfg.get("name") or "")
-        cfg["scenario_id"] = str(cfg.get("scenario_id") or "")
-        cfg["include_recording"] = bool(cfg.get("include_recording"))
-        cfg["prompt_key"] = str(cfg.get("prompt_key") or "")
-        # Migrate legacy snapshot_device_ids to snapshot_entries
-        entries = cfg.get("snapshot_entries")
-        if entries is None:
-            legacy_ids = cfg.get("snapshot_device_ids") or []
-            if isinstance(legacy_ids, str):
-                legacy_ids = [s.strip() for s in legacy_ids.split(",") if s.strip()]
-            entries = [{"device_id": str(s).strip()} for s in legacy_ids if str(s).strip()]
-        out: list = []
-        for entry in (entries if isinstance(entries, list) else []):
-            if not isinstance(entry, dict):
-                continue
-            did = str(entry.get("device_id") or "").strip()
-            if not did:
-                continue
-            out.append({"device_id": did})
-        cfg["snapshot_entries"] = out
-        # Clean up legacy keys
-        cfg.pop("snapshot_device_ids", None)
-        cfg.pop("seconds_ago", None)
-        cfg.pop("message", None)
+    if node_type == "action.fire":
+        cfg["target_type"] = str(cfg.get("target_type") or "event").strip().lower()
+        if cfg["target_type"] not in {"event", "scenario"}:
+            cfg["target_type"] = "event"
+        cfg["target_id"] = str(cfg.get("target_id") or "").strip()
+        return cfg
+
+    if node_type == "action.flush":
+        cfg["target_type"] = str(cfg.get("target_type") or "event").strip().lower()
+        if cfg["target_type"] not in {"event", "scenario"}:
+            cfg["target_type"] = "event"
+        cfg["target_id"] = str(cfg.get("target_id") or "").strip()
         return cfg
 
     return cfg
@@ -2456,6 +2436,30 @@ def _save_runtime_variables(flow: Dict[str, Any], variables: Dict[str, Any], cha
             saved[key] = _coerce_runtime_value(variables.get(key), definitions_by_key[key]["type"])
 
         public_state["values"] = {key: saved[key] for key in definitions_by_key if key in saved}
+        public_state["updated_at"] = _utc_now_iso()
+        _save_runtime_state(payload)
+
+
+def _set_public_variable_value(key: str, value: Any) -> None:
+    """Set a single public variable's runtime value (for auto-fire scenarios)."""
+    definitions = _load_public_variable_definitions()
+    definitions_by_key = _public_variable_definitions_by_key(definitions)
+    defn = definitions_by_key.get(key)
+    if not defn:
+        _log_flows.warning("Cannot set variable '%s': not defined", key)
+        return
+    if defn.get("source") == "physical_input":
+        _log_flows.warning("Cannot set variable '%s': bound to physical I/O", key)
+        return
+    coerced = _coerce_runtime_value(value, defn.get("type", "string"))
+    with _runtime_lock:
+        payload = _load_runtime_state()
+        public_state = payload.setdefault("public_variables", {})
+        saved = public_state.get("values")
+        if not isinstance(saved, dict):
+            saved = {}
+        saved[key] = coerced
+        public_state["values"] = saved
         public_state["updated_at"] = _utc_now_iso()
         _save_runtime_state(payload)
 
@@ -2958,26 +2962,25 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         result["next_handles"] = ["out"]
         return result
 
-    if node_type == "action.build_prompt":
-        from main import _grab_snapshot, _load_devices
-        prompt_key = _render_template(str(cfg.get("prompt_key") or ""), context).strip() or "default"
+    if node_type == "action.contribute":
+        from main import _grab_snapshot, _load_devices, _get_scenario
+        target_id = str(cfg.get("target_id") or "").strip()
+        if not target_id:
+            result["ok"] = False
+            result["error"] = "No scenario selected"
+            result["next_handles"] = ["out"]
+            return result
 
-        clear_first = bool(cfg.get("clear_first"))
-        if clear_first:
-            _clear_prompt_buffer(prompt_key)
+        buf = _get_contribution_buffer(target_id)
 
-        buf = _get_prompt_buffer(prompt_key)
-
-        # Append text
-        text = _render_template(str(cfg.get("text") or ""), context).strip()
-        if text:
-            buf["texts"].append(text)
+        # Track first contribution time
+        if buf["count"] == 0:
+            buf["first_ts"] = time.time()
 
         # Collect and append snapshots
         entries = cfg.get("snapshot_entries") or []
         devices = _load_devices()
         device_map = {d.id: d.name for d in devices}
-        snap_count = 0
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
@@ -2992,138 +2995,127 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
                     "device_name": device_map.get(did, did),
                     "snapshot": data_uri,
                 })
-                snap_count += 1
 
-        result["prompt_key"] = prompt_key
-        result["texts_count"] = len(buf["texts"])
-        result["images_count"] = len(buf["images"])
-        result["message"] = f"Prompt buffer '{prompt_key}': {len(buf['texts'])} text(s), {len(buf['images'])} image(s)"
+        buf["count"] += 1
 
-        # Check ready conditions
-        min_count = max(1, int(cfg.get("min_count") or 1))
-        max_wait = max(0.0, float(cfg.get("max_wait") or 0))
-        image_count = len(buf["images"])
+        result["target_id"] = target_id
+        result["contribution_count"] = buf["count"]
+        result["message"] = f"Contributed to scenario (#{buf['count']})"
 
-        if image_count >= min_count:
-            # Threshold reached — fire "ready" and cancel any pending timer
-            _cancel_prompt_timer(prompt_key)
-            result["next_handles"] = ["out", "ready"]
-            result["message"] += f" — ready ({image_count}/{min_count})"
-        else:
-            result["next_handles"] = ["out"]
-            # Start timer on first contribution if max_wait is set
-            if max_wait > 0 and prompt_key not in _prompt_buffer_timers:
-                flow_id = str((context.get("flow") or {}).get("id") or "")
-                _schedule_prompt_timer(prompt_key, max_wait, flow_id, node["id"])
-                result["message"] += f" — waiting ({image_count}/{min_count}, timeout {max_wait}s)"
-            else:
-                result["message"] += f" — waiting ({image_count}/{min_count})"
+        # Check auto-fire conditions
+        scenario = _get_scenario(target_id)
+        max_contributions = int((scenario or {}).get("max_contributions") or 0)
+        max_seconds = float((scenario or {}).get("max_seconds") or 0)
 
+        if max_contributions > 0 and buf["count"] >= max_contributions:
+            _auto_fire_target("scenario", target_id)
+            result["message"] += " — auto-fired (max contributions reached)"
+        elif max_seconds > 0 and buf["count"] == 1:
+            _schedule_contribution_timer(target_id, max_seconds, "scenario", target_id)
+            result["message"] += f" — timer started ({max_seconds}s)"
+
+        result["next_handles"] = ["out"]
         return result
 
-    if node_type == "action.generate_event":
-        from main import create_event, _grab_snapshot, _get_scenario, _analyze_with_gpt, _load_devices
-        rendered_name = _render_template(str(cfg.get("name") or ""), context) or "Event"
-
-        # Build trigger info string from context
-        trigger = context.get("trigger") or {}
-        trigger_info = ""
-        if trigger.get("path"):
-            trigger_info = str(trigger["path"])
-            if trigger.get("device_name"):
-                trigger_info += f" ({trigger['device_name']})"
-
-        # Consume prompt buffer
-        prompt_key = _render_template(str(cfg.get("prompt_key") or ""), context).strip() or "default"
-        buffer_texts: list = []
-        buffer_images: list = []
-        buffer_snapshots: list = []
-        if prompt_key:
-            _cancel_prompt_timer(prompt_key)
-            buf = _consume_prompt_buffer(prompt_key)
-            buffer_texts = buf.get("texts") or []
-            buffer_images = buf.get("images") or []
-            buffer_snapshots = buf.get("snapshots") or []
-
-        # Collect direct snapshots from this node
-        entries = cfg.get("snapshot_entries") or []
-        devices = _load_devices()
-        device_map = {d.id: d.name for d in devices}
-        snapshots = list(buffer_snapshots)  # start with buffer snapshots
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            did = str(entry.get("device_id") or "").strip()
-            if not did:
-                continue
-            data_uri = _grab_snapshot(did)
-            snapshots.append({
-                "device_id": did,
-                "device_name": device_map.get(did, did),
-                "snapshot": data_uri,
-            })
-
-        # Build recording references
-        recording_refs = []
-        if cfg.get("include_recording"):
-            now_iso = _utc_now_iso()
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                did = str(entry.get("device_id") or "").strip()
-                if did:
-                    recording_refs.append({
-                        "device_id": did,
-                        "device_name": device_map.get(did, did),
-                        "timestamp": now_iso,
-                    })
-
-        # Run AI analysis if a scenario is selected
-        scenario_name = ""
-        scenario_prompt = ""
-        analysis = ""
-        scenario_id = str(cfg.get("scenario_id") or "").strip()
-        if scenario_id:
-            scenario = _get_scenario(scenario_id)
-            if scenario:
-                scenario_name = scenario.get("name", "")
-                raw_prompt = scenario.get("prompt", "")
-                scenario_prompt = _render_template(raw_prompt, context)
-                # Merge buffer texts into the prompt
-                if buffer_texts:
-                    combined_extra = "\n\n".join(buffer_texts)
-                    scenario_prompt = f"{scenario_prompt}\n\n{combined_extra}" if scenario_prompt else combined_extra
-                # Merge all image URIs: buffer images + direct snapshots
-                image_uris = list(buffer_images) + [s["snapshot"] for s in snapshots if s.get("snapshot") and s["snapshot"] not in buffer_images]
-                if scenario_prompt:
-                    analysis = _analyze_with_gpt(scenario_prompt, image_uris)
-        elif buffer_texts:
-            # No scenario but we have buffer text — use it as the prompt
-            scenario_prompt = "\n\n".join(buffer_texts)
-            image_uris = list(buffer_images) + [s["snapshot"] for s in snapshots if s.get("snapshot") and s["snapshot"] not in buffer_images]
-            analysis = _analyze_with_gpt(scenario_prompt, image_uris)
-
-        try:
-            evt = create_event(
-                name=rendered_name,
-                trigger_info=trigger_info,
-                scenario_name=scenario_name,
-                scenario_prompt=scenario_prompt,
-                analysis=analysis,
-                snapshots=snapshots,
-                recording_refs=recording_refs,
-                flow_id=str((context.get("flow") or {}).get("id") or "").strip() or None,
-                flow_name=str((context.get("flow") or {}).get("name") or "").strip() or None,
-                node_id=str(node.get("id") or "").strip() or None,
-            )
-            result["message"] = f"Event created: {rendered_name}"
-            result["event_id"] = evt.get("id")
-            result["snapshot_count"] = len(snapshots)
-            result["has_analysis"] = bool(analysis)
-        except Exception as exc:
+    if node_type == "action.fire":
+        from main import (
+            _get_scenario, create_event,
+            _analyze_with_gpt_structured, _render_template_simple,
+        )
+        target_id = str(cfg.get("target_id") or "").strip()
+        if not target_id:
             result["ok"] = False
-            result["error"] = str(exc)
-            _log_flows.warning("Generate event failed in flow: %s", exc)
+            result["error"] = "No scenario selected"
+            result["next_handles"] = ["out"]
+            return result
+
+        buf = _consume_contribution_buffer(target_id)
+        contrib_context = {"contributions": buf}
+
+        scenario = _get_scenario(target_id)
+        if not scenario:
+            result["ok"] = False
+            result["error"] = "Scenario not found"
+            result["next_handles"] = ["out"]
+            return result
+
+        image_uris = list(buf.get("images") or [])
+        if not image_uris:
+            _log_flows.info("Analyse skipped for scenario '%s': no snapshots in buffer", scenario.get("name", target_id))
+            result["ok"] = True
+            result["message"] = "Skipped: no snapshots in buffer"
+            result["next_handles"] = ["out"]
+            return result
+
+        rendered_prompt = _render_template(
+            _render_template_simple(scenario.get("prompt", ""), contrib_context),
+            context,
+        )
+        if buf.get("texts"):
+            extra = "\n\n".join(buf["texts"])
+            rendered_prompt = f"{rendered_prompt}\n\nAdditional context:\n{extra}" if rendered_prompt else extra
+        response_type = scenario.get("response_type", "text")
+        choices = scenario.get("choices") or []
+        gpt_result = _analyze_with_gpt_structured(
+            rendered_prompt, image_uris, response_type, choices,
+        )
+        # Write result to variable if configured
+        result_variable = scenario.get("result_variable", "").strip()
+        if result_variable and gpt_result.get("result") is not None:
+            _set_public_variable_value(result_variable, gpt_result["result"])
+            context["variables"][result_variable] = gpt_result["result"]
+            context.setdefault("changed_variables", set()).add(result_variable)
+        result["message"] = f"Scenario analysed: {scenario.get('name', '')}"
+        result["scenario_result"] = gpt_result.get("result")
+        result["scenario_reasoning"] = gpt_result.get("reasoning", "")
+        result["scenario_error"] = gpt_result.get("error", "")
+
+        # Auto-event: submit result as event if configured
+        if scenario.get("auto_event_enabled") and gpt_result.get("result") is not None:
+            ae_priority = scenario.get("auto_event_priority", "medium").strip() or "medium"
+            ae_on = scenario.get("auto_event_on_result", "true").strip()
+            should_submit = False
+            if ae_on == "any":
+                should_submit = True
+            elif ae_on == "true" and gpt_result["result"] is True:
+                should_submit = True
+            elif ae_on == "false" and gpt_result["result"] is False:
+                should_submit = True
+            elif ae_on == gpt_result.get("result"):
+                should_submit = True  # choice match
+
+            if should_submit:
+                ae_reasoning = gpt_result.get("reasoning", "")
+                ae_snapshots = list(buf.get("snapshots") or [])
+                create_event(
+                    name=scenario.get("name", "Event"),
+                    priority=ae_priority,
+                    details=ae_reasoning or "",
+                    snapshots=ae_snapshots,
+                    flow_id=str((context.get("flow") or {}).get("id") or "").strip() or None,
+                    flow_name=str((context.get("flow") or {}).get("name") or "").strip() or None,
+                    node_id=str(node.get("id") or "").strip() or None,
+                )
+                result["auto_event_submitted"] = True
+
+        # Determine output handle based on response type and result
+        gpt_value = gpt_result.get("result")
+        if response_type == "boolean" and isinstance(gpt_value, bool):
+            result["next_handles"] = ["true" if gpt_value else "false"]
+        elif response_type == "choice" and isinstance(gpt_value, str) and gpt_value in choices:
+            result["next_handles"] = [f"choice:{gpt_value}"]
+        else:
+            result["next_handles"] = ["out"]
+        return result
+
+    if node_type == "action.flush":
+        target_id = str(cfg.get("target_id") or "").strip()
+        if target_id:
+            _flush_contribution_buffer(target_id)
+            result["message"] = f"Flushed scenario buffer"
+        else:
+            result["ok"] = False
+            result["error"] = "No scenario selected"
         result["next_handles"] = ["out"]
         return result
 

@@ -30,9 +30,11 @@
     const acked = event.acknowledged;
     const cls = acked ? "eventRow acknowledged" : "eventRow unacknowledged";
     const name = event.name || event.message || "Event";
+    const priority = event.priority || "medium";
 
-    // Meta line: flow name + scenario badge + timestamp
+    // Meta line: priority badge + flow name + scenario badge + timestamp
     let metaParts = [];
+    metaParts.push(`<span class="priorityBadge priority-${escapeHtml(priority)}">${escapeHtml(priority)}</span>`);
     if (event.flow_name) {
       metaParts.push(`<span>${escapeHtml(event.flow_name)}</span>`);
     }
@@ -40,6 +42,12 @@
       metaParts.push(`<span class="eventBadge">${escapeHtml(event.scenario_name)}</span>`);
     }
     metaParts.push(`<span>${escapeHtml(formatTimestamp(event.ts))}</span>`);
+
+    // Details
+    let detailsHtml = "";
+    if (event.details) {
+      detailsHtml = `<div class="eventDetails">${escapeHtml(event.details)}</div>`;
+    }
 
     // Trigger info
     let triggerHtml = "";
@@ -87,7 +95,7 @@
     return `
       <div class="${cls}" data-event-id="${escapeHtml(event.id)}">
         <div class="eventHeader">
-          <div class="eventIndicator"></div>
+          <div class="eventIndicator priority-${escapeHtml(priority)}"></div>
           <div class="eventHeaderBody">
             <div class="eventName">${escapeHtml(name)}</div>
             <div class="eventMeta">
@@ -101,6 +109,7 @@
         </div>
         ${triggerHtml}
         ${analysisHtml}
+        ${detailsHtml}
         ${snapshotsHtml}
         ${recordingsHtml}
       </div>
@@ -206,17 +215,13 @@
         }
       });
     });
-    row.querySelectorAll(".eventSnapshotThumb").forEach((img) => {
-      img.addEventListener("click", () => {
-        const fullSrc = img.dataset.full;
-        if (!fullSrc) return;
-        const lightbox = el("eventsLightbox");
-        const lbImg = el("eventsLightboxImg");
-        if (lightbox && lbImg) {
-          lbImg.src = fullSrc;
-          lightbox.classList.remove("hidden");
-          lightbox.setAttribute("aria-hidden", "false");
-        }
+    row.querySelectorAll(".eventSnapshots").forEach((container) => {
+      const imgs = Array.from(container.querySelectorAll(".eventSnapshotThumb"));
+      const srcs = imgs.map(img => img.dataset.full).filter(Boolean);
+      imgs.forEach((img, i) => {
+        img.addEventListener("click", () => {
+          if (srcs.length) openLightbox(srcs, i);
+        });
       });
     });
   }
@@ -248,19 +253,49 @@
   }
 
   function bindSnapshotThumbs() {
-    document.querySelectorAll(".eventSnapshotThumb").forEach((img) => {
-      img.addEventListener("click", () => {
-        const fullSrc = img.dataset.full;
-        if (!fullSrc) return;
-        const lightbox = el("eventsLightbox");
-        const lbImg = el("eventsLightboxImg");
-        if (lightbox && lbImg) {
-          lbImg.src = fullSrc;
-          lightbox.classList.remove("hidden");
-          lightbox.setAttribute("aria-hidden", "false");
-        }
+    document.querySelectorAll(".eventSnapshots").forEach((container) => {
+      const imgs = Array.from(container.querySelectorAll(".eventSnapshotThumb"));
+      const srcs = imgs.map(img => img.dataset.full).filter(Boolean);
+      imgs.forEach((img, i) => {
+        img.addEventListener("click", () => {
+          if (srcs.length) openLightbox(srcs, i);
+        });
       });
     });
+  }
+
+  let _lbSnapshots = [];
+  let _lbIndex = 0;
+
+  function openLightbox(snapshots, index) {
+    _lbSnapshots = snapshots;
+    _lbIndex = index;
+    showLightboxImage();
+    const lightbox = el("eventsLightbox");
+    if (lightbox) {
+      lightbox.classList.remove("hidden");
+      lightbox.setAttribute("aria-hidden", "false");
+    }
+  }
+
+  function showLightboxImage() {
+    const lbImg = el("eventsLightboxImg");
+    if (lbImg && _lbSnapshots[_lbIndex]) {
+      lbImg.src = _lbSnapshots[_lbIndex];
+    }
+    const prev = el("eventsLightboxPrev");
+    const next = el("eventsLightboxNext");
+    if (prev) prev.disabled = _lbIndex <= 0;
+    if (next) next.disabled = _lbIndex >= _lbSnapshots.length - 1;
+    if (prev) prev.style.display = _lbSnapshots.length <= 1 ? "none" : "";
+    if (next) next.style.display = _lbSnapshots.length <= 1 ? "none" : "";
+  }
+
+  function lightboxNav(dir) {
+    const newIdx = _lbIndex + dir;
+    if (newIdx < 0 || newIdx >= _lbSnapshots.length) return;
+    _lbIndex = newIdx;
+    showLightboxImage();
   }
 
   function closeLightbox() {
@@ -271,6 +306,8 @@
     }
     const lbImg = el("eventsLightboxImg");
     if (lbImg) lbImg.src = "";
+    _lbSnapshots = [];
+    _lbIndex = 0;
   }
 
   let allEvents = [];
@@ -359,8 +396,12 @@
 
   el("eventsLightboxBackdrop")?.addEventListener("click", closeLightbox);
   el("eventsLightboxClose")?.addEventListener("click", closeLightbox);
+  el("eventsLightboxPrev")?.addEventListener("click", () => lightboxNav(-1));
+  el("eventsLightboxNext")?.addEventListener("click", () => lightboxNav(1));
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeLightbox();
+    if (e.key === "ArrowLeft") lightboxNav(-1);
+    if (e.key === "ArrowRight") lightboxNav(1);
   });
 
   loadEvents();

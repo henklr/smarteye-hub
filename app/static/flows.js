@@ -10,6 +10,7 @@ const state = {
     presets: { expanded: true, touched: false },
     schedules: { expanded: true, touched: false },
     variables: { expanded: true, touched: false },
+    events: { expanded: true, touched: false },
     scenarios: { expanded: true, touched: false },
     palette: { expanded: true, touched: false },
   },
@@ -182,6 +183,22 @@ function clearDirty() {
 
 function nodeDef(type) {
   return (state.catalog?.nodes || []).find((item) => item.type === type) || null;
+}
+
+function nodeEffectivePorts(node, def) {
+  const basePorts = def?.ports || { inputs: [], outputs: [] };
+  if (node.type !== "action.fire") return basePorts;
+  const cfg = node.config || {};
+  const scenario = _scenariosCache.find(s => s.id === cfg.target_id);
+  if (!scenario) return basePorts;
+  const rt = scenario.response_type || "text";
+  if (rt === "boolean") {
+    return { inputs: ["in"], outputs: ["true", "false"] };
+  }
+  if (rt === "choice" && Array.isArray(scenario.choices) && scenario.choices.length > 0) {
+    return { inputs: ["in"], outputs: scenario.choices.map(c => `choice:${c}`) };
+  }
+  return basePorts;
 }
 
 function currentFlow() {
@@ -1500,11 +1517,24 @@ async function saveScenario() {
   if (!name) throw new Error("Scenario name is required.");
   if (!prompt) throw new Error("Scenario prompt is required.");
 
+  const payload = {
+    name,
+    prompt,
+    response_type: scenario.response_type || "text",
+    choices: scenario.choices || [],
+    result_variable: scenario.result_variable || "",
+    max_contributions: parseInt(scenario.max_contributions) || 0,
+    max_seconds: parseFloat(scenario.max_seconds) || 0,
+    auto_event_enabled: !!scenario.auto_event_enabled,
+    auto_event_priority: scenario.auto_event_priority || "medium",
+    auto_event_on_result: scenario.auto_event_on_result || "true",
+  };
+
   if (scenario._isNew || !scenario.id) {
     const out = await api("/api/scenarios", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, prompt }),
+      body: JSON.stringify(payload),
     });
     await loadScenarios(true);
     const saved = _scenariosCache.find(s => s.name === name);
@@ -1513,7 +1543,7 @@ async function saveScenario() {
     await api(`/api/scenarios/${encodeURIComponent(scenario.id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, prompt }),
+      body: JSON.stringify(payload),
     });
     await loadScenarios(true);
     const saved = _scenariosCache.find(s => s.id === scenario.id);
@@ -1635,6 +1665,9 @@ function renderScenarioSidebar() {
 }
 
 function renderScenarioInspector(scenario, index) {
+  const responseType = scenario.response_type || "text";
+  const choices = (scenario.choices || []).join(", ");
+  const choicesVisible = responseType === "choice" ? "" : " hidden";
   return `
     <div class="inspectorCard">
       <div class="rowSplit">
@@ -1652,6 +1685,54 @@ function renderScenarioInspector(scenario, index) {
           <label>Prompt</label>
           <textarea id="scenarioPromptInput" rows="6" placeholder="Describe the rules for the AI to evaluate.">${escapeHtml(scenario.prompt || "")}</textarea>
         </div>
+        <div class="full">
+          <label>Response type</label>
+          <select id="scenarioResponseType">
+            <option value="boolean" ${responseType === "boolean" ? "selected" : ""}>Boolean (true / false)</option>
+            <option value="number" ${responseType === "number" ? "selected" : ""}>Number</option>
+            <option value="text" ${responseType === "text" ? "selected" : ""}>Text</option>
+            <option value="choice" ${responseType === "choice" ? "selected" : ""}>Choice (pick one)</option>
+          </select>
+        </div>
+        <div class="full${choicesVisible}" id="scenarioChoicesRow">
+          <label>Choices (comma-separated)</label>
+          <input id="scenarioChoicesInput" value="${escapeHtml(choices)}" placeholder="e.g. yes, no, maybe" />
+        </div>
+        <div class="full">
+          <label>Result variable</label>
+          <select id="scenarioResultVariable">
+            ${variableKeyOptionsHtml(scenario.result_variable || "", { includePhysical: false })}
+          </select>
+        </div>
+        <div class="half">
+          <label>Max contributions</label>
+          <input id="scenarioMaxContributions" type="number" min="0" value="${scenario.max_contributions || 0}" placeholder="0 = unlimited" />
+        </div>
+        <div class="half">
+          <label>Max seconds</label>
+          <input id="scenarioMaxSeconds" type="number" min="0" step="0.1" value="${scenario.max_seconds || 0}" placeholder="0 = no timer" />
+        </div>
+
+        <div class="full" style="margin-top:12px; border-top:1px solid var(--stroke, #333); padding-top:12px;">
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-bottom:4px;">
+            <input id="scenarioAutoEventEnabled" type="checkbox" style="width:18px; height:18px; flex-shrink:0;" ${scenario.auto_event_enabled ? "checked" : ""} />
+            <span style="font-weight:600;">Auto-submit as event</span>
+          </label>
+          <div class="inspectorHint">When enabled, the AI result is automatically submitted as an event with the reasoning text and snapshots.</div>
+        </div>
+        <div class="full${scenario.auto_event_enabled ? "" : " hidden"}" id="scenarioAutoEventFields">
+          <label>Event priority</label>
+          <select id="scenarioAutoEventPriority">
+            ${EVENT_PRIORITIES.map(p => `<option value="${p}" ${(scenario.auto_event_priority || "medium") === p ? "selected" : ""}>${p}</option>`).join("")}
+          </select>
+          <label class="mt-10">Submit when result is</label>
+          <select id="scenarioAutoEventOnResult">
+            <option value="true" ${(scenario.auto_event_on_result || "true") === "true" ? "selected" : ""}>True</option>
+            <option value="false" ${scenario.auto_event_on_result === "false" ? "selected" : ""}>False</option>
+            <option value="any" ${scenario.auto_event_on_result === "any" ? "selected" : ""}>Any result</option>
+          </select>
+        </div>
+
         <div class="full inlineMeta">The prompt is sent to GPT-4o along with camera snapshots. You can reference flow templates like {{trigger.path}}, {{variables.key}}.</div>
       </div>
     </div>
@@ -1711,7 +1792,61 @@ function bindScenarioInspector(index) {
     scenario.prompt = ev.target.value;
     renderScenarioSidebar();
   });
+
+  document.getElementById("scenarioResponseType")?.addEventListener("change", (ev) => {
+    const scenario = getScenario();
+    if (!scenario) return;
+    scenario.response_type = ev.target.value;
+    const choicesRow = document.getElementById("scenarioChoicesRow");
+    if (choicesRow) choicesRow.classList.toggle("hidden", ev.target.value !== "choice");
+  });
+
+  document.getElementById("scenarioChoicesInput")?.addEventListener("input", (ev) => {
+    const scenario = getScenario();
+    if (!scenario) return;
+    scenario.choices = ev.target.value.split(",").map(s => s.trim()).filter(Boolean);
+  });
+
+  document.getElementById("scenarioResultVariable")?.addEventListener("change", (ev) => {
+    const scenario = getScenario();
+    if (!scenario) return;
+    scenario.result_variable = ev.target.value;
+  });
+
+  document.getElementById("scenarioMaxContributions")?.addEventListener("input", (ev) => {
+    const scenario = getScenario();
+    if (!scenario) return;
+    scenario.max_contributions = parseInt(ev.target.value) || 0;
+  });
+
+  document.getElementById("scenarioMaxSeconds")?.addEventListener("input", (ev) => {
+    const scenario = getScenario();
+    if (!scenario) return;
+    scenario.max_seconds = parseFloat(ev.target.value) || 0;
+  });
+
+  document.getElementById("scenarioAutoEventEnabled")?.addEventListener("change", (ev) => {
+    const scenario = getScenario();
+    if (!scenario) return;
+    scenario.auto_event_enabled = ev.target.checked;
+    const fields = document.getElementById("scenarioAutoEventFields");
+    if (fields) fields.classList.toggle("hidden", !ev.target.checked);
+  });
+
+  document.getElementById("scenarioAutoEventPriority")?.addEventListener("change", (ev) => {
+    const scenario = getScenario();
+    if (!scenario) return;
+    scenario.auto_event_priority = ev.target.value;
+  });
+
+  document.getElementById("scenarioAutoEventOnResult")?.addEventListener("change", (ev) => {
+    const scenario = getScenario();
+    if (!scenario) return;
+    scenario.auto_event_on_result = ev.target.value;
+  });
 }
+
+const EVENT_PRIORITIES = ["critical", "high", "medium", "low", "info"];
 
 function deviceOptionsHtml(selected = "") {
   const options = [`<option value="">Select device</option>`];
@@ -2260,8 +2395,10 @@ function displayPortLabel(node, kind, port) {
     if (port === "false") return "ELSE";
   }
 
-  if (node?.type === "action.build_prompt" && kind === "output") {
-    if (port === "ready") return "READY";
+  if (node?.type === "action.fire" && kind === "output") {
+    if (port === "true") return "TRUE";
+    if (port === "false") return "FALSE";
+    if (port.startsWith("choice:")) return port.slice(7).toUpperCase();
   }
 
   return "";
@@ -2417,6 +2554,21 @@ function nodePreview(node) {
 
     case "action.log_message":
       return cfg.message || "Log message";
+
+    case "action.contribute": {
+      const targetLabel = _scenariosCache.find(s => s.id === cfg.target_id)?.name || "scenario";
+      return `→ ${targetLabel}${(cfg.snapshot_entries || []).length ? ` (${cfg.snapshot_entries.length} cam)` : ""}`;
+    }
+
+    case "action.fire": {
+      const targetLabel = _scenariosCache.find(s => s.id === cfg.target_id)?.name || "scenario";
+      return `Analyse ${targetLabel}`;
+    }
+
+    case "action.flush": {
+      const targetLabel = _scenariosCache.find(s => s.id === cfg.target_id)?.name || "scenario";
+      return `Flush ${targetLabel}`;
+    }
 
     default:
       return node.label;
@@ -3161,7 +3313,7 @@ function renderCanvas() {
 
   nodesBox.innerHTML = flow.nodes.map((node) => {
     const def = nodeDef(node.type);
-    const ports = def?.ports || { inputs: [], outputs: [] };
+    const ports = nodeEffectivePorts(node, def);
     const meta = CATEGORY_META[node.category] || CATEGORY_META.action;
     const tag = recordNodeTag(node);
     const invalidReason = isNodeInvalid(node);
@@ -3210,7 +3362,7 @@ function renderCanvas() {
             ${ports.outputs.map((port) => `
               <div class="flowPortRow output">
                 ${displayPortLabel(node, "output", port) ? `
-                  <span class="flowBranchLabel ${port === "true" ? "then" : port === "false" ? "else" : port === "ready" ? "ready" : "neutral"}">
+                  <span class="flowBranchLabel ${node.type === "action.fire" ? "neutral" : (port === "true" ? "then" : port === "false" ? "else" : port === "ready" ? "ready" : "neutral")}">
                     ${escapeHtml(displayPortLabel(node, "output", port))}
                   </span>
                 ` : ""}
@@ -6311,87 +6463,53 @@ function renderNodeInspector(node) {
       `;
       break;
 
-    case "action.build_prompt":
+    case "action.contribute":
       body = `
         <div class="inspectorCard">
-          <div class="inspectorTitle">Build prompt</div>
-          <div class="inspectorHint">Accumulates text and camera snapshots into a named prompt buffer. Use a Generate event node with the same Prompt key to consume the buffer and run AI analysis.</div>
+          <div class="inspectorTitle">Contribute to scenario</div>
+          <div class="inspectorHint">Takes camera snapshots and contributes them to a scenario's buffer.</div>
           <div class="fieldGrid">
-            <div class="full">
-              <label>Prompt key</label>
-              <input id="cfg_prompt_key" value="${escapeHtml(cfg.prompt_key || "")}" placeholder="default" />
-              <div class="inlineMeta">A unique name for this prompt buffer. Defaults to "default" if left empty. Supports templates.</div>
-            </div>
-            <div class="full">
-              <label>Text <span class="labelMeta">(optional)</span></label>
-              <textarea id="cfg_text" rows="4" placeholder="Text to append to the prompt buffer...">${escapeHtml(cfg.text || "")}</textarea>
-              <div class="inlineMeta">This text is appended to the buffer. Supports templates: {{trigger.path}}, {{variables.key}}</div>
-            </div>
-            <div class="full">
-              <label>Snapshot cameras <span class="labelMeta">(optional)</span></label>
-              <div id="cfg_snapshot_devices" class="snapshotDeviceList">
-                ${renderSnapshotDeviceList(cfg.snapshot_entries || [])}
-              </div>
-              <div class="inlineMeta mt-6">Snapshots are added to the prompt buffer and sent to the AI when consumed.</div>
-              <button class="btn mt-6" id="btnAddSnapshotDevice" type="button">Add camera</button>
-            </div>
-            <div class="full">
-              <label class="enableRow">
-                <input type="checkbox" id="cfg_clear_first" ${cfg.clear_first ? "checked" : ""} />
-                Clear buffer before adding
-              </label>
-              <div class="inlineMeta">Empties the prompt buffer before appending new content. Useful at the start of a sequence.</div>
-            </div>
-            <div class="full">
-              <label>Minimum contributions</label>
-              <input id="cfg_min_count" type="number" min="1" step="1" value="${escapeHtml(cfg.min_count ?? 1)}" />
-              <div class="inlineMeta">The READY output fires only when the buffer has at least this many images. Until then, only the OUT output fires.</div>
-            </div>
-            <div class="full">
-              <label>Max wait <span class="labelMeta">(seconds, optional)</span></label>
-              <input id="cfg_max_wait" type="number" min="0" step="1" value="${escapeHtml(cfg.max_wait ?? 0)}" />
-              <div class="inlineMeta">If set, the READY output fires after this many seconds even if min contributions haven't been reached. Set to 0 to disable.</div>
-            </div>
-          </div>
-        </div>
-      `;
-      break;
-
-    case "action.generate_event":
-      body = `
-        <div class="inspectorCard">
-          <div class="inspectorTitle">Generate event</div>
-          <div class="inspectorHint">Creates an event on the Events page. Optionally analyzes camera snapshots with an AI scenario.</div>
-          <div class="fieldGrid">
-            <div class="full">
-              <label>Event name</label>
-              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="e.g. Intrusion alert" />
-              <div class="inlineMeta">Supports templates: {{flow.name}}, {{trigger.path}}, {{variables.key}}</div>
-            </div>
-            <div class="full">
-              <label>Prompt key <span class="labelMeta">(optional)</span></label>
-              <input id="cfg_prompt_key" value="${escapeHtml(cfg.prompt_key || "")}" placeholder="default" />
-              <div class="inlineMeta">Consumes text and images from Build prompt nodes with the same key. Defaults to "default". Supports templates.</div>
-            </div>
             <div class="full">
               <label>Scenario</label>
-              <select id="cfg_scenario_id">${scenarioOptionsHtml(cfg.scenario_id || "")}</select>
-              <div class="inlineMeta">Select an AI scenario to analyze the snapshots. Manage scenarios on the System page.</div>
+              <select id="cfg_target_id">${scenarioOptionsHtml(cfg.target_id || "")}</select>
             </div>
             <div class="full">
               <label>Snapshot cameras</label>
               <div id="cfg_snapshot_devices" class="snapshotDeviceList">
                 ${renderSnapshotDeviceList(cfg.snapshot_entries || [])}
               </div>
-              <div class="inlineMeta mt-6">Snapshots are fetched live from the camera and sent to the AI scenario for analysis.</div>
+              <div class="inlineMeta mt-6">Snapshots are captured and stored in the buffer.</div>
               <button class="btn mt-6" id="btnAddSnapshotDevice" type="button">Add camera</button>
             </div>
+          </div>
+        </div>
+      `;
+      break;
+
+    case "action.fire":
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Analyse</div>
+          <div class="inspectorHint">Sends the contribution buffer to the AI scenario for analysis.</div>
+          <div class="fieldGrid">
             <div class="full">
-              <label class="enableRow">
-                <input type="checkbox" id="cfg_include_recording" ${cfg.include_recording ? "checked" : ""} />
-                Include recording reference
-              </label>
-              <div class="inlineMeta">Adds a link to the recording around the event time for each camera.</div>
+              <label>Scenario</label>
+              <select id="cfg_target_id">${scenarioOptionsHtml(cfg.target_id || "")}</select>
+            </div>
+          </div>
+        </div>
+      `;
+      break;
+
+    case "action.flush":
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Flush</div>
+          <div class="inspectorHint">Clears the scenario's contribution buffer without analysing.</div>
+          <div class="fieldGrid">
+            <div class="full">
+              <label>Scenario</label>
+              <select id="cfg_target_id">${scenarioOptionsHtml(cfg.target_id || "")}</select>
             </div>
           </div>
         </div>
@@ -6620,10 +6738,10 @@ function bindNodeInspector(node) {
     });
   }
 
-  if (node.type === "action.generate_event" || node.type === "action.build_prompt") {
+  if (node.type === "action.contribute") {
     document.getElementById("btnAddSnapshotDevice")?.addEventListener("click", () => {
       if (!node.config.snapshot_entries) node.config.snapshot_entries = [];
-      node.config.snapshot_entries.push({ device_id: "", seconds_ago: 0 });
+      node.config.snapshot_entries.push({ device_id: "" });
       markDirty();
       renderInspector();
     });
@@ -6647,7 +6765,15 @@ function bindNodeInspector(node) {
         renderCanvas();
       });
     });
+  }
 
+  if (node.type === "action.fire" || node.type === "action.flush" || node.type === "action.contribute") {
+    document.getElementById("cfg_target_id")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      markDirty();
+      renderCanvas();
+      drawEdges();
+    });
   }
 }
 
@@ -6776,30 +6902,21 @@ function applyNodeInspector(node) {
       set("name");
       set("message");
       break;
-    case "action.build_prompt":
+    case "action.contribute":
       set("name");
-      set("prompt_key");
-      set("text");
-      cfg.clear_first = !!document.getElementById("cfg_clear_first")?.checked;
-      cfg.min_count = Math.max(1, parseInt(document.getElementById("cfg_min_count")?.value) || 1);
-      cfg.max_wait = Math.max(0, parseFloat(document.getElementById("cfg_max_wait")?.value) || 0);
+      set("target_id");
       cfg.snapshot_entries = Array.from(document.querySelectorAll(".snapshotDeviceRow")).map(row => {
         const sel = row.querySelector(".snapshotDeviceSelect");
         return { device_id: sel ? sel.value : "" };
       }).filter(e => e.device_id);
       break;
-    case "action.generate_event":
+    case "action.fire":
       set("name");
-      set("scenario_id");
-      set("prompt_key");
-      cfg.include_recording = !!document.getElementById("cfg_include_recording")?.checked;
-      cfg.snapshot_entries = Array.from(document.querySelectorAll(".snapshotDeviceRow")).map(row => {
-        const sel = row.querySelector(".snapshotDeviceSelect");
-        return { device_id: sel ? sel.value : "" };
-      }).filter(e => e.device_id);
-      delete cfg.snapshot_device_ids;
-      delete cfg.seconds_ago;
-      delete cfg.message;
+      set("target_id");
+      break;
+    case "action.flush":
+      set("name");
+      set("target_id");
       break;
   }
 
@@ -7650,12 +7767,16 @@ async function init() {
   applyZoom(state.zoom);
 
   try {
+    console.log("[init] starting catalog fetch");
     const catalog = await api("/api/flows/catalog");
     state.catalog = catalog;
     state.devices = Array.isArray(catalog?.devices) ? catalog.devices : [];
+    console.log("[init] catalog loaded, nodes:", catalog?.nodes?.length, "devices:", state.devices.length);
 
     await loadScenarios();
+    console.log("[init] scenarios loaded:", _scenariosCache.length);
     await refreshFlows();
+    console.log("[init] flows loaded:", state.flows.length);
     await refreshRecordingPresets(true);
     await refreshSchedules(true);
     await refreshPublicVariables(true);
@@ -7663,19 +7784,24 @@ async function init() {
     startSchedulesPolling();
     startPublicVariablesPolling();
     startPhysicalStatePolling();
+    console.log("[init] rendering sidebars");
     renderScenarioSidebar();
 
     state.draft = state.flows.length ? deepClone(state.flows[0]) : starterFlow();
     state.selectedSavedFlowId = state.draft.id || null;
+    console.log("[init] draft set, flow:", state.draft?.name);
 
     clearDirty();
     clearSchedulesDirty();
     clearPublicVariablesDirty();
     clearTestResult();
+    console.log("[init] rendering palette + all");
     renderPalette();
     renderAll();
     window.requestAnimationFrame(restoreOrFitViewport);
+    console.log("[init] complete");
   } catch (err) {
+    console.error("[init] ERROR:", err);
     setStatus(err.message || String(err), true);
     if (el("inspectorBody")) {
       el("inspectorBody").innerHTML = `<div class="emptyState">Failed to load flows UI: ${escapeHtml(err.message || String(err))}</div>`;
