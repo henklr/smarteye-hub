@@ -781,8 +781,22 @@ def _event_preset_key(event: Dict[str, Any]) -> str:
     return _recording_preset_key(_event_preset_name(event))
 
 
+def _recording_source_path(device_id: str) -> str:
+    """Return the MediaMTX path for recording.
+    Uses the dedicated recording path if a separate recording profile exists,
+    otherwise falls back to the live stream path."""
+    devices = _load_devices()
+    device = next((d for d in devices if str(d.get("id") or "").strip() == device_id), None)
+    if device:
+        rec_token = str(device.get("recording_profile_token") or "").strip()
+        live_token = str(device.get("profile_token") or "").strip()
+        if rec_token and rec_token != live_token:
+            return f"cam-rec-{device_id}"
+    return _path_for(device_id)
+
+
 def _recording_ffmpeg_command(device_id: str) -> List[str]:
-    source = f"{MEDIAMTX_RTSP_BASE}/{_path_for(device_id)}"
+    source = f"{MEDIAMTX_RTSP_BASE}/{_recording_source_path(device_id)}"
     pattern = str(_recordings_dir_for_device(device_id) / "%Y%m%dT%H%M%S.ts")
     return [
         "ffmpeg",

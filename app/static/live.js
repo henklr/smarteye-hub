@@ -11,6 +11,7 @@ const userEl = document.getElementById("username");
 const passEl = document.getElementById("password");
 const fetchBtn = document.getElementById("fetchProfiles");
 const profilesSel = document.getElementById("profiles");
+const recordingProfilesSel = document.getElementById("recordingProfiles");
 const saveBtn = document.getElementById("save");
 const newBtn = document.getElementById("new");
 const clearBtn = document.getElementById("clear");
@@ -559,7 +560,6 @@ function renderList() {
 
           <div class="camItemTopActions">
             <div class="camBadge">${escapeHtml(ready ? "ONLINE" : "SETUP")}</div>
-            <button class="camMiniBtn" type="button" data-action="edit" draggable="false">Edit</button>
             <button class="camMiniBtn danger" type="button" data-action="delete" draggable="false">Delete</button>
           </div>
         </div>
@@ -606,6 +606,8 @@ function clearProfilesUI(msg = "Fetch profiles first…") {
   lastProfiles = [];
   profilesSel.disabled = true;
   profilesSel.innerHTML = `<option>${escapeHtml(msg)}</option>`;
+  recordingProfilesSel.disabled = true;
+  recordingProfilesSel.innerHTML = `<option>${escapeHtml(msg)}</option>`;
 }
 
 function clearForm() {
@@ -640,11 +642,16 @@ function fillForm(d) {
     profilesSel.disabled = false;
   }
 
+  if (d.recording_profile_token) {
+    recordingProfilesSel.innerHTML = `<option value="${escapeHtml(d.recording_profile_token)}">${escapeHtml(d.recording_profile_label || d.recording_profile_token)}</option>`;
+    recordingProfilesSel.disabled = false;
+  }
+
   renderList();
   setFormStatus(
     d.profile_token
-      ? "Loaded. Fetch profiles to confirm you are using the right profile."
-      : "Loaded. Fetch profiles to select one."
+      ? "Loaded. Fetch profiles to confirm you are using the right profiles."
+      : "Loaded. Fetch profiles to select profiles."
   );
 }
 
@@ -1812,7 +1819,13 @@ function readFormFull() {
     ? (selected ? profileLabel(selected) : (profilesSel.selectedOptions?.[0]?.textContent || profile_token))
     : null;
 
-  return { name, ...creds, profile_token, profile_label };
+  const recording_profile_token = recordingProfilesSel.disabled ? null : (recordingProfilesSel.value || null);
+  const recSelected = lastProfiles.find((p) => p.token === recording_profile_token);
+  const recording_profile_label = recording_profile_token
+    ? (recSelected ? profileLabel(recSelected) : (recordingProfilesSel.selectedOptions?.[0]?.textContent || recording_profile_token))
+    : null;
+
+  return { name, ...creds, profile_token, profile_label, recording_profile_token, recording_profile_label };
 }
 
 async function fetchProfiles() {
@@ -1832,6 +1845,7 @@ async function fetchProfiles() {
 
   lastProfiles = profs;
 
+  // Populate live stream profile dropdown
   profilesSel.innerHTML = "";
   for (const p of profs) {
     const opt = document.createElement("option");
@@ -1841,17 +1855,34 @@ async function fetchProfiles() {
   }
   profilesSel.disabled = false;
 
+  // Populate recording profile dropdown (all profiles, not just H264)
+  recordingProfilesSel.innerHTML = "";
+  for (const p of profs) {
+    const opt = document.createElement("option");
+    opt.value = p.token;
+    opt.textContent = profileLabel(p);
+    recordingProfilesSel.appendChild(opt);
+  }
+  recordingProfilesSel.disabled = false;
+
   if (editingId) {
     const d = devices.find((x) => x.id === editingId);
     if (d?.profile_token) profilesSel.value = d.profile_token;
+    if (d?.recording_profile_token) recordingProfilesSel.value = d.recording_profile_token;
   }
 
   const recommended = profs.find((p) => p.recommended);
   if (recommended) {
     profilesSel.value = recommended.token;
-    setFormStatus(`Profiles loaded (${profs.length}). Recommended H264 profile selected.`);
+    setFormStatus(`Profiles loaded (${profs.length}). Recommended H264 profile selected for live.`);
   } else {
     setFormStatus(`Profiles loaded (${profs.length}), but no browser-safe H264 profile was found.`);
+  }
+
+  // Default recording profile to highest resolution if not already set
+  const highestRes = [...profs].sort((a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0)))[0];
+  if (highestRes && !recordingProfilesSel.value) {
+    recordingProfilesSel.value = highestRes.token;
   }
 }
 
@@ -1901,16 +1932,15 @@ camListEl.addEventListener("click", async (ev) => {
     ev.stopPropagation();
 
     const action = actionBtn.getAttribute("data-action");
-    if (action === "edit") {
-      fillForm(d);
-      return;
-    }
-
     if (action === "delete") {
       await deleteDeviceById(d.id);
       return;
     }
+    return;
   }
+
+  // Clicking the row itself opens for edit
+  fillForm(d);
 });
 
 fetchBtn.addEventListener("click", async () => {
