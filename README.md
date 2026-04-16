@@ -8,9 +8,10 @@ If the repository is private, create a GitHub Personal Access Token (classic) wi
 `repo` scope at https://github.com/settings/tokens and use it for both the download
 and the clone:
 
-curl -fsSL -H "Authorization: token YOUR_TOKEN" \
+GH_TOKEN=YOUR_TOKEN
+curl -fsSL -H "Authorization: token $GH_TOKEN" \
   https://raw.githubusercontent.com/henklr/smarteye-hub/main/install.sh \
-  | GH_TOKEN=YOUR_TOKEN bash
+  | GH_TOKEN="$GH_TOKEN" bash
 
 The installer will:
 
