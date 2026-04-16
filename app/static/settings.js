@@ -364,7 +364,6 @@ loadDatetime();
 // ── System actions ────────────────────────────────────────────────────────────
 
 const systemStatusEl = document.getElementById("systemStatus");
-const clearRecordingsBtn = document.getElementById("clearRecordingsBtn");
 const rebootBtn = document.getElementById("rebootBtn");
 const retentionDaysInput = document.getElementById("retentionDaysInput");
 const retentionSaveBtn = document.getElementById("retentionSaveBtn");
@@ -484,21 +483,6 @@ retentionSaveBtn?.addEventListener("click", async () => {
 });
 
 loadRetention();
-
-clearRecordingsBtn?.addEventListener("click", async () => {
-  if (!window.confirm("Clear all recordings, generated clips, and playback markers? This cannot be undone.")) return;
-  clearRecordingsBtn.disabled = true;
-  setSystemStatus("Clearing recordings…");
-  try {
-    const result = await api("/api/playback/recordings", { method: "DELETE" });
-    const count = Number(result?.cleared_events || 0);
-    setSystemStatus(`Cleared ${count} marker${count === 1 ? "" : "s"}. Recording files are being removed in the background.`);
-  } catch (e) {
-    setSystemStatus(`Error: ${String(e.message || e)}`);
-  } finally {
-    clearRecordingsBtn.disabled = false;
-  }
-});
 
 rebootBtn?.addEventListener("click", async () => {
   if (!window.confirm("Reboot the system now? All active streams and recordings will stop.")) return;

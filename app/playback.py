@@ -43,9 +43,25 @@ def _get_recordings_dir() -> Path:
 
 # Keep module-level reference for backward compat in clear_all_recordings
 RECORDINGS_DIR = _DEFAULT_RECORDINGS_DIR
-PLAYBACK_CLIPS_DIR = DATA_DIR / "playback_clips"
-PLAYBACK_CLIPS_DIR.mkdir(parents=True, exist_ok=True)
-RECORDING_EVENTS_JSON = DATA_DIR / "recording_events.json"
+_DEFAULT_CLIPS_DIR = DATA_DIR / "playback_clips"
+_DEFAULT_CLIPS_DIR.mkdir(parents=True, exist_ok=True)
+_DEFAULT_EVENTS_JSON = DATA_DIR / "recording_events.json"
+
+def _get_clips_dir() -> Path:
+    """Return playback clips dir next to the recordings dir."""
+    rec = _get_recordings_dir()
+    if rec != _DEFAULT_RECORDINGS_DIR:
+        d = rec.parent / "playback_clips"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    return _DEFAULT_CLIPS_DIR
+
+def _get_events_json() -> Path:
+    """Return recording_events.json next to the recordings dir."""
+    rec = _get_recordings_dir()
+    if rec != _DEFAULT_RECORDINGS_DIR:
+        return rec.parent / "recording_events.json"
+    return _DEFAULT_EVENTS_JSON
 
 MEDIAMTX_RTSP_BASE = os.getenv("MEDIAMTX_RTSP_BASE", "rtsp://mediamtx:8554").rstrip("/")
 RECORDING_SEGMENT_SECONDS = max(15, int(os.getenv("RECORDING_SEGMENT_SECONDS", "60") or "60"))
@@ -149,7 +165,7 @@ def _recordings_dir_for_device(device_id: str) -> Path:
 
 def _clip_path_for_event(event_id: str) -> Path:
     event_id = _validate_id(event_id, "event_id")
-    return PLAYBACK_CLIPS_DIR / f"{event_id}.mp4"
+    return _get_clips_dir() / f"{event_id}.mp4"
 
 
 def _clip_probe_command(path: Path) -> List[str]:
@@ -181,7 +197,7 @@ def _load_devices() -> List[Dict[str, Any]]:
 
 def _load_events() -> List[Dict[str, Any]]:
     try:
-        payload = json.loads(RECORDING_EVENTS_JSON.read_text(encoding="utf-8"))
+        payload = json.loads(_get_events_json().read_text(encoding="utf-8"))
     except Exception:
         return []
     if not isinstance(payload, list):
@@ -190,7 +206,7 @@ def _load_events() -> List[Dict[str, Any]]:
 
 
 def _save_events(items: List[Dict[str, Any]]) -> None:
-    RECORDING_EVENTS_JSON.write_text(json.dumps(items, indent=2), encoding="utf-8")
+    _get_events_json().write_text(json.dumps(items, indent=2), encoding="utf-8")
 
 
 def _delete_clip_cache(event_ids: set[str]) -> None:
@@ -875,7 +891,8 @@ def _start_recorder(device_id: str) -> None:
 
 
 def _prune_cached_clips() -> None:
-    if not PLAYBACK_CLIPS_DIR.exists():
+    clips_dir = _get_clips_dir()
+    if not clips_dir.exists():
         return
 
     with _events_lock:
@@ -885,7 +902,7 @@ def _prune_cached_clips() -> None:
             if str(item.get("id") or "").strip()
         }
 
-    for path in PLAYBACK_CLIPS_DIR.glob("*.mp4"):
+    for path in clips_dir.glob("*.mp4"):
         if not path.is_file() or path.stem in active_event_ids:
             continue
         try:
@@ -896,7 +913,7 @@ def _prune_cached_clips() -> None:
     if PLAYBACK_CLIP_CACHE_LIMIT <= 0:
         return
 
-    clips = [path for path in PLAYBACK_CLIPS_DIR.glob("*.mp4") if path.is_file()]
+    clips = [path for path in clips_dir.glob("*.mp4") if path.is_file()]
     clips.sort(key=lambda path: path.stat().st_mtime, reverse=True)
 
     for path in clips[PLAYBACK_CLIP_CACHE_LIMIT:]:
@@ -1184,7 +1201,7 @@ def _build_event_clip(event: Dict[str, Any]) -> Path:
     offset_seconds = max(0.0, (started_at - first_start).total_seconds())
     duration_seconds = max(0.1, (ended_at - started_at).total_seconds())
 
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, dir=PLAYBACK_CLIPS_DIR, encoding="utf-8") as manifest:
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, dir=_get_clips_dir(), encoding="utf-8") as manifest:
         manifest_path = Path(manifest.name)
         for segment in segments:
             manifest.write(f"file '{segment.path.as_posix()}'\n")
@@ -1325,7 +1342,7 @@ def clear_all_recordings() -> Dict[str, int]:
                 _events_lock.release()
 
         deleted_recording_files = _clear_directory_contents(_get_recordings_dir())
-        deleted_clip_files = _clear_directory_contents(PLAYBACK_CLIPS_DIR)
+        deleted_clip_files = _clear_directory_contents(_get_clips_dir())
     finally:
         _recorder_pause.clear()
         start_recording_service()
