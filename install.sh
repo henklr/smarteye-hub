@@ -12,12 +12,35 @@ TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 TARGET_HOME="${TARGET_HOME:-$HOME}"
 
 APP_DIR="${APP_DIR:-$TARGET_HOME/smarteye-hub}"
+GH_REPO="henklr/smarteye-hub"
 GH_TOKEN="${GH_TOKEN:-}"
-if [[ -n "$GH_TOKEN" ]]; then
-  REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/henklr/smarteye-hub.git"
-else
-  REPO_URL="https://github.com/henklr/smarteye-hub.git"
-fi
+
+repo_url() {
+  if [[ -n "$GH_TOKEN" ]]; then
+    echo "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git"
+  else
+    echo "https://github.com/${GH_REPO}.git"
+  fi
+}
+
+prompt_for_token() {
+  if [[ ! -t 0 ]]; then
+    err "Repository is private and no GH_TOKEN was provided."
+    err "Re-run with: GH_TOKEN=<your-token> bash install.sh"
+    exit 1
+  fi
+  echo
+  warn "The repository appears to be private."
+  log  "You need a GitHub Personal Access Token (classic) with 'repo' scope."
+  log  "Create one at: https://github.com/settings/tokens/new"
+  echo
+  read -r -s -p "Paste your GitHub token (input hidden): " GH_TOKEN
+  echo
+  if [[ -z "$GH_TOKEN" ]]; then
+    err "No token provided. Aborting."
+    exit 1
+  fi
+}
 PORT="${PORT:-80}"
 REBOOT_RECOMMENDED=0
 
@@ -165,7 +188,7 @@ if [[ -d "$PWD/.git" && -f "$PWD/docker-compose.yml" && -f "$PWD/install.sh" ]];
   log "Using existing repository at $APP_DIR"
 elif [[ -d "$APP_DIR/.git" ]]; then
   if [[ -n "$GH_TOKEN" ]]; then
-    git -C "$APP_DIR" remote set-url origin "$REPO_URL"
+    git -C "$APP_DIR" remote set-url origin "$(repo_url)"
   fi
   if git -C "$APP_DIR" diff --quiet && git -C "$APP_DIR" diff --cached --quiet; then
     log "Repository already exists at $APP_DIR. Pulling latest changes..."
@@ -178,7 +201,10 @@ elif [[ -e "$APP_DIR" ]]; then
   exit 1
 else
   log "Cloning repository into $APP_DIR..."
-  git clone --depth 1 "$REPO_URL" "$APP_DIR"
+  if ! git clone --depth 1 "$(repo_url)" "$APP_DIR" 2>/dev/null; then
+    prompt_for_token
+    git clone --depth 1 "$(repo_url)" "$APP_DIR"
+  fi
 fi
 
 log "Creating additional files..."
