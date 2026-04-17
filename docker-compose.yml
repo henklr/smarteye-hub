@@ -33,6 +33,8 @@ services:
       - /etc/pam.d:/etc/pam.d:ro
       - /etc/nsswitch.conf:/etc/nsswitch.conf:ro
       - /lib/aarch64-linux-gnu/security:/lib/aarch64-linux-gnu/security:ro
+    extra_hosts:
+      - "mediamtx:host-gateway"
     depends_on:
       - mediamtx
 
@@ -40,13 +42,7 @@ services:
     image: bluenviron/mediamtx:latest
     container_name: mediamtx
     restart: unless-stopped
-    ports:
-      - "8554:8554"
-      - "8889:8889"
-      - "8189:8189/udp"
-      - "8189:8189/tcp"
-    expose:
-      - "9997"
+    network_mode: host
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
     environment:
