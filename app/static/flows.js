@@ -42,10 +42,12 @@ const state = {
   selectedScheduleIndex: null,
   selectedPublicVariableIndex: null,
   selectedScenarioIndex: null,
+  selectedPaletteType: null,
   dirty: false,
   connecting: null,
   connectionCursor: null,
   drag: null,
+  paletteDrag: null,
   pan: null,
   panX: 0,
   panY: 0,
@@ -287,6 +289,7 @@ function clearEditorSelection() {
   state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
   state.selectedScenarioIndex = null;
+  state.selectedPaletteType = null;
   renderRecordingPresetSidebar();
   renderScheduleSidebar();
   renderPublicVariablesSidebar();
@@ -302,6 +305,7 @@ function selectNode(nodeId) {
   state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
   state.selectedScenarioIndex = null;
+  state.selectedPaletteType = null;
   renderRecordingPresetSidebar();
   renderScheduleSidebar();
   renderPublicVariablesSidebar();
@@ -317,6 +321,7 @@ function selectEdge(edgeId) {
   state.selectedSchedulePeriod = null;
   state.selectedPublicVariableIndex = null;
   state.selectedScenarioIndex = null;
+  state.selectedPaletteType = null;
   renderRecordingPresetSidebar();
   renderScheduleSidebar();
   renderPublicVariablesSidebar();
@@ -3189,7 +3194,25 @@ function renderPalette() {
   `).join("");
 
   box.querySelectorAll(".paletteItem").forEach((button) => {
-    button.addEventListener("click", () => addNodeFromPalette(button.dataset.type));
+    button.addEventListener("click", () => {
+      state.selectedPaletteType = button.dataset.type;
+      state.selectedNodeId = null;
+      state.selectedEdgeId = null;
+      renderInspector();
+    });
+
+    button.setAttribute("draggable", "true");
+    button.addEventListener("dragstart", (ev) => {
+      state.paletteDrag = button.dataset.type;
+      ev.dataTransfer.effectAllowed = "copy";
+      ev.dataTransfer.setData("text/plain", button.dataset.type);
+      button.classList.add("palette-dragging");
+    });
+    button.addEventListener("dragend", () => {
+      state.paletteDrag = null;
+      button.classList.remove("palette-dragging");
+      el("flowBoardScroller")?.classList.remove("drop-target-active");
+    });
   });
 }
 
@@ -3876,6 +3899,51 @@ function renderInspector() {
 
     box.innerHTML = renderScenarioInspector(scenario, state.selectedScenarioIndex);
     bindScenarioInspector(state.selectedScenarioIndex);
+    restoreInspectorFocusState(focusState);
+    return;
+  }
+
+  if (state.selectedPaletteType) {
+    const def = nodeDef(state.selectedPaletteType);
+    if (!def) {
+      state.selectedPaletteType = null;
+      renderInspector();
+      return;
+    }
+
+    if (el("inspectorSubtext")) {
+      el("inspectorSubtext").textContent = "Node reference (read-only)";
+    }
+
+    const ports = def.ports || { inputs: [], outputs: [] };
+    const inputList = (ports.inputs || []).map((p) => escapeHtml(p)).join(", ") || "none";
+    const outputList = (ports.outputs || []).map((p) => escapeHtml(p)).join(", ") || "none";
+
+    box.innerHTML = `
+      <div class="inspectorCard">
+        <div class="inspectorTitle">${escapeHtml(def.label)}</div>
+        <div class="inspectorHint">${escapeHtml(def.category)}</div>
+        ${def.description ? `<div class="inspectorHint mt-10">${escapeHtml(def.description)}</div>` : ""}
+        <div class="fieldGrid mt-10">
+          <div class="full">
+            <label>Type</label>
+            <input value="${escapeHtml(def.type)}" readonly />
+          </div>
+          <div class="full">
+            <label>Inputs</label>
+            <input value="${escapeHtml(inputList)}" readonly />
+          </div>
+          <div class="full">
+            <label>Outputs</label>
+            <input value="${escapeHtml(outputList)}" readonly />
+          </div>
+        </div>
+      </div>
+      <div class="inspectorCard">
+        <div class="inspectorHint">Drag this node from the sidebar onto the canvas to add it to the flow.</div>
+      </div>
+    `;
+
     restoreInspectorFocusState(focusState);
     return;
   }
@@ -7596,6 +7664,53 @@ function bindGlobalEvents() {
 
     boardScroller.classList.add("panning");
     ev.preventDefault();
+  });
+
+  boardScroller?.addEventListener("dragover", (ev) => {
+    if (!state.paletteDrag) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "copy";
+    boardScroller.classList.add("drop-target-active");
+  });
+
+  boardScroller?.addEventListener("dragleave", (ev) => {
+    if (!boardScroller.contains(ev.relatedTarget)) {
+      boardScroller.classList.remove("drop-target-active");
+    }
+  });
+
+  boardScroller?.addEventListener("drop", (ev) => {
+    ev.preventDefault();
+    boardScroller.classList.remove("drop-target-active");
+    const type = state.paletteDrag;
+    state.paletteDrag = null;
+    if (!type) return;
+
+    const flow = currentFlow();
+    const def = nodeDef(type);
+    if (!flow || !def) return;
+
+    const rect = el("flowBoard")?.getBoundingClientRect();
+    if (!rect) return;
+
+    const x = (ev.clientX - rect.left) / state.zoom;
+    const y = (ev.clientY - rect.top) / state.zoom;
+
+    const node = {
+      id: makeId("node"),
+      type: def.type,
+      category: def.category,
+      label: def.label,
+      x,
+      y,
+      config: deepClone(def.defaults || {}),
+    };
+
+    flow.nodes.push(node);
+    selectNode(node.id);
+    state.selectedPaletteType = null;
+    markDirty();
+    renderAll();
   });
 
   const board = el("flowBoard");

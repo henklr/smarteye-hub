@@ -1118,6 +1118,19 @@ body.flowsPage {
   line-height: 1.3;
 }
 
+.flowsPage .paletteItem.palette-dragging {
+  opacity: 0.4;
+}
+
+.flowsPage .paletteItem[draggable="true"] {
+  cursor: grab;
+}
+
+.flowsPage .flowBoardScroller.drop-target-active {
+  outline: 2px dashed rgba(79, 140, 255, 0.5);
+  outline-offset: -2px;
+}
+
 /* Main editor — fills full area behind panels */
 .flowsPage .flowsMain {
   display: flex;
