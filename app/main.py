@@ -3978,13 +3978,16 @@ def _on_startup():
     except Exception as e:
         _log_system.error("Failed to initialize event workers: %s", e)
 
-    for d in devs:
-        try:
-            _preload_stream_for_device(d)
-        except Exception:
-            pass
+    def _preload_all():
+        for d in devs:
+            try:
+                _preload_stream_for_device(d)
+            except Exception:
+                pass
+        request_recorders_refresh()
+        _log_system.info("Preload streams finished for %d device(s)", len(devs))
 
-    request_recorders_refresh()
+    threading.Thread(target=_preload_all, daemon=True, name="preload-streams").start()
 
 
 @app.on_event("shutdown")

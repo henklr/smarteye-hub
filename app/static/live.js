@@ -52,6 +52,10 @@ let suppressListClickUntil = 0;
 
 let maximizedTile = null;
 
+const deviceStatusMap = new Map();
+let statusPollTimer = null;
+const STATUS_POLL_MS = 5000;
+
 const STREAM_STATE = {
   STARTING: "starting",
   LIVE: "live",
@@ -443,6 +447,38 @@ function isStreaming(deviceId) {
   return streams.has(deviceId);
 }
 
+function getDeviceOnlineStatus(deviceId) {
+  const st = deviceStatusMap.get(deviceId);
+  if (!st) return null;
+  return st.status;
+}
+
+async function pollDeviceStatus() {
+  try {
+    const data = await api("/api/device-status", { method: "GET" });
+    const items = data?.items || [];
+    for (const item of items) {
+      deviceStatusMap.set(item.device_id, item);
+    }
+    renderList();
+  } catch (e) {
+    console.warn("Failed to poll device status", e);
+  }
+}
+
+function startStatusPoll() {
+  stopStatusPoll();
+  pollDeviceStatus();
+  statusPollTimer = setInterval(pollDeviceStatus, STATUS_POLL_MS);
+}
+
+function stopStatusPoll() {
+  if (statusPollTimer) {
+    clearInterval(statusPollTimer);
+    statusPollTimer = null;
+  }
+}
+
 function getEntry(deviceId) {
   return streams.get(deviceId) || null;
 }
@@ -481,12 +517,15 @@ function setEntryState(deviceId, state, errorMessage = "") {
   renderList();
 }
 
-function getVisualState(entry, ready) {
+function getVisualState(entry, ready, deviceId) {
+  const backendStatus = deviceId ? getDeviceOnlineStatus(deviceId) : null;
+  const isDown = backendStatus === "down";
+
   if (!entry) {
     return {
-      className: "",
-      badge: "ONLINE",
-      subtitle: ready ? null : "Not ready (fetch and save a profile)",
+      className: isDown ? "is-offline" : "",
+      badge: !ready ? "SETUP" : (isDown ? "OFFLINE" : "ONLINE"),
+      subtitle: ready ? (isDown ? "Camera unreachable" : null) : "Not ready (fetch and save a profile)",
     };
   }
 
@@ -509,7 +548,7 @@ function getVisualState(entry, ready) {
   if (entry.state === STREAM_STATE.ERROR) {
     return {
       className: "is-error",
-      badge: "ERROR",
+      badge: isDown ? "OFFLINE" : "ERROR",
       subtitle: entry.retryScheduled
         ? `${entry.errorMessage || "Stream error"} — retrying soon`
         : (entry.errorMessage || "Stream error"),
@@ -517,9 +556,9 @@ function getVisualState(entry, ready) {
   }
 
   return {
-    className: "",
-    badge: "ONLINE",
-    subtitle: ready ? null : "Not ready (fetch and save a profile)",
+    className: isDown ? "is-offline" : "",
+    badge: !ready ? "SETUP" : (isDown ? "OFFLINE" : "ONLINE"),
+    subtitle: ready ? (isDown ? "Camera unreachable" : null) : "Not ready (fetch and save a profile)",
   };
 }
 
@@ -559,7 +598,7 @@ function renderList() {
           </div>
 
           <div class="camItemTopActions">
-            <div class="camBadge">${escapeHtml(ready ? "ONLINE" : "SETUP")}</div>
+            <div class="camBadge ${!ready ? '' : (getDeviceOnlineStatus(d.id) === 'down' ? 'badge-offline' : '')}">${escapeHtml(!ready ? "SETUP" : (getDeviceOnlineStatus(d.id) === 'down' ? "OFFLINE" : "ONLINE"))}</div>
             <button class="camMiniBtn danger" type="button" data-action="delete" draggable="false">Delete</button>
           </div>
         </div>
@@ -2239,6 +2278,7 @@ clearForm();
 
 (async function init() {
   await loadDevices();
+  startStatusPoll();
   await restoreGrid();
 
   const params = new URLSearchParams(window.location.search);

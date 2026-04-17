@@ -1653,6 +1653,12 @@ code {
   color: rgba(255, 212, 218, 0.95);
 }
 
+.camBadge.badge-offline {
+  border-color: rgba(239, 68, 68, 0.2);
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+}
+
 .camItem.is-list-dragging {
   opacity: 0.45;
   transform: scale(0.985);
