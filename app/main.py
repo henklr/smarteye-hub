@@ -3361,6 +3361,19 @@ async def play_audio_clip_on_speaker(speaker_id: str, request: Request):
         return play_audio_on_speaker(spk.ip, spk.username, spk.password, audio_bytes, safe_name)
 
     result = await asyncio.to_thread(_work)
+    # Dispatch trigger regardless of speaker response — audio streams as it's
+    # received, so the speaker may play the audio even when reporting an error.
+    _log_speakers.info("Clip '%s' sent to %s (ok=%s), dispatching trigger", safe_name, spk.name, result.get("ok"))
+    matched = dispatch_flow_trigger({
+        "kind": "speaker_audio_played",
+        "speaker_id": speaker_id,
+        "speaker_name": spk.name,
+        "audio_type": "clip",
+        "clip_filename": safe_name,
+        "message": f"Audio clip '{safe_name}' played on {spk.name}",
+        "ts": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+    })
+    _log_speakers.info("Clip trigger dispatched, matched %d flow(s)", matched)
     if not result.get("ok"):
         raise HTTPException(status_code=502, detail=result.get("error", "Playback failed"))
     return result
@@ -3388,6 +3401,19 @@ async def voice_to_speaker(speaker_id: str, request: Request):
         return play_audio_on_speaker(spk.ip, spk.username, spk.password, audio_bytes, f"voice{ext}")
 
     result = await asyncio.to_thread(_work)
+    # Dispatch trigger regardless of speaker response — audio streams as it's
+    # received, so the speaker may play the audio even when reporting an error.
+    _log_speakers.info("Voice sent to %s (ok=%s), dispatching trigger", spk.name, result.get("ok"))
+    matched = dispatch_flow_trigger({
+        "kind": "speaker_audio_played",
+        "speaker_id": speaker_id,
+        "speaker_name": spk.name,
+        "audio_type": "voice",
+        "clip_filename": "",
+        "message": f"Voice message played on {spk.name}",
+        "ts": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+    })
+    _log_speakers.info("Voice trigger dispatched, matched %d flow(s)", matched)
     if not result.get("ok"):
         raise HTTPException(status_code=502, detail=result.get("error", "Voice playback failed"))
     return result

@@ -2331,7 +2331,7 @@ function renderSpeakerSidebar() {
   const canPatch = existingIds.length === speakers.length && speakers.every((s, i) => s.id === existingIds[i]);
 
   if (canPatch) {
-    // In-place update: only touch what changed (dots, buttons, classes)
+    // In-place update: only touch what changed (dots, buttons, clips, classes)
     speakers.forEach((s) => {
       const el = speakerSidebarList.querySelector(`.speakerItem[data-speaker-id="${CSS.escape(s.id)}"]`);
       if (!el) return;
@@ -2346,6 +2346,13 @@ function renderSpeakerSidebar() {
       if (playBtn) {
         playBtn.disabled = isPlaying || !audioClips.length;
         playBtn.innerHTML = isPlaying ? '…' : '&#9654;';
+      }
+      const sel = el.querySelector('.speakerClipSelect');
+      if (sel) {
+        const saved = sel.value;
+        sel.innerHTML = clipsOptions;
+        sel.disabled = !audioClips.length;
+        if (saved && audioClips.some(c => c.filename === saved)) sel.value = saved;
       }
       const micBtn = el.querySelector('.speakerMicBtn');
       if (micBtn) {

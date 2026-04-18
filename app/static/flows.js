@@ -2261,6 +2261,7 @@ function compareTriggerPathGroups() {
     "trigger.analog_input_above": ["input_kind", "channel", "value", "previous_value", "delta", "label", "extra.channel", "extra.value", "extra.previous_value"],
     "trigger.analog_input_below": ["input_kind", "channel", "value", "previous_value", "delta", "label", "extra.channel", "extra.value", "extra.previous_value"],
     "trigger.physical_output_changed": ["target_kind", "channel", "value", "previous_value", "label", "extra.target_kind", "extra.channel", "extra.value", "extra.previous_value"],
+    "trigger.speaker_audio_played": ["speaker_id", "speaker_name", "audio_type", "clip_filename", "message"],
   };
 
   const dedupePaths = (values) => Array.from(new Set(values.filter(Boolean)));
@@ -2468,6 +2469,11 @@ function isNodeInvalid(node) {
     case "operator.template":
       if (cfg.variable_key && !variableKeys.has(cfg.variable_key)) return "Unknown variable";
       break;
+    case "trigger.speaker_audio_played": {
+      const speakerIds = new Set(state.speakers.map((s) => s.id));
+      if (cfg.speaker_id && !speakerIds.has(cfg.speaker_id)) return "Unknown speaker";
+      break;
+    }
   }
   return null;
 }
@@ -2532,6 +2538,14 @@ function nodePreview(node) {
       const targetKind = String(cfg.target_kind || "output").trim().toLowerCase() === "relay" ? "relay" : "output";
       const channel = cfg.channel || "1";
       return `When ${physicalLabel(targetKind, channel)} changes · now ${physicalLiveValueText(targetKind, channel)}`;
+    }
+
+    case "trigger.speaker_audio_played": {
+      const speaker = state.speakers.find(s => s.id === cfg.speaker_id);
+      const speakerLabel = speaker?.name || cfg.speaker_id || "any speaker";
+      const audioType = String(cfg.audio_type || "any").trim().toLowerCase();
+      const typeLabel = audioType === "clip" ? "clip" : audioType === "voice" ? "voice" : "clip or voice";
+      return `When ${typeLabel} played on ${speakerLabel}`;
     }
 
     case "condition.compare": {
@@ -6376,6 +6390,38 @@ function renderNodeInspector(node) {
       break;
     }
 
+    case "trigger.speaker_audio_played": {
+      const audioType = String(cfg.audio_type || "any").trim().toLowerCase();
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Speaker audio played</div>
+          <div class="inspectorHint">Triggers when an audio clip or voice message is played on a speaker.</div>
+          <div class="fieldGrid mt-10">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+            <div class="full">
+              <label>Speaker</label>
+              <select id="cfg_speaker_id">
+                <option value=""${!cfg.speaker_id ? " selected" : ""}>Any speaker</option>
+                ${state.speakers.map(s => `<option value="${escapeHtml(s.id)}"${s.id === cfg.speaker_id ? " selected" : ""}>${escapeHtml(s.name)}</option>`).join("")}
+              </select>
+            </div>
+            <div class="full">
+              <label>Audio type</label>
+              <select id="cfg_audio_type">
+                <option value="any"${audioType === "any" ? " selected" : ""}>Any (clip or voice)</option>
+                <option value="clip"${audioType === "clip" ? " selected" : ""}>Audio clip only</option>
+                <option value="voice"${audioType === "voice" ? " selected" : ""}>Voice only</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      `;
+      break;
+    }
+
     case "condition.compare":
       const leftSource = cfg.left_source || "variable";
       const rightSource = cfg.right_source || "literal";
@@ -7002,6 +7048,11 @@ function applyNodeInspector(node) {
       set("name");
       set("target_kind");
       set("channel");
+      break;
+    case "trigger.speaker_audio_played":
+      set("name");
+      set("speaker_id");
+      set("audio_type");
       break;
     case "condition.compare":
       set("name");

@@ -411,6 +411,15 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "defaults": {"target_kind": "output", "channel": "1", "name": ""},
     },
     {
+        "type": "trigger.speaker_audio_played",
+        "category": "trigger",
+        "label": "Speaker audio played",
+        "description": "Starts when an audio clip or voice message is played on a speaker.",
+        "color": "#4f8cff",
+        "ports": {"inputs": [], "outputs": ["out"]},
+        "defaults": {"speaker_id": "", "audio_type": "any", "name": ""},
+    },
+    {
         "type": "condition.compare",
         "category": "condition",
         "label": "Compare",
@@ -2670,6 +2679,17 @@ def _trigger_matches_node(node: Dict[str, Any], trigger: Dict[str, Any]) -> bool
             and str(cfg.get("channel") or "") == str(trigger.get("channel") or "")
         )
 
+    if node_type == "trigger.speaker_audio_played":
+        if kind != "speaker_audio_played":
+            return False
+        cfg_speaker = str(cfg.get("speaker_id") or "").strip()
+        if cfg_speaker and cfg_speaker != str(trigger.get("speaker_id") or ""):
+            return False
+        cfg_audio_type = str(cfg.get("audio_type") or "any").strip().lower()
+        if cfg_audio_type != "any" and cfg_audio_type != str(trigger.get("audio_type") or ""):
+            return False
+        return True
+
     return False
 
 
@@ -3341,6 +3361,15 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
             )
             if play_result.get("ok"):
                 result["message"] = f"Playing '{clip_filename}' on {speaker['name']}"
+                dispatch_flow_trigger({
+                    "kind": "speaker_audio_played",
+                    "speaker_id": speaker_id,
+                    "speaker_name": speaker.get("name", ""),
+                    "audio_type": "clip",
+                    "clip_filename": safe_name,
+                    "message": f"Audio clip '{safe_name}' played on {speaker.get('name', '')}",
+                    "ts": _utc_now_iso(),
+                })
             else:
                 result["ok"] = False
                 result["error"] = play_result.get("error", "Playback failed")

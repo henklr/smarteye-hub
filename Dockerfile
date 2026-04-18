@@ -24,4 +24,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ .
 
 EXPOSE 80 443
-CMD ["sh", "-c", "export COOKIE_SECRET=$(python -c 'import secrets; print(secrets.token_hex(32))') && uvicorn main:app --host 0.0.0.0 --port ${PORT:-80} & uvicorn main:app --host 0.0.0.0 --port 443 --ssl-keyfile /app/certs/key.pem --ssl-certfile /app/certs/cert.pem & wait"]
+CMD ["sh", "-c", "if [ ! -f /app/data/.cookie_secret ]; then python -c 'import secrets; print(secrets.token_hex(32))' > /app/data/.cookie_secret; fi; export COOKIE_SECRET=$(cat /app/data/.cookie_secret); uvicorn main:app --host 0.0.0.0 --port ${PORT:-80} & uvicorn main:app --host 0.0.0.0 --port 443 --ssl-keyfile /app/certs/key.pem --ssl-certfile /app/certs/cert.pem & wait"]
