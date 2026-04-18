@@ -22,6 +22,7 @@ services:
       - RECORDER_POLL_SECONDS=2
     ports:
       - "${PORT:-80}:80"
+      - "443:443"
     volumes:
       - ./data:/app/data
       - ./secrets:/app/secrets

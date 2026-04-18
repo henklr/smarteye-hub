@@ -68,7 +68,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=(self)"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(self), camera=(self)"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         host = request.headers.get("host", "").split(":")[0] or "localhost"
         response.headers["Content-Security-Policy"] = (
@@ -76,7 +76,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; "
-            f"connect-src 'self' ws: wss: http://{host}:8889 https://{host}:8889; "
+            f"connect-src 'self' ws: wss:; "
             "media-src 'self' blob:; "
             "frame-src 'self'"
         )
@@ -999,7 +999,7 @@ def _convert_audio_to_axis_format(audio_bytes: bytes, src_ext: str = ".mp3") -> 
         proc = subprocess.run(
             [
                 "ffmpeg", "-y", "-i", src_path,
-                "-ar", "8000",        # 8 kHz sample rate
+                "-ar", "16000",       # 16 kHz for axis-mulaw-128 (128 kbps)
                 "-ac", "1",           # mono
                 "-f", "mulaw",        # raw G.711 mu-law
                 out_path,
@@ -3366,6 +3366,33 @@ async def play_audio_clip_on_speaker(speaker_id: str, request: Request):
     return result
 
 
+@app.post("/api/speakers/{speaker_id}/voice")
+async def voice_to_speaker(speaker_id: str, request: Request):
+    """Send recorded voice audio to a speaker. Accepts raw audio blob (webm/ogg)."""
+    spk = _get_speaker(speaker_id)
+
+    content_type = request.headers.get("content-type", "")
+    audio_bytes = await request.body()
+    if not audio_bytes or len(audio_bytes) < 100:
+        raise HTTPException(status_code=400, detail="No audio data received")
+    if len(audio_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Audio too large (max 10 MB)")
+
+    ext = ".webm"
+    if "ogg" in content_type:
+        ext = ".ogg"
+    elif "wav" in content_type:
+        ext = ".wav"
+
+    def _work():
+        return play_audio_on_speaker(spk.ip, spk.username, spk.password, audio_bytes, f"voice{ext}")
+
+    result = await asyncio.to_thread(_work)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("error", "Voice playback failed"))
+    return result
+
+
 @app.post("/api/profiles")
 async def profiles(req: OnvifBase):
     def _work():
@@ -3388,6 +3415,47 @@ async def profiles(req: OnvifBase):
 def streams():
     devs = _load_devices()
     return {"streams": [_path_for(d.id) for d in devs if d.profile_token]}
+
+
+@app.api_route("/api/whep/{path:path}", methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"])
+async def whep_proxy(path: str, request: Request):
+    """Proxy WHEP requests to MediaMTX so HTTPS pages can reach it."""
+    host = request.headers.get("host", "").split(":")[0] or "localhost"
+    target_url = f"http://{host}:8889/{path}"
+    body = await request.body()
+    headers = {}
+    for k, v in request.headers.items():
+        lk = k.lower()
+        if lk in ("content-type", "accept", "authorization"):
+            headers[k] = v
+    req = urllib.request.Request(
+        target_url,
+        data=body if body else None,
+        method=request.method,
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp_body = resp.read()
+            resp_headers = {}
+            for h in ("content-type", "location", "etag"):
+                val = resp.getheader(h)
+                if val:
+                    resp_headers[h] = val
+            return Response(
+                content=resp_body,
+                status_code=resp.status,
+                headers=resp_headers,
+            )
+    except urllib.error.HTTPError as exc:
+        resp_body = b""
+        try:
+            resp_body = exc.read(8192)
+        except Exception:
+            pass
+        return Response(content=resp_body, status_code=exc.code)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @app.get("/api/status/{device_id}")

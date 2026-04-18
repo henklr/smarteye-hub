@@ -1240,6 +1240,33 @@ code {
   cursor: not-allowed;
 }
 
+.speakerMicBtn {
+  flex-shrink: 0;
+  padding: 4px 6px;
+  font-size: 0.72rem;
+  line-height: 1;
+  min-width: 0;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+
+.speakerMicIcon {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.speakerMicBtn.is-recording {
+  background: rgba(239, 68, 68, 0.25);
+  color: #ef4444;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+  animation: micPulse 1s ease-in-out infinite;
+}
+
+@keyframes micPulse {
+  0%, 100% { box-shadow: 0 0 4px rgba(239, 68, 68, 0.3); }
+  50% { box-shadow: 0 0 12px rgba(239, 68, 68, 0.6); }
+}
+
 .liveSidebarList {
   flex: 1;
   overflow-y: auto;

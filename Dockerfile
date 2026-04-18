@@ -10,12 +10,18 @@ RUN apt-get update \
     g++ \
     make \
     libpam0g \
+    openssl \
   && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /app/certs \
+  && openssl req -x509 -newkey rsa:2048 -nodes \
+     -keyout /app/certs/key.pem -out /app/certs/cert.pem \
+     -days 3650 -subj "/CN=smarteye-hub"
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ .
 
-EXPOSE 80
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-80}"]
+EXPOSE 80 443
+CMD ["sh", "-c", "export COOKIE_SECRET=$(python -c 'import secrets; print(secrets.token_hex(32))') && uvicorn main:app --host 0.0.0.0 --port ${PORT:-80} & uvicorn main:app --host 0.0.0.0 --port 443 --ssl-keyfile /app/certs/key.pem --ssl-certfile /app/certs/cert.pem & wait"]

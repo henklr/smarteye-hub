@@ -63,9 +63,8 @@ const STREAM_STATE = {
 };
 
 function getWhepUrl(deviceId) {
-  const proto = window.location.protocol;
-  const host = window.location.hostname;
-  return `${proto}//${host}:8889/cam-${encodeURIComponent(deviceId)}/whep`;
+  // Proxy WHEP through our server to avoid mixed-content issues on HTTPS
+  return `/api/whep/cam-${encodeURIComponent(deviceId)}/whep`;
 }
 
 async function api(url, opts) {
@@ -2291,6 +2290,10 @@ const speakerStatusMap = new Map();
 let speakerStatusTimer = null;
 const SPEAKER_STATUS_POLL_MS = 10000;
 
+let recordingSpeakerId = null;
+let mediaRecorder = null;
+let recordedChunks = [];
+
 async function loadSpeakers() {
   try {
     const data = await api("/api/speakers", { method: "GET" });
@@ -2307,6 +2310,9 @@ async function loadAudioClips() {
   renderSpeakerSidebar();
 }
 
+// Map to track selected clip per speaker
+const speakerClipSelections = {};
+
 function renderSpeakerSidebar() {
   if (!speakerSidebarList) return;
 
@@ -2318,6 +2324,37 @@ function renderSpeakerSidebar() {
   const clipsOptions = audioClips.length
     ? audioClips.map((c) => `<option value="${escapeHtml(c.filename)}">${escapeHtml(c.filename)}</option>`).join("")
     : '<option value="">No audio clips</option>';
+
+  // Check if we can do an in-place update (same speaker set)
+  const existingItems = speakerSidebarList.querySelectorAll('.speakerItem[data-speaker-id]');
+  const existingIds = Array.from(existingItems).map(el => el.getAttribute('data-speaker-id'));
+  const canPatch = existingIds.length === speakers.length && speakers.every((s, i) => s.id === existingIds[i]);
+
+  if (canPatch) {
+    // In-place update: only touch what changed (dots, buttons, classes)
+    speakers.forEach((s) => {
+      const el = speakerSidebarList.querySelector(`.speakerItem[data-speaker-id="${CSS.escape(s.id)}"]`);
+      if (!el) return;
+      const st = speakerStatusMap.get(s.id);
+      const isOnline = st === "online";
+      const isOffline = st === "offline";
+      el.className = `speakerItem ${isOnline ? 'speaker-online' : isOffline ? 'speaker-offline' : ''}`;
+      const dot = el.querySelector('.statusDot');
+      if (dot) dot.className = `statusDot ${isOnline ? 'dot-online' : isOffline ? 'dot-offline' : 'dot-unknown'}`;
+      const isPlaying = playingSpeakerId === s.id;
+      const playBtn = el.querySelector('.speakerPlayBtn');
+      if (playBtn) {
+        playBtn.disabled = isPlaying || !audioClips.length;
+        playBtn.innerHTML = isPlaying ? '…' : '&#9654;';
+      }
+      const micBtn = el.querySelector('.speakerMicBtn');
+      if (micBtn) {
+        micBtn.classList.toggle('is-recording', recordingSpeakerId === s.id);
+        micBtn.title = recordingSpeakerId === s.id ? 'Stop & send' : 'Push to talk';
+      }
+    });
+    return;
+  }
 
   speakerSidebarList.innerHTML = speakers.map((s) => {
     const isPlaying = playingSpeakerId === s.id;
@@ -2335,9 +2372,17 @@ function renderSpeakerSidebar() {
       <div class="speakerItemControls">
         <select class="speakerClipSelect" ${!audioClips.length ? 'disabled' : ''}>${clipsOptions}</select>
         <button class="btn speakerPlayBtn" type="button" ${isPlaying || !audioClips.length ? 'disabled' : ''}>${isPlaying ? '…' : '&#9654;'}</button>
+        <button class="btn speakerMicBtn ${recordingSpeakerId === s.id ? 'is-recording' : ''}" type="button" title="${recordingSpeakerId === s.id ? 'Stop & send' : 'Push to talk'}"><svg class="speakerMicIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm-1-9a1 1 0 1 1 2 0v6a1 1 0 1 1-2 0V5zm6 6a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.93V20H8v2h8v-2h-3v-2.07A7 7 0 0 0 19 11h-2z"/></svg></button>
       </div>
     </div>`;
   }).join("");
+
+  // Restore saved dropdown selections after full rebuild
+  speakerSidebarList.querySelectorAll('.speakerItem[data-speaker-id]').forEach((el) => {
+    const id = el.getAttribute('data-speaker-id');
+    const sel = el.querySelector('.speakerClipSelect');
+    if (id && sel && speakerClipSelections[id]) sel.value = speakerClipSelections[id];
+  });
 }
 
 async function pollSpeakerStatus() {
@@ -2379,6 +2424,13 @@ async function playClipOnSpeaker(speakerId, filename) {
 }
 
 if (speakerSidebarList) {
+  speakerSidebarList.addEventListener("change", (ev) => {
+    const sel = ev.target.closest(".speakerClipSelect");
+    if (!sel) return;
+    const item = sel.closest(".speakerItem[data-speaker-id]");
+    if (item) speakerClipSelections[item.getAttribute("data-speaker-id")] = sel.value;
+  });
+
   speakerSidebarList.addEventListener("click", (ev) => {
     const playBtn = ev.target.closest(".speakerPlayBtn");
     if (playBtn) {
@@ -2388,8 +2440,95 @@ if (speakerSidebarList) {
       const sel = item.querySelector(".speakerClipSelect");
       const clip = sel ? sel.value : "";
       if (speakerId && clip) playClipOnSpeaker(speakerId, clip);
+      return;
+    }
+
+    const micBtn = ev.target.closest(".speakerMicBtn");
+    if (micBtn) {
+      const item = micBtn.closest(".speakerItem[data-speaker-id]");
+      if (!item) return;
+      const speakerId = item.getAttribute("data-speaker-id");
+      if (recordingSpeakerId === speakerId) {
+        stopVoiceRecording();
+      } else {
+        startVoiceRecording(speakerId);
+      }
     }
   });
+}
+
+async function startVoiceRecording(speakerId) {
+  if (recordingSpeakerId) stopVoiceRecording();
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert("Microphone access requires HTTPS. Please access this site over HTTPS.");
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recordedChunks = [];
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")
+        ? "audio/ogg;codecs=opus"
+        : "";
+    mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      if (!recordedChunks.length) {
+        recordingSpeakerId = null;
+        renderSpeakerSidebar();
+        return;
+      }
+      const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || "audio/webm" });
+      recordedChunks = [];
+      const sid = recordingSpeakerId;
+      recordingSpeakerId = null;
+      playingSpeakerId = sid;
+      renderSpeakerSidebar();
+
+      try {
+        const res = await fetch(`/api/speakers/${encodeURIComponent(sid)}/voice`, {
+          method: "POST",
+          headers: { "Content-Type": blob.type },
+          body: blob,
+        });
+        if (res.status === 401) { window.location.href = "/login"; return; }
+        if (!res.ok) {
+          const text = await res.text();
+          console.error("Voice playback failed:", text);
+        }
+      } catch (e) {
+        console.error("Voice send error:", e);
+      } finally {
+        playingSpeakerId = null;
+        renderSpeakerSidebar();
+      }
+    };
+
+    recordingSpeakerId = speakerId;
+    mediaRecorder.start();
+    renderSpeakerSidebar();
+  } catch (e) {
+    console.error("Microphone access denied:", e);
+    alert(e.name === "NotAllowedError"
+      ? "Microphone permission denied. Please allow microphone access in your browser settings."
+      : "Could not access microphone. Ensure the site is served over HTTPS.");
+    recordingSpeakerId = null;
+    renderSpeakerSidebar();
+  }
+}
+
+function stopVoiceRecording() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    mediaRecorder.stop();
+  }
 }
 
 (async function init() {
