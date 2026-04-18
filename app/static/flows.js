@@ -3,6 +3,8 @@ const el = (id) => document.getElementById(id);
 const state = {
   catalog: null,
   devices: [],
+  speakers: [],
+  audioClips: [],
   flows: [],
   draft: null,
   sidebarSections: {
@@ -1863,6 +1865,26 @@ function deviceOptionsHtml(selected = "") {
   return options.join("");
 }
 
+function speakerOptionsHtml(selected = "") {
+  const options = [`<option value="">Select speaker</option>`];
+  for (const speaker of state.speakers) {
+    options.push(
+      `<option value="${escapeHtml(speaker.id)}" ${speaker.id === selected ? "selected" : ""}>${escapeHtml(speaker.name)}</option>`
+    );
+  }
+  return options.join("");
+}
+
+function audioClipOptionsHtml(selected = "") {
+  const options = [`<option value="">Select audio clip</option>`];
+  for (const clip of state.audioClips) {
+    options.push(
+      `<option value="${escapeHtml(clip.filename)}" ${clip.filename === selected ? "selected" : ""}>${escapeHtml(clip.filename)}</option>`
+    );
+  }
+  return options.join("");
+}
+
 function renderSnapshotDeviceList(entries = []) {
   if (!entries.length) return `<div class="inlineMeta">No cameras selected. Snapshots are optional.</div>`;
   return entries.map((entry, i) => {
@@ -2579,6 +2601,13 @@ function nodePreview(node) {
 
     case "action.submit_event":
       return `${cfg.event_name || "Event"} · ${cfg.priority || "medium"}`;
+
+    case "action.play_audio": {
+      const speaker = state.speakers.find(s => s.id === cfg.speaker_id);
+      const speakerLabel = speaker?.name || "speaker";
+      const clipLabel = cfg.clip_filename || "clip";
+      return `${clipLabel} → ${speakerLabel}`;
+    }
 
     default:
       return node.label;
@@ -4747,6 +4776,8 @@ async function saveRecordingPreset() {
   const catalog = await api("/api/flows/catalog");
   state.catalog = catalog;
   state.devices = Array.isArray(catalog?.devices) ? catalog.devices : [];
+  state.speakers = Array.isArray(catalog?.speakers) ? catalog.speakers : [];
+  state.audioClips = Array.isArray(catalog?.audio_clips) ? catalog.audio_clips : [];
   renderRecordingPresetSidebar();
   renderCanvas();
   renderInspector();
@@ -4781,6 +4812,8 @@ async function deleteRecordingPreset() {
   const catalog = await api("/api/flows/catalog");
   state.catalog = catalog;
   state.devices = Array.isArray(catalog?.devices) ? catalog.devices : [];
+  state.speakers = Array.isArray(catalog?.speakers) ? catalog.speakers : [];
+  state.audioClips = Array.isArray(catalog?.audio_clips) ? catalog.audio_clips : [];
   renderRecordingPresetSidebar();
   renderCanvas();
   renderInspector();
@@ -6634,6 +6667,29 @@ function renderNodeInspector(node) {
       `;
       break;
 
+    case "action.play_audio":
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Play audio</div>
+          <div class="inspectorHint">Plays an MP3/WAV/OGG audio clip through an AXIS network speaker.</div>
+          <div class="fieldGrid mt-10">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional node label" />
+            </div>
+            <div class="full">
+              <label>Speaker</label>
+              <select id="cfg_speaker_id">${speakerOptionsHtml(cfg.speaker_id || "")}</select>
+            </div>
+            <div class="full">
+              <label>Audio clip</label>
+              <select id="cfg_clip_filename">${audioClipOptionsHtml(cfg.clip_filename || "")}</select>
+            </div>
+          </div>
+        </div>
+      `;
+      break;
+
     default:
       body = `<div class="inspectorCard"><div class="inspectorHint">No editor available for this node yet.</div></div>`;
       break;
@@ -7046,6 +7102,11 @@ function applyNodeInspector(node) {
         const sel = row.querySelector(".snapshotDeviceSelect");
         return { device_id: sel ? sel.value : "" };
       }).filter(e => e.device_id);
+      break;
+    case "action.play_audio":
+      set("name");
+      set("speaker_id");
+      set("clip_filename");
       break;
   }
 
@@ -7536,6 +7597,8 @@ async function saveFlow() {
   const catalog = await api("/api/flows/catalog");
   state.catalog = catalog;
   state.devices = Array.isArray(catalog?.devices) ? catalog.devices : [];
+  state.speakers = Array.isArray(catalog?.speakers) ? catalog.speakers : [];
+  state.audioClips = Array.isArray(catalog?.audio_clips) ? catalog.audio_clips : [];
   clearDirty();
   setStatus("Flow saved.");
   renderAll();
@@ -7947,6 +8010,8 @@ async function init() {
     const catalog = await api("/api/flows/catalog");
     state.catalog = catalog;
     state.devices = Array.isArray(catalog?.devices) ? catalog.devices : [];
+    state.speakers = Array.isArray(catalog?.speakers) ? catalog.speakers : [];
+    state.audioClips = Array.isArray(catalog?.audio_clips) ? catalog.audio_clips : [];
     console.log("[init] catalog loaded, nodes:", catalog?.nodes?.length, "devices:", state.devices.length);
 
     await loadScenarios();

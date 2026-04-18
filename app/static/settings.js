@@ -897,3 +897,219 @@ window._storageUnmount = async function(mountPath) {
 storageRefreshBtn?.addEventListener("click", loadStorageDevices);
 
 loadStorageDevices();
+
+// ── AXIS Speakers ─────────────────────────────────────────────────────────────
+
+const speakerListEl      = document.getElementById("speakerList");
+const speakerFormEl      = document.getElementById("speakerForm");
+const speakerNameEl      = document.getElementById("speakerName");
+const speakerIpEl        = document.getElementById("speakerIp");
+const speakerUsernameEl  = document.getElementById("speakerUsername");
+const speakerPasswordEl  = document.getElementById("speakerPassword");
+const addSpeakerBtn      = document.getElementById("addSpeakerBtn");
+const saveSpeakerBtn     = document.getElementById("saveSpeakerBtn");
+const cancelSpeakerBtn   = document.getElementById("cancelSpeakerBtn");
+const speakerStatusEl    = document.getElementById("speakerStatus");
+
+let _editingSpeakerId = null;
+
+function setSpeakerStatus(text) {
+  if (speakerStatusEl) speakerStatusEl.textContent = text;
+}
+
+function renderSpeakerList(speakers) {
+  if (!speakerListEl) return;
+  if (!speakers.length) {
+    speakerListEl.innerHTML = '<span class="muted">No speakers configured.</span>';
+    return;
+  }
+  speakerListEl.innerHTML = speakers.map(s => `
+    <div class="settingsListRow" style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--clr-border, #333);">
+      <div>
+        <strong>${escapeH(s.name)}</strong>
+        <span class="muted" style="margin-left:8px;">${escapeH(s.ip)}</span>
+      </div>
+      <div style="display:flex;gap:6px;">
+        <button class="btn btn-mini" onclick="window._testSpeaker('${escapeH(s.id)}')">Test</button>
+        <button class="btn btn-mini" onclick="window._editSpeaker('${escapeH(s.id)}')">Edit</button>
+        <button class="btn btn-mini btn-danger" onclick="window._deleteSpeaker('${escapeH(s.id)}')">Delete</button>
+      </div>
+    </div>
+  `).join("");
+}
+
+function escapeH(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function loadSpeakers() {
+  try {
+    const data = await api("/api/speakers");
+    renderSpeakerList(data.speakers || []);
+  } catch (e) {
+    setSpeakerStatus(`Error: ${e.message || e}`);
+  }
+}
+
+function showSpeakerForm(speaker) {
+  _editingSpeakerId = speaker ? speaker.id : null;
+  if (speakerNameEl)     speakerNameEl.value     = speaker?.name     || "";
+  if (speakerIpEl)       speakerIpEl.value       = speaker?.ip       || "";
+  if (speakerUsernameEl) speakerUsernameEl.value = speaker?.username || "";
+  if (speakerPasswordEl) speakerPasswordEl.value = speaker?.password || "";
+  if (speakerFormEl) speakerFormEl.style.display = "";
+}
+
+function hideSpeakerForm() {
+  _editingSpeakerId = null;
+  if (speakerFormEl) speakerFormEl.style.display = "none";
+}
+
+addSpeakerBtn?.addEventListener("click", () => showSpeakerForm(null));
+cancelSpeakerBtn?.addEventListener("click", hideSpeakerForm);
+
+saveSpeakerBtn?.addEventListener("click", async () => {
+  const payload = {
+    name:     (speakerNameEl?.value     || "").trim(),
+    ip:       (speakerIpEl?.value       || "").trim(),
+    username: (speakerUsernameEl?.value || "").trim(),
+    password: (speakerPasswordEl?.value || "").trim(),
+  };
+  if (!payload.name || !payload.ip || !payload.username || !payload.password) {
+    setSpeakerStatus("All fields are required.");
+    return;
+  }
+  try {
+    if (_editingSpeakerId) {
+      await api(`/api/speakers/${_editingSpeakerId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setSpeakerStatus("Speaker updated.");
+    } else {
+      await api("/api/speakers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setSpeakerStatus("Speaker added.");
+    }
+    hideSpeakerForm();
+    await loadSpeakers();
+  } catch (e) {
+    setSpeakerStatus(`Error: ${e.message || e}`);
+  }
+});
+
+window._editSpeaker = async function(id) {
+  try {
+    const data = await api("/api/speakers");
+    const speaker = (data.speakers || []).find(s => s.id === id);
+    if (speaker) showSpeakerForm(speaker);
+  } catch (e) {
+    setSpeakerStatus(`Error: ${e.message || e}`);
+  }
+};
+
+window._deleteSpeaker = async function(id) {
+  if (!confirm("Delete this speaker?")) return;
+  try {
+    await api(`/api/speakers/${id}`, { method: "DELETE" });
+    setSpeakerStatus("Speaker deleted.");
+    await loadSpeakers();
+  } catch (e) {
+    setSpeakerStatus(`Error: ${e.message || e}`);
+  }
+};
+
+window._testSpeaker = async function(id) {
+  setSpeakerStatus("Testing connection…");
+  try {
+    await api(`/api/speakers/${id}/test`, { method: "POST" });
+    setSpeakerStatus("Connection successful.");
+  } catch (e) {
+    setSpeakerStatus(`Connection failed: ${e.message || e}`);
+  }
+};
+
+loadSpeakers();
+
+// ── Audio Clips ───────────────────────────────────────────────────────────────
+
+const audioClipListEl   = document.getElementById("audioClipList");
+const audioClipUploadEl = document.getElementById("audioClipUpload");
+const audioClipStatusEl = document.getElementById("audioClipStatus");
+
+function setAudioClipStatus(text) {
+  if (audioClipStatusEl) audioClipStatusEl.textContent = text;
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / 1048576).toFixed(1) + " MB";
+}
+
+function renderAudioClipList(clips) {
+  if (!audioClipListEl) return;
+  if (!clips.length) {
+    audioClipListEl.innerHTML = '<span class="muted">No audio clips uploaded.</span>';
+    return;
+  }
+  audioClipListEl.innerHTML = clips.map(c => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--clr-border, #333);">
+      <div>
+        <strong>${escapeH(c.filename)}</strong>
+        <span class="muted" style="margin-left:8px;">${formatBytes(c.size)}</span>
+      </div>
+      <button class="btn btn-mini btn-danger" onclick="window._deleteAudioClip('${escapeH(c.filename)}')">Delete</button>
+    </div>
+  `).join("");
+}
+
+async function loadAudioClips() {
+  try {
+    const data = await api("/api/audio-clips");
+    renderAudioClipList(data.clips || []);
+  } catch (e) {
+    setAudioClipStatus(`Error: ${e.message || e}`);
+  }
+}
+
+audioClipUploadEl?.addEventListener("change", async () => {
+  const file = audioClipUploadEl.files?.[0];
+  if (!file) return;
+  setAudioClipStatus("Uploading…");
+  try {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch("/api/audio-clips", { method: "POST", body: form });
+    if (res.status === 401) { window.location.href = "/login"; return; }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || res.statusText);
+    }
+    setAudioClipStatus(`Uploaded: ${file.name}`);
+    await loadAudioClips();
+  } catch (e) {
+    setAudioClipStatus(`Upload failed: ${e.message || e}`);
+  } finally {
+    audioClipUploadEl.value = "";
+  }
+});
+
+window._deleteAudioClip = async function(filename) {
+  if (!confirm(`Delete audio clip "${filename}"?`)) return;
+  try {
+    await api(`/api/audio-clips/${encodeURIComponent(filename)}`, { method: "DELETE" });
+    setAudioClipStatus("Audio clip deleted.");
+    await loadAudioClips();
+  } catch (e) {
+    setAudioClipStatus(`Error: ${e.message || e}`);
+  }
+};
+
+loadAudioClips();

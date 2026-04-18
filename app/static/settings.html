@@ -131,6 +131,73 @@
         <section class="settingsCard">
           <div class="listHeader compact">
             <div>
+              <div class="listTitle small">AXIS speakers</div>
+              <div class="listSub">Manage AXIS network horn speakers for audio playback in flows.</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex:0 0 auto;">
+              <button class="btn btn-mini btn-primary" id="addSpeakerBtn" type="button">Add speaker</button>
+            </div>
+          </div>
+
+          <div id="speakerList" style="margin-top:14px;">
+            <span class="muted">Loading…</span>
+          </div>
+
+          <div id="speakerForm" style="margin-top:14px;display:none;">
+            <div class="grid overlayFormGrid">
+              <div data-full>
+                <label for="speakerName">Name</label>
+                <input id="speakerName" placeholder="Front entrance speaker" />
+              </div>
+              <div data-full>
+                <label for="speakerIp">IP address</label>
+                <input id="speakerIp" placeholder="192.168.1.200" />
+              </div>
+              <div data-full>
+                <label for="speakerUsername">Username</label>
+                <input id="speakerUsername" placeholder="root" autocomplete="off" />
+              </div>
+              <div data-full>
+                <label for="speakerPassword">Password</label>
+                <input id="speakerPassword" type="password" autocomplete="off" />
+              </div>
+            </div>
+            <div class="row2" style="margin-top:14px;">
+              <button class="btn btn-primary" id="saveSpeakerBtn" type="button">Save speaker</button>
+              <button class="btn" id="cancelSpeakerBtn" type="button">Cancel</button>
+            </div>
+          </div>
+
+          <div class="statusLine compact" style="margin-top:12px;">
+            <span id="speakerStatus" class="muted"></span>
+          </div>
+        </section>
+
+        <section class="settingsCard">
+          <div class="listHeader compact">
+            <div>
+              <div class="listTitle small">Audio clips</div>
+              <div class="listSub">Upload MP3/WAV/OGG audio clips that can be played through speakers in flows.</div>
+            </div>
+          </div>
+
+          <div id="audioClipList" style="margin-top:14px;">
+            <span class="muted">Loading…</span>
+          </div>
+
+          <div style="margin-top:14px;">
+            <label for="audioClipUpload" class="btn btn-primary" style="cursor:pointer;">Upload audio clip</label>
+            <input id="audioClipUpload" type="file" accept=".mp3,.wav,.ogg" style="display:none;" />
+          </div>
+
+          <div class="statusLine compact" style="margin-top:12px;">
+            <span id="audioClipStatus" class="muted"></span>
+          </div>
+        </section>
+
+        <section class="settingsCard">
+          <div class="listHeader compact">
+            <div>
               <div class="listTitle small">OpenAI API key</div>
               <div class="listSub">Required for AI scenario analysis in flows. Your key is stored locally and never shared.</div>
             </div>

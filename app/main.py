@@ -932,6 +932,147 @@ class Device(DeviceIn):
     id: str
 
 
+# ── AXIS Speaker models ───────────────────────────────────────────────────────
+
+class SpeakerIn(BaseModel):
+    name: str = Field(..., min_length=1)
+    ip: str = Field(..., min_length=1)
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+
+
+class Speaker(SpeakerIn):
+    id: str
+
+
+SPEAKERS_JSON = DATA_DIR / "speakers.json"
+AUDIO_CLIPS_DIR = DATA_DIR / "audio_clips"
+AUDIO_CLIPS_DIR.mkdir(parents=True, exist_ok=True)
+
+_log_speakers = logging.getLogger("speakers")
+
+
+def _load_speakers() -> List[Speaker]:
+    try:
+        raw = json.loads(SPEAKERS_JSON.read_text(encoding="utf-8"))
+        items = raw.get("speakers", [])
+        if not isinstance(items, list):
+            return []
+        return [Speaker(**d) for d in items]
+    except Exception:
+        return []
+
+
+def _save_speakers(speakers: List[Speaker]) -> None:
+    payload = {"speakers": [_dump(s) for s in speakers]}
+    tmp = SPEAKERS_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(SPEAKERS_JSON)
+
+
+def _get_speaker(speaker_id: str) -> Speaker:
+    for s in _load_speakers():
+        if s.id == speaker_id:
+            return s
+    raise HTTPException(status_code=404, detail="Speaker not found")
+
+
+def _axis_auth_opener(base_url: str, username: str, password: str):
+    """Build a urllib opener with digest + basic auth for AXIS devices."""
+    password_mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+    password_mgr.add_password(None, base_url, username, password)
+    digest_handler = urllib.request.HTTPDigestAuthHandler(password_mgr)
+    basic_handler = urllib.request.HTTPBasicAuthHandler(password_mgr)
+    return urllib.request.build_opener(digest_handler, basic_handler)
+
+
+def _convert_audio_to_axis_format(audio_bytes: bytes, src_ext: str = ".mp3") -> bytes:
+    """Convert audio to 16-bit 8 kHz mono mu-law WAV using ffmpeg.
+
+    AXIS speakers accept G.711 mu-law via the transmit API.
+    """
+    with tempfile.NamedTemporaryFile(suffix=src_ext, delete=False) as src:
+        src.write(audio_bytes)
+        src_path = src.name
+    out_path = src_path + ".ul"
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", src_path,
+                "-ar", "8000",        # 8 kHz sample rate
+                "-ac", "1",           # mono
+                "-f", "mulaw",        # raw G.711 mu-law
+                out_path,
+            ],
+            capture_output=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            _log_speakers.warning("ffmpeg conversion failed: %s", proc.stderr.decode(errors="replace")[:500])
+            return b""
+        return Path(out_path).read_bytes()
+    except Exception as exc:
+        _log_speakers.warning("ffmpeg conversion error: %s", exc)
+        return b""
+    finally:
+        try:
+            os.unlink(src_path)
+        except OSError:
+            pass
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+
+def play_audio_on_speaker(speaker_ip: str, username: str, password: str,
+                          audio_bytes: bytes, clip_name: str = "smarteye_clip") -> dict:
+    """Play an audio clip on an AXIS speaker via the transmit API.
+
+    Converts the source audio to G.711 mu-law (8 kHz mono) with ffmpeg,
+    then streams it to /axis-cgi/audio/transmit.cgi.
+    """
+    ext = Path(clip_name).suffix.lower() if "." in clip_name else ".mp3"
+    if not ext:
+        ext = ".mp3"
+
+    mulaw_bytes = _convert_audio_to_axis_format(audio_bytes, ext)
+    if not mulaw_bytes:
+        return {"ok": False, "error": "Failed to convert audio to speaker format"}
+
+    url = f"http://{speaker_ip}/axis-cgi/audio/transmit.cgi"
+    opener = _axis_auth_opener(url, username, password)
+
+    req = urllib.request.Request(
+        url,
+        data=mulaw_bytes,
+        method="POST",
+        headers={
+            "Content-Type": "audio/axis-mulaw-128",
+            "Content-Length": str(len(mulaw_bytes)),
+        },
+    )
+    try:
+        with opener.open(req, timeout=120) as resp:
+            body = resp.read(2048).decode("utf-8", errors="replace")
+            _log_speakers.info(
+                "Audio played on %s (%d bytes mu-law from %d bytes source)",
+                speaker_ip, len(mulaw_bytes), len(audio_bytes),
+            )
+            return {"ok": True, "status": int(getattr(resp, "status", 200)), "response": body}
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = exc.read(2048).decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        _log_speakers.warning(
+            "Transmit API failed on %s: HTTP %d — %s", speaker_ip, exc.code, err_body[:200],
+        )
+        return {"ok": False, "status": int(exc.code), "error": f"HTTP {exc.code}: {err_body[:200]}"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 class EventsStartRequest(OnvifBase):
     device_id: str
 
@@ -3043,6 +3184,158 @@ def delete_device(device_id: str):
     request_recorders_refresh()
 
     return {"ok": True}
+
+
+# ── Speaker CRUD ───────────────────────────────────────────────────────────────
+
+@app.get("/api/speakers")
+def list_speakers():
+    return {"speakers": [_dump(s) for s in _load_speakers()]}
+
+
+@app.post("/api/speakers")
+def create_speaker(spk: SpeakerIn):
+    speakers = _load_speakers()
+    new = Speaker(id=uuid.uuid4().hex[:12], **_dump(spk))
+    speakers.append(new)
+    _save_speakers(speakers)
+    _log_speakers.info("Speaker added: %s (%s)", new.name, new.id)
+    return {"ok": True, "speaker": _dump(new)}
+
+
+@app.put("/api/speakers/{speaker_id}")
+def update_speaker(speaker_id: str, spk_in: SpeakerIn):
+    speaker_id = speaker_id.strip()
+    if not speaker_id:
+        raise HTTPException(status_code=400, detail="Missing speaker_id")
+    speakers = _load_speakers()
+    for i, s in enumerate(speakers):
+        if s.id == speaker_id:
+            speakers[i] = Speaker(id=speaker_id, **_dump(spk_in))
+            _save_speakers(speakers)
+            _log_speakers.info("Speaker updated: %s (%s)", speakers[i].name, speaker_id)
+            return {"ok": True, "speaker": _dump(speakers[i])}
+    raise HTTPException(status_code=404, detail="Speaker not found")
+
+
+@app.delete("/api/speakers/{speaker_id}")
+def delete_speaker(speaker_id: str):
+    speaker_id = speaker_id.strip()
+    if not speaker_id:
+        raise HTTPException(status_code=400, detail="Missing speaker_id")
+    speakers = _load_speakers()
+    new_speakers = [s for s in speakers if s.id != speaker_id]
+    if len(new_speakers) == len(speakers):
+        raise HTTPException(status_code=404, detail="Speaker not found")
+    _save_speakers(new_speakers)
+    _log_speakers.info("Speaker deleted: %s", speaker_id)
+    return {"ok": True}
+
+
+@app.post("/api/speakers/{speaker_id}/test")
+async def test_speaker(speaker_id: str):
+    """Play a short test tone on the speaker to verify connectivity."""
+    spk = _get_speaker(speaker_id)
+    # Try to reach the speaker with a simple GET to verify connectivity
+    url = f"http://{spk.ip}/axis-cgi/param.cgi?action=list&group=Brand"
+    password_mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+    password_mgr.add_password(None, url, spk.username, spk.password)
+    digest_handler = urllib.request.HTTPDigestAuthHandler(password_mgr)
+    basic_handler = urllib.request.HTTPBasicAuthHandler(password_mgr)
+    opener = urllib.request.build_opener(digest_handler, basic_handler)
+    req = urllib.request.Request(url)
+    try:
+        def _work():
+            with opener.open(req, timeout=10) as resp:
+                return resp.read(2048).decode("utf-8", errors="replace")
+        body = await asyncio.to_thread(_work)
+        return {"ok": True, "response": body}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Speaker connection failed: {exc}")
+
+
+# ── Audio clips ────────────────────────────────────────────────────────────────
+
+_ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg"}
+_MAX_AUDIO_CLIP_SIZE = 50 * 1024 * 1024  # 50 MB
+
+
+@app.get("/api/audio-clips")
+def list_audio_clips():
+    clips = []
+    if AUDIO_CLIPS_DIR.is_dir():
+        for f in sorted(AUDIO_CLIPS_DIR.iterdir()):
+            if f.is_file() and f.suffix.lower() in _ALLOWED_AUDIO_EXTENSIONS:
+                clips.append({"filename": f.name, "size": f.stat().st_size})
+    return {"clips": clips}
+
+
+@app.post("/api/audio-clips")
+async def upload_audio_clip(request: Request):
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" not in content_type:
+        raise HTTPException(status_code=400, detail="Expected multipart/form-data")
+
+    from starlette.formparsers import MultiPartParser
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None:
+        raise HTTPException(status_code=400, detail="No file uploaded")
+
+    filename = getattr(upload, "filename", None) or "clip.mp3"
+    # Sanitize filename — only allow safe characters
+    safe_name = _re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+    if not safe_name or safe_name.startswith("."):
+        safe_name = "clip.mp3"
+    ext = Path(safe_name).suffix.lower()
+    if ext not in _ALLOWED_AUDIO_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}. Allowed: {', '.join(_ALLOWED_AUDIO_EXTENSIONS)}")
+
+    data = await upload.read()
+    if len(data) > _MAX_AUDIO_CLIP_SIZE:
+        raise HTTPException(status_code=400, detail=f"File too large (max {_MAX_AUDIO_CLIP_SIZE // (1024*1024)} MB)")
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    dest = AUDIO_CLIPS_DIR / safe_name
+    dest.write_bytes(data)
+    _log_speakers.info("Audio clip uploaded: %s (%d bytes)", safe_name, len(data))
+    return {"ok": True, "filename": safe_name, "size": len(data)}
+
+
+@app.delete("/api/audio-clips/{filename}")
+def delete_audio_clip(filename: str):
+    safe_name = _re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+    target = AUDIO_CLIPS_DIR / safe_name
+    if not target.is_file() or not str(target.resolve()).startswith(str(AUDIO_CLIPS_DIR.resolve())):
+        raise HTTPException(status_code=404, detail="Audio clip not found")
+    target.unlink()
+    _log_speakers.info("Audio clip deleted: %s", safe_name)
+    return {"ok": True}
+
+
+@app.post("/api/speakers/{speaker_id}/play")
+async def play_audio_clip_on_speaker(speaker_id: str, request: Request):
+    """Play an audio clip on a speaker. Body: {"filename": "clip.mp3"}"""
+    spk = _get_speaker(speaker_id)
+    body = await request.json()
+    filename = str(body.get("filename") or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="Missing filename")
+    safe_name = _re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+    clip_path = AUDIO_CLIPS_DIR / safe_name
+    if not clip_path.is_file() or not str(clip_path.resolve()).startswith(str(AUDIO_CLIPS_DIR.resolve())):
+        raise HTTPException(status_code=404, detail="Audio clip not found")
+
+    audio_bytes = clip_path.read_bytes()
+
+    def _work():
+        return play_audio_on_speaker(spk.ip, spk.username, spk.password, audio_bytes, safe_name)
+
+    result = await asyncio.to_thread(_work)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("error", "Playback failed"))
+    return result
 
 
 @app.post("/api/profiles")

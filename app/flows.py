@@ -562,6 +562,19 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
             "name": "",
         },
     },
+    {
+        "type": "action.play_audio",
+        "category": "action",
+        "label": "Play audio",
+        "description": "Plays an MP3 audio clip through an AXIS network speaker.",
+        "color": "#ff8c42",
+        "ports": {"inputs": ["in"], "outputs": ["out"]},
+        "defaults": {
+            "speaker_id": "",
+            "clip_filename": "",
+            "name": "",
+        },
+    },
 ]
 
 NODE_LIBRARY_BY_TYPE = {item["type"]: item for item in NODE_LIBRARY}
@@ -578,6 +591,8 @@ def flows_catalog() -> Dict[str, Any]:
     return {
         "nodes": NODE_LIBRARY,
         "devices": _load_devices(),
+        "speakers": _load_speakers(),
+        "audio_clips": _list_audio_clips(),
         "recording_presets": recording_presets,
         "physical_io": physical_io_catalog(),
         "http_methods": sorted(_VALID_HTTP_METHODS),
@@ -929,6 +944,37 @@ def _load_devices() -> List[Dict[str, Any]]:
         )
     return [item for item in out if item["id"]]
 
+
+SPEAKERS_JSON = DATA_DIR / "speakers.json"
+AUDIO_CLIPS_DIR = DATA_DIR / "audio_clips"
+
+
+def _load_speakers() -> List[Dict[str, Any]]:
+    payload = _load_json(SPEAKERS_JSON, {"speakers": []})
+    items = payload.get("speakers") if isinstance(payload, dict) else []
+    out: List[Dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            {
+                "id": str(item.get("id") or "").strip(),
+                "name": str(item.get("name") or item.get("id") or "Unnamed speaker").strip(),
+                "ip": str(item.get("ip") or "").strip(),
+                "username": str(item.get("username") or "").strip(),
+                "password": str(item.get("password") or "").strip(),
+            }
+        )
+    return [item for item in out if item["id"]]
+
+
+def _list_audio_clips() -> List[Dict[str, Any]]:
+    clips: List[Dict[str, Any]] = []
+    if AUDIO_CLIPS_DIR.is_dir():
+        for f in sorted(AUDIO_CLIPS_DIR.iterdir()):
+            if f.is_file() and f.suffix.lower() in {".mp3", ".wav", ".ogg"}:
+                clips.append({"filename": f.name, "size": f.stat().st_size})
+    return clips
 
 
 def _load_flows() -> List[Dict[str, Any]]:
@@ -1981,6 +2027,15 @@ def _normalize_node_config(
                 continue
             out.append({"device_id": did})
         cfg["snapshot_entries"] = out
+        return cfg
+
+    if node_type == "action.play_audio":
+        cfg["speaker_id"] = str(cfg.get("speaker_id") or "").strip()
+        cfg["clip_filename"] = str(cfg.get("clip_filename") or "").strip()
+        if not cfg["speaker_id"]:
+            raise HTTPException(status_code=400, detail="Play audio action needs a speaker")
+        if not cfg["clip_filename"]:
+            raise HTTPException(status_code=400, detail="Play audio action needs an audio clip")
         return cfg
 
     return cfg
@@ -3251,6 +3306,49 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
             result["ok"] = False
             result["error"] = str(exc)
             _log_flows.warning("Stop recording action failed in flow: %s", exc)
+        result["next_handles"] = ["out"]
+        return result
+
+    if node_type == "action.play_audio":
+        from main import play_audio_on_speaker
+        speaker_id = str(cfg.get("speaker_id") or "").strip()
+        clip_filename = str(cfg.get("clip_filename") or "").strip()
+        if not speaker_id or not clip_filename:
+            result["ok"] = False
+            result["error"] = "Speaker and audio clip are required"
+            result["next_handles"] = ["out"]
+            return result
+        speakers = _load_speakers()
+        speaker = next((s for s in speakers if s["id"] == speaker_id), None)
+        if not speaker:
+            result["ok"] = False
+            result["error"] = f"Speaker not found: {speaker_id}"
+            result["next_handles"] = ["out"]
+            return result
+        import re as _re_mod
+        safe_name = _re_mod.sub(r'[^a-zA-Z0-9._-]', '_', clip_filename)
+        clip_path = AUDIO_CLIPS_DIR / safe_name
+        if not clip_path.is_file():
+            result["ok"] = False
+            result["error"] = f"Audio clip not found: {clip_filename}"
+            result["next_handles"] = ["out"]
+            return result
+        try:
+            audio_bytes = clip_path.read_bytes()
+            play_result = play_audio_on_speaker(
+                speaker["ip"], speaker["username"], speaker["password"],
+                audio_bytes, safe_name,
+            )
+            if play_result.get("ok"):
+                result["message"] = f"Playing '{clip_filename}' on {speaker['name']}"
+            else:
+                result["ok"] = False
+                result["error"] = play_result.get("error", "Playback failed")
+                _log_flows.warning("Play audio failed: %s", play_result.get("error"))
+        except Exception as exc:
+            result["ok"] = False
+            result["error"] = str(exc)
+            _log_flows.warning("Play audio action failed in flow: %s", exc)
         result["next_handles"] = ["out"]
         return result
 
