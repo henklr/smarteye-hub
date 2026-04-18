@@ -634,9 +634,13 @@ function renderSidebar() {
         : entry.state === STREAM_STATE.ERROR ? '!' : '')
       : '';
 
+    const onlineStatus = getDeviceOnlineStatus(d.id);
+    const camDotClass = (onlineStatus === 'live' || onlineStatus === 'idle') ? 'dot-online' : onlineStatus === 'down' ? 'dot-offline' : 'dot-unknown';
+
     return `<div class="liveSidebarRow ${active ? 'active' : ''} ${stateClass}" data-id="${escapeHtml(d.id)}" draggable="true">
       <button class="liveSidebarDragHandle" type="button" draggable="false" aria-label="Reorder" title="Drag to reorder">⋮⋮</button>
       <span class="liveSidebarName">${escapeHtml(d.name || d.ip || d.id)}</span>
+      <span class="statusDot ${camDotClass}"></span>
     </div>`;
   }).join('');
 }
@@ -2321,13 +2325,12 @@ function renderSpeakerSidebar() {
     const isOnline = st === "online";
     const isOffline = st === "offline";
     const statusClass = isOnline ? "speaker-online" : isOffline ? "speaker-offline" : "";
-    const badgeText = isOnline ? "ONLINE" : isOffline ? "OFFLINE" : "";
-    const badgeClass = isOnline ? "" : isOffline ? "badge-offline" : "";
+    const dotClass = isOnline ? "dot-online" : isOffline ? "dot-offline" : "dot-unknown";
 
     return `<div class="speakerItem ${statusClass}" data-speaker-id="${escapeHtml(s.id)}">
       <div class="speakerItemHeader">
         <div class="speakerItemName">${escapeHtml(s.name || s.ip)}</div>
-        ${badgeText ? `<div class="speakerBadge ${badgeClass}">${badgeText}</div>` : ''}
+        <span class="statusDot ${dotClass}"></span>
       </div>
       <div class="speakerItemControls">
         <select class="speakerClipSelect" ${!audioClips.length ? 'disabled' : ''}>${clipsOptions}</select>
