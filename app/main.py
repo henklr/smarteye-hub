@@ -3254,6 +3254,34 @@ async def test_speaker(speaker_id: str):
         raise HTTPException(status_code=502, detail=f"Speaker connection failed: {exc}")
 
 
+def _check_speaker_online(spk: Speaker) -> dict:
+    """Check if a speaker is reachable by hitting its param API."""
+    url = f"http://{spk.ip}/axis-cgi/param.cgi?action=list&group=Brand"
+    opener = _axis_auth_opener(url, spk.username, spk.password)
+    req = urllib.request.Request(url)
+    try:
+        with opener.open(req, timeout=5) as resp:
+            resp.read(512)
+        return {"speaker_id": spk.id, "name": spk.name, "ip": spk.ip, "status": "online"}
+    except Exception:
+        return {"speaker_id": spk.id, "name": spk.name, "ip": spk.ip, "status": "offline"}
+
+
+@app.get("/api/speaker-status")
+async def all_speaker_status():
+    spks = _load_speakers()
+    if not spks:
+        return {"items": []}
+
+    import concurrent.futures
+    def _work():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(spks), 8)) as pool:
+            return list(pool.map(_check_speaker_online, spks))
+
+    items = await asyncio.to_thread(_work)
+    return {"items": items}
+
+
 # ── Audio clips ────────────────────────────────────────────────────────────────
 
 _ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg"}

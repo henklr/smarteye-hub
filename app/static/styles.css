@@ -1156,6 +1156,88 @@ code {
   flex-shrink: 0;
 }
 
+/* ── Speaker sidebar items ───────────────────────────────────────────── */
+
+.speakerItem {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  border-left: 3px solid transparent;
+}
+
+.speakerItem.speaker-online {
+  border-left-color: #22c55e;
+}
+
+.speakerItem.speaker-offline {
+  border-left-color: #ef4444;
+}
+
+.speakerItem:last-child {
+  border-bottom: 0;
+}
+
+.speakerItemHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.speakerItemName {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.speakerBadge {
+  flex-shrink: 0;
+  font-size: 0.58rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+.speakerBadge.badge-offline {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.speakerItemControls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.speakerClipSelect {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.72rem;
+  padding: 4px 6px;
+}
+
+.speakerPlayBtn {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  line-height: 1;
+  min-width: 0;
+}
+
+.speakerPlayBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .liveSidebarList {
   flex: 1;
   overflow-y: auto;

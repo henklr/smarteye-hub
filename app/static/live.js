@@ -2276,10 +2276,126 @@ installListDnD();
 installSidebarDnD();
 clearForm();
 
+// ── Speaker / Audio clip sidebar ──────────────────────────────────────────────
+
+const speakerSidebarList = document.getElementById("speakerSidebarList");
+
+let speakers = [];
+let audioClips = [];
+let playingSpeakerId = null;
+const speakerStatusMap = new Map();
+let speakerStatusTimer = null;
+const SPEAKER_STATUS_POLL_MS = 10000;
+
+async function loadSpeakers() {
+  try {
+    const data = await api("/api/speakers", { method: "GET" });
+    speakers = data.speakers || [];
+  } catch { speakers = []; }
+  renderSpeakerSidebar();
+}
+
+async function loadAudioClips() {
+  try {
+    const data = await api("/api/audio-clips", { method: "GET" });
+    audioClips = data.clips || [];
+  } catch { audioClips = []; }
+  renderSpeakerSidebar();
+}
+
+function renderSpeakerSidebar() {
+  if (!speakerSidebarList) return;
+
+  if (!speakers.length) {
+    speakerSidebarList.innerHTML = '<div class="liveSidebarEmpty">No speakers configured</div>';
+    return;
+  }
+
+  const clipsOptions = audioClips.length
+    ? audioClips.map((c) => `<option value="${escapeHtml(c.filename)}">${escapeHtml(c.filename)}</option>`).join("")
+    : '<option value="">No audio clips</option>';
+
+  speakerSidebarList.innerHTML = speakers.map((s) => {
+    const isPlaying = playingSpeakerId === s.id;
+    const st = speakerStatusMap.get(s.id);
+    const isOnline = st === "online";
+    const isOffline = st === "offline";
+    const statusClass = isOnline ? "speaker-online" : isOffline ? "speaker-offline" : "";
+    const badgeText = isOnline ? "ONLINE" : isOffline ? "OFFLINE" : "";
+    const badgeClass = isOnline ? "" : isOffline ? "badge-offline" : "";
+
+    return `<div class="speakerItem ${statusClass}" data-speaker-id="${escapeHtml(s.id)}">
+      <div class="speakerItemHeader">
+        <div class="speakerItemName">${escapeHtml(s.name || s.ip)}</div>
+        ${badgeText ? `<div class="speakerBadge ${badgeClass}">${badgeText}</div>` : ''}
+      </div>
+      <div class="speakerItemControls">
+        <select class="speakerClipSelect" ${!audioClips.length ? 'disabled' : ''}>${clipsOptions}</select>
+        <button class="btn speakerPlayBtn" type="button" ${isPlaying || !audioClips.length ? 'disabled' : ''}>${isPlaying ? '…' : '&#9654;'}</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function pollSpeakerStatus() {
+  try {
+    const data = await api("/api/speaker-status", { method: "GET" });
+    const items = data?.items || [];
+    for (const item of items) {
+      speakerStatusMap.set(item.speaker_id, item.status);
+    }
+    renderSpeakerSidebar();
+  } catch (e) {
+    console.warn("Failed to poll speaker status", e);
+  }
+}
+
+function startSpeakerStatusPoll() {
+  if (speakerStatusTimer) clearInterval(speakerStatusTimer);
+  pollSpeakerStatus();
+  speakerStatusTimer = setInterval(pollSpeakerStatus, SPEAKER_STATUS_POLL_MS);
+}
+
+async function playClipOnSpeaker(speakerId, filename) {
+  if (playingSpeakerId || !filename) return;
+  playingSpeakerId = speakerId;
+  renderSpeakerSidebar();
+
+  try {
+    await api(`/api/speakers/${encodeURIComponent(speakerId)}/play`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename }),
+    });
+  } catch (e) {
+    console.error("Failed to play clip:", e);
+  } finally {
+    playingSpeakerId = null;
+    renderSpeakerSidebar();
+  }
+}
+
+if (speakerSidebarList) {
+  speakerSidebarList.addEventListener("click", (ev) => {
+    const playBtn = ev.target.closest(".speakerPlayBtn");
+    if (playBtn) {
+      const item = playBtn.closest(".speakerItem[data-speaker-id]");
+      if (!item) return;
+      const speakerId = item.getAttribute("data-speaker-id");
+      const sel = item.querySelector(".speakerClipSelect");
+      const clip = sel ? sel.value : "";
+      if (speakerId && clip) playClipOnSpeaker(speakerId, clip);
+    }
+  });
+}
+
 (async function init() {
   await loadDevices();
   startStatusPoll();
   await restoreGrid();
+  loadSpeakers();
+  loadAudioClips();
+  startSpeakerStatusPoll();
 
   const params = new URLSearchParams(window.location.search);
   if (params.get("devices") === "1") {
