@@ -2495,8 +2495,10 @@ function nodePreview(node) {
       return `When ${(schedule?.name || cfg.schedule_key || "schedule")} becomes inactive${schedule ? ` · ${schedule.is_active ? "active now" : "inactive now"}` : ""}`;
     }
 
-    case "trigger.digital_input_changed":
-      return `When ${physicalLabel("digital", cfg.channel || "1")} changes · now ${physicalLiveValueText("digital", cfg.channel || "1")}`;
+    case "trigger.digital_input_changed": {
+      const toLabel = (cfg.changed_to && cfg.changed_to !== "any") ? ` → ${cfg.changed_to}` : "";
+      return `When ${physicalLabel("digital", cfg.channel || "1")} changes${toLabel} · now ${physicalLiveValueText("digital", cfg.channel || "1")}`;
+    }
 
     case "trigger.analog_input_above":
       return `${physicalLabel("analog", cfg.channel || "1")} > ${formatAnalogThreshold(cfg.threshold)} V · now ${physicalLiveValueText("analog", cfg.channel || "1")}`;
@@ -2574,6 +2576,9 @@ function nodePreview(node) {
       const targetLabel = _scenariosCache.find(s => s.id === cfg.target_id)?.name || "scenario";
       return `Flush ${targetLabel}`;
     }
+
+    case "action.submit_event":
+      return `${cfg.event_name || "Event"} · ${cfg.priority || "medium"}`;
 
     default:
       return node.label;
@@ -6271,6 +6276,14 @@ function renderNodeInspector(node) {
               <label>Input</label>
               <select id="cfg_channel">${physicalChannelOptionsHtml("digital", cfg.channel || "1")}</select>
             </div>
+            <div class="full">
+              <label>Changed to</label>
+              <select id="cfg_changed_to">
+                <option value="any" ${(cfg.changed_to || "any") === "any" ? "selected" : ""}>Any</option>
+                <option value="high" ${cfg.changed_to === "high" ? "selected" : ""}>High</option>
+                <option value="low" ${cfg.changed_to === "low" ? "selected" : ""}>Low</option>
+              </select>
+            </div>
             ${renderPhysicalLiveField("digital", cfg.channel || "1", "Current state")}
           </div>
         </div>
@@ -6584,6 +6597,43 @@ function renderNodeInspector(node) {
       `;
       break;
 
+    case "action.submit_event":
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Generate event</div>
+          <div class="inspectorHint">Submits an event to the events page. Supports templates like {{trigger.path}}, {{variables.key}}.</div>
+          <div class="fieldGrid">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional node label" />
+            </div>
+            <div class="full">
+              <label>Event name</label>
+              <input id="cfg_event_name" value="${escapeHtml(cfg.event_name || "Event")}" placeholder="Event" />
+            </div>
+            <div class="full">
+              <label>Priority</label>
+              <select id="cfg_priority">
+                ${EVENT_PRIORITIES.map(p => `<option value="${p}" ${(cfg.priority || "medium") === p ? "selected" : ""}>${p}</option>`).join("")}
+              </select>
+            </div>
+            <div class="full">
+              <label>Details</label>
+              <textarea id="cfg_details" rows="4">${escapeHtml(cfg.details || "")}</textarea>
+            </div>
+            <div class="full">
+              <label>Snapshot cameras</label>
+              <div id="cfg_snapshot_devices" class="snapshotDeviceList">
+                ${renderSnapshotDeviceList(cfg.snapshot_entries || [])}
+              </div>
+              <div class="inlineMeta mt-6">Optional: attach camera snapshots to the event.</div>
+              <button class="btn mt-6" id="btnAddSnapshotDevice" type="button">Add camera</button>
+            </div>
+          </div>
+        </div>
+      `;
+      break;
+
     default:
       body = `<div class="inspectorCard"><div class="inspectorHint">No editor available for this node yet.</div></div>`;
       break;
@@ -6806,7 +6856,7 @@ function bindNodeInspector(node) {
     });
   }
 
-  if (node.type === "action.contribute") {
+  if (node.type === "action.contribute" || node.type === "action.submit_event") {
     document.getElementById("btnAddSnapshotDevice")?.addEventListener("click", () => {
       if (!node.config.snapshot_entries) node.config.snapshot_entries = [];
       node.config.snapshot_entries.push({ device_id: "" });
@@ -6884,6 +6934,7 @@ function applyNodeInspector(node) {
     case "trigger.digital_input_changed":
       set("name");
       set("channel");
+      set("changed_to");
       break;
     case "trigger.analog_input_above":
     case "trigger.analog_input_below":
@@ -6985,6 +7036,16 @@ function applyNodeInspector(node) {
     case "action.flush":
       set("name");
       set("target_id");
+      break;
+    case "action.submit_event":
+      set("name");
+      set("event_name");
+      set("priority");
+      set("details");
+      cfg.snapshot_entries = Array.from(document.querySelectorAll(".snapshotDeviceRow")).map(row => {
+        const sel = row.querySelector(".snapshotDeviceSelect");
+        return { device_id: sel ? sel.value : "" };
+      }).filter(e => e.device_id);
       break;
   }
 

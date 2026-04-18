@@ -381,7 +381,7 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "description": "Starts when a selected Automation HAT Mini digital input changes.",
         "color": "#4f8cff",
         "ports": {"inputs": [], "outputs": ["out"]},
-        "defaults": {"channel": "1", "name": ""},
+        "defaults": {"channel": "1", "changed_to": "any", "name": ""},
     },
     {
         "type": "trigger.analog_input_above",
@@ -546,6 +546,21 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
         "defaults": {"target_id": "", "name": ""},
+    },
+    {
+        "type": "action.submit_event",
+        "category": "action",
+        "label": "Generate event",
+        "description": "Submits an event to the events page with a name, priority, and details.",
+        "color": "#ff8c42",
+        "ports": {"inputs": ["in"], "outputs": ["out"]},
+        "defaults": {
+            "event_name": "Event",
+            "priority": "medium",
+            "details": "",
+            "snapshot_entries": [],
+            "name": "",
+        },
     },
 ]
 
@@ -1754,6 +1769,9 @@ def _normalize_node_config(
 
     if node_type == "trigger.digital_input_changed":
         cfg["channel"] = _normalize_physical_channel(cfg.get("channel"), "digital")
+        cfg["changed_to"] = str(cfg.get("changed_to") or "any").strip().lower()
+        if cfg["changed_to"] not in {"any", "high", "low"}:
+            cfg["changed_to"] = "any"
         return cfg
 
     if node_type in {"trigger.analog_input_above", "trigger.analog_input_below"}:
@@ -1945,6 +1963,24 @@ def _normalize_node_config(
         if cfg["target_type"] not in {"event", "scenario"}:
             cfg["target_type"] = "event"
         cfg["target_id"] = str(cfg.get("target_id") or "").strip()
+        return cfg
+
+    if node_type == "action.submit_event":
+        cfg["event_name"] = str(cfg.get("event_name") or "Event").strip() or "Event"
+        cfg["priority"] = str(cfg.get("priority") or "medium").strip().lower()
+        if cfg["priority"] not in {"critical", "high", "medium", "low", "info"}:
+            cfg["priority"] = "medium"
+        cfg["details"] = str(cfg.get("details") or "")
+        entries = cfg.get("snapshot_entries")
+        out: list = []
+        for entry in (entries if isinstance(entries, list) else []):
+            if not isinstance(entry, dict):
+                continue
+            did = str(entry.get("device_id") or "").strip()
+            if not did:
+                continue
+            out.append({"device_id": did})
+        cfg["snapshot_entries"] = out
         return cfg
 
     return cfg
@@ -2540,7 +2576,17 @@ def _trigger_matches_node(node: Dict[str, Any], trigger: Dict[str, Any]) -> bool
         return path_ok and method_ok
 
     if node_type == "trigger.digital_input_changed":
-        return kind == "digital_input_changed" and str(cfg.get("channel") or "") == str(trigger.get("channel") or "")
+        if kind != "digital_input_changed":
+            return False
+        if str(cfg.get("channel") or "") != str(trigger.get("channel") or ""):
+            return False
+        changed_to = str(cfg.get("changed_to") or "any").strip().lower()
+        if changed_to != "any":
+            cur = trigger.get("value")
+            expected_cur = changed_to == "high"
+            if cur != expected_cur:
+                return False
+        return True
 
     if node_type in {"trigger.analog_input_above", "trigger.analog_input_below"}:
         if kind != "analog_input_changed":
@@ -3116,6 +3162,43 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         else:
             result["ok"] = False
             result["error"] = "No scenario selected"
+        result["next_handles"] = ["out"]
+        return result
+
+    if node_type == "action.submit_event":
+        from main import create_event, _grab_snapshot, _load_devices
+        event_name = _render_template(str(cfg.get("event_name") or "Event"), context)
+        priority = str(cfg.get("priority") or "medium").strip().lower()
+        details = _render_template(str(cfg.get("details") or ""), context)
+
+        snapshots = []
+        entries = cfg.get("snapshot_entries") or []
+        devices = _load_devices()
+        device_map = {d.id: d.name for d in devices}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            did = str(entry.get("device_id") or "").strip()
+            if not did:
+                continue
+            data_uri = _grab_snapshot(did)
+            if data_uri:
+                snapshots.append({
+                    "device_id": did,
+                    "device_name": device_map.get(did, did),
+                    "snapshot": data_uri,
+                })
+
+        create_event(
+            name=event_name,
+            priority=priority,
+            details=details,
+            snapshots=snapshots,
+            flow_id=str((context.get("flow") or {}).get("id") or "").strip() or None,
+            flow_name=str((context.get("flow") or {}).get("name") or "").strip() or None,
+            node_id=str(node.get("id") or "").strip() or None,
+        )
+        result["message"] = f"Event submitted: {event_name}"
         result["next_handles"] = ["out"]
         return result
 
