@@ -228,6 +228,7 @@
               allEvents[idx] = data.event || { ...allEvents[idx], acknowledged: true };
               updateSummary();
               applyFilters();
+              if (window.__smarteyeRefreshEventBadge) window.__smarteyeRefreshEventBadge();
             }
           }
         } catch (err) {
@@ -245,6 +246,7 @@
             updateSummary();
             updateFlowFilter();
             applyFilters();
+            if (window.__smarteyeRefreshEventBadge) window.__smarteyeRefreshEventBadge();
           }
         } catch (err) {
           console.error("Archive failed:", err);
@@ -664,6 +666,7 @@
         allEvents.forEach(e => { e.acknowledged = true; });
         updateSummary();
         applyFilters();
+        if (window.__smarteyeRefreshEventBadge) window.__smarteyeRefreshEventBadge();
       }
     } catch (err) {
       console.error("Acknowledge all failed:", err);
@@ -679,6 +682,7 @@
         updateSummary();
         updateFlowFilter();
         applyFilters();
+        if (window.__smarteyeRefreshEventBadge) window.__smarteyeRefreshEventBadge();
       }
     } catch (err) {
       console.error("Archive all failed:", err);

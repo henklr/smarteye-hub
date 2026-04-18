@@ -309,6 +309,28 @@ h1 {
   background: var(--accent);
 }
 
+/* Event notification badge on tab */
+.tab .tabBadge {
+  display: none;
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--badge-color, #e53e3e);
+  box-shadow: 0 0 4px var(--badge-color, #e53e3e);
+  pointer-events: none;
+  animation: badgePulse 1.5s ease-in-out infinite;
+}
+.tab.has-badge .tabBadge {
+  display: block;
+}
+@keyframes badgePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 .devicesQuickBtn {
   min-width: 92px;
 }
@@ -2320,6 +2342,13 @@ body.tileMaximizedMode #videoGrid {
 
   .tab:active {
     transform: scale(0.98);
+  }
+
+  .tab .tabBadge {
+    top: 2px;
+    right: 2px;
+    width: 7px;
+    height: 7px;
   }
 
   .tabDot {
