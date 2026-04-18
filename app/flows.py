@@ -532,7 +532,7 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
     {
         "type": "action.fire",
         "category": "action",
-        "label": "Analyse",
+        "label": "Analyse Scenario",
         "description": "Sends the contribution buffer to the AI scenario for analysis.",
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
@@ -541,7 +541,7 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
     {
         "type": "action.flush",
         "category": "action",
-        "label": "Flush",
+        "label": "Flush Scenario",
         "description": "Clears a scenario's contribution buffer without analysing.",
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},

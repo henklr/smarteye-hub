@@ -2569,12 +2569,12 @@ function nodePreview(node) {
 
     case "action.fire": {
       const targetLabel = _scenariosCache.find(s => s.id === cfg.target_id)?.name || "scenario";
-      return `Analyse ${targetLabel}`;
+      return `Analyse Scenario: ${targetLabel}`;
     }
 
     case "action.flush": {
       const targetLabel = _scenariosCache.find(s => s.id === cfg.target_id)?.name || "scenario";
-      return `Flush ${targetLabel}`;
+      return `Flush Scenario: ${targetLabel}`;
     }
 
     case "action.submit_event":
@@ -6570,7 +6570,7 @@ function renderNodeInspector(node) {
     case "action.fire":
       body = `
         <div class="inspectorCard">
-          <div class="inspectorTitle">Analyse</div>
+          <div class="inspectorTitle">Analyse Scenario</div>
           <div class="inspectorHint">Sends the contribution buffer to the AI scenario for analysis.</div>
           <div class="fieldGrid">
             <div class="full">
@@ -6585,7 +6585,7 @@ function renderNodeInspector(node) {
     case "action.flush":
       body = `
         <div class="inspectorCard">
-          <div class="inspectorTitle">Flush</div>
+          <div class="inspectorTitle">Flush Scenario</div>
           <div class="inspectorHint">Clears the scenario's contribution buffer without analysing.</div>
           <div class="fieldGrid">
             <div class="full">
