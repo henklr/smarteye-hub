@@ -37,18 +37,194 @@
     </div>
 
     <div class="eventsShell">
-      <div class="eventsContent">
+      <aside class="eventsSidebar" id="eventsSidebar">
 
+        <!-- Summary -->
+        <div class="eventsSidebarBlock" data-sidebar-section="summary">
+          <button class="eventsSidebarToggle" data-sidebar-toggle="summary" aria-controls="eventsSumBody" aria-expanded="true" type="button">
+            <span class="eventsSidebarToggleLabel">Summary</span>
+            <span class="eventsSidebarChevron" aria-hidden="true"></span>
+          </button>
+          <div class="eventsSidebarBody" id="eventsSumBody">
+            <div class="eventsSummaryGrid" id="eventsSummaryGrid">
+              <div class="eventsSumStat" data-filter-action="status:all" title="Click to show all events">
+                <span class="eventsSumCount" id="sumTotal">0</span>
+                <span class="eventsSumLabel">Total</span>
+              </div>
+              <div class="eventsSumStat" data-filter-action="status:unacknowledged" title="Click to filter unacknowledged">
+                <span class="eventsSumCount" id="sumUnacked">0</span>
+                <span class="eventsSumLabel">Unacked</span>
+              </div>
+              <div class="eventsSumStat" data-filter-action="priority:critical" title="Click to filter critical">
+                <span class="eventsSumCount" id="sumCritical">0</span>
+                <span class="eventsSumLabel">Critical</span>
+              </div>
+              <div class="eventsSumStat" data-filter-action="priority:high" title="Click to filter high">
+                <span class="eventsSumCount" id="sumHigh">0</span>
+                <span class="eventsSumLabel">High</span>
+              </div>
+              <div class="eventsSumStat" data-filter-action="priority:medium" title="Click to filter medium">
+                <span class="eventsSumCount" id="sumMedium">0</span>
+                <span class="eventsSumLabel">Medium</span>
+              </div>
+              <div class="eventsSumStat" data-filter-action="priority:low" title="Click to filter low">
+                <span class="eventsSumCount" id="sumLow">0</span>
+                <span class="eventsSumLabel">Low</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Search -->
+        <div class="eventsSidebarBlock" data-sidebar-section="search">
+          <button class="eventsSidebarToggle" data-sidebar-toggle="search" aria-controls="eventsSearchBody" aria-expanded="true" type="button">
+            <span class="eventsSidebarToggleLabel">Search</span>
+            <span class="eventsSidebarChevron" aria-hidden="true"></span>
+          </button>
+          <div class="eventsSidebarBody" id="eventsSearchBody">
+            <input id="eventsSearchInput" placeholder="Search events" autocomplete="off" />
+          </div>
+        </div>
+
+        <!-- Status filter -->
+        <div class="eventsSidebarBlock" data-sidebar-section="status">
+          <button class="eventsSidebarToggle" data-sidebar-toggle="status" aria-controls="eventsStatusBody" aria-expanded="true" type="button">
+            <span class="eventsSidebarToggleLabel">Status</span>
+            <span class="eventsSidebarChevron" aria-hidden="true"></span>
+          </button>
+          <div class="eventsSidebarBody" id="eventsStatusBody">
+            <div class="eventsFilterGroup" id="statusFilterGroup">
+              <label class="eventsFilterOption">
+                <input type="radio" name="statusFilter" value="all" checked /> All
+              </label>
+              <label class="eventsFilterOption">
+                <input type="radio" name="statusFilter" value="unacknowledged" />
+                <span class="eventsFilterDot unacked"></span> Unacknowledged
+              </label>
+              <label class="eventsFilterOption">
+                <input type="radio" name="statusFilter" value="acknowledged" />
+                <span class="eventsFilterDot acked"></span> Acknowledged
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Priority filter -->
+        <div class="eventsSidebarBlock" data-sidebar-section="priority">
+          <button class="eventsSidebarToggle" data-sidebar-toggle="priority" aria-controls="eventsPriorityBody" aria-expanded="true" type="button">
+            <span class="eventsSidebarToggleLabel">Priority</span>
+            <span class="eventsSidebarChevron" aria-hidden="true"></span>
+          </button>
+          <div class="eventsSidebarBody" id="eventsPriorityBody">
+            <div class="eventsFilterGroup" id="priorityFilterGroup">
+              <label class="eventsFilterOption">
+                <input type="checkbox" name="priorityFilter" value="critical" checked />
+                <span class="eventsFilterDot priority-critical"></span> Critical
+              </label>
+              <label class="eventsFilterOption">
+                <input type="checkbox" name="priorityFilter" value="high" checked />
+                <span class="eventsFilterDot priority-high"></span> High
+              </label>
+              <label class="eventsFilterOption">
+                <input type="checkbox" name="priorityFilter" value="medium" checked />
+                <span class="eventsFilterDot priority-medium"></span> Medium
+              </label>
+              <label class="eventsFilterOption">
+                <input type="checkbox" name="priorityFilter" value="low" checked />
+                <span class="eventsFilterDot priority-low"></span> Low
+              </label>
+              <label class="eventsFilterOption">
+                <input type="checkbox" name="priorityFilter" value="info" checked />
+                <span class="eventsFilterDot priority-info"></span> Info
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Time range -->
+        <div class="eventsSidebarBlock" data-sidebar-section="time">
+          <button class="eventsSidebarToggle" data-sidebar-toggle="time" aria-controls="eventsTimeBody" aria-expanded="true" type="button">
+            <span class="eventsSidebarToggleLabel">Time Range</span>
+            <span class="eventsSidebarChevron" aria-hidden="true"></span>
+          </button>
+          <div class="eventsSidebarBody" id="eventsTimeBody">
+            <div class="eventsFilterGroup" id="timeFilterGroup">
+              <label class="eventsFilterOption">
+                <input type="radio" name="timeFilter" value="all" checked /> All time
+              </label>
+              <label class="eventsFilterOption">
+                <input type="radio" name="timeFilter" value="1h" /> Last hour
+              </label>
+              <label class="eventsFilterOption">
+                <input type="radio" name="timeFilter" value="24h" /> Last 24 hours
+              </label>
+              <label class="eventsFilterOption">
+                <input type="radio" name="timeFilter" value="7d" /> Last 7 days
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Flow filter -->
+        <div class="eventsSidebarBlock" data-sidebar-section="flows">
+          <button class="eventsSidebarToggle" data-sidebar-toggle="flows" aria-controls="eventsFlowsBody" aria-expanded="true" type="button">
+            <span class="eventsSidebarToggleLabel">Source Flow</span>
+            <span class="eventsSidebarChevron" aria-hidden="true"></span>
+          </button>
+          <div class="eventsSidebarBody" id="eventsFlowsBody">
+            <div class="eventsFilterGroup" id="flowFilterGroup">
+              <label class="eventsFilterOption">
+                <input type="radio" name="flowFilter" value="__all__" checked /> All flows
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="eventsSidebarBlock" data-sidebar-section="actions">
+          <button class="eventsSidebarToggle" data-sidebar-toggle="actions" aria-controls="eventsActionsBody" aria-expanded="true" type="button">
+            <span class="eventsSidebarToggleLabel">Actions</span>
+            <span class="eventsSidebarChevron" aria-hidden="true"></span>
+          </button>
+          <div class="eventsSidebarBody" id="eventsActionsBody">
+            <div class="eventsSidebarActions">
+              <button class="btn eventsSidebarBtn" id="btnAcknowledgeAll" type="button">Acknowledge All</button>
+              <button class="btn btn-danger eventsSidebarBtn" id="btnClearAll" type="button">Archive All Events</button>
+              <button class="btn eventsSidebarBtn" id="btnViewArchive" type="button">View Archive</button>
+            </div>
+          </div>
+        </div>
+
+      </aside>
+
+      <div class="eventsContent">
         <section class="eventsCard">
-          <div class="listHeader compact eventsHeader">
+          <div class="eventsHeader">
             <div>
-              <div class="listTitle small">Events</div>
-              <div class="listSub" id="eventsHeaderSub">AI-analyzed security events from your flows.</div>
+              <div class="listTitle small">Event Log</div>
             </div>
             <div class="eventsHeaderActions">
-              <button class="btn" id="btnAcknowledgeAll" type="button">Acknowledge all</button>
-              <button class="btn btn-danger" id="btnClearAll" type="button">Clear all</button>
+              <select class="eventsSort" id="eventsSort" title="Sort order">
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+                <option value="priority">Priority</option>
+              </select>
+              <button class="eventsToolBtn" id="btnToggleSound" type="button" title="Toggle alert sound">
+                <svg id="soundIconOn" class="eventsToolSvg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                <svg id="soundIconOff" class="eventsToolSvg hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+              </button>
+              <button class="eventsToolBtn" id="btnExpandAll" type="button" title="Expand / Collapse all">
+                <span class="eventsToolIcon">&#9776;</span>
+              </button>
+              <div class="eventsLiveIndicator" id="eventsLiveIndicator">
+                <span class="eventsLiveDot"></span> Live
+              </div>
             </div>
+          </div>
+
+          <div class="eventsFilterBar hidden" id="eventsFilterBar">
+            <span class="eventsFilterBarLabel" id="eventsFilterBarLabel">Filters active</span>
+            <button class="eventsFilterBarReset" id="eventsFilterBarReset" type="button">Reset all</button>
           </div>
 
           <div class="eventsListWrap">
@@ -60,7 +236,6 @@
             </div>
           </div>
         </section>
-
       </div>
     </div>
   </div>
@@ -74,6 +249,21 @@
       <button class="btn eventsLightboxClose" id="eventsLightboxClose" type="button">Close</button>
     </div>
     <button class="eventsLightboxArrow eventsLightboxNext" id="eventsLightboxNext" type="button">&#8250;</button>
+  </div>
+
+  <!-- Archive overlay -->
+  <div class="archiveOverlay hidden" id="archiveOverlay">
+    <div class="archivePanel">
+      <div class="archivePanelHeader">
+        <div class="listTitle small">Archived Events</div>
+        <button class="btn archivePanelClose" id="archiveClose" type="button">Close</button>
+      </div>
+      <div class="archiveListWrap">
+        <div class="archiveList" id="archiveList">
+          <div class="eventsEmpty" id="archiveEmpty">No archived events.</div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script>

@@ -3894,8 +3894,10 @@ def _analyze_with_gpt_structured(
 # ── Events (operator events) ───────────────────────────────────────────────────
 
 EVENTS_JSON = DATA_DIR / "events.json"
+ARCHIVED_EVENTS_JSON = DATA_DIR / "archived_events.json"
 _events_lock = threading.RLock()
 _MAX_EVENTS = 500
+_MAX_ARCHIVED = 2000
 
 _log_events = logging.getLogger("events")
 
@@ -3919,6 +3921,35 @@ def _save_events(items: List[Dict[str, Any]]) -> None:
     tmp = EVENTS_JSON.with_suffix(".json.tmp")
     tmp.write_text(json.dumps({"items": items}, indent=2), encoding="utf-8")
     tmp.replace(EVENTS_JSON)
+
+
+def _load_archived_events() -> List[Dict[str, Any]]:
+    try:
+        if not ARCHIVED_EVENTS_JSON.exists():
+            return []
+        payload = json.loads(ARCHIVED_EVENTS_JSON.read_text(encoding="utf-8"))
+        items = payload.get("items") if isinstance(payload, dict) else []
+        return list(items) if isinstance(items, list) else []
+    except Exception:
+        return []
+
+
+def _save_archived_events(items: List[Dict[str, Any]]) -> None:
+    items = items[-_MAX_ARCHIVED:]
+    tmp = ARCHIVED_EVENTS_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"items": items}, indent=2), encoding="utf-8")
+    tmp.replace(ARCHIVED_EVENTS_JSON)
+
+
+def _archive_events(events_to_archive: List[Dict[str, Any]]) -> None:
+    """Move events to the archived store."""
+    if not events_to_archive:
+        return
+    archived = _load_archived_events()
+    for ev in events_to_archive:
+        ev["archived_at"] = datetime.now(timezone.utc).isoformat()
+    archived.extend(events_to_archive)
+    _save_archived_events(archived)
 
 
 def _broadcast_page_event(event: Dict[str, Any]) -> None:
@@ -4159,7 +4190,14 @@ def api_event_acknowledge(event_id: str):
             if item.get("id") == event_id:
                 item["acknowledged"] = True
                 _save_events(items)
-                return {"ok": True}
+                # Return lightweight version (no heavy snapshot data)
+                ev = {k: v for k, v in item.items() if k != "snapshots"}
+                ev["snapshots"] = []
+                for idx, snap in enumerate(item.get("snapshots") or []):
+                    s = {k: v for k, v in snap.items() if k != "snapshot"}
+                    s["snapshot"] = f"/api/events/{item['id']}/snapshot/{idx}" if snap.get("snapshot") else None
+                    ev["snapshots"].append(s)
+                return {"ok": True, "event": ev}
     raise HTTPException(status_code=404, detail="Event not found")
 
 
@@ -4173,22 +4211,90 @@ def api_events_acknowledge_all():
     return {"ok": True}
 
 
-@app.delete("/api/events/{event_id}")
-def api_event_delete(event_id: str):
+@app.post("/api/events/{event_id}/archive")
+def api_event_archive(event_id: str):
     with _events_lock:
         items = _load_events()
-        before = len(items)
-        items = [item for item in items if item.get("id") != event_id]
-        if len(items) == before:
+        archived_item = None
+        remaining = []
+        for item in items:
+            if item.get("id") == event_id:
+                archived_item = item
+            else:
+                remaining.append(item)
+        if archived_item is None:
             raise HTTPException(status_code=404, detail="Event not found")
-        _save_events(items)
+        _archive_events([archived_item])
+        _save_events(remaining)
     return {"ok": True}
+
+
+@app.post("/api/events/archive-all")
+def api_events_archive_all():
+    with _events_lock:
+        items = _load_events()
+        _archive_events(items)
+        _save_events([])
+    return {"ok": True}
+
+
+# Keep DELETE endpoints for backward compat but they now archive
+@app.delete("/api/events/{event_id}")
+def api_event_delete(event_id: str):
+    return api_event_archive(event_id)
 
 
 @app.delete("/api/events")
 def api_events_clear():
+    return api_events_archive_all()
+
+
+@app.get("/api/events/archived")
+def api_events_archived_list():
+    items = _load_archived_events()
+    # Strip heavy snapshot data; return lightweight list
+    light_items = []
+    for item in items:
+        ev = {k: v for k, v in item.items() if k != "snapshots"}
+        ev["snapshots"] = []
+        for idx, snap in enumerate(item.get("snapshots") or []):
+            s = {k: v for k, v in snap.items() if k != "snapshot"}
+            s["snapshot"] = None  # archived snapshots not served
+            ev["snapshots"].append(s)
+        light_items.append(ev)
+    return {"items": light_items}
+
+
+@app.post("/api/events/archived/{event_id}/restore")
+def api_event_restore(event_id: str):
     with _events_lock:
-        _save_events([])
+        archived = _load_archived_events()
+        restored_item = None
+        remaining = []
+        for item in archived:
+            if item.get("id") == event_id:
+                restored_item = item
+            else:
+                remaining.append(item)
+        if restored_item is None:
+            raise HTTPException(status_code=404, detail="Archived event not found")
+        restored_item.pop("archived_at", None)
+        _save_archived_events(remaining)
+        items = _load_events()
+        items.append(restored_item)
+        _save_events(items)
+    return {"ok": True}
+
+
+@app.delete("/api/events/archived/{event_id}")
+def api_archived_event_delete(event_id: str):
+    with _events_lock:
+        archived = _load_archived_events()
+        before = len(archived)
+        archived = [item for item in archived if item.get("id") != event_id]
+        if len(archived) == before:
+            raise HTTPException(status_code=404, detail="Archived event not found")
+        _save_archived_events(archived)
     return {"ok": True}
 
 
