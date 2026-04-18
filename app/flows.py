@@ -447,19 +447,19 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
     },
     {
         "type": "operator.delay",
-        "category": "action",
+        "category": "operator",
         "label": "Delay",
         "description": "Waits for the configured number of seconds.",
-        "color": "#ff8c42",
+        "color": "#17b978",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
         "defaults": {"seconds": 2, "name": ""},
     },
     {
         "type": "operator.set_variable",
-        "category": "action",
+        "category": "operator",
         "label": "Set variable",
         "description": "Updates a shared variable from a literal, template, variable, trigger path, or physical input.",
-        "color": "#ff8c42",
+        "color": "#17b978",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
         "defaults": {
             "variable_key": "",

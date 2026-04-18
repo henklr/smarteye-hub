@@ -3227,19 +3227,34 @@ function renderPalette() {
     return;
   }
 
-  box.innerHTML = [...groups.entries()].map(([category, items]) => `
-    <div class="paletteGroup">
-      <div class="paletteGroupHead">${escapeHtml(category)}</div>
+  const categoryOrder = ["trigger", "condition", "operator", "action"];
+  const sortedEntries = [...groups.entries()].sort((a, b) => {
+    const ai = categoryOrder.indexOf(a[0]);
+    const bi = categoryOrder.indexOf(b[0]);
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  });
+
+  box.innerHTML = sortedEntries.map(([category, items]) => {
+    const meta = CATEGORY_META[category] || { label: category, color: "#888" };
+    return `
+    <div class="paletteGroup" data-category="${escapeHtml(category)}">
+      <div class="paletteGroupHead">
+        <span class="paletteCatBadge" style="background:${meta.color}22; color:${meta.color};">${escapeHtml(meta.label)}</span>
+        <span class="paletteCatCount">${items.length}</span>
+      </div>
       <div class="paletteGroupBody">
         ${items.map((item) => `
           <button class="paletteItem" type="button" data-type="${escapeHtml(item.type)}">
-            <div class="paletteItemTitle">${escapeHtml(item.label)}</div>
-            <div class="paletteItemSub">${escapeHtml(item.description || "")}</div>
+            <span class="paletteItemDot" style="background:${meta.color};"></span>
+            <div class="paletteItemText">
+              <div class="paletteItemTitle">${escapeHtml(item.label)}</div>
+              <div class="paletteItemSub">${escapeHtml(item.description || "")}</div>
+            </div>
           </button>
         `).join("")}
       </div>
     </div>
-  `).join("");
+  `}).join("");
 
   box.querySelectorAll(".paletteItem").forEach((button) => {
     button.addEventListener("click", () => {
