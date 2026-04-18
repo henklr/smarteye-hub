@@ -1128,9 +1128,8 @@ code {
 .liveLayout {
   display: flex;
   flex-direction: row;
-  height: calc(100vh - 48px - 24px);
+  height: calc(100vh - 48px);
   min-height: 0;
-  margin: 12px;
 }
 
 /* ── Live sidebar ── */
@@ -1139,11 +1138,12 @@ code {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: var(--surface);
-  border: 1px solid var(--stroke);
-  border-radius: var(--r-md, 10px);
-  margin-right: 12px;
-  overflow: hidden;
+  background: var(--glass-panel);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .liveSidebarHdr {
@@ -1152,7 +1152,7 @@ code {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
-  border-bottom: 1px solid var(--stroke);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   flex-shrink: 0;
 }
 
@@ -1245,7 +1245,7 @@ code {
 
 .liveSidebarFooter {
   padding: 8px 10px;
-  border-top: 1px solid var(--stroke);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
   flex-shrink: 0;
 }
 
@@ -1325,7 +1325,7 @@ code {
 .liveMain {
   position: relative;
   min-width: 0;
-  padding: 0 !important;
+  padding: 12px !important;
   overflow: hidden;
   flex: 1;
   display: flex;
@@ -2090,7 +2090,6 @@ body.tileMaximizedMode #videoGrid {
   body.livePage .liveLayout {
     height: auto;
     min-height: 0;
-    margin-bottom: 0;
   }
 
   body.livePage .liveMain {
