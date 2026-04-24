@@ -94,6 +94,8 @@ const state = {
   },
   transport: {
     speed: 1,
+    volume: 1,
+    muted: false,
     direction: "forward",
     advancingToNextClip: false,
     forwardBoundaryTimer: 0,
@@ -168,6 +170,61 @@ function clamp(value, min, max) {
 
 function normalizePlaybackSpeed(value) {
   return clamp(Number(value) || 1, 0.25, 25);
+}
+
+function normalizeVolume(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 1;
+  return clamp(n, 0, 1);
+}
+
+function volumeIconState() {
+  if (state.transport.muted || state.transport.volume <= 0.001) return "muted";
+  if (state.transport.volume < 0.33) return "low";
+  if (state.transport.volume < 0.67) return "mid";
+  return "high";
+}
+
+function applyVolumeToVideo() {
+  const video = el("playbackVideo");
+  if (!video) return;
+  video.volume = normalizeVolume(state.transport.volume);
+  video.muted = !!state.transport.muted;
+}
+
+function syncVolumeUi() {
+  const slider = el("playbackVolumeInput");
+  const btn = el("playbackVolumeBtn");
+  if (slider) {
+    const effective = state.transport.muted ? 0 : normalizeVolume(state.transport.volume);
+    if (document.activeElement !== slider) slider.value = String(effective);
+  }
+  if (btn) {
+    btn.setAttribute("data-state", volumeIconState());
+    const label = state.transport.muted ? "Unmute" : "Mute";
+    btn.setAttribute("aria-label", label);
+    btn.title = label;
+  }
+}
+
+function setVolume(value, { persist = true, unmute = true } = {}) {
+  state.transport.volume = normalizeVolume(value);
+  if (unmute && state.transport.volume > 0) state.transport.muted = false;
+  applyVolumeToVideo();
+  syncVolumeUi();
+  if (persist) schedulePlaybackStateSave();
+}
+
+function toggleMute() {
+  if (state.transport.muted) {
+    state.transport.muted = false;
+    if (state.transport.volume <= 0.001) state.transport.volume = 0.5;
+  } else {
+    state.transport.muted = true;
+  }
+  applyVolumeToVideo();
+  syncVolumeUi();
+  schedulePlaybackStateSave();
 }
 
 function formatPlaybackSpeed(value) {
@@ -302,6 +359,8 @@ function snapshotPlaybackState() {
     selectedEventId: typeof state.selectedEventId === "string" && state.selectedEventId ? state.selectedEventId : null,
     hiddenPresetKeys: [...new Set((state.timelineFilters.hiddenPresetKeys || []).map((value) => String(value || "").trim()).filter(Boolean))],
     seekSeconds,
+    volume: normalizeVolume(state.transport.volume),
+    muted: !!state.transport.muted,
     timelineView: {
       startMinute: Number(state.timelineView.startMinute) || 0,
       durationMinutes: currentTimelineDuration(),
@@ -1792,6 +1851,12 @@ function bindUi() {
   state.selectedDay = normalizeStoredDay(saved?.selectedDay);
   state.selectedEventId = typeof saved?.selectedEventId === "string" && saved.selectedEventId ? saved.selectedEventId : null;
   state.timelineFilters.hiddenPresetKeys = Array.isArray(saved?.hiddenPresetKeys) ? saved.hiddenPresetKeys.map((value) => String(value || "").trim()).filter(Boolean) : [];
+
+  if (typeof saved?.volume === "number") state.transport.volume = normalizeVolume(saved.volume);
+  if (typeof saved?.muted === "boolean") state.transport.muted = saved.muted;
+  applyVolumeToVideo();
+  syncVolumeUi();
+
   el("playbackDayInput").value = state.selectedDay;
 
   const savedStartMinute = Number(saved?.timelineView?.startMinute);
@@ -1974,6 +2039,14 @@ function bindUi() {
   el("playbackSpeedInput")?.addEventListener("pointerup", () => {
     resetPlaybackSpeed();
   });
+  el("playbackVolumeInput")?.addEventListener("input", (event) => {
+    setVolume(event.target.value);
+  });
+  el("playbackVolumeBtn")?.addEventListener("click", () => {
+    toggleMute();
+  });
+  // Re-apply volume whenever a new clip loads (sources can reset video.volume).
+  el("playbackVideo")?.addEventListener("loadstart", applyVolumeToVideo);
   el("playbackTimelineFilters")?.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target.closest("[data-preset-key], [data-filter-action]") : null;
     if (!target) {
