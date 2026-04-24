@@ -58,57 +58,15 @@ function attachPlaybackSource(video, event) {
   if (!video || !event) return;
   detachPlaybackSource(video);
 
-  const token = ++_playbackLoadToken;
-  const hlsUrl = hlsPlaylistUrlForEvent(event);
+  ++_playbackLoadToken;
+
+  // Event-scoped playback: the MP4 clip endpoint returns a file with exact
+  // event bounds and a keyframe at t=0 (ffmpeg -ss -t rewrite). That is
+  // perfectly aligned to what the UI timeline expects, with no risk of a
+  // mid-segment "no keyframe at start" decode failure. Use it as the primary
+  // source. The HLS endpoint remains available at the API for future
+  // timeline-scrub features.
   const mp4Url = mp4FallbackUrlForEvent(event);
-  const hasHlsJs = typeof window !== "undefined" && !!window.Hls && typeof window.Hls.isSupported === "function" && window.Hls.isSupported();
-  const nativeHls = video.canPlayType("application/vnd.apple.mpegurl") !== "";
-
-  const fallbackToMp4 = (reason) => {
-    if (token !== _playbackLoadToken) return;
-    // hls.destroy() fires a synthetic media error; suppress it for the
-    // transition so the error handler doesn't flash "Clip unavailable".
-    suppressVideoErrorFor(2000);
-    if (_hls) { try { _hls.destroy(); } catch {} _hls = null; }
-    if (mp4Url) {
-      video.src = mp4Url;
-      try { video.load(); } catch {}
-    }
-    if (reason) console.warn("[playback] HLS failed, falling back to MP4:", reason);
-  };
-
-  if (hlsUrl && hasHlsJs) {
-    try {
-      _hls = new window.Hls({
-        // Workers are blocked by the default CSP (worker-src falls back to
-        // default-src 'self', which disallows blob: workers). Stay on the main
-        // thread to avoid that class of failure.
-        enableWorker: false,
-        lowLatencyMode: false,
-        backBufferLength: 90,
-        maxBufferLength: 30,
-        maxMaxBufferLength: 120,
-      });
-      _hls.on(window.Hls.Events.ERROR, (_evt, data) => {
-        if (data && data.fatal) {
-          fallbackToMp4(data.details || data.type || "fatal");
-        }
-      });
-      _hls.loadSource(hlsUrl);
-      _hls.attachMedia(video);
-      return;
-    } catch (exc) {
-      fallbackToMp4(exc && exc.message);
-      return;
-    }
-  }
-
-  if (hlsUrl && nativeHls) {
-    video.src = hlsUrl;
-    try { video.load(); } catch {}
-    return;
-  }
-
   if (mp4Url) {
     video.src = mp4Url;
     try { video.load(); } catch {}
