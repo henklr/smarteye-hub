@@ -282,6 +282,8 @@ function syncVolumeUi() {
   if (slider) {
     const effective = state.transport.muted ? 0 : normalizeVolume(state.transport.volume);
     if (document.activeElement !== slider) slider.value = String(effective);
+    // Drive the Webkit/Chrome progress backfill via a custom property.
+    slider.style.setProperty("--volume-fill-pct", `${Math.round(effective * 100)}%`);
   }
   if (btn) {
     btn.setAttribute("data-state", volumeIconState());

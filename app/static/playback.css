@@ -32,6 +32,40 @@ body.playbackPage {
   flex-direction: column;
   flex: 1 1 auto;
   gap: 0;
+  position: relative;
+}
+
+/* 1px top highlight to carry the glassy language into the cards. */
+.playbackPage .playbackViewerCard::before,
+.playbackPage .playbackTimelineCard::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.06) 20%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.06) 80%,
+    transparent 100%
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+[data-theme="light"] .playbackPage .playbackViewerCard::before,
+[data-theme="light"] .playbackPage .playbackTimelineCard::before {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.45) 20%,
+    rgba(255, 255, 255, 0.7) 50%,
+    rgba(255, 255, 255, 0.45) 80%,
+    transparent 100%
+  );
 }
 
 .playbackPage .playbackHeader {
@@ -262,16 +296,44 @@ body.playbackPage {
   height: 44px;
   min-width: 44px;
   min-height: 44px;
-  border: none;
-  background: rgba(212, 170, 79, 0.12);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background:
+    radial-gradient(circle at 50% 20%, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0) 55%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent) 22%, transparent) 0%,
+      color-mix(in srgb, var(--accent) 14%, transparent) 100%
+    );
   color: var(--accent-strong);
-  box-shadow: none;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.15);
+  transition: transform 0.12s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
 
 .playbackPage .playbackTransportButton.btn-primary:hover:not(:disabled) {
-  background: rgba(212, 170, 79, 0.2);
+  background:
+    radial-gradient(circle at 50% 20%, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0) 55%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent) 32%, transparent) 0%,
+      color-mix(in srgb, var(--accent) 22%, transparent) 100%
+    );
   color: var(--accent-strong);
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.4),
+    0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.18);
+  transform: translateY(-0.5px);
   filter: none;
+}
+.playbackPage .playbackTransportButton.btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.35),
+    inset 0 1px 2px rgba(0, 0, 0, 0.25);
 }
 
 .playbackPage .playbackTransportButton:disabled {
@@ -285,20 +347,20 @@ body.playbackPage {
 .playbackPage .playbackShuttleBar {
   position: relative;
   flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
   min-width: 160px;
-  min-height: 44px;  /* reserves room for the floating value label */
-  padding: 0;
+  /* Natural height = input's 20px. The floating label overflows below,
+     which is fine — transport centers the 20px bar and the label sits
+     just underneath. */
 }
 
-/* Track overlay — centered inside the 30px-tall slider hit area.
-   Slider center y = 30/2 = 15; overlay top = 13 gives a 4px bar at 13..17. */
+/* Track overlay — centered on the 20px slider hit area (track y=8..12,
+   center y=10) and inset 6px on each side (thumb radius) so detents/fill/
+   label share the thumb's actual travel range. */
 .playbackPage .playbackShuttleTrackBg {
   position: absolute;
-  top: 13px;
-  left: 0;
-  right: 0;
+  top: 8px;
+  left: 6px;
+  right: 6px;
   height: 4px;
   border-radius: 2px;
   background: linear-gradient(
@@ -346,10 +408,12 @@ body.playbackPage {
 }
 
 /* Floating multiplier label under the thumb. Its `left` is updated in JS to
-   track the thumb's horizontal position. */
+   track the thumb's horizontal position.
+   top: 10px inside the overlay (which sits at bar y=8) → bar y=18, which is
+   2px below the thumb's bottom (thumb y=4..16 inside a 20px input). */
 .playbackPage .playbackShuttleValue {
   position: absolute;
-  top: 22px;
+  top: 10px;
   left: 62.5%;
   transform: translateX(-50%);
   display: inline-flex;
@@ -404,7 +468,7 @@ body.playbackPage {
   flex: 1 1 auto;
   -webkit-appearance: none;
   appearance: none;
-  height: 14px;
+  height: 20px; /* 20px chassis so the 12px thumb stays inside the element */
   border: none;
   border-radius: 0;
   background: transparent;
@@ -419,7 +483,11 @@ body.playbackPage {
 .playbackPage .playbackShuttleControl input[type="range"] {
   position: relative;
   z-index: 2;
-  height: 30px; /* generous hit area spanning track + detent */
+  /* Match volume's 20px chassis so the two sliders sit at the same vertical
+     line when both are centered by `.playbackTransport`'s align-items: center. */
+  height: 20px;
+  flex: 0 0 auto;
+  width: 100%;
 }
 
 .playbackPage .playbackSpeedControl input[type="range"]:focus,
@@ -430,108 +498,122 @@ body.playbackPage {
   background: transparent;
 }
 
+/* Shared glassy thumb — 12px, vertically centered on a 4px track in a 20px
+   chassis via margin-top: -4px, which is (trackHeight - thumbHeight) / 2. */
 .playbackPage .playbackSpeedControl input[type="range"]::-webkit-slider-thumb,
 .playbackPage .playbackVolumeControl input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 20px;
-  height: 20px;
+  width: 12px;
+  height: 12px;
   border-radius: 999px;
   border: none;
-  background: var(--accent);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
   cursor: pointer;
-  margin-top: -8px;
+  margin-top: -4px;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.8) 0%, rgba(255, 255, 255, 0) 48%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent) 50%, white) 0%,
+      var(--accent) 55%,
+      color-mix(in srgb, var(--accent) 75%, black) 100%
+    );
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.55),
+    0 0 0 0.5px rgba(0, 0, 0, 0.5),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.3),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.25);
+  transition: transform 0.12s ease, box-shadow 0.15s ease;
 }
 
 .playbackPage .playbackSpeedControl input[type="range"]::-moz-range-thumb,
 .playbackPage .playbackVolumeControl input[type="range"]::-moz-range-thumb {
-  width: 20px;
-  height: 20px;
+  width: 12px;
+  height: 12px;
   border-radius: 999px;
   border: none;
-  background: var(--accent);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
   cursor: pointer;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.8) 0%, rgba(255, 255, 255, 0) 48%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent) 50%, white) 0%,
+      var(--accent) 55%,
+      color-mix(in srgb, var(--accent) 75%, black) 100%
+    );
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.55),
+    0 0 0 0.5px rgba(0, 0, 0, 0.5),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.3),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.25);
+  transition: transform 0.12s ease, box-shadow 0.15s ease;
+}
+.playbackPage .playbackSpeedControl input[type="range"]:hover::-webkit-slider-thumb,
+.playbackPage .playbackVolumeControl input[type="range"]:hover::-webkit-slider-thumb,
+.playbackPage .playbackSpeedControl input[type="range"]:active::-webkit-slider-thumb,
+.playbackPage .playbackVolumeControl input[type="range"]:active::-webkit-slider-thumb {
+  transform: scale(1.15);
+  box-shadow:
+    0 2px 5px rgba(0, 0, 0, 0.6),
+    0 0 0 0.5px rgba(0, 0, 0, 0.55),
+    0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.35),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.25);
+}
+.playbackPage .playbackSpeedControl input[type="range"]:hover::-moz-range-thumb,
+.playbackPage .playbackVolumeControl input[type="range"]:hover::-moz-range-thumb,
+.playbackPage .playbackSpeedControl input[type="range"]:active::-moz-range-thumb,
+.playbackPage .playbackVolumeControl input[type="range"]:active::-moz-range-thumb {
+  transform: scale(1.15);
+  box-shadow:
+    0 2px 5px rgba(0, 0, 0, 0.6),
+    0 0 0 0.5px rgba(0, 0, 0, 0.55),
+    0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.35),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.25);
 }
 
+/* Shared track — gradient + inset shadow, matches the shuttle overlay. */
 .playbackPage .playbackSpeedControl input[type="range"]::-webkit-slider-runnable-track,
 .playbackPage .playbackVolumeControl input[type="range"]::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.12);
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.22) 0%,
+    rgba(255, 255, 255, 0.08) 100%
+  );
+  box-shadow:
+    inset 0 1px 1px rgba(0, 0, 0, 0.35),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
 
 .playbackPage .playbackSpeedControl input[type="range"]::-moz-range-track,
 .playbackPage .playbackVolumeControl input[type="range"]::-moz-range-track {
   height: 4px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.12);
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.22) 0%,
+    rgba(255, 255, 255, 0.08) 100%
+  );
+  box-shadow:
+    inset 0 1px 1px rgba(0, 0, 0, 0.35),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
   border: none;
 }
 
-/* Shuttle-specific: transparent native track so the custom overlay shows
-   through, and a smaller thumb centered on the 4px track. */
+/* Shuttle: transparent native track so the custom overlay (with detents +
+   fill) shows through. Thumb visuals come from the shared slider rules above. */
 .playbackPage .playbackShuttleControl input[type="range"]::-webkit-slider-runnable-track {
   background: transparent;
-  height: 4px;
+  box-shadow: none;
 }
 .playbackPage .playbackShuttleControl input[type="range"]::-moz-range-track {
   background: transparent;
-  height: 4px;
-}
-/* Thumb: small, centered, with a subtle top highlight + ring for a
-   slightly elevated feel. */
-.playbackPage .playbackShuttleControl input[type="range"]::-webkit-slider-thumb {
-  width: 12px;
-  height: 12px;
-  margin-top: -4px;
-  background:
-    radial-gradient(
-      circle at 35% 30%,
-      color-mix(in srgb, var(--accent) 55%, white) 0%,
-      var(--accent) 60%
-    );
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.55),
-    0 0 0 1px rgba(0, 0, 0, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.25);
-  transition: transform 0.12s ease, box-shadow 0.15s ease;
-}
-.playbackPage .playbackShuttleControl input[type="range"]::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  background:
-    radial-gradient(
-      circle at 35% 30%,
-      color-mix(in srgb, var(--accent) 55%, white) 0%,
-      var(--accent) 60%
-    );
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.55),
-    0 0 0 1px rgba(0, 0, 0, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.25);
-  transition: transform 0.12s ease, box-shadow 0.15s ease;
-}
-.playbackPage .playbackShuttleControl input[type="range"]:active::-webkit-slider-thumb,
-.playbackPage .playbackShuttleControl input[type="range"]:hover::-webkit-slider-thumb {
-  transform: scale(1.12);
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.6),
-    0 0 0 1px rgba(0, 0, 0, 0.4),
-    0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3);
-}
-.playbackPage .playbackShuttleControl input[type="range"]:active::-moz-range-thumb,
-.playbackPage .playbackShuttleControl input[type="range"]:hover::-moz-range-thumb {
-  transform: scale(1.12);
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.6),
-    0 0 0 1px rgba(0, 0, 0, 0.4),
-    0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  box-shadow: none;
 }
 
-/* Accent fill: slight gradient for a hint of depth. */
+/* Shuttle's center→thumb accent fill inside the overlay — gradient for depth. */
 .playbackPage .playbackShuttleTrackFill {
   background: linear-gradient(
     90deg,
@@ -547,6 +629,55 @@ body.playbackPage {
   font-size: 11px;
   font-weight: 700;
   color: var(--text);
+}
+
+/* Separate the volume group from the rest of the transport so it reads as
+   its own cluster on the right-hand side. */
+.playbackPage .playbackVolumeControl {
+  margin-left: 24px;
+  width: min(100%, 150px);
+  min-width: 120px;
+}
+
+/* Progress backfill — accent-colored portion from 0 → thumb. The fill width
+   is driven by the `--volume-fill-pct` custom property set from JS whenever
+   the volume changes. Layered on top of the base recessed-track gradient. */
+.playbackPage .playbackVolumeControl input[type="range"]::-webkit-slider-runnable-track {
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent) 80%, transparent) 0%,
+      var(--accent) 100%
+    ) left center / var(--volume-fill-pct, 0%) 100% no-repeat,
+    linear-gradient(
+      180deg,
+      rgba(0, 0, 0, 0.22) 0%,
+      rgba(255, 255, 255, 0.08) 100%
+    );
+}
+.playbackPage .playbackVolumeControl input[type="range"]::-moz-range-track {
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent) 80%, transparent) 0%,
+      var(--accent) 100%
+    ) left center / var(--volume-fill-pct, 0%) 100% no-repeat,
+    linear-gradient(
+      180deg,
+      rgba(0, 0, 0, 0.22) 0%,
+      rgba(255, 255, 255, 0.08) 100%
+    );
+}
+/* Firefox also supports ::-moz-range-progress for a native fill; use it so
+   Firefox doesn't depend on the CSS variable. */
+.playbackPage .playbackVolumeControl input[type="range"]::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 80%, transparent) 0%,
+    var(--accent) 100%
+  );
 }
 
 .playbackPage .playbackVolumeBtn {
@@ -600,6 +731,7 @@ body.playbackPage {
   background: var(--glass);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
+  position: relative;
 }
 
 .playbackPage .playbackTimelineWrap {
