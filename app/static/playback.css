@@ -526,7 +526,7 @@ body.playbackPage {
 
 .playbackPage .playbackTimelineTrack {
   position: relative;
-  min-height: 64px;
+  min-height: 48px;
   padding: 6px;
   border: 1px solid var(--stroke);
   border-radius: var(--r-md);
@@ -537,6 +537,9 @@ body.playbackPage {
   cursor: grab;
   touch-action: none;
   user-select: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .playbackPage .playbackTimelineTrack.is-dragging {
@@ -585,53 +588,9 @@ body.playbackPage {
 
 .playbackPage .playbackTimelineLane {
   position: relative;
-  min-height: 34px;
+  min-height: 18px;
   border-radius: 0;
   background: transparent;
-}
-
-.playbackPage .playbackTimelineLane:first-child {
-  border-top-left-radius: 0;
-  border-top-right-radius: 0;
-}
-
-.playbackPage .playbackTimelineLane:last-child {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-}
-
-.playbackPage .playbackTimelineLaneHeader {
-  position: absolute;
-  left: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 4;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 10px;
-  border-radius: var(--r-sm);
-  background: rgba(22, 22, 22, 0.50);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--stroke);
-  pointer-events: none;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
-}
-
-.playbackPage .playbackTimelineLaneSwatch {
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
-  flex: 0 0 auto;
-}
-
-.playbackPage .playbackTimelineLaneLabel {
-  color: var(--text);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  white-space: nowrap;
 }
 
 .playbackPage .playbackTimelineEmpty {
@@ -879,12 +838,6 @@ body.playbackPage {
 }
 [data-theme="light"] .playbackPage .playbackTimelineCursorLabel {
   background: rgba(244, 244, 245, 0.08);
-}
-
-/* ── Lane header ── */
-[data-theme="light"] .playbackPage .playbackTimelineLaneHeader {
-  background: rgba(244, 244, 245, 0.08);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
 }
 
 /* ── Spinner ── */

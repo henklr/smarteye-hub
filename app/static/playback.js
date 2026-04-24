@@ -1469,10 +1469,6 @@ function renderTimeline() {
     <div class="playbackTimelineRows">
       ${rows.length ? rows.map((row) => `
         <div class="playbackTimelineLane" data-preset-key="${escapeHtml(row.key)}">
-          <div class="playbackTimelineLaneHeader">
-            <span class="playbackTimelineLaneSwatch" style="background:${escapeHtml(row.color)};"></span>
-            <span class="playbackTimelineLaneLabel">${escapeHtml(row.name)}</span>
-          </div>
           <div class="playbackTimelineBase" data-playback-track-base></div>
           ${row.events.map((segment) => {
             const range = dayRange(segment.clip_start, segment.clip_end);
