@@ -278,6 +278,106 @@ body.playbackPage {
   opacity: 0.35;
 }
 
+.playbackPage .playbackShuttleControl {
+  width: min(100%, 320px);
+}
+
+.playbackPage .playbackShuttleBar {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  min-height: 44px;  /* reserves room for the floating value label */
+  padding: 0;
+}
+
+/* Track overlay — centered inside the 30px-tall slider hit area.
+   Slider center y = 30/2 = 15; overlay top = 13 gives a 4px bar at 13..17. */
+.playbackPage .playbackShuttleTrackBg {
+  position: absolute;
+  top: 13px;
+  left: 0;
+  right: 0;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.22) 0%,
+    rgba(255, 255, 255, 0.08) 100%
+  );
+  box-shadow:
+    inset 0 1px 1px rgba(0, 0, 0, 0.35),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  pointer-events: none;
+}
+
+.playbackPage .playbackShuttleTrackFill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 0%;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.playbackPage .playbackShuttleDetent {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.playbackPage .playbackShuttleDetent[data-pos="center"] {
+  left: 50%;
+  background: rgba(255, 255, 255, 0.4);
+}
+.playbackPage .playbackShuttleDetent[data-pos="neg-one"] {
+  left: 37.5%;
+  background: rgba(255, 255, 255, 0.28);
+}
+.playbackPage .playbackShuttleDetent[data-pos="rest"] {
+  left: 62.5%;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+/* Floating multiplier label under the thumb. Its `left` is updated in JS to
+   track the thumb's horizontal position. */
+.playbackPage .playbackShuttleValue {
+  position: absolute;
+  top: 22px;
+  left: 62.5%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(20, 20, 20, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--accent) 90%, white);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  pointer-events: none;
+  user-select: none;
+  transition: color 0.15s ease, background 0.15s ease;
+  white-space: nowrap;
+}
+[data-theme="light"] .playbackPage .playbackShuttleValue {
+  background: rgba(250, 250, 250, 0.9);
+  border-color: rgba(0, 0, 0, 0.06);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+}
+
 .playbackPage .playbackSpeedControl {
   display: flex;
   align-items: center;
@@ -314,6 +414,12 @@ body.playbackPage {
   margin: 0;
   cursor: pointer;
   overflow: visible;
+}
+
+.playbackPage .playbackShuttleControl input[type="range"] {
+  position: relative;
+  z-index: 2;
+  height: 30px; /* generous hit area spanning track + detent */
 }
 
 .playbackPage .playbackSpeedControl input[type="range"]:focus,
@@ -361,6 +467,78 @@ body.playbackPage {
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.12);
   border: none;
+}
+
+/* Shuttle-specific: transparent native track so the custom overlay shows
+   through, and a smaller thumb centered on the 4px track. */
+.playbackPage .playbackShuttleControl input[type="range"]::-webkit-slider-runnable-track {
+  background: transparent;
+  height: 4px;
+}
+.playbackPage .playbackShuttleControl input[type="range"]::-moz-range-track {
+  background: transparent;
+  height: 4px;
+}
+/* Thumb: small, centered, with a subtle top highlight + ring for a
+   slightly elevated feel. */
+.playbackPage .playbackShuttleControl input[type="range"]::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  background:
+    radial-gradient(
+      circle at 35% 30%,
+      color-mix(in srgb, var(--accent) 55%, white) 0%,
+      var(--accent) 60%
+    );
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  transition: transform 0.12s ease, box-shadow 0.15s ease;
+}
+.playbackPage .playbackShuttleControl input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background:
+    radial-gradient(
+      circle at 35% 30%,
+      color-mix(in srgb, var(--accent) 55%, white) 0%,
+      var(--accent) 60%
+    );
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  transition: transform 0.12s ease, box-shadow 0.15s ease;
+}
+.playbackPage .playbackShuttleControl input[type="range"]:active::-webkit-slider-thumb,
+.playbackPage .playbackShuttleControl input[type="range"]:hover::-webkit-slider-thumb {
+  transform: scale(1.12);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(0, 0, 0, 0.4),
+    0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+.playbackPage .playbackShuttleControl input[type="range"]:active::-moz-range-thumb,
+.playbackPage .playbackShuttleControl input[type="range"]:hover::-moz-range-thumb {
+  transform: scale(1.12);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(0, 0, 0, 0.4),
+    0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+/* Accent fill: slight gradient for a hint of depth. */
+.playbackPage .playbackShuttleTrackFill {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 80%, transparent) 0%,
+    var(--accent) 100%
+  );
+  opacity: 1;
 }
 
 .playbackPage .playbackSpeedValue {

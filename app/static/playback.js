@@ -168,8 +168,92 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+const SHUTTLE_MAX = 16;
+const SHUTTLE_DEADZONE = 0.25;
+const SHUTTLE_REST_VALUE = 1;
+const SHUTTLE_SNAP_DURATION_MS = 260;
+// Non-linear mapping: slider position p in [-1, 1] maps to speed
+// v = sign(p) * p^CURVE * MAX. CURVE=2 gives fine control near 1x (low
+// speeds span the inner half of the track) and coarse control near 20x.
+const SHUTTLE_CURVE = 2;
+// Magnetic snap zones around 1x and -1x. Small so they don't intrude on
+// deliberate fine adjustments.
+const SHUTTLE_SNAP_TARGETS = [1, -1];
+const SHUTTLE_SNAP_RADIUS = 0.15;
+
+function shuttlePosToValue(pos) {
+  const p = clamp(Number(pos) || 0, -1, 1);
+  const sign = p < 0 ? -1 : 1;
+  return sign * Math.pow(Math.abs(p), SHUTTLE_CURVE) * SHUTTLE_MAX;
+}
+
+function shuttleValueToPos(value) {
+  const v = clamp(Number(value) || 0, -SHUTTLE_MAX, SHUTTLE_MAX);
+  const sign = v < 0 ? -1 : 1;
+  return sign * Math.pow(Math.abs(v) / SHUTTLE_MAX, 1 / SHUTTLE_CURVE);
+}
+
+function applyShuttleSnap(value) {
+  for (const target of SHUTTLE_SNAP_TARGETS) {
+    if (Math.abs(value - target) <= SHUTTLE_SNAP_RADIUS) return target;
+  }
+  return value;
+}
+
+// Interaction state for the shuttle slider. `_shuttleDragging` blocks
+// syncPlaybackTransport from clobbering the slider's DOM value while the user
+// has their finger on it; `_shuttleAnimRafId` tracks the spring-back tween.
+let _shuttleDragging = false;
+let _shuttleAnimRafId = 0;
+
+function cancelShuttleAnim() {
+  if (_shuttleAnimRafId) {
+    cancelAnimationFrame(_shuttleAnimRafId);
+    _shuttleAnimRafId = 0;
+  }
+}
+
+function updateShuttleFillFromPos(pos) {
+  const p = clamp(Number(pos) || 0, -1, 1);
+  const thumbPct = ((p + 1) / 2) * 100; // 0..100
+
+  const fill = document.querySelector("[data-shuttle-fill]");
+  if (fill) {
+    if (thumbPct >= 50) {
+      fill.style.left = "50%";
+      fill.style.width = `${thumbPct - 50}%`;
+    } else {
+      fill.style.left = `${thumbPct}%`;
+      fill.style.width = `${50 - thumbPct}%`;
+    }
+  }
+
+  // Pin the floating multiplier label under the thumb.
+  const label = document.querySelector("[data-shuttle-value]");
+  if (label) label.style.left = `${thumbPct}%`;
+}
+
+function updateShuttleFillFromValue(value) {
+  updateShuttleFillFromPos(shuttleValueToPos(value));
+}
+
 function normalizePlaybackSpeed(value) {
-  return clamp(Number(value) || 1, 0.25, 25);
+  return clamp(Number(value) || 1, 0.25, SHUTTLE_MAX);
+}
+
+function signedShuttleValue() {
+  const speed = normalizePlaybackSpeed(state.transport.speed);
+  return isReverseDirection() ? -speed : speed;
+}
+
+function formatShuttleValue(signed) {
+  const v = Number(signed) || 0;
+  if (Math.abs(v) < SHUTTLE_DEADZONE) return "0x";
+  const rounded = Math.round(v * 100) / 100;
+  const trimmed = Math.abs(rounded) === Math.round(Math.abs(rounded))
+    ? String(Math.round(rounded))
+    : rounded.toFixed(2).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+  return `${trimmed}x`;
 }
 
 function normalizeVolume(value) {
@@ -889,10 +973,8 @@ function syncPlaybackTransport() {
   const video = el("playbackVideo");
   const playPauseBtn = el("playbackPlayPauseBtn");
   const stopBtn = el("playbackStopBtn");
-  const backwardBtn = el("playbackDirectionBackwardBtn");
-  const forwardBtn = el("playbackDirectionForwardBtn");
-  const speedInput = el("playbackSpeedInput");
-  const speedValue = el("playbackSpeedValue");
+  const shuttleInput = el("playbackShuttleInput");
+  const shuttleValue = el("playbackShuttleValue");
   const hasEvent = !!selectedEvent();
   const running = isPlaybackRunning(video);
 
@@ -909,29 +991,22 @@ function syncPlaybackTransport() {
     stopBtn.disabled = !hasEvent;
   }
 
-  if (backwardBtn) {
-    backwardBtn.disabled = !hasEvent;
-    backwardBtn.classList.toggle("is-active", isReverseDirection());
-    backwardBtn.setAttribute("aria-pressed", isReverseDirection() ? "true" : "false");
-    backwardBtn.setAttribute("aria-label", "Backward");
-    backwardBtn.title = "Backward";
+  const effectiveSigned = running ? signedShuttleValue() : 0;
+  if (shuttleInput) {
+    // The input now lives in POSITION space [-1, 1]; convert from the signed
+    // speed. Don't clobber while the user is dragging or a snap-back is tweening.
+    if (!_shuttleDragging && !_shuttleAnimRafId) {
+      shuttleInput.value = String(shuttleValueToPos(effectiveSigned));
+    }
+    shuttleInput.disabled = !hasEvent;
   }
-
-  if (forwardBtn) {
-    forwardBtn.disabled = !hasEvent;
-    forwardBtn.classList.toggle("is-active", !isReverseDirection());
-    forwardBtn.setAttribute("aria-pressed", !isReverseDirection() ? "true" : "false");
-    forwardBtn.setAttribute("aria-label", "Forward");
-    forwardBtn.title = "Forward";
-  }
-
-  if (speedInput) {
-    speedInput.value = String(normalizePlaybackSpeed(state.transport.speed));
-  }
-
-  if (speedValue) {
-    speedValue.value = formatPlaybackSpeed(state.transport.speed);
-    speedValue.textContent = formatPlaybackSpeed(state.transport.speed);
+  const displayPos = shuttleInput ? Number(shuttleInput.value) : shuttleValueToPos(effectiveSigned);
+  const displayValue = shuttlePosToValue(displayPos);
+  updateShuttleFillFromPos(displayPos);
+  if (shuttleValue) {
+    const label = formatShuttleValue(displayValue);
+    shuttleValue.value = label;
+    shuttleValue.textContent = label;
   }
 
   if (video) {
@@ -1259,6 +1334,75 @@ function resetPlaybackSpeed() {
   }
 
   setPlaybackSpeed(1);
+}
+
+// Drive speed + direction + play/pause from a single signed value in
+// [-SHUTTLE_MAX, +SHUTTLE_MAX]. Center (|v| < deadzone) = paused; sign = direction.
+async function setShuttle(signedValue) {
+  const value = clamp(Number(signedValue) || 0, -SHUTTLE_MAX, SHUTTLE_MAX);
+  const video = el("playbackVideo");
+  const event = selectedEvent();
+
+  if (Math.abs(value) < SHUTTLE_DEADZONE) {
+    // Center detent = pause. Don't mutate speed/direction so release snaps cleanly.
+    pauseCurrentPlayback();
+    syncPlaybackTransport();
+    return;
+  }
+
+  const nextDirection = value < 0 ? "backward" : "forward";
+  const nextSpeed = Math.min(SHUTTLE_MAX, Math.abs(value));
+
+  // setPlaybackDirection is async and, if direction flips, restarts playback
+  // in the right mode (MSE forward, simulated forward >16x, or reverse rAF).
+  if (nextDirection !== playbackDirectionLabel()) {
+    await setPlaybackDirection(nextDirection);
+  }
+  setPlaybackSpeed(nextSpeed);
+
+  // If the user dragged through 0 and back out, resume playback.
+  if (event && video && !isPlaybackRunning(video)) {
+    startConfiguredPlayback(video, event).catch(() => {});
+  }
+}
+
+// Ease-out cubic: snappy at start, soft landing on 1x.
+function _easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+function animateShuttleTo(targetValue, durationMs = SHUTTLE_SNAP_DURATION_MS) {
+  cancelShuttleAnim();
+  const input = el("playbackShuttleInput");
+  if (!input) { setShuttle(targetValue); return; }
+  // Tween in POSITION space so the thumb travels at a visually uniform rate
+  // even with the non-linear position→value curve.
+  const startPos = clamp(Number(input.value) || 0, -1, 1);
+  const endPos = shuttleValueToPos(targetValue);
+  if (Math.abs(endPos - startPos) < 0.002) {
+    input.value = String(endPos);
+    setShuttle(shuttlePosToValue(endPos));
+    return;
+  }
+  const t0 = performance.now();
+  const step = (now) => {
+    const t = Math.min(1, (now - t0) / durationMs);
+    const p = startPos + (endPos - startPos) * _easeOutCubic(t);
+    input.value = String(p);
+    updateShuttleFillFromPos(p);
+    setShuttle(shuttlePosToValue(p));
+    if (t < 1) {
+      _shuttleAnimRafId = requestAnimationFrame(step);
+    } else {
+      _shuttleAnimRafId = 0;
+      input.value = String(endPos);
+      updateShuttleFillFromPos(endPos);
+      setShuttle(shuttlePosToValue(endPos));
+    }
+  };
+  _shuttleAnimRafId = requestAnimationFrame(step);
+}
+
+function resetShuttleToRest() {
+  animateShuttleTo(SHUTTLE_REST_VALUE);
 }
 
 async function setPlaybackDirection(direction) {
@@ -2024,20 +2168,34 @@ function bindUi() {
   el("playbackStopBtn")?.addEventListener("click", async () => {
     await stopPlayback();
   });
-  el("playbackDirectionBackwardBtn")?.addEventListener("click", async () => {
-    await setPlaybackDirection("backward");
+  el("playbackShuttleInput")?.addEventListener("pointerdown", () => {
+    cancelShuttleAnim();
+    _shuttleDragging = true;
   });
-  el("playbackDirectionForwardBtn")?.addEventListener("click", async () => {
-    await setPlaybackDirection("forward");
+  el("playbackShuttleInput")?.addEventListener("input", (event) => {
+    const input = event.target;
+    const rawPos = Number(input.value) || 0;
+    const rawValue = shuttlePosToValue(rawPos);
+    const snappedValue = applyShuttleSnap(rawValue);
+    // Always realign the DOM value to the (possibly snapped) value's position.
+    // This is what makes the magnet visible — the thumb physically jumps to
+    // the detent when the raw drag crosses into the snap radius.
+    const effectivePos = shuttleValueToPos(snappedValue);
+    input.value = String(effectivePos);
+    updateShuttleFillFromPos(effectivePos);
+    setShuttle(snappedValue);
   });
-  el("playbackSpeedInput")?.addEventListener("input", (event) => {
-    setPlaybackSpeed(event.target.value);
-  });
-  el("playbackSpeedInput")?.addEventListener("change", () => {
-    resetPlaybackSpeed();
-  });
-  el("playbackSpeedInput")?.addEventListener("pointerup", () => {
-    resetPlaybackSpeed();
+  // Snap back to 1x on mouse/touch release or keyboard-commit.
+  const _shuttleRelease = () => {
+    _shuttleDragging = false;
+    resetShuttleToRest();
+  };
+  el("playbackShuttleInput")?.addEventListener("pointerup", _shuttleRelease);
+  el("playbackShuttleInput")?.addEventListener("pointercancel", _shuttleRelease);
+  el("playbackShuttleInput")?.addEventListener("blur", _shuttleRelease);
+  // Keyboard users: Enter/Escape commit returns to rest.
+  el("playbackShuttleInput")?.addEventListener("keyup", (event) => {
+    if (event.key === "Enter" || event.key === "Escape") _shuttleRelease();
   });
   el("playbackVolumeInput")?.addEventListener("input", (event) => {
     setVolume(event.target.value);
