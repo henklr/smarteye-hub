@@ -13,19 +13,29 @@ services:
       - MEDIAMTX_API_URL=http://mediamtx:9997
       - MEDIAMTX_API_USER=${MEDIAMTX_API_USER:-apiuser}
       - MEDIAMTX_API_PASS=${MEDIAMTX_API_PASS:-apipass}
-      - PLAYBACK_RECORDING_SCOPE=flow_cameras
+      - PLAYBACK_RECORDING_SCOPE=all
       - PLAYBACK_CLIP_MODE=copy-first
       - PLAYBACK_CLIP_PRESET=ultrafast
       - PLAYBACK_CLIP_THREADS=1
       - PLAYBACK_CLIP_CACHE_LIMIT=8
-      - RECORDING_SEGMENT_SECONDS=15
-      - RECORDER_POLL_SECONDS=2
+      - RECORDING_SEGMENT_SECONDS=60
+      - RECORDER_POLL_SECONDS=5
+      - INDEXER_POLL_SECONDS=3
+      - NVME_BASE=/mnt/nvme/smarteye
     ports:
       - "${PORT:-80}:80"
       - "443:443"
     volumes:
       - ./data:/app/data
       - ./secrets:/app/secrets
+      # rslave: host mount changes under /mnt/nvme propagate into the container,
+      # so `mkfs.ext4 + mount` from the API is visible here immediately.
+      - type: bind
+        source: /mnt/nvme
+        target: /mnt/nvme
+        bind:
+          propagation: rslave
+          create_host_path: true
       - /sys/firmware/devicetree/base:/sys/firmware/devicetree/base:ro
       # PAM auth: mount host user database (read-only)
       - /etc/passwd:/etc/passwd:ro

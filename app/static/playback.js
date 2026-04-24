@@ -1,5 +1,120 @@
 const el = (id) => document.getElementById(id);
 
+let _hls = null;
+let _playbackLoadToken = 0;
+// Timestamp (ms) until which `video.error` events should be swallowed. Set
+// when we transition sources (hls.js teardown, MP4 fallback, etc.) because
+// those transitions produce spurious synthetic errors before the new source
+// is in place.
+let _suppressErrorUntil = 0;
+
+function suppressVideoErrorFor(ms) {
+  const until = Date.now() + Math.max(0, ms | 0);
+  if (until > _suppressErrorUntil) _suppressErrorUntil = until;
+}
+
+function detachPlaybackSource(video) {
+  _playbackLoadToken++;
+  // Destroying hls.js detaches the MediaSource, which fires `video.error`
+  // asynchronously. Suppress for a beat so the global handler doesn't flash
+  // "Clip unavailable" while we're mid-transition.
+  suppressVideoErrorFor(1500);
+  if (_hls) {
+    try { _hls.destroy(); } catch {}
+    _hls = null;
+  }
+  if (video) {
+    try { video.pause(); } catch {}
+    // Drop the current source without triggering a synthetic error event
+    // (removeAttribute + load() fires MEDIA_ERR_EMPTY, which we want to avoid).
+    try { video.src = ""; } catch {}
+  }
+}
+
+function isIgnorableVideoError(video) {
+  if (Date.now() < _suppressErrorUntil) return true;
+  if (!video) return true;
+  if (!video.currentSrc) return true;
+  const err = video.error;
+  if (!err) return true;
+  // MediaError.MEDIA_ERR_ABORTED = 1 (user or programmatic abort) — harmless.
+  return err.code === 1;
+}
+
+function hlsPlaylistUrlForEvent(event) {
+  const deviceId = String(event?.device_id || "").trim();
+  const eventId = String(event?.id || "").trim();
+  if (!deviceId || !eventId) return null;
+  return `/api/playback/hls/${encodeURIComponent(deviceId)}/index.m3u8?event_id=${encodeURIComponent(eventId)}&ts=${Date.now()}`;
+}
+
+function mp4FallbackUrlForEvent(event) {
+  const eventId = String(event?.id || "").trim();
+  if (!eventId) return null;
+  return `/api/playback/events/${encodeURIComponent(eventId)}/clip?ts=${Date.now()}`;
+}
+
+function attachPlaybackSource(video, event) {
+  if (!video || !event) return;
+  detachPlaybackSource(video);
+
+  const token = ++_playbackLoadToken;
+  const hlsUrl = hlsPlaylistUrlForEvent(event);
+  const mp4Url = mp4FallbackUrlForEvent(event);
+  const hasHlsJs = typeof window !== "undefined" && !!window.Hls && typeof window.Hls.isSupported === "function" && window.Hls.isSupported();
+  const nativeHls = video.canPlayType("application/vnd.apple.mpegurl") !== "";
+
+  const fallbackToMp4 = (reason) => {
+    if (token !== _playbackLoadToken) return;
+    // hls.destroy() fires a synthetic media error; suppress it for the
+    // transition so the error handler doesn't flash "Clip unavailable".
+    suppressVideoErrorFor(2000);
+    if (_hls) { try { _hls.destroy(); } catch {} _hls = null; }
+    if (mp4Url) {
+      video.src = mp4Url;
+      try { video.load(); } catch {}
+    }
+    if (reason) console.warn("[playback] HLS failed, falling back to MP4:", reason);
+  };
+
+  if (hlsUrl && hasHlsJs) {
+    try {
+      _hls = new window.Hls({
+        // Workers are blocked by the default CSP (worker-src falls back to
+        // default-src 'self', which disallows blob: workers). Stay on the main
+        // thread to avoid that class of failure.
+        enableWorker: false,
+        lowLatencyMode: false,
+        backBufferLength: 90,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 120,
+      });
+      _hls.on(window.Hls.Events.ERROR, (_evt, data) => {
+        if (data && data.fatal) {
+          fallbackToMp4(data.details || data.type || "fatal");
+        }
+      });
+      _hls.loadSource(hlsUrl);
+      _hls.attachMedia(video);
+      return;
+    } catch (exc) {
+      fallbackToMp4(exc && exc.message);
+      return;
+    }
+  }
+
+  if (hlsUrl && nativeHls) {
+    video.src = hlsUrl;
+    try { video.load(); } catch {}
+    return;
+  }
+
+  if (mp4Url) {
+    video.src = mp4Url;
+    try { video.load(); } catch {}
+  }
+}
+
 const DAY_MINUTES = 24 * 60;
 const MIN_VISIBLE_MINUTES = 5;
 const CLICK_SUPPRESSION_MS = 250;
@@ -170,9 +285,7 @@ function showVideoEmpty(title, text, options = {}) {
   stopReversePlayback();
 
   if (video) {
-    video.pause();
-    video.removeAttribute("src");
-    video.load();
+    detachPlaybackSource(video);
     video.classList.add("hidden");
   }
 
@@ -1596,10 +1709,7 @@ async function selectEvent(eventId, options = {}) {
   setStatus(`Loading ${event.title}…`);
   empty.classList.add("hidden");
   video.classList.remove("hidden");
-  video.pause();
-  video.currentTime = 0;
-  video.src = `/api/playback/events/${encodeURIComponent(eventId)}/clip?ts=${Date.now()}`;
-  video.load();
+  attachPlaybackSource(video, event);
 
   await seekVideoToSeconds(video, seekSeconds);
 
@@ -1809,6 +1919,7 @@ function bindUi() {
   });
 
   video?.addEventListener("error", () => {
+    if (isIgnorableVideoError(video)) return;
     clearForwardPlaybackBoundarySchedule();
     stopPlaybackCursorLoop();
     stopReversePlayback();

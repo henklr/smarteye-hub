@@ -52,8 +52,6 @@ from playback import (
     set_recording_path_refresher,
     start_recording_service,
     stop_recording_service,
-    _list_segments as _playback_list_segments,
-    _recordings_dir_for_device as _playback_recordings_dir,
 )
 from physical_io import start_physical_io_monitor, stop_physical_io_monitor
 
@@ -802,45 +800,107 @@ def storage_format(request: Request, body: dict = None):
 
     _log_system.warning("Formatting %s and mounting to %s", dev_path, mount_path)
 
-    # Unmount any existing partitions
+    import time as _time
+
+    # Stop any app-side writers that might be touching the mount.
+    try:
+        from playback import stop_recording_service, start_recording_service
+        stop_recording_service()
+    except Exception as exc:
+        _log_system.warning("Could not stop recording service before format: %s", exc)
+        start_recording_service = None
+
+    def _path_is_mounted(path: str) -> bool:
+        proc = _host_cmd(["findmnt", "-n", path])
+        return proc.returncode == 0
+
+    def _device_is_mounted(dev: str) -> bool:
+        proc = _host_cmd(["findmnt", "-S", dev, "-n"])
+        return proc.returncode == 0
+
+    def _unmount(target: str) -> tuple[bool, str]:
+        """Try umount, then lazy umount. Returns (ok, error)."""
+        proc = _host_cmd(["umount", target])
+        if proc.returncode == 0:
+            return True, ""
+        err1 = proc.stderr.strip()
+        proc = _host_cmd(["umount", "-l", target])
+        if proc.returncode == 0:
+            return True, ""
+        return False, f"{err1}; lazy: {proc.stderr.strip()}"
+
+    # Unmount by mountpoint and by device path for any existing partition.
     devs = _find_nvme_devices()
     for d in devs:
-        if d["name"] == device:
-            for p in d["partitions"]:
-                if p["mountpoint"]:
-                    _host_cmd(["umount", f"/dev/{p['name']}"])
+        if d["name"] != device:
+            continue
+        for p in d["partitions"]:
+            if p.get("mountpoint"):
+                _unmount(p["mountpoint"])
+            if _device_is_mounted(f"/dev/{p['name']}"):
+                _unmount(f"/dev/{p['name']}")
 
-    # Create partition table + single partition
+    # Also unmount the requested mount_path if something else is mounted there.
+    if _path_is_mounted(mount_path):
+        ok, err = _unmount(mount_path)
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{mount_path} is mounted by something else and cannot be unmounted: {err}",
+            )
+
+    # Wipe existing signatures — avoids blkid/udev reporting "in use" after fdisk.
+    _host_cmd(["wipefs", "-a", dev_path], timeout=15)
+
+    # Create partition table + single partition.
     fdisk_input = "o\nn\np\n1\n\n\nw\n"
     proc = _host_cmd(["fdisk", dev_path], input_data=fdisk_input, timeout=30)
-    if proc.returncode not in (0, 1):  # fdisk may return 1 with re-read warning
+    if proc.returncode not in (0, 1):
         _log_system.error("fdisk failed: %s", proc.stderr)
         raise HTTPException(status_code=500, detail=f"Partitioning failed: {proc.stderr.strip()}")
 
-    # Wait for kernel to re-read partition table
+    # Let udev resettle after partition table rewrite.
     _host_cmd(["partprobe", dev_path], timeout=10)
-    import time as _time
-    _time.sleep(2)
+    _host_cmd(["udevadm", "settle", "--timeout=10"], timeout=15)
 
     part_path = f"{dev_path}p1"
 
-    # Format as ext4
-    proc = _host_cmd(["mkfs.ext4", "-F", part_path], timeout=120)
+    # Wait for the partition node to appear and be free of any lingering mount.
+    deadline = _time.monotonic() + 10
+    while _time.monotonic() < deadline:
+        check = _host_cmd(["test", "-b", part_path])
+        if check.returncode == 0 and not _device_is_mounted(part_path):
+            break
+        _time.sleep(0.5)
+
+    # Wipe the new partition's signature slate before mkfs.
+    _host_cmd(["wipefs", "-a", part_path], timeout=15)
+
+    # mkfs.ext4 with double-force: survives lingering "in use" detection from
+    # udev/blkid probing immediately after partprobe.
+    proc = _host_cmd(["mkfs.ext4", "-F", "-F", part_path], timeout=180)
     if proc.returncode != 0:
         _log_system.error("mkfs.ext4 failed: %s", proc.stderr)
         raise HTTPException(status_code=500, detail=f"Formatting failed: {proc.stderr.strip()}")
 
-    # Create mount point and mount
+    # Create mount point and mount.
     _host_cmd(["mkdir", "-p", mount_path])
     proc = _host_cmd(["mount", part_path, mount_path])
     if proc.returncode != 0:
         raise HTTPException(status_code=500, detail=f"Mount failed: {proc.stderr.strip()}")
 
-    # Add to fstab if not already present
+    # Add to fstab if not already present.
     fstab_check = _host_cmd(["grep", "-q", part_path, "/etc/fstab"])
     if fstab_check.returncode != 0:
         fstab_line = f"\n{part_path}  {mount_path}  ext4  defaults,nofail  0  2\n"
         _host_cmd(["sh", "-c", f"echo '{fstab_line}' >> /etc/fstab"])
+
+    # Restart the recording service so it picks up the fresh mount.
+    if start_recording_service is not None:
+        try:
+            start_recording_service()
+        except Exception as exc:
+            _log_system.warning("Could not restart recording service after format: %s", exc)
 
     _log_system.info("NVMe %s formatted and mounted at %s", device, mount_path)
     return {"ok": True, "device": device, "partition": f"{device}p1", "mount_path": mount_path}

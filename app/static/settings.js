@@ -484,6 +484,26 @@ retentionSaveBtn?.addEventListener("click", async () => {
 
 loadRetention();
 
+const clearRecordingsBtn = document.getElementById("clearRecordingsBtn");
+const clearRecordingsStatus = document.getElementById("clearRecordingsStatus");
+function setClearRecordingsStatus(msg) {
+  if (clearRecordingsStatus) clearRecordingsStatus.textContent = msg || "";
+}
+clearRecordingsBtn?.addEventListener("click", async () => {
+  if (!window.confirm("Delete ALL recordings, clips, and timeline markers? This cannot be undone.")) return;
+  clearRecordingsBtn.disabled = true;
+  setClearRecordingsStatus("Deleting…");
+  try {
+    const result = await api("/api/playback/recordings", { method: "DELETE" });
+    const count = result?.cleared_events ?? 0;
+    setClearRecordingsStatus(`Deleted. ${count} marker${count === 1 ? "" : "s"} cleared. Recording resumed.`);
+  } catch (e) {
+    setClearRecordingsStatus(`Error: ${String(e.message || e)}`);
+  } finally {
+    clearRecordingsBtn.disabled = false;
+  }
+});
+
 rebootBtn?.addEventListener("click", async () => {
   if (!window.confirm("Reboot the system now? All active streams and recordings will stop.")) return;
   rebootBtn.disabled = true;
