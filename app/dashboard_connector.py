@@ -58,7 +58,10 @@ MEDIAMTX_RTSP = os.environ.get("MEDIAMTX_RTSP", "rtsp://mediamtx:8554")
 DASHBOARD_CAMERA_ID = os.environ.get("DASHBOARD_CAMERA_ID", "").strip()
 
 CHUNK_SIZE = 32 * 1024
-RECONNECT_SEC = 5
+RECONNECT_MIN_SEC = 2
+RECONNECT_MAX_SEC = 60
+# How long ws.send() may stall before we treat the connection as dead.
+SEND_TIMEOUT_SEC = 15
 
 
 # ── MAC address ───────────────────────────────────────────────────────────────
@@ -258,14 +261,15 @@ async def _stream_session(creds: dict[str, str]) -> None:
     camera_id = _pick_camera_id()
     if not camera_id:
         log.warning("No camera configured; will retry shortly")
-        await asyncio.sleep(RECONNECT_SEC)
+        await asyncio.sleep(RECONNECT_MIN_SEC)
         return
 
     log.info("Connecting to dashboard %s", ws_url)
+    # Aggressive keepalives so we detect a half-open / restarted server fast.
     # ``additional_headers`` is the modern websockets API; older versions used
     # ``extra_headers``.  Fall back transparently.
-    connect_kwargs = dict(ping_interval=20, ping_timeout=10, close_timeout=5,
-                          max_size=None)
+    connect_kwargs = dict(ping_interval=10, ping_timeout=10, close_timeout=5,
+                          open_timeout=15, max_size=None)
     try:
         ws_ctx = websockets.connect(ws_url, additional_headers=headers,
                                     **connect_kwargs)
@@ -277,15 +281,52 @@ async def _stream_session(creds: dict[str, str]) -> None:
     async with ws_ctx as ws:
         log.info("Dashboard stream connected")
         proc = await _spawn_ffmpeg(camera_id)
-        try:
-            assert proc.stdout is not None
+
+        # A sentinel task that resolves the moment the peer closes the WS or
+        # any protocol-level error occurs.  When it resolves, we cancel the
+        # ffmpeg pump so the session tears down immediately instead of
+        # blocking on a doomed ws.send().
+        async def _wait_close() -> None:
+            try:
+                async for _ in ws:
+                    # We don't expect inbound frames; ignore anything received.
+                    pass
+            except Exception:
+                pass
+
+        closer = asyncio.create_task(_wait_close())
+
+        async def _pump() -> None:
+            assert proc and proc.stdout is not None
             while True:
                 chunk = await proc.stdout.read(CHUNK_SIZE)
                 if not chunk:
                     log.info("ffmpeg ended")
-                    break
-                await ws.send(chunk)
+                    return
+                # Bound the send so a wedged TCP path can't stall us forever.
+                await asyncio.wait_for(ws.send(chunk), timeout=SEND_TIMEOUT_SEC)
+
+        pump = asyncio.create_task(_pump())
+        try:
+            done, pending = await asyncio.wait(
+                {pump, closer},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            # Surface any exception from whichever task finished first.
+            for t in done:
+                exc = t.exception()
+                if exc:
+                    raise exc
         finally:
+            for t in (pump, closer):
+                if not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except BaseException:
+                        pass
             try:
                 if proc and proc.returncode is None:
                     proc.terminate()
@@ -295,32 +336,45 @@ async def _stream_session(creds: dict[str, str]) -> None:
 
 
 async def _connector_loop(stop_event: asyncio.Event) -> None:
+    backoff = RECONNECT_MIN_SEC
     while not stop_event.is_set():
         creds = load_credentials()
         if not creds or not creds.get("device_password"):
             log.info("No dashboard credentials; connector idle")
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=RECONNECT_SEC)
+                await asyncio.wait_for(stop_event.wait(), timeout=RECONNECT_MAX_SEC)
             except asyncio.TimeoutError:
                 pass
             continue
 
+        connected_ok = False
         try:
             await _stream_session(creds)
-        except websockets.exceptions.InvalidStatusCode as exc:
-            # 401/404 → bad credentials; do not hammer the server, but keep
-            # the loop alive so the user can re-register without restarting.
-            log.warning("Dashboard rejected connection: %s", exc)
-        except (OSError, websockets.exceptions.WebSocketException) as exc:
-            log.warning("Dashboard connection failed: %s", exc)
+            # _stream_session returning normally means we did at least connect
+            # successfully (e.g., ffmpeg ended) — reset backoff.
+            connected_ok = True
         except asyncio.CancelledError:
             raise
+        except websockets.exceptions.InvalidStatusCode as exc:
+            # 401/403/404 → bad credentials; do not hammer the server, but keep
+            # the loop alive so the user can re-register without restarting.
+            log.warning("Dashboard rejected connection: %s", exc)
+        except websockets.exceptions.ConnectionClosed as exc:
+            log.warning("Dashboard connection closed: %s", exc)
+            connected_ok = True  # reached the server; quick retry is fine
+        except (OSError, asyncio.TimeoutError, websockets.exceptions.WebSocketException) as exc:
+            log.warning("Dashboard connection failed: %s", exc)
         except Exception:
             log.exception("Unexpected error in dashboard connector")
 
-        log.info("Reconnecting to dashboard in %ds", RECONNECT_SEC)
+        if connected_ok:
+            backoff = RECONNECT_MIN_SEC
+        else:
+            backoff = min(backoff * 2, RECONNECT_MAX_SEC)
+
+        log.info("Reconnecting to dashboard in %ds", backoff)
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=RECONNECT_SEC)
+            await asyncio.wait_for(stop_event.wait(), timeout=backoff)
         except asyncio.TimeoutError:
             pass
 
