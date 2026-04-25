@@ -54,6 +54,7 @@ from playback import (
     stop_recording_service,
 )
 from physical_io import start_physical_io_monitor, stop_physical_io_monitor
+import dashboard_connector
 
 app = FastAPI()
 
@@ -3166,6 +3167,55 @@ def cloud_connect(req: CloudConnectorConfigIn):
     return {"ok": True, **cfg, "running": bool(module.is_connector_running())}
 
 
+# ── SmartEye Dashboard registration & streaming ───────────────────────────────
+
+class DashboardRegisterIn(BaseModel):
+    backend_url: str = Field(..., min_length=1)
+    key: str = Field(..., min_length=1)
+
+
+@app.get("/api/dashboard/status")
+def dashboard_status():
+    return {"ok": True, **dashboard_connector.get_status()}
+
+
+@app.post("/api/dashboard/register")
+def dashboard_register(req: DashboardRegisterIn):
+    try:
+        creds = dashboard_connector.register_device(req.backend_url, req.key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Registration failed: {exc}")
+
+    # (Re)start the connector so it picks up the new credentials immediately.
+    try:
+        dashboard_connector.stop_connector()
+    except Exception:
+        pass
+    dashboard_connector.start_connector()
+
+    status = dashboard_connector.get_status()
+    return {
+        "ok": True,
+        "backend_url": creds.get("backend_url", ""),
+        "mac_address": creds.get("mac_address", ""),
+        **status,
+    }
+
+
+@app.post("/api/dashboard/unregister")
+def dashboard_unregister():
+    try:
+        dashboard_connector.stop_connector()
+    except Exception:
+        pass
+    dashboard_connector.clear_credentials()
+    return {"ok": True, **dashboard_connector.get_status()}
+
+
 @app.get("/api/devices")
 def list_devices():
     devs = _load_devices()
@@ -4570,6 +4620,13 @@ def _on_startup():
 
     threading.Thread(target=_preload_all, daemon=True, name="preload-streams").start()
 
+    try:
+        dashboard_connector.start_connector()
+        _log_system.info("Dashboard connector started (registered=%s)",
+                         dashboard_connector.is_registered())
+    except Exception as e:
+        _log_system.error("Failed to start dashboard connector: %s", e)
+
 
 @app.on_event("shutdown")
 def _on_shutdown():
@@ -4589,6 +4646,10 @@ def _on_shutdown():
     stop_schedule_monitor()
     stop_physical_io_monitor()
     stop_recording_service()
+    try:
+        dashboard_connector.stop_connector()
+    except Exception:
+        pass
 
     with _ptz_watchdog_lock:
         timers = list(_ptz_watchdogs.values())

@@ -189,6 +189,104 @@ cloudConnectBtn?.addEventListener("click", async () => {
 
 loadCloudConfig();
 
+// ── SmartEye Dashboard registration ──────────────────────────────────────────
+
+const dashboardBackendUrlEl   = document.getElementById("dashboardBackendUrl");
+const dashboardKeyEl          = document.getElementById("dashboardKey");
+const dashboardMacAddressEl   = document.getElementById("dashboardMacAddress");
+const dashboardConnectBtn     = document.getElementById("dashboardConnectBtn");
+const dashboardUnregisterBtn  = document.getElementById("dashboardUnregisterBtn");
+const dashboardStatusEl       = document.getElementById("dashboardStatus");
+
+function setDashboardStatus(text, isError) {
+  if (!dashboardStatusEl) return;
+  dashboardStatusEl.textContent = text;
+  dashboardStatusEl.style.color = isError ? "var(--clr-danger, #e74c3c)" : "";
+}
+
+function applyDashboardStatus(data) {
+  if (!data) return;
+  if (dashboardMacAddressEl) {
+    dashboardMacAddressEl.textContent = data.mac_address || "—";
+  }
+  if (dashboardBackendUrlEl) {
+    if (data.backend_url) {
+      dashboardBackendUrlEl.value = data.backend_url;
+    } else if (!dashboardBackendUrlEl.value) {
+      dashboardBackendUrlEl.value = data.default_backend_url || "https://dashboard.smarteye.dk";
+    }
+  }
+  if (dashboardUnregisterBtn) {
+    dashboardUnregisterBtn.style.display = data.registered ? "" : "none";
+  }
+  if (dashboardConnectBtn) {
+    dashboardConnectBtn.textContent = data.registered ? "Re-connect with new key" : "Connect to dashboard";
+  }
+  if (data.registered) {
+    setDashboardStatus(
+      data.running
+        ? `Registered at ${data.backend_url} — streaming.`
+        : `Registered at ${data.backend_url} — reconnecting…`,
+      false
+    );
+  } else {
+    setDashboardStatus("Not registered. Enter the dashboard URL and registration key.", false);
+  }
+}
+
+async function loadDashboardStatus() {
+  try {
+    const data = await api("/api/dashboard/status", { method: "GET" });
+    applyDashboardStatus(data);
+  } catch (e) {
+    setDashboardStatus(`Error: ${String(e.message || e)}`, true);
+  }
+}
+
+dashboardConnectBtn?.addEventListener("click", async () => {
+  const backend_url = (dashboardBackendUrlEl?.value || "").trim();
+  const key = (dashboardKeyEl?.value || "").trim();
+  if (!backend_url) { setDashboardStatus("Dashboard URL is required.", true); return; }
+  if (!key) { setDashboardStatus("Registration key is required.", true); return; }
+
+  dashboardConnectBtn.disabled = true;
+  setDashboardStatus("Registering…", false);
+  try {
+    const data = await api("/api/dashboard/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backend_url, key }),
+    });
+    if (dashboardKeyEl) dashboardKeyEl.value = "";
+    applyDashboardStatus(data);
+    // Give the connector a moment to come up before refreshing.
+    setTimeout(loadDashboardStatus, 1500);
+  } catch (e) {
+    setDashboardStatus(`Error: ${String(e.message || e)}`, true);
+  } finally {
+    dashboardConnectBtn.disabled = false;
+  }
+});
+
+dashboardUnregisterBtn?.addEventListener("click", async () => {
+  if (!confirm("Disconnect this device from the SmartEye Dashboard? The administrator will need to issue a new registration key to reconnect.")) {
+    return;
+  }
+  dashboardUnregisterBtn.disabled = true;
+  try {
+    const data = await api("/api/dashboard/unregister", { method: "POST" });
+    applyDashboardStatus(data);
+  } catch (e) {
+    setDashboardStatus(`Error: ${String(e.message || e)}`, true);
+  } finally {
+    dashboardUnregisterBtn.disabled = false;
+  }
+});
+
+loadDashboardStatus();
+// Auto-refresh status periodically so the user sees live connector state.
+setInterval(loadDashboardStatus, 10000);
+
 // ── Date & Time ───────────────────────────────────────────────────────────────
 
 const timezoneSelect = document.getElementById("timezoneSelect");

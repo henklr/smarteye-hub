@@ -1,0 +1,407 @@
+"""
+dashboard_connector.py — SmartEye Pi → SmartEye Dashboard (.NET) client.
+
+Two responsibilities:
+
+  1. **Registration** with the dotnet backend at `{backend_url}/Device/RegisterDevice`.
+     The user enters the registration key (generated on the dashboard via
+     InternalController.GetRegisterDeviceKey) on the Pi settings page; we POST
+     the device's MAC address along with the key and receive a long-lived
+     device password back which we persist on disk.
+
+  2. **Streaming**: an OUTBOUND, persistent WebSocket to
+     `{backend_url}/Device/Stream` authenticated via the `X-Device-MAC` and
+     `X-Device-Password` headers.  ffmpeg pulls the local camera RTSP from
+     MediaMTX and we forward fragmented MP4 chunks as binary frames so that
+     `DeviceController.Stream` can broadcast them to all dashboard viewers
+     calling `Device/WatchStream/{siteId}`.
+
+The connector reconnects automatically with a fixed back-off whenever the
+WebSocket drops, ffmpeg dies, or the Pi reboots.
+
+Persisted state lives in `${DATA_DIR}/dashboard_credentials.json`:
+
+    {
+      "backend_url":  "https://dashboard.smarteye.dk",
+      "mac_address":  "dc:a6:32:xx:xx:xx",
+      "device_password": "<base64 password from server>",
+      "site_id": "<optional>"
+    }
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import threading
+import time
+import urllib.error
+import urllib.request
+import uuid
+from pathlib import Path
+from typing import Any, Optional
+
+import websockets
+import websockets.exceptions
+
+log = logging.getLogger("dashboard_connector")
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
+CREDENTIALS_FILE = DATA_DIR / "dashboard_credentials.json"
+DEFAULT_BACKEND_URL = os.getenv("DASHBOARD_BACKEND_URL", "https://dashboard.smarteye.dk")
+
+MEDIAMTX_RTSP = os.environ.get("MEDIAMTX_RTSP", "rtsp://mediamtx:8554")
+DASHBOARD_CAMERA_ID = os.environ.get("DASHBOARD_CAMERA_ID", "").strip()
+
+CHUNK_SIZE = 32 * 1024
+RECONNECT_SEC = 5
+
+
+# ── MAC address ───────────────────────────────────────────────────────────────
+
+def get_mac_address() -> str:
+    """Return the MAC address of the primary network interface."""
+    for interface in ("eth0", "wlan0", "en0", "wlan1"):
+        try:
+            mac_path = f"/sys/class/net/{interface}/address"
+            if os.path.exists(mac_path):
+                with open(mac_path, "r", encoding="utf-8") as f:
+                    mac = f.read().strip()
+                if mac and mac != "00:00:00:00:00:00":
+                    return mac
+        except Exception:
+            continue
+    try:
+        node = uuid.getnode()
+        return ":".join(f"{(node >> shift) & 0xff:02x}"
+                        for shift in range(40, -1, -8))
+    except Exception:
+        return "00:00:00:00:00:01"
+
+
+# ── Credentials persistence ───────────────────────────────────────────────────
+
+def load_credentials() -> Optional[dict[str, str]]:
+    try:
+        if CREDENTIALS_FILE.exists():
+            return json.loads(CREDENTIALS_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log.warning("Failed to load credentials: %s", exc)
+    return None
+
+
+def save_credentials(creds: dict[str, str]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = CREDENTIALS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(creds, indent=2), encoding="utf-8")
+    tmp.replace(CREDENTIALS_FILE)
+    log.info("Saved dashboard credentials")
+
+
+def clear_credentials() -> None:
+    try:
+        if CREDENTIALS_FILE.exists():
+            CREDENTIALS_FILE.unlink()
+            log.info("Cleared dashboard credentials")
+    except Exception as exc:
+        log.warning("Failed to clear credentials: %s", exc)
+
+
+def is_registered() -> bool:
+    creds = load_credentials() or {}
+    return bool(creds.get("device_password") and creds.get("backend_url"))
+
+
+# ── URL helpers ───────────────────────────────────────────────────────────────
+
+def _normalize_backend_url(url: str) -> str:
+    url = (url or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+    return url
+
+
+def _backend_to_ws_url(backend_url: str, path: str) -> str:
+    backend_url = _normalize_backend_url(backend_url)
+    if backend_url.startswith("https://"):
+        return "wss://" + backend_url[len("https://"):] + path
+    if backend_url.startswith("http://"):
+        return "ws://" + backend_url[len("http://"):] + path
+    return backend_url + path
+
+
+# ── Registration ──────────────────────────────────────────────────────────────
+
+def register_device(backend_url: str, registration_key: str) -> dict[str, Any]:
+    """Call `{backend_url}/Device/RegisterDevice` and persist the password."""
+    backend_url = _normalize_backend_url(backend_url)
+    if not backend_url:
+        raise ValueError("backend_url is required")
+    if not registration_key:
+        raise ValueError("registration key is required")
+
+    mac_address = get_mac_address()
+    register_url = f"{backend_url}/Device/RegisterDevice"
+    payload = json.dumps({
+        "MacAddress": mac_address,
+        "Key": registration_key,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        register_url,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "SmartEye-Pi/1.0",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8") if exc.fp else ""
+        except Exception:
+            pass
+        raise RuntimeError(f"Registration rejected by server ({exc.code}): {detail or exc.reason}")
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Network error contacting {register_url}: {exc.reason}")
+
+    try:
+        result = json.loads(body)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"Unexpected non-JSON response: {body[:200]}")
+
+    # The dotnet API returns RegisterDeviceResponse { DevicePassword } as JSON,
+    # serialised with the default camelCase contract.
+    password = (result or {}).get("devicePassword") or (result or {}).get("DevicePassword")
+    if not password:
+        raise RuntimeError(f"Server response missing devicePassword: {body[:200]}")
+
+    creds = {
+        "backend_url": backend_url,
+        "mac_address": mac_address,
+        "device_password": password,
+    }
+    save_credentials(creds)
+    log.info("Device registered with %s as %s", backend_url, mac_address)
+    return creds
+
+
+def get_status() -> dict[str, Any]:
+    """Public registration + connector status used by the settings UI."""
+    creds = load_credentials() or {}
+    return {
+        "registered": is_registered(),
+        "backend_url": creds.get("backend_url", ""),
+        "mac_address": creds.get("mac_address") or get_mac_address(),
+        "running": is_running(),
+        "default_backend_url": DEFAULT_BACKEND_URL,
+    }
+
+
+# ── Streaming ─────────────────────────────────────────────────────────────────
+
+def _pick_camera_id() -> Optional[str]:
+    """Return the camera id whose stream is forwarded to the dashboard."""
+    if DASHBOARD_CAMERA_ID:
+        return DASHBOARD_CAMERA_ID
+    try:
+        devices_file = DATA_DIR / "devices.json"
+        if devices_file.exists():
+            data = json.loads(devices_file.read_text(encoding="utf-8"))
+            for d in data.get("devices", []) or []:
+                if d.get("id"):
+                    return d["id"]
+    except Exception as exc:
+        log.warning("Could not read devices.json: %s", exc)
+    return None
+
+
+async def _spawn_ffmpeg(camera_id: str) -> asyncio.subprocess.Process:
+    cam_path = camera_id if str(camera_id).startswith("cam-") else f"cam-{camera_id}"
+    rtsp_url = f"{MEDIAMTX_RTSP}/{cam_path}"
+    log.info("Starting ffmpeg for %s", rtsp_url)
+    return await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-loglevel", "error",
+        "-rtsp_transport", "tcp",
+        "-i", rtsp_url,
+        "-c:v", "copy",
+        "-an",
+        "-f", "mp4",
+        "-movflags",
+        "frag_keyframe+empty_moov+default_base_moof+omit_tfhd_offset",
+        "pipe:1",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+
+
+async def _stream_session(creds: dict[str, str]) -> None:
+    """One full WebSocket session: connect → stream until either side drops."""
+    ws_url = _backend_to_ws_url(creds["backend_url"], "/Device/Stream")
+    headers = {
+        "X-Device-MAC": creds["mac_address"],
+        "X-Device-Password": creds["device_password"],
+    }
+
+    camera_id = _pick_camera_id()
+    if not camera_id:
+        log.warning("No camera configured; will retry shortly")
+        await asyncio.sleep(RECONNECT_SEC)
+        return
+
+    log.info("Connecting to dashboard %s", ws_url)
+    # ``additional_headers`` is the modern websockets API; older versions used
+    # ``extra_headers``.  Fall back transparently.
+    connect_kwargs = dict(ping_interval=20, ping_timeout=10, close_timeout=5,
+                          max_size=None)
+    try:
+        ws_ctx = websockets.connect(ws_url, additional_headers=headers,
+                                    **connect_kwargs)
+    except TypeError:
+        ws_ctx = websockets.connect(ws_url, extra_headers=headers,
+                                    **connect_kwargs)
+
+    proc: Optional[asyncio.subprocess.Process] = None
+    async with ws_ctx as ws:
+        log.info("Dashboard stream connected")
+        proc = await _spawn_ffmpeg(camera_id)
+        try:
+            assert proc.stdout is not None
+            while True:
+                chunk = await proc.stdout.read(CHUNK_SIZE)
+                if not chunk:
+                    log.info("ffmpeg ended")
+                    break
+                await ws.send(chunk)
+        finally:
+            try:
+                if proc and proc.returncode is None:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=3)
+            except Exception:
+                pass
+
+
+async def _connector_loop(stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        creds = load_credentials()
+        if not creds or not creds.get("device_password"):
+            log.info("No dashboard credentials; connector idle")
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=RECONNECT_SEC)
+            except asyncio.TimeoutError:
+                pass
+            continue
+
+        try:
+            await _stream_session(creds)
+        except websockets.exceptions.InvalidStatusCode as exc:
+            # 401/404 → bad credentials; do not hammer the server, but keep
+            # the loop alive so the user can re-register without restarting.
+            log.warning("Dashboard rejected connection: %s", exc)
+        except (OSError, websockets.exceptions.WebSocketException) as exc:
+            log.warning("Dashboard connection failed: %s", exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Unexpected error in dashboard connector")
+
+        log.info("Reconnecting to dashboard in %ds", RECONNECT_SEC)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=RECONNECT_SEC)
+        except asyncio.TimeoutError:
+            pass
+
+
+# ── Background thread management ──────────────────────────────────────────────
+
+_thread: Optional[threading.Thread] = None
+_loop: Optional[asyncio.AbstractEventLoop] = None
+_stop_event: Optional[asyncio.Event] = None
+_lock = threading.Lock()
+
+
+def is_running() -> bool:
+    return bool(_thread and _thread.is_alive())
+
+
+def start_connector() -> None:
+    """Start the background connector thread (idempotent)."""
+    global _thread, _loop, _stop_event
+    with _lock:
+        if _thread and _thread.is_alive():
+            return
+
+        loop = asyncio.new_event_loop()
+        stop_event = asyncio.Event()
+
+        def _run() -> None:
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(_connector_loop(stop_event))
+            except Exception:
+                log.exception("Dashboard connector loop crashed")
+            finally:
+                try:
+                    pending = asyncio.all_tasks(loop)
+                    for t in pending:
+                        t.cancel()
+                    loop.run_until_complete(asyncio.gather(*pending,
+                                                           return_exceptions=True))
+                except Exception:
+                    pass
+                loop.close()
+
+        _loop = loop
+        _stop_event = stop_event
+        _thread = threading.Thread(target=_run, name="dashboard-connector",
+                                   daemon=True)
+        _thread.start()
+        log.info("Dashboard connector thread started")
+
+
+def stop_connector(timeout: float = 5.0) -> None:
+    """Signal the connector loop to stop and wait for the thread to exit."""
+    global _thread, _loop, _stop_event
+    with _lock:
+        thread = _thread
+        loop = _loop
+        stop_event = _stop_event
+        _thread = None
+        _loop = None
+        _stop_event = None
+
+    if not thread:
+        return
+
+    if loop and stop_event and loop.is_running():
+        loop.call_soon_threadsafe(stop_event.set)
+
+    deadline = time.time() + timeout
+    thread.join(timeout=max(0.1, deadline - time.time()))
+    log.info("Dashboard connector thread stopped")
+
+
+# ── Standalone entry-point (debugging) ────────────────────────────────────────
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    start_connector()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        stop_connector()
