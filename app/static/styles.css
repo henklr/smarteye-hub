@@ -224,63 +224,54 @@ h1 {
   background: linear-gradient(90deg, #d9534f, #ff8080);
 }
 
-.loadCamerasGrid {
+.camMetrics {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.4fr) minmax(0, 0.9fr);
-  column-gap: 10px;
-  row-gap: 6px;
-  align-items: center;
-}
-
-.loadCamRow {
-  display: contents;
-}
-
-.loadCamName {
-  display: flex;
+  grid-template-columns: auto auto 1fr auto auto auto;
   align-items: center;
   gap: 6px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border, rgba(255, 255, 255, 0.08));
+  font-size: 11px;
+  color: var(--muted);
 }
 
-.loadCamStatus {
-  display: inline-block;
+.camMetricStatus {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  flex-shrink: 0;
+  background: var(--muted);
+  opacity: 0.4;
 }
 
-.loadCamStatus.is-rec {
+.camMetricStatus.is-rec {
   background: #e74c3c;
+  opacity: 1;
   box-shadow: 0 0 4px rgba(231, 76, 60, 0.6);
 }
 
-.loadCamStatus.is-idle {
-  background: var(--muted);
-  opacity: 0.5;
+.camMetricStatus.is-idle {
+  opacity: 0.4;
 }
 
-.loadCamMetric {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
+.camMetricLabel {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
 }
 
-.loadCamMetric .loadBar {
-  flex: 1;
+.camMetrics .loadBar {
   min-width: 40px;
 }
 
-.loadCamValue {
+.camMetricValue {
   font-variant-numeric: tabular-nums;
-  color: var(--muted);
   font-size: 11px;
   white-space: nowrap;
+  color: var(--text, inherit);
+  min-width: 38px;
+  text-align: right;
 }
 
 .topbar {

@@ -1465,8 +1465,6 @@ def start_recording_service() -> None:
         _indexer_thread.start()
 
 
-_proc_cpu_snapshot: Dict[int, Tuple[float, int]] = {}
-_segment_size_snapshot: Dict[str, Tuple[float, int, str]] = {}
 _load_snapshot_lock = threading.Lock()
 
 
@@ -1487,59 +1485,122 @@ def _read_proc_cpu_jiffies(pid: int) -> Optional[int]:
         return None
 
 
-def _process_cpu_pct(pid: Optional[int]) -> Optional[float]:
-    if pid is None:
-        return None
-    now = time.monotonic()
-    cur = _read_proc_cpu_jiffies(pid)
-    if cur is None:
-        _proc_cpu_snapshot.pop(pid, None)
-        return None
-    prev = _proc_cpu_snapshot.get(pid)
-    _proc_cpu_snapshot[pid] = (now, cur)
-    if prev is None:
-        return None
-    prev_t, prev_j = prev
-    elapsed = now - prev_t
-    if elapsed <= 0.05:
-        return None
+def _scan_recorder_pids() -> Dict[str, int]:
+    """Map device_id -> ffmpeg pid by scanning /proc.
+
+    The recorder lock guarantees only one uvicorn worker spawns ffmpeg
+    subprocesses, but every worker shares the container's PID namespace, so
+    any worker can find the recorders this way. That's important for the
+    load endpoint, which must work whichever worker handles the request.
+    """
+    out: Dict[str, int] = {}
+    rec_root = str(_recordings_root().resolve()) + "/"
+    try:
+        entries = os.listdir("/proc")
+    except Exception:
+        return out
+    for name in entries:
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        try:
+            with open(f"/proc/{pid}/comm", "r") as fh:
+                comm = fh.read().strip()
+        except Exception:
+            continue
+        if comm != "ffmpeg":
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmdline = fh.read().decode("utf-8", errors="replace")
+        except Exception:
+            continue
+        # cmdline is NUL-separated; segment output path is the last arg
+        # and contains the device id as the parent directory.
+        for arg in cmdline.split("\x00"):
+            if not arg.startswith(rec_root):
+                continue
+            tail = arg[len(rec_root):]
+            did = tail.split("/", 1)[0]
+            if did and _SAFE_ID_RE.match(did):
+                out[did] = pid
+                break
+    return out
+
+
+def _sample_recorder_metrics(
+    device_pids: Dict[str, int],
+    sleep_seconds: float = 0.4,
+) -> Dict[str, Dict[str, Optional[float]]]:
+    """Self-contained two-phase sample of CPU% and recording bitrate.
+
+    Reads jiffies + latest segment size for every alive recorder, sleeps,
+    reads again, and returns concrete deltas. This avoids relying on a
+    cross-worker cache — every call is its own baseline.
+    """
     try:
         clk = os.sysconf("SC_CLK_TCK")
     except (ValueError, OSError):
         clk = 100
-    cpu_seconds = max(0, cur - prev_j) / clk
-    return 100.0 * cpu_seconds / elapsed
 
+    def latest_segment(did: str) -> Optional[Path]:
+        try:
+            recdir = _device_recordings_dir(did)
+            files = sorted(recdir.glob("*.ts"), key=lambda p: p.stat().st_mtime)
+            return files[-1] if files else None
+        except Exception:
+            return None
 
-def _recording_bitrate_mbps(device_id: str) -> Optional[float]:
-    try:
-        recdir = _device_recordings_dir(device_id)
-        candidates = sorted(recdir.glob("*.ts"), key=lambda p: p.stat().st_mtime)
-    except Exception:
-        return None
-    if not candidates:
-        return None
-    latest = candidates[-1]
-    try:
-        size = latest.stat().st_size
-    except Exception:
-        return None
-    now = time.monotonic()
-    prev = _segment_size_snapshot.get(device_id)
-    _segment_size_snapshot[device_id] = (now, size, latest.name)
-    if prev is None:
-        return None
-    prev_t, prev_size, prev_name = prev
-    elapsed = now - prev_t
-    if elapsed <= 0.05:
-        return None
-    if prev_name != latest.name:
-        # rotated to a new segment; use a fraction of the new file as the
-        # signal — the previous segment may have closed mid-interval.
-        delta_bytes = size
-    else:
-        delta_bytes = max(0, size - prev_size)
-    return (delta_bytes * 8.0) / 1_000_000.0 / elapsed
+    first_jiffies: Dict[str, Optional[int]] = {}
+    first_size: Dict[str, Optional[int]] = {}
+    first_seg_name: Dict[str, Optional[str]] = {}
+    for did, pid in device_pids.items():
+        first_jiffies[did] = _read_proc_cpu_jiffies(pid)
+        seg = latest_segment(did)
+        if seg is not None:
+            try:
+                first_size[did] = seg.stat().st_size
+                first_seg_name[did] = seg.name
+            except Exception:
+                first_size[did] = None
+                first_seg_name[did] = None
+        else:
+            first_size[did] = None
+            first_seg_name[did] = None
+
+    t0 = time.monotonic()
+    time.sleep(max(0.05, sleep_seconds))
+    elapsed = max(0.05, time.monotonic() - t0)
+
+    out: Dict[str, Dict[str, Optional[float]]] = {}
+    for did, pid in device_pids.items():
+        cpu_pct: Optional[float] = None
+        j2 = _read_proc_cpu_jiffies(pid)
+        j1 = first_jiffies.get(did)
+        if j1 is not None and j2 is not None and j2 >= j1:
+            cpu_seconds = (j2 - j1) / clk
+            cpu_pct = 100.0 * cpu_seconds / elapsed
+
+        mbps: Optional[float] = None
+        seg = latest_segment(did)
+        if seg is not None:
+            try:
+                size2 = seg.stat().st_size
+            except Exception:
+                size2 = None
+            size1 = first_size.get(did)
+            seg_name1 = first_seg_name.get(did)
+            if size2 is not None:
+                if seg_name1 == seg.name and size1 is not None:
+                    delta_bytes = max(0, size2 - size1)
+                else:
+                    # rotated to a new segment mid-window — treat the new
+                    # file's size as bytes-since-rotation.
+                    delta_bytes = size2
+                mbps = (delta_bytes * 8.0) / 1_000_000.0 / elapsed
+
+        out[did] = {"cpu_pct": cpu_pct, "mbps": mbps}
+    return out
 
 
 def system_load_snapshot() -> Dict[str, Any]:
@@ -1573,25 +1634,39 @@ def system_load_snapshot() -> Dict[str, Any]:
             pass
 
         devices = _load_devices()
+        scanned_pids = _scan_recorder_pids()
         with _recorders_lock:
-            recs = {did: proc for did, proc in _recorders.items()}
+            local_pids = {
+                did: proc.pid
+                for did, proc in _recorders.items()
+                if proc and proc.poll() is None
+            }
+        device_pids: Dict[str, int] = {}
+        for d in devices:
+            did = str(d.get("id") or "").strip()
+            if not did:
+                continue
+            pid = local_pids.get(did) or scanned_pids.get(did)
+            if pid is not None:
+                device_pids[did] = pid
+
+        metrics = _sample_recorder_metrics(device_pids) if device_pids else {}
+
         cameras: List[Dict[str, Any]] = []
         for d in devices:
             did = str(d.get("id") or "").strip()
             if not did:
                 continue
-            proc = recs.get(did)
-            alive = bool(proc and proc.poll() is None)
-            pid = proc.pid if alive else None
-            cpu_pct = _process_cpu_pct(pid) if alive else None
-            mbps = _recording_bitrate_mbps(did) if alive else None
+            pid = device_pids.get(did)
+            alive = pid is not None
+            sample = metrics.get(did) or {}
             cameras.append({
                 "device_id": did,
                 "name": str(d.get("name") or did),
                 "recorder_alive": alive,
                 "recorder_pid": pid,
-                "recorder_cpu_pct": cpu_pct,
-                "recording_mbps": mbps,
+                "recorder_cpu_pct": sample.get("cpu_pct") if alive else None,
+                "recording_mbps": sample.get("mbps") if alive else None,
             })
         cameras.sort(key=lambda c: (-(c.get("recorder_cpu_pct") or 0), c["name"]))
 

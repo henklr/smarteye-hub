@@ -167,37 +167,54 @@ function _setLoadBar(barEl, pct) {
   if (cls) barEl.classList.add(cls);
 }
 
-function _renderCameraLoad(grid, cameras) {
-  if (!grid) return;
-  if (!cameras || cameras.length === 0) {
-    grid.innerHTML = `<div class="muted" style="grid-column:1/-1; padding:6px 2px;">No cameras configured.</div>`;
-    return;
-  }
-  grid.innerHTML = cameras.map((c) => {
-    const cpu = c.recorder_cpu_pct == null ? null : Number(c.recorder_cpu_pct);
-    const mbps = c.recording_mbps == null ? null : Number(c.recording_mbps);
-    const cpuTxt = cpu == null ? "—" : `${cpu.toFixed(0)}%`;
-    const mbpsTxt = mbps == null ? "—" : `${mbps.toFixed(1)} Mbps`;
-    const status = c.recorder_alive ? "rec" : "idle";
-    const statusCls = c.recorder_alive ? "is-rec" : "is-idle";
-    const cpuPct = cpu == null ? 0 : Math.min(100, cpu);
+const _camMetricCache = new Map();
+
+function _updateCameraMetrics(cameras) {
+  const root = document.getElementById("camList");
+  if (!root) return;
+  for (const c of cameras || []) {
+    const did = c.device_id || "";
+    const row = root.querySelector(`[data-cam-metrics="${CSS.escape(did)}"]`);
+    if (!row) continue;
+
+    const prev = _camMetricCache.get(did) || { cpu: null, mbps: null };
+    let cpu = c.recorder_cpu_pct == null ? null : Number(c.recorder_cpu_pct);
+    let mbps = c.recording_mbps == null ? null : Number(c.recording_mbps);
+
+    // If recorder is alive but a value is missing, hold the previous one
+    // rather than flashing "—" — keeps the UI stable across transient nulls
+    // (recorder restarts, brief proc-read failures, etc).
+    if (c.recorder_alive) {
+      if (cpu == null && prev.cpu != null) cpu = prev.cpu;
+      if (mbps == null && prev.mbps != null) mbps = prev.mbps;
+      _camMetricCache.set(did, { cpu, mbps });
+    } else {
+      _camMetricCache.delete(did);
+    }
+
+    const cpuPct = cpu == null ? 0 : Math.max(0, Math.min(100, cpu));
     const cpuCls = _loadStatusClass(cpuPct);
-    return `
-      <div class="loadCamRow">
-        <div class="loadCamName" title="${escapeHtml(c.device_id || "")}">
-          <span class="loadCamStatus ${statusCls}" title="${status}"></span>
-          ${escapeHtml(c.name || c.device_id || "")}
-        </div>
-        <div class="loadCamMetric">
-          <div class="loadBar small"><div class="loadBarFill ${cpuCls}" style="width:${cpuPct.toFixed(1)}%"></div></div>
-          <span class="loadCamValue">${cpuTxt}</span>
-        </div>
-        <div class="loadCamMetric">
-          <span class="loadCamValue">${mbpsTxt}</span>
-        </div>
-      </div>
-    `;
-  }).join("");
+
+    const statusEl = row.querySelector('[data-cam-metric="status"]');
+    if (statusEl) {
+      statusEl.classList.toggle("is-rec", !!c.recorder_alive);
+      statusEl.classList.toggle("is-idle", !c.recorder_alive);
+      statusEl.title = c.recorder_alive ? "recording" : "idle";
+    }
+
+    const cpuBar = row.querySelector('[data-cam-metric="cpuBar"]');
+    if (cpuBar) {
+      cpuBar.style.width = cpuPct.toFixed(1) + "%";
+      cpuBar.classList.remove("is-warn", "is-critical");
+      if (cpuCls) cpuBar.classList.add(cpuCls);
+    }
+
+    const cpuVal = row.querySelector('[data-cam-metric="cpu"]');
+    if (cpuVal) cpuVal.textContent = cpu == null ? "—" : `${cpu.toFixed(0)}%`;
+
+    const mbpsVal = row.querySelector('[data-cam-metric="mbps"]');
+    if (mbpsVal) mbpsVal.textContent = mbps == null ? "—" : `${mbps.toFixed(1)} Mbps`;
+  }
 }
 
 async function refreshSystemLoad() {
@@ -231,7 +248,7 @@ async function refreshSystemLoad() {
     }
     _setLoadBar(document.getElementById("loadMemBar"), memUsedPct);
 
-    _renderCameraLoad(document.getElementById("loadCamerasGrid"), data.cameras || []);
+    _updateCameraMetrics(data.cameras || []);
   } catch (e) {
     const cpuValue = document.getElementById("loadCpuValue");
     const memValue = document.getElementById("loadMemValue");
@@ -708,6 +725,15 @@ function renderList() {
         </div>
 
         <div class="camSub">${escapeHtml(ipPart + subtitleText)}</div>
+
+        <div class="camMetrics" data-cam-metrics="${escapeHtml(d.id)}">
+          <span class="camMetricStatus" data-cam-metric="status" title="recorder status"></span>
+          <span class="camMetricLabel">CPU</span>
+          <div class="loadBar small"><div class="loadBarFill" data-cam-metric="cpuBar"></div></div>
+          <span class="camMetricValue" data-cam-metric="cpu">—</span>
+          <span class="camMetricLabel">Rec</span>
+          <span class="camMetricValue" data-cam-metric="mbps">—</span>
+        </div>
       </div>
     `;
   }).join("");
