@@ -1898,6 +1898,38 @@ function renderSnapshotDeviceList(entries = []) {
   }).join("");
 }
 
+function recordDeviceEntries(cfg) {
+  if (Array.isArray(cfg?.device_ids)) {
+    return cfg.device_ids.map((entry) => String(entry || "").trim());
+  }
+  const legacy = String(cfg?.device_id || "").trim();
+  return legacy ? [legacy] : [];
+}
+
+function recordDeviceIds(cfg) {
+  const out = [];
+  const seen = new Set();
+  for (const did of recordDeviceEntries(cfg)) {
+    if (did && !seen.has(did)) {
+      seen.add(did);
+      out.push(did);
+    }
+  }
+  return out;
+}
+
+function renderRecordDeviceList(entries = []) {
+  if (!entries.length) {
+    return `<div class="inlineMeta">No cameras selected. Add at least one.</div>`;
+  }
+  return entries.map((did, i) => `
+    <div class="snapshotDeviceRow" data-index="${i}">
+      <select class="recordDeviceSelect" data-index="${i}">${deviceOptionsHtml(did)}</select>
+      <button class="snapshotDeviceRemove recordDeviceRemove" data-index="${i}" type="button" title="Remove camera">&times;</button>
+    </div>
+  `).join("");
+}
+
 function variableKeyOptionsHtml(selected = "", { includePhysical = true } = {}) {
   const vars = currentPublicVariables().filter((variable) => includePhysical || normalizeVariableSource(variable.source) !== "physical_input");
   const options = [`<option value="">Select variable</option>`];
@@ -2450,9 +2482,13 @@ function isNodeInvalid(node) {
     case "trigger.ptz_manual_control_started":
     case "trigger.ptz_manual_control_stopped":
     case "action.record":
-    case "action.stop_recording":
-      if (cfg.device_id && !deviceIds.has(cfg.device_id)) return "Unknown device";
+    case "action.stop_recording": {
+      const ids = recordDeviceIds(cfg);
+      for (const did of ids) {
+        if (did && !deviceIds.has(did)) return "Unknown device";
+      }
       break;
+    }
     case "trigger.schedule_active":
     case "trigger.schedule_inactive":
     case "condition.schedule_active":
@@ -2584,14 +2620,30 @@ function nodePreview(node) {
       return `${physicalLabel("relay", cfg.channel || "1")} · ${cfg.mode || "pulse"}${cfg.mode === "pulse" ? ` for ${cfg.pulse_seconds || 0}s` : ""} · now ${physicalLiveValueText("relay", cfg.channel || "1")}`;
 
     case "action.record": {
-      const device = state.devices.find((item) => item.id === cfg.device_id);
-      const label = device?.name || cfg.device_id || "camera";
+      const ids = recordDeviceIds(cfg);
+      let label;
+      if (!ids.length) {
+        label = "camera";
+      } else if (ids.length === 1) {
+        const device = state.devices.find((item) => item.id === ids[0]);
+        label = device?.name || ids[0];
+      } else {
+        label = `${ids.length} cameras`;
+      }
       return `${label} · start · -${formatSecondsLabel(cfg.before_seconds ?? 0)}`;
     }
 
     case "action.stop_recording": {
-      const device = state.devices.find((item) => item.id === cfg.device_id);
-      const label = device?.name || cfg.device_id || "camera";
+      const ids = recordDeviceIds(cfg);
+      let label;
+      if (!ids.length) {
+        label = "camera";
+      } else if (ids.length === 1) {
+        const device = state.devices.find((item) => item.id === ids[0]);
+        label = device?.name || ids[0];
+      } else {
+        label = `${ids.length} cameras`;
+      }
       return `${label} · stop`;
     }
 
@@ -6575,18 +6627,22 @@ function renderNodeInspector(node) {
       {
         const selectedPreset = recordingPresetByName(cfg.preset_name || cfg.name);
         const tagColor = selectedPreset?.color || cfg.color || "#c6a14b";
+        const recordEntries = recordDeviceEntries(cfg);
       body = `
         <div class="inspectorCard">
           <div class="inspectorTitle">Start recording</div>
-          <div class="inspectorHint">Starts a colored playback marker for the selected camera using a shared recording tag. Use a Stop recording node later in the flow to end it.</div>
+          <div class="inspectorHint">Starts a colored playback marker on one or more cameras using a shared recording tag. Use a Stop recording node later in the flow to end it.</div>
           <div class="fieldGrid mt-10">
             <div class="full">
               <label>Tag</label>
               <select id="cfg_preset_name">${recordingPresetOptionsHtml(cfg.preset_name || cfg.name || "")}</select>
             </div>
             <div class="full">
-              <label>Camera</label>
-              <select id="cfg_device_id">${deviceOptionsHtml(cfg.device_id || "")}</select>
+              <label>Cameras</label>
+              <div id="cfg_record_devices" class="snapshotDeviceList">
+                ${renderRecordDeviceList(recordEntries)}
+              </div>
+              <button class="btn mt-6" id="btnAddRecordDevice" type="button">Add camera</button>
             </div>
             <div>
               <label>Seconds before</label>
@@ -6606,18 +6662,24 @@ function renderNodeInspector(node) {
       break;
 
     case "action.stop_recording":
+      {
+        const stopEntries = recordDeviceEntries(cfg);
       body = `
         <div class="inspectorCard">
           <div class="inspectorTitle">Stop recording</div>
-          <div class="inspectorHint">Stops the most recent in-progress recording marker for the selected camera.</div>
+          <div class="inspectorHint">Stops the most recent in-progress recording marker on one or more cameras.</div>
           <div class="fieldGrid mt-10">
             <div class="full">
-              <label>Camera</label>
-              <select id="cfg_device_id">${deviceOptionsHtml(cfg.device_id || "")}</select>
+              <label>Cameras</label>
+              <div id="cfg_record_devices" class="snapshotDeviceList">
+                ${renderRecordDeviceList(stopEntries)}
+              </div>
+              <button class="btn mt-6" id="btnAddRecordDevice" type="button">Add camera</button>
             </div>
           </div>
         </div>
       `;
+      }
       break;
 
     case "action.log_message":
@@ -6973,6 +7035,37 @@ function bindNodeInspector(node) {
     });
   }
 
+  if (node.type === "action.record" || node.type === "action.stop_recording") {
+    document.getElementById("btnAddRecordDevice")?.addEventListener("click", () => {
+      const entries = recordDeviceEntries(node.config);
+      entries.push("");
+      node.config.device_ids = entries;
+      delete node.config.device_id;
+      markDirty();
+      renderInspector();
+    });
+
+    document.querySelectorAll(".recordDeviceRemove").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const idx = parseInt(btn.dataset.index, 10);
+        const entries = recordDeviceEntries(node.config);
+        entries.splice(idx, 1);
+        node.config.device_ids = entries;
+        delete node.config.device_id;
+        markDirty();
+        renderInspector();
+        renderCanvas();
+      });
+    });
+
+    document.querySelectorAll(".recordDeviceSelect").forEach(sel => {
+      sel.addEventListener("change", () => {
+        applyNodeInspector(node);
+        renderCanvas();
+      });
+    });
+  }
+
   if (node.type === "action.contribute" || node.type === "action.submit_event") {
     document.getElementById("btnAddSnapshotDevice")?.addEventListener("click", () => {
       if (!node.config.snapshot_entries) node.config.snapshot_entries = [];
@@ -7116,9 +7209,15 @@ function applyNodeInspector(node) {
       break;
     case "action.record":
       set("preset_name");
-      set("device_id");
       set("before_seconds");
       {
+        const selects = document.querySelectorAll(".recordDeviceSelect");
+        if (selects.length) {
+          cfg.device_ids = Array.from(selects).map((sel) => String(sel.value || "").trim());
+        } else if (!Array.isArray(cfg.device_ids)) {
+          cfg.device_ids = recordDeviceEntries(cfg);
+        }
+        delete cfg.device_id;
         const preset = recordingPresetByName(cfg.preset_name);
         if (preset) {
           cfg.preset_name = preset.name;
@@ -7137,7 +7236,15 @@ function applyNodeInspector(node) {
       }
       break;
     case "action.stop_recording":
-      set("device_id");
+      {
+        const selects = document.querySelectorAll(".recordDeviceSelect");
+        if (selects.length) {
+          cfg.device_ids = Array.from(selects).map((sel) => String(sel.value || "").trim());
+        } else if (!Array.isArray(cfg.device_ids)) {
+          cfg.device_ids = recordDeviceEntries(cfg);
+        }
+        delete cfg.device_id;
+      }
       break;
     case "action.log_message":
       set("name");

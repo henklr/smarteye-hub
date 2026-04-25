@@ -499,11 +499,11 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "type": "action.record",
         "category": "action",
         "label": "Start recording",
-        "description": "Starts a colored playback marker for the selected camera.",
+        "description": "Starts a colored playback marker for one or more selected cameras.",
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
         "defaults": {
-            "device_id": "",
+            "device_ids": [],
             "before_seconds": 10,
             "color": "#c6a14b",
             "name": "",
@@ -513,11 +513,11 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "type": "action.stop_recording",
         "category": "action",
         "label": "Stop recording",
-        "description": "Stops the most recent in-progress recording marker for the selected camera.",
+        "description": "Stops the most recent in-progress recording marker for one or more selected cameras.",
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
         "defaults": {
-            "device_id": "",
+            "device_ids": [],
         },
     },
     {
@@ -1934,9 +1934,21 @@ def _normalize_node_config(
         return cfg
 
     if node_type == "action.record":
-        cfg["device_id"] = str(cfg.get("device_id") or "").strip()
-        if not cfg["device_id"]:
-            raise HTTPException(status_code=400, detail="Record action needs a device")
+        raw_ids = cfg.get("device_ids")
+        if not isinstance(raw_ids, list):
+            legacy = str(cfg.get("device_id") or "").strip()
+            raw_ids = [legacy] if legacy else []
+        device_ids: List[str] = []
+        seen_ids: set = set()
+        for entry in raw_ids:
+            did = str(entry or "").strip()
+            if did and did not in seen_ids:
+                seen_ids.add(did)
+                device_ids.append(did)
+        if not device_ids:
+            raise HTTPException(status_code=400, detail="Record action needs at least one camera")
+        cfg["device_ids"] = device_ids
+        cfg.pop("device_id", None)
         cfg["preset_name"] = str(cfg.get("preset_name") or "").strip()
         cfg["name"] = str(cfg.get("name") or cfg.get("preset_name") or "").strip()
         try:
@@ -1979,9 +1991,21 @@ def _normalize_node_config(
         return cfg
 
     if node_type == "action.stop_recording":
-        cfg["device_id"] = str(cfg.get("device_id") or "").strip()
-        if not cfg["device_id"]:
-            raise HTTPException(status_code=400, detail="Stop recording action needs a device")
+        raw_ids = cfg.get("device_ids")
+        if not isinstance(raw_ids, list):
+            legacy = str(cfg.get("device_id") or "").strip()
+            raw_ids = [legacy] if legacy else []
+        device_ids: List[str] = []
+        seen_ids: set = set()
+        for entry in raw_ids:
+            did = str(entry or "").strip()
+            if did and did not in seen_ids:
+                seen_ids.add(did)
+                device_ids.append(did)
+        if not device_ids:
+            raise HTTPException(status_code=400, detail="Stop recording action needs at least one camera")
+        cfg["device_ids"] = device_ids
+        cfg.pop("device_id", None)
         return cfg
 
     if node_type == "action.log_message":
@@ -3283,49 +3307,120 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         title = preset_name
         color = str((preset or {}).get("color") or _normalize_record_color(cfg.get("color")))
         preset_key = str((preset or {}).get("key") or cfg.get("preset_key") or _recording_preset_key(preset_name)).strip()
-        try:
-            event = create_recording_marker(
-                device_id=str(cfg.get("device_id") or "").strip(),
-                before_seconds=float(cfg.get("before_seconds") or 0),
-                after_seconds=(
-                    float(cfg.get("after_seconds"))
-                    if cfg.get("after_seconds") not in {None, ""}
-                    else None
-                ),
-                color=color,
-                title=title,
-                preset_key=preset_key,
-                preset_name=preset_name,
-                flow_id=str((context.get("flow") or {}).get("id") or "").strip() or None,
-                flow_name=str((context.get("flow") or {}).get("name") or "").strip() or None,
-                node_id=str(node.get("id") or "").strip() or None,
-            )
-            result["message"] = f"Started recording for {title}"
-            result["event_id"] = event.get("id")
-            result["device_id"] = event.get("device_id")
-            result["clip_start"] = event.get("clip_start")
-            result["clip_end"] = event.get("clip_end")
-            result["color"] = event.get("color")
-            result["preset_key"] = event.get("preset_key")
-        except Exception as exc:
+
+        raw_ids = cfg.get("device_ids")
+        if not isinstance(raw_ids, list):
+            legacy = str(cfg.get("device_id") or "").strip()
+            raw_ids = [legacy] if legacy else []
+        device_ids: List[str] = []
+        seen_ids: set = set()
+        for entry in raw_ids:
+            did = str(entry or "").strip()
+            if did and did not in seen_ids:
+                seen_ids.add(did)
+                device_ids.append(did)
+
+        before = float(cfg.get("before_seconds") or 0)
+        after = (
+            float(cfg.get("after_seconds"))
+            if cfg.get("after_seconds") not in {None, ""}
+            else None
+        )
+        flow_id = str((context.get("flow") or {}).get("id") or "").strip() or None
+        flow_name = str((context.get("flow") or {}).get("name") or "").strip() or None
+        node_id = str(node.get("id") or "").strip() or None
+
+        created: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        for did in device_ids:
+            try:
+                event = create_recording_marker(
+                    device_id=did,
+                    before_seconds=before,
+                    after_seconds=after,
+                    color=color,
+                    title=title,
+                    preset_key=preset_key,
+                    preset_name=preset_name,
+                    flow_id=flow_id,
+                    flow_name=flow_name,
+                    node_id=node_id,
+                )
+                created.append(event)
+            except Exception as exc:
+                errors.append(f"{did}: {exc}")
+                _log_flows.warning("Record action failed for device %s: %s", did, exc)
+
+        if created:
+            labels = ", ".join(str(e.get("device_id") or "") for e in created)
+            result["message"] = f"Started recording for {title} on {labels}" if labels else f"Started recording for {title}"
+            result["events"] = [
+                {
+                    "event_id": e.get("id"),
+                    "device_id": e.get("device_id"),
+                    "clip_start": e.get("clip_start"),
+                    "clip_end": e.get("clip_end"),
+                    "color": e.get("color"),
+                    "preset_key": e.get("preset_key"),
+                }
+                for e in created
+            ]
+            first = created[0]
+            result["event_id"] = first.get("id")
+            result["device_id"] = first.get("device_id")
+            result["clip_start"] = first.get("clip_start")
+            result["clip_end"] = first.get("clip_end")
+            result["color"] = first.get("color")
+            result["preset_key"] = first.get("preset_key")
+        if errors:
             result["ok"] = False
-            result["error"] = str(exc)
-            _log_flows.warning("Record action failed in flow: %s", exc)
+            result["error"] = "; ".join(errors)
         result["next_handles"] = ["out"]
         return result
 
     if node_type == "action.stop_recording":
-        try:
-            event = stop_recording_marker(device_id=str(cfg.get("device_id") or "").strip())
-            result["message"] = f"Stopped recording for {event.get('title') or 'Recording'}"
-            result["event_id"] = event.get("id")
-            result["device_id"] = event.get("device_id")
-            result["clip_start"] = event.get("clip_start")
-            result["clip_end"] = event.get("clip_end")
-        except Exception as exc:
+        raw_ids = cfg.get("device_ids")
+        if not isinstance(raw_ids, list):
+            legacy = str(cfg.get("device_id") or "").strip()
+            raw_ids = [legacy] if legacy else []
+        device_ids: List[str] = []
+        seen_ids: set = set()
+        for entry in raw_ids:
+            did = str(entry or "").strip()
+            if did and did not in seen_ids:
+                seen_ids.add(did)
+                device_ids.append(did)
+
+        stopped: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        for did in device_ids:
+            try:
+                event = stop_recording_marker(device_id=did)
+                stopped.append(event)
+            except Exception as exc:
+                errors.append(f"{did}: {exc}")
+                _log_flows.warning("Stop recording action failed for device %s: %s", did, exc)
+
+        if stopped:
+            titles = ", ".join(str(e.get("title") or "Recording") for e in stopped)
+            result["message"] = f"Stopped recording for {titles}"
+            result["events"] = [
+                {
+                    "event_id": e.get("id"),
+                    "device_id": e.get("device_id"),
+                    "clip_start": e.get("clip_start"),
+                    "clip_end": e.get("clip_end"),
+                }
+                for e in stopped
+            ]
+            first = stopped[0]
+            result["event_id"] = first.get("id")
+            result["device_id"] = first.get("device_id")
+            result["clip_start"] = first.get("clip_start")
+            result["clip_end"] = first.get("clip_end")
+        if errors:
             result["ok"] = False
-            result["error"] = str(exc)
-            _log_flows.warning("Stop recording action failed in flow: %s", exc)
+            result["error"] = "; ".join(errors)
         result["next_handles"] = ["out"]
         return result
 
