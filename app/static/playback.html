@@ -37,75 +37,76 @@
     </div>
 
     <div class="playbackShell">
-      <div class="playbackViewerRegion">
-        <section class="playbackViewerCard">
-        <div class="listHeader compact playbackHeader">
-          <div>
-            <div class="listTitle small">Playback</div>
-            <div class="listSub" id="playbackHeaderSub">Select a camera and marker to load a recorded clip.</div>
+      <div class="playbackLayout">
+        <div class="liveSidebar playbackSidebar" id="playbackSidebar">
+          <div class="liveSidebarHdr">Cameras</div>
+          <div class="liveSidebarList" id="playbackSidebarList">
+            <div class="liveSidebarEmpty">Loading…</div>
           </div>
-          <div class="playbackHeaderActions">
-          </div>
-        </div>
-
-        <div class="playbackVideoShell" id="playbackVideoShell">
-          <video id="playbackVideo" class="playbackVideo" playsinline preload="metadata"></video>
-          <button class="tileAudioBtn" id="playbackAudioBtn" type="button" data-muted="0" aria-label="Mute" title="Mute">
-            <svg class="tileAudioIcon" data-icon="on" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 9v6h4l5 4V5L8 9H4z"></path>
-              <path d="M16.5 12a4.5 4.5 0 0 0-2.5-4.03v8.06A4.5 4.5 0 0 0 16.5 12z"></path>
-              <path d="M14 3.23v2.06A7 7 0 0 1 14 18.71v2.06A9 9 0 0 0 14 3.23z"></path>
-            </svg>
-            <svg class="tileAudioIcon" data-icon="muted" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 9v6h4l5 4V5L8 9H4z"></path>
-              <path d="M22 9l-1.4-1.4L18 10.2l-2.6-2.6L14 9l2.6 2.6L14 14.2l1.4 1.4L18 13l2.6 2.6L22 14.2 19.4 11.6z"></path>
-            </svg>
-          </button>
-          <div class="playbackVideoEmpty" id="playbackVideoEmpty" data-state="loading" aria-live="polite" aria-busy="true">
-            <div class="playbackVideoEmptyPanel">
-              <div class="playbackVideoEmptyBadge" id="playbackVideoEmptyBadge">Loading</div>
-              <div class="playbackVideoEmptySpinner" aria-hidden="true"></div>
-              <div class="playbackVideoEmptyTitle">Loading playback...</div>
-              <div class="playbackVideoEmptyText" id="playbackVideoEmptyText">Fetching cameras and timeline markers for the selected day.</div>
+          <div class="liveSidebarFooter">
+            <div class="liveSidebarActions">
+              <button class="btn liveSidebarActionBtn" id="playbackSidebarSelectAll" type="button">Select All</button>
+              <button class="btn liveSidebarActionBtn" id="playbackSidebarClearAll" type="button">Clear All</button>
             </div>
           </div>
         </div>
 
-        </section>
-
-        <div class="playbackControlsSection">
-        <div class="playbackTransport" id="playbackTransport">
-          <div class="playbackTransportButtons">
-            <button class="btn btn-primary btn-compact playbackTransportButton" id="playbackPlayPauseBtn" type="button" aria-label="Play" title="Play">
-              <span class="playbackTransportGlyph" aria-hidden="true">
-                <svg viewBox="0 0 24 24" focusable="false">
-                  <path d="M8 6.5V17.5L17 12L8 6.5Z"></path>
-                </svg>
-              </span>
-            </button>
-            <button class="btn btn-compact playbackTransportButton" id="playbackStopBtn" type="button" aria-label="Stop" title="Stop">
-              <span class="playbackTransportGlyph" aria-hidden="true">
-                <svg viewBox="0 0 24 24" focusable="false">
-                  <rect x="7" y="7" width="10" height="10" rx="1.5"></rect>
-                </svg>
-              </span>
-            </button>
-          </div>
-
-          <div class="playbackSpeedControl playbackShuttleControl">
-            <div class="playbackShuttleBar">
-              <div class="playbackShuttleTrackBg" aria-hidden="true">
-                <span class="playbackShuttleTrackFill" data-shuttle-fill></span>
-                <span class="playbackShuttleDetent" data-pos="neg-one"></span>
-                <span class="playbackShuttleDetent" data-pos="center"></span>
-                <span class="playbackShuttleDetent" data-pos="rest"></span>
-                <output id="playbackShuttleValue" class="playbackShuttleValue" for="playbackShuttleInput" data-shuttle-value>1x</output>
+        <div class="playbackMain">
+          <section class="playbackViewerCard">
+            <div class="listHeader compact playbackHeader">
+              <div>
+                <div class="listTitle small">Playback</div>
+                <div class="listSub" id="playbackHeaderSub">Pick cameras from the sidebar and a marker on the timeline to load recorded clips.</div>
               </div>
-              <input id="playbackShuttleInput" type="range" min="-1" max="1" step="0.002" value="0.25" />
+              <div class="playbackHeaderActions"></div>
+            </div>
+
+            <div class="playbackVideoShell" id="playbackVideoShell">
+              <div class="videoGrid playbackVideoGrid" id="playbackVideoGrid"></div>
+              <div class="playbackVideoEmpty" id="playbackVideoEmpty" data-state="loading" aria-live="polite" aria-busy="true">
+                <div class="playbackVideoEmptyPanel">
+                  <div class="playbackVideoEmptyBadge" id="playbackVideoEmptyBadge">Loading</div>
+                  <div class="playbackVideoEmptySpinner" aria-hidden="true"></div>
+                  <div class="playbackVideoEmptyTitle">Loading playback...</div>
+                  <div class="playbackVideoEmptyText" id="playbackVideoEmptyText">Fetching cameras and timeline markers for the selected day.</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <div class="playbackControlsSection">
+            <div class="playbackTransport" id="playbackTransport">
+              <div class="playbackTransportButtons">
+                <button class="btn btn-primary btn-compact playbackTransportButton" id="playbackPlayPauseBtn" type="button" aria-label="Play" title="Play">
+                  <span class="playbackTransportGlyph" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <path d="M8 6.5V17.5L17 12L8 6.5Z"></path>
+                    </svg>
+                  </span>
+                </button>
+                <button class="btn btn-compact playbackTransportButton" id="playbackStopBtn" type="button" aria-label="Stop" title="Stop">
+                  <span class="playbackTransportGlyph" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <rect x="7" y="7" width="10" height="10" rx="1.5"></rect>
+                    </svg>
+                  </span>
+                </button>
+              </div>
+
+              <div class="playbackSpeedControl playbackShuttleControl">
+                <div class="playbackShuttleBar">
+                  <div class="playbackShuttleTrackBg" aria-hidden="true">
+                    <span class="playbackShuttleTrackFill" data-shuttle-fill></span>
+                    <span class="playbackShuttleDetent" data-pos="neg-one"></span>
+                    <span class="playbackShuttleDetent" data-pos="center"></span>
+                    <span class="playbackShuttleDetent" data-pos="rest"></span>
+                    <output id="playbackShuttleValue" class="playbackShuttleValue" for="playbackShuttleInput" data-shuttle-value>1x</output>
+                  </div>
+                  <input id="playbackShuttleInput" type="range" min="-1" max="1" step="0.002" value="0.25" />
+                </div>
+              </div>
             </div>
           </div>
-
-        </div>
         </div>
       </div>
 
@@ -114,10 +115,6 @@
           <div class="playbackTimelineToolbar">
             <div class="playbackTimelineFilters" id="playbackTimelineFilters"></div>
             <div class="playbackTimelineSelectors">
-              <div class="playbackTimelineSelector">
-                <label for="playbackDeviceSelect">Camera</label>
-                <select id="playbackDeviceSelect"></select>
-              </div>
               <div class="playbackTimelineSelector">
                 <label for="playbackDayInput">Day</label>
                 <input id="playbackDayInput" type="date" />

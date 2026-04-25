@@ -15,13 +15,29 @@ body.playbackPage {
   min-height: 0;
 }
 
-.playbackPage .playbackViewerRegion,
+.playbackPage .playbackLayout,
+.playbackPage .playbackMain,
 .playbackPage .playbackViewerCard,
 .playbackPage .playbackTimelineCard {
   min-height: 0;
 }
 
-.playbackPage .playbackViewerRegion {
+.playbackPage .playbackLayout {
+  display: flex;
+  flex-direction: row;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.playbackPage .playbackSidebar {
+  width: 230px;
+  flex-shrink: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.playbackPage .playbackMain {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -94,7 +110,10 @@ body.playbackPage {
   border-bottom: 1px solid var(--stroke);
   border-radius: 0;
   overflow: hidden;
-  background: #000;
+  background: #0a0a0a;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
 }
 
 .playbackPage .playbackVideo {
@@ -102,6 +121,33 @@ body.playbackPage {
   height: 100%;
   display: block;
   background: #0d0d0d;
+}
+
+.playbackPage .playbackVideoGrid {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.playbackPage .playbackVideoGrid .videoRow {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+
+.playbackPage .playbackVideoGrid:empty {
+  display: none;
 }
 
 .playbackPage .playbackVideoEmpty {
