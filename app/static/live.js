@@ -139,6 +139,7 @@ function openDevicesOverlay() {
   devicesOverlay.setAttribute("aria-hidden", "false");
   document.body.classList.add("modalOpen");
   openDevicesBtn?.classList.add("active");
+  startSystemLoadPolling();
 }
 
 function closeDevicesOverlay() {
@@ -146,6 +147,110 @@ function closeDevicesOverlay() {
   devicesOverlay.setAttribute("aria-hidden", "true");
   document.body.classList.remove("modalOpen");
   openDevicesBtn?.classList.remove("active");
+  stopSystemLoadPolling();
+}
+
+let _systemLoadTimer = null;
+
+function _loadStatusClass(pct) {
+  if (pct >= 90) return "is-critical";
+  if (pct >= 70) return "is-warn";
+  return "";
+}
+
+function _setLoadBar(barEl, pct) {
+  if (!barEl) return;
+  const clamped = Math.max(0, Math.min(100, Number(pct) || 0));
+  barEl.style.width = clamped.toFixed(1) + "%";
+  barEl.classList.remove("is-warn", "is-critical");
+  const cls = _loadStatusClass(clamped);
+  if (cls) barEl.classList.add(cls);
+}
+
+function _renderCameraLoad(grid, cameras) {
+  if (!grid) return;
+  if (!cameras || cameras.length === 0) {
+    grid.innerHTML = `<div class="muted" style="grid-column:1/-1; padding:6px 2px;">No cameras configured.</div>`;
+    return;
+  }
+  grid.innerHTML = cameras.map((c) => {
+    const cpu = c.recorder_cpu_pct == null ? null : Number(c.recorder_cpu_pct);
+    const mbps = c.recording_mbps == null ? null : Number(c.recording_mbps);
+    const cpuTxt = cpu == null ? "—" : `${cpu.toFixed(0)}%`;
+    const mbpsTxt = mbps == null ? "—" : `${mbps.toFixed(1)} Mbps`;
+    const status = c.recorder_alive ? "rec" : "idle";
+    const statusCls = c.recorder_alive ? "is-rec" : "is-idle";
+    const cpuPct = cpu == null ? 0 : Math.min(100, cpu);
+    const cpuCls = _loadStatusClass(cpuPct);
+    return `
+      <div class="loadCamRow">
+        <div class="loadCamName" title="${escapeHtml(c.device_id || "")}">
+          <span class="loadCamStatus ${statusCls}" title="${status}"></span>
+          ${escapeHtml(c.name || c.device_id || "")}
+        </div>
+        <div class="loadCamMetric">
+          <div class="loadBar small"><div class="loadBarFill ${cpuCls}" style="width:${cpuPct.toFixed(1)}%"></div></div>
+          <span class="loadCamValue">${cpuTxt}</span>
+        </div>
+        <div class="loadCamMetric">
+          <span class="loadCamValue">${mbpsTxt}</span>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+async function refreshSystemLoad() {
+  const panel = document.getElementById("loadPanel");
+  if (!panel) return;
+  try {
+    const r = await fetch("/api/system/load", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+
+    const cpu = data.cpu_count || 1;
+    const l1 = Number(data.load?.["1m"] || 0);
+    const l5 = Number(data.load?.["5m"] || 0);
+    const l15 = Number(data.load?.["15m"] || 0);
+    const cpuPct = Math.round((data.load_pct_1m || 0) * 100);
+    const memUsedPct = Math.round((data.memory?.used_pct || 0) * 100);
+    const memTotalGb = (data.memory?.total_kb || 0) / 1024 / 1024;
+    const memUsedGb = memTotalGb * (data.memory?.used_pct || 0);
+
+    const cpuValue = document.getElementById("loadCpuValue");
+    if (cpuValue) {
+      cpuValue.textContent =
+        `${cpuPct}% of ${cpu} core${cpu === 1 ? "" : "s"} · ` +
+        `${l1.toFixed(2)}, ${l5.toFixed(2)}, ${l15.toFixed(2)}`;
+    }
+    _setLoadBar(document.getElementById("loadCpuBar"), cpuPct);
+
+    const memValue = document.getElementById("loadMemValue");
+    if (memValue) {
+      memValue.textContent = `${memUsedPct}% · ${memUsedGb.toFixed(1)} / ${memTotalGb.toFixed(1)} GB`;
+    }
+    _setLoadBar(document.getElementById("loadMemBar"), memUsedPct);
+
+    _renderCameraLoad(document.getElementById("loadCamerasGrid"), data.cameras || []);
+  } catch (e) {
+    const cpuValue = document.getElementById("loadCpuValue");
+    const memValue = document.getElementById("loadMemValue");
+    if (cpuValue) cpuValue.textContent = "unavailable";
+    if (memValue) memValue.textContent = "unavailable";
+  }
+}
+
+function startSystemLoadPolling() {
+  refreshSystemLoad();
+  if (_systemLoadTimer) clearInterval(_systemLoadTimer);
+  _systemLoadTimer = setInterval(refreshSystemLoad, 3000);
+}
+
+function stopSystemLoadPolling() {
+  if (_systemLoadTimer) {
+    clearInterval(_systemLoadTimer);
+    _systemLoadTimer = null;
+  }
 }
 
 function ensureDevicesVisibleWhenNoStreams() {

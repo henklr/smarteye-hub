@@ -52,6 +52,7 @@ from playback import (
     set_recording_path_refresher,
     start_recording_service,
     stop_recording_service,
+    system_load_snapshot,
 )
 from physical_io import start_physical_io_monitor, stop_physical_io_monitor
 import dashboard_connector
@@ -538,6 +539,11 @@ def _list_timezones() -> list:
     return sorted(zones)
 
 
+@app.get("/api/system/load")
+def get_system_load():
+    return system_load_snapshot()
+
+
 @app.get("/api/system/datetime")
 def get_datetime():
     from datetime import datetime as dt, timezone as tz
@@ -985,6 +991,7 @@ class DeviceIn(BaseModel):
     profile_encoding: Optional[str] = None
     recording_profile_token: Optional[str] = None
     recording_profile_label: Optional[str] = None
+    recording_rtsp_url: Optional[str] = None
     preload_stream: bool = True
     snapshot_uri: Optional[str] = None
 
@@ -2527,40 +2534,6 @@ def _mediamtx_delete_path(device_id: str) -> dict:
         raise
 
 
-def _ensure_mediamtx_rec_path(device_id: str, source_rtsp: str, preload: bool = False) -> dict:
-    name = _rec_path_for(device_id)
-
-    payload = {
-        "source": source_rtsp,
-        "sourceOnDemand": not preload,
-        "sourceOnDemandStartTimeout": "10s",
-        "sourceOnDemandCloseAfter": "10s",
-    }
-
-    snapshot = _mediamtx_paths_snapshot()
-    items = list(snapshot.get("items") or [])
-    existing = next((x for x in items if x.get("name") == name), None)
-
-    if existing:
-        current_source = existing.get("source")
-        current_on_demand = existing.get("sourceOnDemand")
-        desired_on_demand = not preload
-
-        if current_source == source_rtsp and current_on_demand == desired_on_demand:
-            return {"ok": True, "exists": True, "name": name}
-
-        try:
-            return _mediamtx_api_request("PATCH", f"/v3/config/paths/edit/{name}", payload)
-        except Exception:
-            try:
-                _mediamtx_delete_rec_path(device_id)
-            except Exception:
-                pass
-            return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
-
-    return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
-
-
 def _mediamtx_delete_rec_path(device_id: str) -> dict:
     name = _rec_path_for(device_id)
     try:
@@ -2591,6 +2564,7 @@ def _refresh_device_stream(device_id: str) -> dict:
             _mediamtx_delete_rec_path(device_id)
         except Exception:
             pass
+        _persist_device_recording_url(device_id, None)
         return {"ok": True, "device_id": device_id, "removed": True, "reason": "no_profile"}
 
     req = _device_req(d)
@@ -2598,23 +2572,42 @@ def _refresh_device_stream(device_id: str) -> dict:
     source_rtsp = _rtsp_with_auth(source_uri, d.username, d.password)
     result = _ensure_mediamtx_path(device_id, source_rtsp, preload=bool(d.preload_stream))
 
-    # Refresh recording path if separate recording profile is set
-    rec_token = getattr(d, 'recording_profile_token', None)
-    if rec_token and rec_token != d.profile_token:
+    # Resolve the recording-side RTSP URL. The recorder pulls this URL
+    # directly from the camera (bypassing MediaMTX) to avoid the RTP
+    # demux/remux overhead of routing every byte through MediaMTX.
+    rec_token = getattr(d, "recording_profile_token", None) or d.profile_token
+    rec_rtsp: Optional[str] = source_rtsp
+    if rec_token != d.profile_token:
         try:
             rec_uri = _get_stream_uri(req, rec_token)
             rec_rtsp = _rtsp_with_auth(rec_uri, d.username, d.password)
-            _ensure_mediamtx_rec_path(device_id, rec_rtsp, preload=bool(d.preload_stream))
         except Exception:
-            pass
-    else:
-        # No separate recording profile — clean up any stale rec path
-        try:
-            _mediamtx_delete_rec_path(device_id)
-        except Exception:
-            pass
+            rec_rtsp = source_rtsp
+
+    _persist_device_recording_url(device_id, rec_rtsp)
+
+    # Drop any stale cam-rec-* MediaMTX path; recorder no longer needs it.
+    try:
+        _mediamtx_delete_rec_path(device_id)
+    except Exception:
+        pass
 
     return result
+
+
+def _persist_device_recording_url(device_id: str, url: Optional[str]) -> None:
+    devs = _load_devices()
+    changed = False
+    out: List[Device] = []
+    for d in devs:
+        if d.id == device_id and (d.recording_rtsp_url or "") != (url or ""):
+            updated = d.model_copy(update={"recording_rtsp_url": url or None})
+            out.append(updated)
+            changed = True
+        else:
+            out.append(d)
+    if changed:
+        _save_devices(out)
 
 
 def _path_bytes_from_snapshot_row(row: Optional[dict]) -> int:
@@ -2811,15 +2804,20 @@ def _preload_stream_for_device(device: Device) -> None:
     source_uri = _get_stream_uri(req, device.profile_token)
     source_rtsp = _rtsp_with_auth(source_uri, device.username, device.password)
     _ensure_mediamtx_path(device.id, source_rtsp, preload=True)
-    # Also preload recording stream if a separate recording profile is set
-    rec_token = getattr(device, 'recording_profile_token', None)
-    if rec_token and rec_token != device.profile_token:
+    # Resolve and persist the direct camera RTSP URL for the recorder.
+    rec_token = getattr(device, "recording_profile_token", None) or device.profile_token
+    rec_rtsp: Optional[str] = source_rtsp
+    if rec_token != device.profile_token:
         try:
             rec_uri = _get_stream_uri(req, rec_token)
             rec_rtsp = _rtsp_with_auth(rec_uri, device.username, device.password)
-            _ensure_mediamtx_rec_path(device.id, rec_rtsp, preload=True)
         except Exception:
-            pass
+            rec_rtsp = source_rtsp
+    _persist_device_recording_url(device.id, rec_rtsp)
+    try:
+        _mediamtx_delete_rec_path(device.id)
+    except Exception:
+        pass
 
 
 def _ptz_status(device_id: str) -> dict:

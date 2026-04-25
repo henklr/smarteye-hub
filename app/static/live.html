@@ -83,6 +83,27 @@
           <div class="statusLine compact" style="margin-top:0;">
             <strong>Status:</strong> <span id="sidebarListStatus" class="muted">Loading devices…</span>
           </div>
+          <div class="loadPanel" id="loadPanel">
+            <div class="loadPanelHead">System load</div>
+            <div class="loadMeter">
+              <div class="loadMeterLabel">
+                <span>CPU (1m)</span>
+                <span class="loadMeterValue" id="loadCpuValue">—</span>
+              </div>
+              <div class="loadBar"><div class="loadBarFill" id="loadCpuBar"></div></div>
+            </div>
+            <div class="loadMeter">
+              <div class="loadMeterLabel">
+                <span>Memory</span>
+                <span class="loadMeterValue" id="loadMemValue">—</span>
+              </div>
+              <div class="loadBar"><div class="loadBarFill" id="loadMemBar"></div></div>
+            </div>
+            <div class="loadPanelHead loadCamerasHead">Per camera</div>
+            <div class="loadCamerasGrid" id="loadCamerasGrid">
+              <div class="muted" style="grid-column:1/-1; padding:6px 2px;">Loading…</div>
+            </div>
+          </div>
         </section>
 
         <section class="overlaySection">

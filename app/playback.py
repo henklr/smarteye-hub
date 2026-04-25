@@ -1118,16 +1118,34 @@ def _desired_recorder_ids(devices: List[Dict[str, Any]]) -> set[str]:
     return configured & _recording_device_ids_from_flows()
 
 
-def _recording_source_path(device_id: str) -> str:
-    """Always record the sub-stream (`cam-{id}`). The main stream is HEVC on
-    most ONVIF cameras and MSE/hls.js in Chrome/Firefox cannot decode HEVC, so
-    recording the main stream produces files no browser can play back.
-    The sub-stream is H.264 at a sane resolution — browser-native."""
-    return f"cam-{_validate_id(device_id, 'device_id')}"
+def _recording_source_url(device_id: str) -> str:
+    """Return the RTSP URL the recorder should pull from for this device.
+
+    Pulls *directly* from the camera (using `recording_rtsp_url` populated by
+    `_refresh_device_stream`) so MediaMTX is not in the recording path. That
+    cuts MediaMTX's CPU/RTP-handling load roughly proportionally to the
+    main-stream bitrate and stops upstream RTP fragmentation losses from
+    corrupting recorded segments.
+
+    Falls back to the MediaMTX live path if the direct URL hasn't been
+    populated yet (legacy device records from before this change).
+
+    Note: the recording profile determines the stored codec. H.264 plays in
+    any browser. HEVC profiles record fine but Chrome/Firefox can't decode
+    them in the playback UI.
+    """
+    device_id = _validate_id(device_id, "device_id")
+    devices = _load_devices()
+    device = next((d for d in devices if str(d.get("id") or "").strip() == device_id), None)
+    if device:
+        url = str(device.get("recording_rtsp_url") or "").strip()
+        if url.startswith("rtsp://"):
+            return url
+    return f"{MEDIAMTX_RTSP_BASE}/cam-{device_id}"
 
 
 def _ffmpeg_command(device_id: str) -> List[str]:
-    source = f"{MEDIAMTX_RTSP_BASE}/{_recording_source_path(device_id)}"
+    source = _recording_source_url(device_id)
     pattern = str(_device_recordings_dir(device_id) / "%Y%m%dT%H%M%SZ.ts")
     return [
         "ffmpeg",
@@ -1176,6 +1194,7 @@ def _ffmpeg_command(device_id: str) -> List[str]:
 
 _recorders_lock = threading.RLock()
 _recorders: Dict[str, subprocess.Popen] = {}
+_recorder_sources: Dict[str, str] = {}
 _recorder_stop = threading.Event()
 _recorder_kick = threading.Event()
 _recorder_pause = threading.Event()
@@ -1233,6 +1252,7 @@ def request_recorders_refresh() -> None:
 def _stop_recorder(device_id: str) -> None:
     with _recorders_lock:
         proc = _recorders.pop(device_id, None)
+        _recorder_sources.pop(device_id, None)
     if proc is None:
         return
     try:
@@ -1254,15 +1274,17 @@ def _start_recorder(device_id: str) -> None:
             return
         if existing is not None:
             _recorders.pop(device_id, None)
+    source = _recording_source_url(device_id)
     proc = subprocess.Popen(
         _ffmpeg_command(device_id),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         env={**os.environ, "TZ": "UTC"},
     )
-    _log_recording.info("Started ffmpeg recorder for %s (pid=%d)", device_id, proc.pid)
+    _log_recording.info("Started ffmpeg recorder for %s (pid=%d) source=%s", device_id, proc.pid, source)
     with _recorders_lock:
         _recorders[device_id] = proc
+        _recorder_sources[device_id] = source
 
 
 def _prune_old_recordings() -> None:
@@ -1364,6 +1386,15 @@ def _recorders_loop() -> None:
             with _recorders_lock:
                 proc = _recorders.get(device_id)
                 alive = bool(proc and proc.poll() is None)
+                current_src = _recorder_sources.get(device_id)
+            new_src = _recording_source_url(device_id)
+            if alive and current_src and current_src != new_src:
+                _log_recording.info(
+                    "Recorder source changed for %s; restarting (%s -> %s)",
+                    device_id, current_src, new_src,
+                )
+                _stop_recorder(device_id)
+                alive = False
             if not alive:
                 _start_recorder(device_id)
 
@@ -1432,6 +1463,151 @@ def start_recording_service() -> None:
             target=_indexer_loop, name="playback-indexer", daemon=True
         )
         _indexer_thread.start()
+
+
+_proc_cpu_snapshot: Dict[int, Tuple[float, int]] = {}
+_segment_size_snapshot: Dict[str, Tuple[float, int, str]] = {}
+_load_snapshot_lock = threading.Lock()
+
+
+def _read_proc_cpu_jiffies(pid: int) -> Optional[int]:
+    try:
+        with open(f"/proc/{pid}/stat", "r") as fh:
+            data = fh.read()
+    except Exception:
+        return None
+    # field 14 = utime, 15 = stime; comm field can contain spaces wrapped in ().
+    rparen = data.rfind(")")
+    if rparen < 0:
+        return None
+    fields = data[rparen + 2:].split()
+    try:
+        return int(fields[11]) + int(fields[12])
+    except (IndexError, ValueError):
+        return None
+
+
+def _process_cpu_pct(pid: Optional[int]) -> Optional[float]:
+    if pid is None:
+        return None
+    now = time.monotonic()
+    cur = _read_proc_cpu_jiffies(pid)
+    if cur is None:
+        _proc_cpu_snapshot.pop(pid, None)
+        return None
+    prev = _proc_cpu_snapshot.get(pid)
+    _proc_cpu_snapshot[pid] = (now, cur)
+    if prev is None:
+        return None
+    prev_t, prev_j = prev
+    elapsed = now - prev_t
+    if elapsed <= 0.05:
+        return None
+    try:
+        clk = os.sysconf("SC_CLK_TCK")
+    except (ValueError, OSError):
+        clk = 100
+    cpu_seconds = max(0, cur - prev_j) / clk
+    return 100.0 * cpu_seconds / elapsed
+
+
+def _recording_bitrate_mbps(device_id: str) -> Optional[float]:
+    try:
+        recdir = _device_recordings_dir(device_id)
+        candidates = sorted(recdir.glob("*.ts"), key=lambda p: p.stat().st_mtime)
+    except Exception:
+        return None
+    if not candidates:
+        return None
+    latest = candidates[-1]
+    try:
+        size = latest.stat().st_size
+    except Exception:
+        return None
+    now = time.monotonic()
+    prev = _segment_size_snapshot.get(device_id)
+    _segment_size_snapshot[device_id] = (now, size, latest.name)
+    if prev is None:
+        return None
+    prev_t, prev_size, prev_name = prev
+    elapsed = now - prev_t
+    if elapsed <= 0.05:
+        return None
+    if prev_name != latest.name:
+        # rotated to a new segment; use a fraction of the new file as the
+        # signal — the previous segment may have closed mid-interval.
+        delta_bytes = size
+    else:
+        delta_bytes = max(0, size - prev_size)
+    return (delta_bytes * 8.0) / 1_000_000.0 / elapsed
+
+
+def system_load_snapshot() -> Dict[str, Any]:
+    with _load_snapshot_lock:
+        cpu_count = os.cpu_count() or 1
+        load_1 = load_5 = load_15 = 0.0
+        try:
+            load_1, load_5, load_15 = os.getloadavg()
+        except (OSError, AttributeError):
+            try:
+                with open("/proc/loadavg", "r") as fh:
+                    parts = fh.read().split()
+                load_1 = float(parts[0])
+                load_5 = float(parts[1])
+                load_15 = float(parts[2])
+            except Exception:
+                pass
+
+        mem_total_kb = 0
+        mem_available_kb = 0
+        try:
+            with open("/proc/meminfo", "r") as fh:
+                for line in fh:
+                    if line.startswith("MemTotal:"):
+                        mem_total_kb = int(line.split()[1])
+                    elif line.startswith("MemAvailable:"):
+                        mem_available_kb = int(line.split()[1])
+                    if mem_total_kb and mem_available_kb:
+                        break
+        except Exception:
+            pass
+
+        devices = _load_devices()
+        with _recorders_lock:
+            recs = {did: proc for did, proc in _recorders.items()}
+        cameras: List[Dict[str, Any]] = []
+        for d in devices:
+            did = str(d.get("id") or "").strip()
+            if not did:
+                continue
+            proc = recs.get(did)
+            alive = bool(proc and proc.poll() is None)
+            pid = proc.pid if alive else None
+            cpu_pct = _process_cpu_pct(pid) if alive else None
+            mbps = _recording_bitrate_mbps(did) if alive else None
+            cameras.append({
+                "device_id": did,
+                "name": str(d.get("name") or did),
+                "recorder_alive": alive,
+                "recorder_pid": pid,
+                "recorder_cpu_pct": cpu_pct,
+                "recording_mbps": mbps,
+            })
+        cameras.sort(key=lambda c: (-(c.get("recorder_cpu_pct") or 0), c["name"]))
+
+        return {
+            "cpu_count": cpu_count,
+            "load": {"1m": load_1, "5m": load_5, "15m": load_15},
+            "load_pct_1m": (load_1 / cpu_count) if cpu_count else 0.0,
+            "memory": {
+                "total_kb": mem_total_kb,
+                "available_kb": mem_available_kb,
+                "used_pct": (
+                    (1 - mem_available_kb / mem_total_kb) if mem_total_kb else 0.0
+                ),
+            },
+            "cameras": cameras,
+        }
 
 
 def stop_recording_service() -> None:
