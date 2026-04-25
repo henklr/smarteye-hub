@@ -31,6 +31,27 @@ const sidebarStopAll = document.getElementById("sidebarStopAll");
 
 const LS_GRID_KEY = "live.gridState";
 const LS_DEVICE_ORDER_KEY = "live.deviceOrder";
+const LS_AUDIO_KEY = "live.audioState";
+
+function loadTileMuted(deviceId) {
+  try {
+    const raw = localStorage.getItem(LS_AUDIO_KEY);
+    if (!raw) return true;
+    const obj = JSON.parse(raw);
+    return obj?.[deviceId] !== false;
+  } catch {
+    return true;
+  }
+}
+
+function saveTileMuted(deviceId, muted) {
+  try {
+    const raw = localStorage.getItem(LS_AUDIO_KEY);
+    const obj = raw ? JSON.parse(raw) : {};
+    obj[deviceId] = !!muted;
+    localStorage.setItem(LS_AUDIO_KEY, JSON.stringify(obj));
+  } catch {}
+}
 
 const RETRY_DELAY_MS = 4000;
 
@@ -894,6 +915,7 @@ async function startWhep(deviceId, videoEl, onState, opts = {}) {
   pc.onconnectionstatechange = () => onState?.(pc.connectionState);
 
   pc.addTransceiver("video", { direction: "recvonly" });
+  pc.addTransceiver("audio", { direction: "recvonly" });
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
@@ -1034,7 +1056,7 @@ function canToggleTileFullscreen(target) {
   if (isMobileViewport()) return false;
 
   return !target.closest(
-    ".tilePtzPanel, .tilePtzJoystick, .tilePtzZoomBtn, .tileCloseBtn"
+    ".tilePtzPanel, .tilePtzJoystick, .tilePtzZoomBtn, .tileCloseBtn, .tileAudioBtn"
   );
 }
 
@@ -1104,6 +1126,18 @@ function makeTile(device) {
 
       <button class="tileCloseBtn" type="button" aria-label="Close stream" title="Close stream">×</button>
 
+      <button class="tileAudioBtn" type="button" data-muted="1" aria-label="Unmute" title="Unmute">
+        <svg class="tileAudioIcon" data-icon="on" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 9v6h4l5 4V5L8 9H4z"></path>
+          <path d="M16.5 12a4.5 4.5 0 0 0-2.5-4.03v8.06A4.5 4.5 0 0 0 16.5 12z"></path>
+          <path d="M14 3.23v2.06A7 7 0 0 1 14 18.71v2.06A9 9 0 0 0 14 3.23z"></path>
+        </svg>
+        <svg class="tileAudioIcon" data-icon="muted" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 9v6h4l5 4V5L8 9H4z"></path>
+          <path d="M22 9l-1.4-1.4L18 10.2l-2.6-2.6L14 9l2.6 2.6L14 14.2l1.4 1.4L18 13l2.6 2.6L22 14.2 19.4 11.6z"></path>
+        </svg>
+      </button>
+
       <div class="tileHud">
         <div class="tileName">${escapeHtml(device.name || device.ip || device.id)}</div>
       </div>
@@ -1129,6 +1163,30 @@ function makeTile(device) {
   const videoEl = tile.querySelector("video");
   const overlayEl = tile.querySelector(".tileOverlay");
   const closeBtn = tile.querySelector(".tileCloseBtn");
+  const audioBtn = tile.querySelector(".tileAudioBtn");
+
+  let tileMuted = loadTileMuted(device.id);
+
+  function applyTileMuted() {
+    videoEl.muted = tileMuted;
+    audioBtn.setAttribute("data-muted", tileMuted ? "1" : "0");
+    audioBtn.setAttribute("aria-label", tileMuted ? "Unmute" : "Mute");
+    audioBtn.setAttribute("title", tileMuted ? "Unmute" : "Mute");
+  }
+
+  applyTileMuted();
+
+  audioBtn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    tileMuted = !tileMuted;
+    applyTileMuted();
+    if (!tileMuted) {
+      const p = videoEl.play?.();
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    }
+    saveTileMuted(device.id, tileMuted);
+  });
 
   let aspectPollTimer = null;
   let aspectPollCount = 0;
