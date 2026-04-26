@@ -720,19 +720,42 @@ function isIgnorableTileError(tile) {
   return err.code === 1; // MEDIA_ERR_ABORTED
 }
 
-function detachTileSource(tile) {
+function detachTileSource(tile, options = {}) {
   if (!tile) return;
+  const destroy = options.destroy === true;
   tile.loadToken += 1;
   suppressTileError(tile, 1500);
   if (tile.hls) {
-    try { tile.hls.destroy(); } catch {}
-    tile.hls = null;
+    if (destroy) {
+      try { tile.hls.destroy(); } catch {}
+      tile.hls = null;
+    } else {
+      try { tile.hls.stopLoad(); } catch {}
+    }
   }
   if (tile.video) {
     try { tile.video.pause(); } catch {}
-    try { tile.video.src = ""; } catch {}
+    if (destroy) {
+      try { tile.video.removeAttribute("src"); } catch {}
+      try { tile.video.load(); } catch {}
+    }
   }
 }
+
+const HLS_VOD_CONFIG = {
+  enableWorker: true,
+  lowLatencyMode: false,
+  // VOD start-latency tuning: prefetch fragment metadata, keep buffers tight
+  // so the first fragment is fetched + decoded fast.
+  startFragPrefetch: true,
+  maxBufferLength: 10,
+  maxMaxBufferLength: 30,
+  // Network resilience for slow Pi → camera fetches.
+  manifestLoadingTimeOut: 10000,
+  manifestLoadingMaxRetry: 2,
+  levelLoadingTimeOut: 10000,
+  fragLoadingTimeOut: 20000,
+};
 
 function hlsPlaylistUrlForRange(deviceId, fromIso, toIso) {
   if (!deviceId || !fromIso || !toIso) return null;
@@ -740,34 +763,65 @@ function hlsPlaylistUrlForRange(deviceId, fromIso, toIso) {
   return `/api/playback/hls/${encodeURIComponent(deviceId)}/index.m3u8?${params.toString()}`;
 }
 
+function deviceHasEventInRange(deviceId, fromIso, toIso) {
+  const fromMs = Date.parse(fromIso);
+  const toMs = Date.parse(toIso);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return false;
+  return state.timeline.events.some((ev) => {
+    if (String(ev?.device_id || "").trim() !== deviceId) return false;
+    const evFromMs = Date.parse(ev?.clip_start);
+    const evToMs = Date.parse(ev?.clip_end);
+    if (!Number.isFinite(evFromMs) || !Number.isFinite(evToMs)) return false;
+    return evFromMs < toMs && evToMs > fromMs;
+  });
+}
+
 function attachTileSource(tile, event) {
   if (!tile || !event) return;
-  detachTileSource(tile);
-  tile.loadToken += 1;
 
   const url = hlsPlaylistUrlForRange(tile.deviceId, event.clip_start, event.clip_end);
   if (!url) {
-    setTileOverlay(tile, "No source", true);
+    setTileOverlay(tile, "No source", true, { state: "error" });
+    return;
+  }
+
+  // Only play if this camera has its own event covering the master window —
+  // even if untagged footage is still on disk inside the pruner grace window,
+  // we don't want it visible.
+  if (!deviceHasEventInRange(tile.deviceId, event.clip_start, event.clip_end)) {
+    detachTileSource(tile, { destroy: false });
+    setTileOverlay(tile, "No event in this range", true, { state: "error" });
     return;
   }
 
   const video = tile.video;
+
+  // Cancel any in-flight load and bump token. Don't destroy the Hls instance
+  // — reusing it across event switches avoids MediaSource detach/reattach,
+  // which is the bulk of the per-switch latency.
+  detachTileSource(tile, { destroy: false });
+  tile.loadToken += 1;
+
   setTileOverlay(tile, "", true, { state: "loading" });
 
   const hideOverlay = () => setTileOverlay(tile, "", false);
   const showError = (msg) => setTileOverlay(tile, msg, true, { state: "error" });
 
   if (window.Hls && window.Hls.isSupported && window.Hls.isSupported()) {
-    const hls = new window.Hls({ enableWorker: true, lowLatencyMode: false });
-    tile.hls = hls;
-    hls.attachMedia(video);
-    hls.on(window.Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(url));
+    let hls = tile.hls;
+    if (!hls) {
+      hls = new window.Hls(HLS_VOD_CONFIG);
+      tile.hls = hls;
+      hls.on(window.Hls.Events.ERROR, (_evt, data) => {
+        if (data?.fatal) showError("No recording in this range");
+      });
+      hls.attachMedia(video);
+    }
     // First decoded frame is the most reliable "video is actually showing" signal.
     video.addEventListener("playing", hideOverlay, { once: true });
     video.addEventListener("loadeddata", hideOverlay, { once: true });
-    hls.on(window.Hls.Events.ERROR, (_evt, data) => {
-      if (data?.fatal) showError("No recording in this range");
-    });
+    hls.loadSource(url);
+    try { hls.startLoad(); } catch {}
   } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
     video.src = url;
     video.addEventListener("loadeddata", hideOverlay, { once: true });
@@ -1003,7 +1057,7 @@ function getOrCreateTile(deviceId) {
 function destroyTile(deviceId) {
   const tile = tiles.get(deviceId);
   if (!tile) return;
-  detachTileSource(tile);
+  detachTileSource(tile, { destroy: true });
   if (tile.tile?.parentElement) tile.tile.parentElement.removeChild(tile.tile);
   tiles.delete(deviceId);
 }

@@ -69,7 +69,7 @@ _NVME_CANDIDATES = [
 ]
 
 MEDIAMTX_RTSP_BASE = os.getenv("MEDIAMTX_RTSP_BASE", "rtsp://mediamtx:8554").rstrip("/")
-RECORDING_SEGMENT_SECONDS = max(10, int(os.getenv("RECORDING_SEGMENT_SECONDS", "60") or "60"))
+RECORDING_SEGMENT_SECONDS = max(2, int(os.getenv("RECORDING_SEGMENT_SECONDS", "8") or "8"))
 RECORDER_POLL_SECONDS = max(2.0, float(os.getenv("RECORDER_POLL_SECONDS", "5") or "5"))
 INDEXER_POLL_SECONDS = max(1.0, float(os.getenv("INDEXER_POLL_SECONDS", "3") or "3"))
 MIN_SEGMENT_BYTES = max(0, int(os.getenv("MIN_SEGMENT_BYTES", "65536") or "65536"))
