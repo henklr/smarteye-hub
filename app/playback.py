@@ -76,6 +76,13 @@ MIN_SEGMENT_BYTES = max(0, int(os.getenv("MIN_SEGMENT_BYTES", "65536") or "65536
 SEGMENT_FINALIZE_GRACE_SECONDS = max(2.0, RECORDER_POLL_SECONDS)
 READINESS_GAP_TOLERANCE_SECONDS = 0.5
 
+# Untagged-segment pruner: how often to run, and the protective grace period
+# applied to fresh segments. The grace covers (1) segments ffmpeg just rolled
+# but the indexer hasn't probed yet, and (2) the small gap between recording
+# start and the flow upserting an event for that range.
+UNTAGGED_PRUNE_INTERVAL_SECONDS = max(15.0, float(os.getenv("UNTAGGED_PRUNE_INTERVAL_SECONDS", "60") or "60"))
+UNTAGGED_PRUNE_GRACE_SECONDS = max(0.0, float(os.getenv("UNTAGGED_PRUNE_GRACE_SECONDS", "60") or "60"))
+
 # Maximum span of a single HLS playlist request. Guards the server from
 # pathological ranges (e.g. from=1970..to=2099). 24h is plenty for a day view.
 HLS_MAX_WINDOW_SECONDS = 24 * 3600
@@ -1330,6 +1337,143 @@ def _prune_old_recordings() -> None:
                     pass
 
 
+def _segment_intersects_keep_windows(
+    seg_start: datetime,
+    seg_end: datetime,
+    windows: List[Tuple[datetime, Optional[datetime]]],
+) -> bool:
+    for win_start, win_end in windows:
+        if win_end is None:
+            # Open event: keep anything overlapping [win_start, +inf).
+            if seg_end > win_start:
+                return True
+            continue
+        if seg_start < win_end and seg_end > win_start:
+            return True
+    return False
+
+
+def _device_keep_windows(device_id: str) -> List[Tuple[datetime, Optional[datetime]]]:
+    with _events_lock:
+        events = [
+            e for e in _load_events()
+            if str(e.get("device_id") or "").strip() == device_id
+        ]
+    windows: List[Tuple[datetime, Optional[datetime]]] = []
+    for event in events:
+        try:
+            started_at, ended_at = _event_compare_bounds(event)
+        except Exception:
+            continue
+        windows.append((started_at, ended_at))
+    return windows
+
+
+def _prune_untagged_segments(device_id: str) -> int:
+    """Delete recording segments not covered by any saved event for this device.
+
+    Always preserves the in-progress tip segment (ffmpeg is writing it) and any
+    segment whose start falls within the protective grace window — so a segment
+    written moments before the flow upserts its event is not destroyed in the
+    race.
+    """
+    device_dir = _device_recordings_dir(device_id)
+    if not device_dir.exists():
+        return 0
+
+    keep_windows = _device_keep_windows(device_id)
+    grace_cutoff = _utc_now() - timedelta(seconds=UNTAGGED_PRUNE_GRACE_SECONDS)
+
+    try:
+        disk_files = sorted(
+            p.name for p in device_dir.iterdir()
+            if p.is_file() and p.suffix == ".ts" and _parse_segment_name(p.name)
+        )
+    except OSError:
+        return 0
+    tip = disk_files[-1] if disk_files else None
+
+    deleted_names: List[str] = []
+
+    try:
+        with _index_connect(device_id) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT filename, started_at_us, ended_at_us FROM segments"
+            ).fetchall()
+            for row in rows:
+                name = row["filename"]
+                if name == tip:
+                    continue
+                seg_start = _dt_from_us(int(row["started_at_us"]))
+                seg_end = _dt_from_us(int(row["ended_at_us"]))
+                if seg_start >= grace_cutoff:
+                    continue
+                if _segment_intersects_keep_windows(seg_start, seg_end, keep_windows):
+                    continue
+                deleted_names.append(name)
+            if deleted_names:
+                _index_delete_many(conn, deleted_names)
+    except Exception as exc:
+        _log_index.warning("Untagged-prune index pass failed for %s: %s", device_id, exc)
+        return 0
+
+    deleted = 0
+    for name in deleted_names:
+        try:
+            (device_dir / name).unlink(missing_ok=True)
+            deleted += 1
+        except Exception:
+            pass
+
+    # Defensive on-disk sweep for files not yet in the index.
+    indexed_names = {row["filename"] for row in rows} if 'rows' in locals() else set()
+    for path in device_dir.iterdir():
+        if not path.is_file() or path.suffix != ".ts":
+            continue
+        if path.name == tip or path.name in indexed_names:
+            continue
+        seg_start = _parse_segment_name(path.name)
+        if seg_start is None:
+            continue
+        if seg_start >= grace_cutoff:
+            continue
+        # Conservatively assume the segment spans up to the next start time on
+        # disk (or +RECORDING_SEGMENT_SECONDS if it's the latest on-disk orphan).
+        seg_end = seg_start + timedelta(seconds=RECORDING_SEGMENT_SECONDS)
+        if _segment_intersects_keep_windows(seg_start, seg_end, keep_windows):
+            continue
+        try:
+            path.unlink(missing_ok=True)
+            deleted += 1
+        except Exception:
+            pass
+
+    if deleted:
+        _log_index.info("Pruned %d untagged segment(s) for %s", deleted, device_id)
+    return deleted
+
+
+def _prune_all_untagged_segments() -> Dict[str, int]:
+    rec_root = _recordings_root()
+    if not rec_root.exists():
+        return {}
+    summary: Dict[str, int] = {}
+    for device_dir in rec_root.iterdir():
+        if not device_dir.is_dir():
+            continue
+        device_id = device_dir.name
+        if not _SAFE_ID_RE.match(device_id):
+            continue
+        try:
+            count = _prune_untagged_segments(device_id)
+            if count:
+                summary[device_id] = count
+        except Exception as exc:
+            _log_recording.warning("Untagged-prune failed for %s: %s", device_id, exc)
+    return summary
+
+
 def _prune_cached_clips() -> None:
     clips = _clips_root()
     if not clips.exists():
@@ -1363,6 +1507,8 @@ def _prune_cached_clips() -> None:
 def _recorders_loop() -> None:
     prune_counter = 0
     prune_every = max(1, int(3600 / RECORDER_POLL_SECONDS))
+    untagged_counter = 0
+    untagged_every = max(1, int(UNTAGGED_PRUNE_INTERVAL_SECONDS / RECORDER_POLL_SECONDS))
     while not _recorder_stop.is_set():
         if _recorder_pause.is_set():
             _recorder_kick.wait(timeout=RECORDER_POLL_SECONDS)
@@ -1406,6 +1552,14 @@ def _recorders_loop() -> None:
                 _prune_cached_clips()
             except Exception as exc:
                 _log_recording.warning("Prune cycle failed: %s", exc)
+
+        untagged_counter += 1
+        if untagged_counter >= untagged_every:
+            untagged_counter = 0
+            try:
+                _prune_all_untagged_segments()
+            except Exception as exc:
+                _log_recording.warning("Untagged-prune cycle failed: %s", exc)
 
         _recorder_kick.wait(timeout=RECORDER_POLL_SECONDS)
         _recorder_kick.clear()
@@ -2189,3 +2343,15 @@ def playback_reindex(device_id: Optional[str] = None) -> Dict[str, Any]:
                 except Exception as exc:
                     results[child.name] = {"error": str(exc)}
     return {"ok": True, "results": results}
+
+
+@router.post("/api/playback/prune-untagged")
+def playback_prune_untagged(device_id: Optional[str] = None) -> Dict[str, Any]:
+    """Manually delete recording segments not covered by any saved event.
+
+    Optional device_id to scope; otherwise sweeps every device.
+    """
+    if device_id:
+        device_id = _validate_id(device_id, "device_id")
+        return {"ok": True, "device_id": device_id, "pruned": _prune_untagged_segments(device_id)}
+    return {"ok": True, "pruned": _prune_all_untagged_segments()}

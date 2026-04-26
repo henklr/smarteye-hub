@@ -695,10 +695,15 @@ function eachTileVideo(cb) {
   for (const tile of tiles.values()) cb(tile.video, tile);
 }
 
-function setTileOverlay(tile, text, visible) {
+function setTileOverlay(tile, text, visible, options = {}) {
   if (!tile?.overlayEl) return;
-  tile.overlayEl.textContent = text || "";
-  tile.overlayEl.style.display = (visible ?? !!text) ? "flex" : "none";
+  const overlay = tile.overlayEl;
+  const textEl = overlay.querySelector(".tileOverlayText");
+  if (textEl) textEl.textContent = text || "";
+  else overlay.textContent = text || "";
+  const show = visible ?? !!(text || options.state === "loading");
+  overlay.dataset.state = options.state || "";
+  overlay.style.display = show ? "flex" : "none";
 }
 
 function suppressTileError(tile, ms) {
@@ -747,28 +752,31 @@ function attachTileSource(tile, event) {
   }
 
   const video = tile.video;
-  setTileOverlay(tile, "Loading…", true);
+  setTileOverlay(tile, "", true, { state: "loading" });
 
   const hideOverlay = () => setTileOverlay(tile, "", false);
+  const showError = (msg) => setTileOverlay(tile, msg, true, { state: "error" });
 
   if (window.Hls && window.Hls.isSupported && window.Hls.isSupported()) {
     const hls = new window.Hls({ enableWorker: true, lowLatencyMode: false });
     tile.hls = hls;
     hls.attachMedia(video);
     hls.on(window.Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(url));
-    hls.on(window.Hls.Events.MANIFEST_PARSED, hideOverlay);
+    // First decoded frame is the most reliable "video is actually showing" signal.
+    video.addEventListener("playing", hideOverlay, { once: true });
+    video.addEventListener("loadeddata", hideOverlay, { once: true });
     hls.on(window.Hls.Events.ERROR, (_evt, data) => {
-      if (data?.fatal) setTileOverlay(tile, "No recording in this range", true);
+      if (data?.fatal) showError("No recording in this range");
     });
   } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
     video.src = url;
-    video.addEventListener("loadedmetadata", hideOverlay, { once: true });
+    video.addEventListener("loadeddata", hideOverlay, { once: true });
     video.addEventListener("error", () => {
-      if (!isIgnorableTileError(tile)) setTileOverlay(tile, "No recording in this range", true);
+      if (!isIgnorableTileError(tile)) showError("No recording in this range");
     });
     try { video.load(); } catch {}
   } else {
-    setTileOverlay(tile, "HLS not supported in this browser", true);
+    showError("HLS not supported in this browser");
   }
 }
 
@@ -793,7 +801,10 @@ function makeTileElement(device) {
       <div class="tileHud">
         <div class="tileName">${escapeHtml(device.name || device.ip || device.id)}</div>
       </div>
-      <div class="tileOverlay"></div>
+      <div class="tileOverlay" data-state="">
+        <span class="tileOverlaySpinner" aria-hidden="true"></span>
+        <span class="tileOverlayText"></span>
+      </div>
     </div>
   `;
   return tileEl;
