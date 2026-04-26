@@ -669,12 +669,6 @@ body.playbackPage {
   border: none;
 }
 
-/* Mute overlay button on the playback video — always visible, top-right. */
-.playbackPage .playbackVideoShell .tileAudioBtn {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0);
-}
 
 /* Shuttle: transparent native track so the custom overlay (with detents +
    fill) shows through. Thumb visuals come from the shared slider rules above. */

@@ -324,9 +324,9 @@ function loadStoredPlaybackState() {
 
 function snapshotPlaybackState() {
   const event = selectedEvent();
-  const video = primaryVideoEl();
-  const seekSeconds = event
-    ? clamp(Number.isFinite(video?.currentTime) ? video.currentTime : 0, 0, eventDurationSeconds(event))
+  const tile = primaryTile();
+  const seekSeconds = event && tile
+    ? clamp(tileElapsedSeconds(tile), 0, eventDurationSeconds(event))
     : 0;
 
   return {
@@ -740,6 +740,66 @@ function detachTileSource(tile, options = {}) {
       try { tile.video.load(); } catch {}
     }
   }
+  if (destroy) {
+    tile.currentEvent = null;
+    tile.startOffsetSeconds = null;
+    tile.pendingSeekElapsed = null;
+  }
+}
+
+// Map between video.currentTime (offset from first segment's start) and
+// elapsed-in-event seconds (offset from event.clip_start). The two diverge
+// because the HLS playlist returns whole segments overlapping the requested
+// window, so segment 1 may begin before clip_start.
+function tileElapsedSeconds(tile) {
+  if (!tile?.video) return 0;
+  const offset = tile.startOffsetSeconds || 0;
+  return Math.max(0, (Number(tile.video.currentTime) || 0) - offset);
+}
+
+function setTileElapsed(tile, elapsedSeconds) {
+  if (!tile?.video) return;
+  const elapsed = Math.max(0, Number(elapsedSeconds) || 0);
+  if (tile.startOffsetSeconds == null) {
+    tile.pendingSeekElapsed = elapsed;
+    return;
+  }
+  tile.video.currentTime = Math.max(0, tile.startOffsetSeconds + elapsed);
+}
+
+async function setAllTilesElapsed(elapsedSeconds) {
+  await Promise.all([...tiles.values()].map(async (tile) => {
+    if (tile.video.readyState < 1 || tile.startOffsetSeconds == null) {
+      tile.pendingSeekElapsed = elapsedSeconds;
+      await new Promise((resolve) => {
+        const apply = () => {
+          if (tile.startOffsetSeconds != null) {
+            tile.video.currentTime = Math.max(0, tile.startOffsetSeconds + elapsedSeconds);
+            tile.pendingSeekElapsed = null;
+          }
+          resolve();
+        };
+        tile.video.addEventListener("loadedmetadata", apply, { once: true });
+      });
+    } else {
+      tile.video.currentTime = Math.max(0, tile.startOffsetSeconds + elapsedSeconds);
+    }
+  }));
+}
+
+function applyTileOffsetFromProgramDateTime(tile, segStartMs) {
+  const event = tile.currentEvent;
+  if (!event) return;
+  const eventStartMs = Date.parse(event.clip_start);
+  if (Number.isFinite(segStartMs) && Number.isFinite(eventStartMs)) {
+    tile.startOffsetSeconds = (eventStartMs - segStartMs) / 1000;
+  } else {
+    tile.startOffsetSeconds = 0;
+  }
+  if (tile.pendingSeekElapsed != null) {
+    setTileElapsed(tile, tile.pendingSeekElapsed);
+    tile.pendingSeekElapsed = null;
+  }
 }
 
 const HLS_VOD_CONFIG = {
@@ -807,6 +867,11 @@ function attachTileSource(tile, event) {
   const hideOverlay = () => setTileOverlay(tile, "", false);
   const showError = (msg) => setTileOverlay(tile, msg, true, { state: "error" });
 
+  // Reset offset; will be computed once the manifest/metadata reports the
+  // first segment's wall-clock start.
+  tile.currentEvent = event;
+  tile.startOffsetSeconds = null;
+
   if (window.Hls && window.Hls.isSupported && window.Hls.isSupported()) {
     let hls = tile.hls;
     if (!hls) {
@@ -814,6 +879,11 @@ function attachTileSource(tile, event) {
       tile.hls = hls;
       hls.on(window.Hls.Events.ERROR, (_evt, data) => {
         if (data?.fatal) showError("No recording in this range");
+      });
+      hls.on(window.Hls.Events.LEVEL_LOADED, (_evt, data) => {
+        const firstFrag = data?.details?.fragments?.[0];
+        const segStartMs = firstFrag?.programDateTime;
+        if (Number.isFinite(segStartMs)) applyTileOffsetFromProgramDateTime(tile, segStartMs);
       });
       hls.attachMedia(video);
     }
@@ -824,6 +894,17 @@ function attachTileSource(tile, event) {
     try { hls.startLoad(); } catch {}
   } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
     video.src = url;
+    const onMetadata = () => {
+      try {
+        const startDate = video.getStartDate?.();
+        const segStartMs = startDate?.getTime?.();
+        if (Number.isFinite(segStartMs)) applyTileOffsetFromProgramDateTime(tile, segStartMs);
+        else applyTileOffsetFromProgramDateTime(tile, Date.parse(event.clip_start));
+      } catch {
+        applyTileOffsetFromProgramDateTime(tile, Date.parse(event.clip_start));
+      }
+    };
+    video.addEventListener("loadedmetadata", onMetadata, { once: true });
     video.addEventListener("loadeddata", hideOverlay, { once: true });
     video.addEventListener("error", () => {
       if (!isIgnorableTileError(tile)) showError("No recording in this range");
@@ -972,6 +1053,13 @@ function getOrCreateTile(deviceId) {
     deviceId,
     loadToken: 0,
     suppressErrorUntil: 0,
+    // Wall-clock alignment: video.currentTime is offset from the first
+    // segment's start, NOT from event.clip_start. We compute the delta from
+    // EXT-X-PROGRAM-DATE-TIME (hls.js) or HTMLMediaElement.getStartDate()
+    // (Safari) and translate via tileElapsedSeconds / setTileElapsed.
+    currentEvent: null,
+    startOffsetSeconds: null,  // (eventStart - firstSegmentStart) in seconds
+    pendingSeekElapsed: null,  // seek requested before manifest parsed
   };
   tiles.set(deviceId, tile);
 
@@ -1160,18 +1248,9 @@ function reloadAllTileSourcesForEvent(event) {
 
 // ── Transport (across all tiles) ──────────────────────────────────────
 
-async function seekVideoToSeconds(video, seconds) {
-  if (!video) return;
-  const target = Math.max(0, Number(seconds) || 0);
-  if (video.readyState >= 1) { video.currentTime = target; return; }
-  await new Promise((resolve) => {
-    const apply = () => { video.currentTime = target; resolve(); };
-    video.addEventListener("loadedmetadata", apply, { once: true });
-  });
-}
-
-async function seekAllTilesToSeconds(seconds) {
-  await Promise.all([...tiles.values()].map((tile) => seekVideoToSeconds(tile.video, seconds)));
+// Seek every tile to the given elapsed-in-event seconds (NOT raw video.currentTime).
+async function seekAllTilesToSeconds(elapsedSeconds) {
+  await setAllTilesElapsed(elapsedSeconds);
 }
 
 async function startVideoPlayback(video) {
@@ -1201,8 +1280,10 @@ function setAllTilesPlaybackRate(rate) {
   }
 }
 
-function playbackDurationSeconds(video, event = selectedEvent()) {
-  if (Number.isFinite(video?.duration) && video.duration > 0) return video.duration;
+function playbackDurationSeconds(_video, event = selectedEvent()) {
+  // Use the event's bounds, NOT video.duration — the loaded HLS playlist
+  // contains whole segments overlapping the event window, so video.duration
+  // can exceed the event by up to two segment lengths.
   return eventDurationSeconds(event);
 }
 
@@ -1336,11 +1417,13 @@ async function handleForwardPlaybackBoundary(event) {
   }
 }
 
-function playbackReachedEnd(video, event) {
-  if (!video || !event || isReverseDirection() || state.transport.advancingToNextClip) return false;
-  const duration = playbackDurationSeconds(video, event);
+function playbackReachedEnd(_video, event) {
+  if (!event || isReverseDirection() || state.transport.advancingToNextClip) return false;
+  const duration = eventDurationSeconds(event);
   if (!(Number.isFinite(duration) && duration > 0)) return false;
-  return (Number(video.currentTime) || 0) >= Math.max(0, duration - 0.05);
+  const tile = primaryTile();
+  if (!tile) return false;
+  return tileElapsedSeconds(tile) >= Math.max(0, duration - 0.05);
 }
 
 function queueForwardPlaybackBoundaryCheck(event = selectedEvent()) {
@@ -1354,15 +1437,15 @@ function queueForwardPlaybackBoundaryCheck(event = selectedEvent()) {
 }
 
 async function startReversePlayback(event) {
-  const video = primaryVideoEl();
-  if (!video || !event) return false;
+  const primary = primaryTile();
+  if (!primary || !event) return false;
   stopPlaybackCursorLoop();
   stopSimulatedForwardPlayback();
   stopReversePlayback();
   pauseAllTiles();
 
-  if (video.currentTime <= 0.05) {
-    await seekAllTilesToSeconds(playbackDurationSeconds(video, event));
+  if (tileElapsedSeconds(primary) <= 0.05) {
+    await seekAllTilesToSeconds(eventDurationSeconds(event));
   }
 
   const reverse = reversePlaybackState();
@@ -1373,12 +1456,14 @@ async function startReversePlayback(event) {
   const tick = (timestamp) => {
     if (!reverse.active) { reverse.rafId = 0; return; }
     if (!reverse.lastTs) reverse.lastTs = timestamp;
-    const elapsedSeconds = clamp((timestamp - reverse.lastTs) / 1000, 0, 0.25);
+    const dtSeconds = clamp((timestamp - reverse.lastTs) / 1000, 0, 0.25);
     reverse.lastTs = timestamp;
-    const nextTime = Math.max(0, (Number(video.currentTime) || 0) - (elapsedSeconds * normalizePlaybackSpeed(state.transport.speed)));
-    eachTileVideo((v) => { v.currentTime = nextTime; });
+    const cur = primaryTile();
+    if (!cur) { stopReversePlayback(); return; }
+    const nextElapsed = Math.max(0, tileElapsedSeconds(cur) - (dtSeconds * normalizePlaybackSpeed(state.transport.speed)));
+    for (const tile of tiles.values()) setTileElapsed(tile, nextElapsed);
     updatePlaybackCursorFromVideo();
-    if (nextTime <= 0.001) {
+    if (nextElapsed <= 0.001) {
       stopReversePlayback();
       syncPlaybackTransport();
       handleReversePlaybackBoundary(event).catch((error) => setStatus(error.message || String(error)));
@@ -1391,8 +1476,8 @@ async function startReversePlayback(event) {
 }
 
 async function startSimulatedForwardPlayback(event) {
-  const video = primaryVideoEl();
-  if (!video || !event) return false;
+  const primary = primaryTile();
+  if (!primary || !event) return false;
   clearForwardPlaybackBoundarySchedule();
   stopPlaybackCursorLoop();
   stopSimulatedForwardPlayback();
@@ -1407,18 +1492,20 @@ async function startSimulatedForwardPlayback(event) {
   const tick = (timestamp) => {
     if (!forward.active || state.selectedEventId !== event.id) { forward.rafId = 0; return; }
     if (!forward.lastTs) forward.lastTs = timestamp;
-    const duration = playbackDurationSeconds(video, event);
+    const duration = eventDurationSeconds(event);
     if (!(Number.isFinite(duration) && duration > 0)) {
       stopSimulatedForwardPlayback();
       syncPlaybackTransport();
       return;
     }
-    const elapsedSeconds = clamp((timestamp - forward.lastTs) / 1000, 0, 0.25);
+    const dtSeconds = clamp((timestamp - forward.lastTs) / 1000, 0, 0.25);
     forward.lastTs = timestamp;
-    const nextTime = Math.min(duration, (Number(video.currentTime) || 0) + (elapsedSeconds * normalizePlaybackSpeed(state.transport.speed)));
-    eachTileVideo((v) => { v.currentTime = nextTime; });
+    const cur = primaryTile();
+    if (!cur) { stopSimulatedForwardPlayback(); return; }
+    const nextElapsed = Math.min(duration, tileElapsedSeconds(cur) + (dtSeconds * normalizePlaybackSpeed(state.transport.speed)));
+    for (const tile of tiles.values()) setTileElapsed(tile, nextElapsed);
     updatePlaybackCursorFromVideo();
-    if (nextTime >= Math.max(0, duration - 0.001)) {
+    if (nextElapsed >= Math.max(0, duration - 0.001)) {
       stopSimulatedForwardPlayback();
       syncPlaybackTransport();
       queueForwardPlaybackBoundaryCheck(event);
@@ -1529,9 +1616,9 @@ async function setPlaybackDirection(direction) {
   if (nextDirection === currentDirection) { syncPlaybackTransport(); return; }
   state.transport.direction = nextDirection;
   syncPlaybackTransport();
-  const video = primaryVideoEl();
-  if (video && event && nextDirection === "backward" && video.currentSrc && video.currentTime <= 0.05) {
-    await seekAllTilesToSeconds(playbackDurationSeconds(video, event));
+  const primary = primaryTile();
+  if (primary && event && nextDirection === "backward" && primary.video.currentSrc && tileElapsedSeconds(primary) <= 0.05) {
+    await seekAllTilesToSeconds(eventDurationSeconds(event));
   }
   if (wasRunning && event) {
     const started = await startConfiguredPlayback(event);
@@ -1662,14 +1749,14 @@ function stopPlaybackCursorLoop() {
 function playbackCursorPosition() {
   const event = selectedEvent();
   if (!event) return null;
-  const video = primaryVideoEl();
-  const offsetSeconds = Number.isFinite(video?.currentTime) ? Math.max(video.currentTime, 0) : 0;
+  const tile = primaryTile();
+  const elapsedSeconds = tile ? tileElapsedSeconds(tile) : 0;
   const range = dayRange(event.clip_start, event.clip_end);
-  const minute = clamp(range.startMinute + (offsetSeconds / 60), range.startMinute, range.endMinute);
+  const minute = clamp(range.startMinute + (elapsedSeconds / 60), range.startMinute, range.endMinute);
   const startMs = Date.parse(event.clip_start);
   return {
     minute,
-    label: Number.isFinite(startMs) ? clockLabel(startMs + (offsetSeconds * 1000)) : minuteLabel(minute),
+    label: Number.isFinite(startMs) ? clockLabel(startMs + (elapsedSeconds * 1000)) : minuteLabel(minute),
   };
 }
 
