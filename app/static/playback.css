@@ -41,6 +41,7 @@ body.playbackPage {
   display: flex;
   flex-direction: column;
   gap: 0;
+  padding: 12px;
 }
 
 .playbackPage .playbackViewerCard {
@@ -49,39 +50,6 @@ body.playbackPage {
   flex: 1 1 auto;
   gap: 0;
   position: relative;
-}
-
-/* 1px top highlight to carry the glassy language into the cards. */
-.playbackPage .playbackViewerCard::before,
-.playbackPage .playbackTimelineCard::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(255, 255, 255, 0.06) 20%,
-    rgba(255, 255, 255, 0.1) 50%,
-    rgba(255, 255, 255, 0.06) 80%,
-    transparent 100%
-  );
-  pointer-events: none;
-  z-index: 1;
-}
-
-[data-theme="light"] .playbackPage .playbackViewerCard::before,
-[data-theme="light"] .playbackPage .playbackTimelineCard::before {
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(255, 255, 255, 0.45) 20%,
-    rgba(255, 255, 255, 0.7) 50%,
-    rgba(255, 255, 255, 0.45) 80%,
-    transparent 100%
-  );
 }
 
 .playbackPage .playbackHeader {
@@ -107,7 +75,6 @@ body.playbackPage {
   flex: 1 1 auto;
   min-height: 0;
   border: none;
-  border-bottom: 1px solid var(--stroke);
   border-radius: 0;
   overflow: hidden;
   background: #0a0a0a;
@@ -308,7 +275,6 @@ body.playbackPage {
   gap: 12px;
   padding: 10px 14px;
   border: 0;
-  border-bottom: 1px solid var(--stroke);
   background: transparent;
 }
 
