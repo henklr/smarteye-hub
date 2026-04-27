@@ -2396,8 +2396,9 @@ window.viewsPlayback = {
     });
   },
   // Called by views-live.js when the user drag-reorders the shared sidebar.
-  // Mirror the new order into state.devices + state.activeDeviceIds and
-  // re-sort playback tiles so the grid stays 1:1 with the sidebar.
+  // Always update playback state so the order is correct on next entry; only
+  // touch the playback DOM when playback is the visible mode (otherwise the
+  // hidden-grid replaceChildren on every dragover frame can disrupt the drag).
   onSidebarReorder(orderedIds) {
     if (!Array.isArray(orderedIds) || !orderedIds.length) return;
     const byId = new Map(state.devices.map((d) => [d.id, d]));
@@ -2411,8 +2412,16 @@ window.viewsPlayback = {
     }
     state.devices = reordered;
     const activeSet = new Set(state.activeDeviceIds);
-    state.activeDeviceIds = orderedIds.filter((id) => activeSet.has(id));
-    syncTilesToActive();
+    const orderedActive = [];
+    const seen = new Set();
+    for (const id of orderedIds) {
+      if (activeSet.has(id) && !seen.has(id)) { orderedActive.push(id); seen.add(id); }
+    }
+    for (const id of state.activeDeviceIds) {
+      if (!seen.has(id)) { orderedActive.push(id); seen.add(id); }
+    }
+    state.activeDeviceIds = orderedActive;
+    if (window.views?.mode === "playback") syncTilesToActive();
   },
   async onModeChange(next, prev) {
     if (next === "playback") {
