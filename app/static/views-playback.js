@@ -927,6 +927,7 @@ function makeTileElement(device) {
   tileEl.innerHTML = `
     <div class="tilePlayer">
       <video playsinline preload="metadata" muted></video>
+      <button class="tileCloseBtn" type="button" aria-label="Close tile" title="Close tile">×</button>
       <button class="tileAudioBtn" type="button" data-muted="1" aria-label="Unmute" title="Unmute">
         <svg class="tileAudioIcon" data-icon="on" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M4 9v6h4l5 4V5L8 9H4z"></path>
@@ -1047,7 +1048,13 @@ function getOrCreateTile(deviceId) {
   const tileEl = makeTileElement(device);
   const video = tileEl.querySelector("video");
   const audioBtn = tileEl.querySelector(".tileAudioBtn");
+  const closeBtn = tileEl.querySelector(".tileCloseBtn");
   const overlayEl = tileEl.querySelector(".tileOverlay");
+
+  closeBtn?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    toggleActiveDevice(deviceId);
+  });
 
   const tile = {
     tile: tileEl,
