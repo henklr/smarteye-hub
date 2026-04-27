@@ -3434,6 +3434,31 @@ def streams():
     return {"streams": [_path_for(d.id) for d in devs if d.profile_token]}
 
 
+def _whep_forward(target_url: str, method: str, body: bytes, headers: dict) -> tuple[int, bytes, dict]:
+    req = urllib.request.Request(
+        target_url,
+        data=body if body else None,
+        method=method,
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp_body = resp.read()
+            resp_headers = {}
+            for h in ("content-type", "location", "etag"):
+                val = resp.getheader(h)
+                if val:
+                    resp_headers[h] = val
+            return resp.status, resp_body, resp_headers
+    except urllib.error.HTTPError as exc:
+        resp_body = b""
+        try:
+            resp_body = exc.read(8192)
+        except Exception:
+            pass
+        return exc.code, resp_body, {}
+
+
 @app.api_route("/api/whep/{path:path}", methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"])
 async def whep_proxy(path: str, request: Request):
     """Proxy WHEP requests to MediaMTX so HTTPS pages can reach it."""
@@ -3445,32 +3470,11 @@ async def whep_proxy(path: str, request: Request):
         lk = k.lower()
         if lk in ("content-type", "accept", "authorization"):
             headers[k] = v
-    req = urllib.request.Request(
-        target_url,
-        data=body if body else None,
-        method=request.method,
-        headers=headers,
-    )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            resp_body = resp.read()
-            resp_headers = {}
-            for h in ("content-type", "location", "etag"):
-                val = resp.getheader(h)
-                if val:
-                    resp_headers[h] = val
-            return Response(
-                content=resp_body,
-                status_code=resp.status,
-                headers=resp_headers,
-            )
-    except urllib.error.HTTPError as exc:
-        resp_body = b""
-        try:
-            resp_body = exc.read(8192)
-        except Exception:
-            pass
-        return Response(content=resp_body, status_code=exc.code)
+        status, resp_body, resp_headers = await asyncio.to_thread(
+            _whep_forward, target_url, request.method, body, headers
+        )
+        return Response(content=resp_body, status_code=status, headers=resp_headers)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 

@@ -2098,3 +2098,29 @@ window.viewsLive = {
     loadDevices().catch(() => {});
   });
 })();
+
+// Stop polling and notify the backend of active streams as we navigate away.
+// Without this, the browser closes RTCPeerConnections locally but MediaMTX waits
+// for ICE timeout — and any in-flight polls keep the event loop busy while the
+// next page tries to load, producing the "freeze on fast page switch" symptom.
+window.addEventListener("pagehide", () => {
+  try {
+    if (statusPollTimer) { clearInterval(statusPollTimer); statusPollTimer = null; }
+  } catch {}
+  try {
+    if (typeof speakerStatusTimer !== "undefined" && speakerStatusTimer) {
+      clearInterval(speakerStatusTimer);
+      speakerStatusTimer = null;
+    }
+  } catch {}
+  for (const id of streams.keys()) {
+    try {
+      const url = `/api/stop/${encodeURIComponent(id)}`;
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(url, new Blob([], { type: "application/json" }));
+      } else {
+        fetch(url, { method: "POST", keepalive: true }).catch(() => {});
+      }
+    } catch {}
+  }
+});
