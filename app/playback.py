@@ -45,7 +45,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 
 _log_recording = logging.getLogger("recording")
 _log_playback = logging.getLogger("playback")
@@ -2212,9 +2212,9 @@ def put_recording_path(body: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "recording_path": raw, "active_base": str(_resolve_base_dir())}
 
 
-@router.get("/playback", response_class=HTMLResponse)
-def playback_page() -> HTMLResponse:
-    return HTMLResponse((STATIC_DIR / "playback.html").read_text(encoding="utf-8"))
+@router.get("/playback")
+def playback_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/views?mode=playback", status_code=307)
 
 
 @router.get("/api/playback/timeline")

@@ -20,7 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 from onvif import ONVIFCamera
@@ -411,14 +411,19 @@ def auth_me(request: Request):
     return {"user": username}
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 def index_page():
-    return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    return RedirectResponse(url="/views", status_code=307)
 
 
-@app.get("/live", response_class=HTMLResponse)
-def live_page():
-    return (STATIC_DIR / "live.html").read_text(encoding="utf-8")
+@app.get("/live")
+def live_redirect():
+    return RedirectResponse(url="/views?mode=live", status_code=307)
+
+
+@app.get("/views", response_class=HTMLResponse)
+def views_page():
+    return (STATIC_DIR / "views.html").read_text(encoding="utf-8")
 
 
 @app.get("/devices", response_class=HTMLResponse)

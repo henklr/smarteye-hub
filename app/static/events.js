@@ -107,7 +107,7 @@
       const links = event.recording_refs.map((ref) => {
         const label = ref.device_name || ref.device_id || "Camera";
         const ts = ref.timestamp ? `&t=${encodeURIComponent(ref.timestamp)}` : "";
-        return `<a class="eventRecordingLink" href="/playback?device=${encodeURIComponent(ref.device_id)}${ts}" title="View recording for ${escapeHtml(label)}">&#9654; ${escapeHtml(label)}</a>`;
+        return `<a class="eventRecordingLink" href="/views?mode=playback&device=${encodeURIComponent(ref.device_id)}${ts}" title="View recording for ${escapeHtml(label)}">&#9654; ${escapeHtml(label)}</a>`;
       }).join("");
       recordingsHtml = `<div class="eventRecordings">${links}</div>`;
     }

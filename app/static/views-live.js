@@ -24,7 +24,7 @@ const devicesOverlayBackdrop = document.getElementById("devicesOverlayBackdrop")
 
 const videoGrid = document.getElementById("videoGrid");
 
-const liveSidebarList = document.getElementById("liveSidebarList");
+const liveSidebarList = document.getElementById("viewsCameraList");
 const openDevicesBtn2 = document.getElementById("openDevicesBtn2");
 const sidebarStartAll = document.getElementById("sidebarStartAll");
 const sidebarStopAll = document.getElementById("sidebarStopAll");
@@ -329,6 +329,11 @@ function saveGridState() {
       order: ids,
     })
   );
+  // Mirror the engaged-camera set so playback mode picks up the same selection.
+  if (window.views?.selectedDevices) {
+    window.views.selectedDevices.clear();
+    for (const id of streams.keys()) window.views.selectedDevices.add(id);
+  }
 }
 
 function loadDeviceOrder() {
@@ -788,12 +793,17 @@ function renderSidebar() {
     const onlineStatus = getDeviceOnlineStatus(d.id);
     const camDotClass = (onlineStatus === 'live' || onlineStatus === 'idle') ? 'dot-online' : onlineStatus === 'down' ? 'dot-offline' : 'dot-unknown';
 
-    return `<div class="liveSidebarRow ${active ? 'active' : ''} ${stateClass}" data-id="${escapeHtml(d.id)}" draggable="true">
+    return `<div class="liveSidebarRow ${active ? 'active' : ''} ${stateClass}" data-id="${escapeHtml(d.id)}" draggable="true" data-live-active="${active ? '1' : '0'}" data-live-state="${stateClass}">
       <button class="liveSidebarDragHandle" type="button" draggable="false" aria-label="Reorder" title="Drag to reorder">⋮⋮</button>
       <span class="liveSidebarName">${escapeHtml(d.name || d.ip || d.id)}</span>
       <span class="statusDot ${camDotClass}"></span>
     </div>`;
   }).join('');
+
+  // Let the playback module decorate the shared sidebar for its mode.
+  if (typeof window.viewsPlayback?.afterSidebarRender === "function") {
+    window.viewsPlayback.afterSidebarRender();
+  }
 }
 
 function clearProfilesUI(msg = "Fetch profiles first…") {
@@ -2306,6 +2316,9 @@ liveSidebarList?.addEventListener("click", async (ev) => {
   const row = ev.target.closest(".liveSidebarRow[data-id]");
   if (!row) return;
 
+  // Sidebar is shared with playback mode; only handle clicks in live mode.
+  if (window.views?.mode && window.views.mode !== "live") return;
+
   const id = row.getAttribute("data-id");
   const d = devices.find((x) => x.id === id);
   if (!d) return;
@@ -2727,10 +2740,55 @@ function stopVoiceRecording() {
   }
 }
 
+let _liveGridRestored = false;
+
+async function restoreLiveGridOnce() {
+  if (_liveGridRestored) return;
+  _liveGridRestored = true;
+  // Cross-mode handoff: if the shared engagement set is non-empty (e.g. user
+  // had cameras selected in playback before switching here), prefer that over
+  // the LS-restored grid.
+  const sharedIds = Array.from(window.views?.selectedDevices ?? []);
+  if (sharedIds.length) {
+    await reconcileLiveStreamsToIds(sharedIds);
+  } else {
+    await restoreGrid();
+  }
+}
+
+async function reconcileLiveStreamsToIds(targetIds) {
+  const target = new Set(targetIds);
+  const startPromises = [];
+  for (const id of target) {
+    if (isStreaming(id)) continue;
+    const d = devices.find((x) => x.id === id);
+    if (d) startPromises.push(startDevice(d));
+  }
+  const stopPromises = [];
+  for (const id of Array.from(streams.keys())) {
+    if (!target.has(id)) stopPromises.push(stopDevice(id));
+  }
+  await Promise.allSettled([...startPromises, ...stopPromises]);
+}
+
+window.viewsLive = {
+  async onModeChange(next, _prev) {
+    if (next === "live") {
+      if (!_liveGridRestored) {
+        await restoreLiveGridOnce();
+      } else {
+        const sharedIds = Array.from(window.views?.selectedDevices ?? []);
+        await reconcileLiveStreamsToIds(sharedIds);
+      }
+      ensureDevicesVisibleWhenNoStreams();
+    }
+    // Streams stay alive when leaving live mode (the grid is just hidden).
+  },
+};
+
 (async function init() {
   await loadDevices();
   startStatusPoll();
-  await restoreGrid();
   loadSpeakers();
   loadAudioClips();
   startSpeakerStatusPoll();
@@ -2741,7 +2799,10 @@ function stopVoiceRecording() {
     params.delete("devices");
     const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}${window.location.hash || ""}`;
     window.history.replaceState({}, "", next);
-  } else {
+  }
+
+  if (window.views?.mode === "live") {
+    await restoreLiveGridOnce();
     ensureDevicesVisibleWhenNoStreams();
   }
 

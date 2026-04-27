@@ -1,3 +1,8 @@
+// Views: playback module. Wrapped in an IIFE so its top-level globals
+// (api, escapeHtml, loadTileMuted/saveTileMuted, state, tiles, …) don't
+// collide with views-live.js.
+(function () {
+
 const el = (id) => document.getElementById(id);
 
 const DAY_MINUTES = 24 * 60;
@@ -1188,24 +1193,13 @@ function getDeviceOnlineStatus(deviceId) {
   return cached?.[deviceId] || "unknown";
 }
 
+// The shared sidebar is rendered by views-live.js; playback only decorates
+// the rows to mark its current selection. Internal callers that used to
+// trigger a sidebar repaint now route through window.viewsPlayback.afterSidebarRender.
 function renderSidebar() {
-  const list = el("playbackSidebarList");
-  if (!list) return;
-  const configured = state.devices.filter((d) => d.profile_token);
-  if (!configured.length) {
-    list.innerHTML = '<div class="liveSidebarEmpty">No cameras configured</div>';
-    return;
+  if (typeof window.viewsPlayback?.afterSidebarRender === "function") {
+    window.viewsPlayback.afterSidebarRender();
   }
-  list.innerHTML = configured.map((d) => {
-    const active = state.activeDeviceIds.includes(d.id);
-    const onlineStatus = getDeviceOnlineStatus(d.id);
-    const camDotClass = (onlineStatus === "live" || onlineStatus === "idle") ? "dot-online"
-      : onlineStatus === "down" ? "dot-offline" : "dot-unknown";
-    return `<div class="liveSidebarRow ${active ? "active" : ""}" data-id="${escapeHtml(d.id)}">
-      <span class="liveSidebarName">${escapeHtml(d.name || d.ip || d.id)}</span>
-      <span class="statusDot ${camDotClass}"></span>
-    </div>`;
-  }).join("");
 }
 
 async function setActiveDeviceIds(ids, options = {}) {
@@ -1219,6 +1213,11 @@ async function setActiveDeviceIds(ids, options = {}) {
     next.push(trimmed);
   }
   state.activeDeviceIds = next;
+  // Mirror to the shared engagement set so live mode picks up the same selection.
+  if (window.views?.selectedDevices) {
+    window.views.selectedDevices.clear();
+    for (const id of next) window.views.selectedDevices.add(id);
+  }
   renderSidebar();
   syncTilesToActive();
   schedulePlaybackStateSave();
@@ -2141,9 +2140,11 @@ function bindUi() {
   bindTimelineInteractions();
   renderTimeline();
 
-  el("playbackSidebarList")?.addEventListener("click", async (event) => {
+  el("viewsCameraList")?.addEventListener("click", async (event) => {
+    if (window.views?.mode !== "playback") return;
     const row = event.target instanceof Element ? event.target.closest(".liveSidebarRow[data-id]") : null;
     if (!row) return;
+    if (event.target.closest(".liveSidebarDragHandle")) return;
     const id = row.getAttribute("data-id");
     if (!id) return;
     await toggleActiveDevice(id);
@@ -2317,5 +2318,78 @@ function bindTimelineInteractions() {
   }, true);
 }
 
+// ── Mount/unmount on mode switch ──────────────────────────────────────
+
+let _playbackInitialized = false;
+
+async function enterPlaybackMode() {
+  const sharedIds = Array.from(window.views?.selectedDevices ?? []);
+
+  if (!_playbackInitialized) {
+    _playbackInitialized = true;
+    // First-time bootstrap. If the shared set already has cameras (e.g. user
+    // had streams running in live before opening playback), prefer those over
+    // playback's last-saved selection.
+    if (sharedIds.length) state.activeDeviceIds = sharedIds;
+    await refreshAll();
+    // Seed the shared set from playback if live hadn't populated it yet.
+    if (!sharedIds.length && window.views?.selectedDevices) {
+      for (const id of state.activeDeviceIds) window.views.selectedDevices.add(id);
+    }
+  } else {
+    // Re-entry: reconcile to the shared set and refresh device list / timeline.
+    try {
+      await loadDevices();
+      await setActiveDeviceIds(sharedIds, { reloadTimeline: false });
+      await loadTimeline({ background: true, preservePlayback: true, autoSelectLatest: false });
+    } catch (error) {
+      setStatus(error.message || String(error));
+    }
+  }
+  scheduleTimelineAutoRefresh();
+}
+
+function pauseAllTileVideos() {
+  tiles.forEach((entry) => {
+    if (entry?.video && !entry.video.paused) {
+      try { entry.video.pause(); } catch (_) {}
+    }
+  });
+}
+
+window.viewsPlayback = {
+  // Called by views-live.js after it rebuilds the shared sidebar.
+  // We decorate the rows to reflect playback's selection (state.activeDeviceIds)
+  // and strip live-only state classes.
+  afterSidebarRender() {
+    if (window.views?.mode !== "playback") return;
+    const list = el("viewsCameraList");
+    if (!list) return;
+    const selected = new Set(state.activeDeviceIds);
+    list.querySelectorAll(".liveSidebarRow[data-id]").forEach((row) => {
+      const id = row.getAttribute("data-id");
+      const isSel = selected.has(id);
+      row.classList.toggle("active", isSel);
+      row.classList.remove("is-starting", "is-error");
+    });
+  },
+  async onModeChange(next, prev) {
+    if (next === "playback") {
+      await enterPlaybackMode();
+      this.afterSidebarRender();
+    } else if (prev === "playback") {
+      clearTimelineAutoRefresh();
+      pauseAllTileVideos();
+    }
+  },
+};
+
+// Always wire UI handlers so they're ready when the user enters playback mode.
 bindUi();
-refreshAll();
+
+// Auto-init only if we're starting in playback mode.
+if (window.views?.mode === "playback") {
+  enterPlaybackMode().catch((e) => console.error("playback init failed:", e));
+}
+
+})();
