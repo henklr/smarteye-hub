@@ -1427,4 +1427,88 @@ window._deleteAudioClip = async function(filename) {
   }
 };
 
+// ── Sidebar navigation: scrollspy + smooth scroll ─────────────────────────────
+(function initSettingsNav() {
+  const main = document.getElementById("settingsMain");
+  const nav = document.getElementById("settingsNav");
+  if (!main || !nav) return;
+
+  const links = Array.from(nav.querySelectorAll(".settingsNavRow"));
+  const entries = [];
+  for (const link of links) {
+    const id = link.getAttribute("href")?.slice(1);
+    if (!id) continue;
+    const section = document.getElementById(id);
+    if (section) entries.push({ id, link, section });
+  }
+  if (!entries.length) return;
+
+  function setActive(id) {
+    for (const e of entries) e.link.classList.toggle("active", e.id === id);
+  }
+
+  // Pick the scroll container that's actually scrollable (main on desktop,
+  // window on small viewports where the page itself scrolls).
+  function getScroller() {
+    if (main.scrollHeight > main.clientHeight + 1) return main;
+    return window;
+  }
+
+  function scrollToSection(section) {
+    const scroller = getScroller();
+    if (scroller === window) {
+      const top = section.getBoundingClientRect().top + window.scrollY - 16;
+      window.scrollTo({ top, behavior: "smooth" });
+    } else {
+      const mainRect = main.getBoundingClientRect();
+      const top = section.getBoundingClientRect().top - mainRect.top + main.scrollTop - 16;
+      main.scrollTo({ top, behavior: "smooth" });
+    }
+  }
+
+  for (const { id, link, section } of entries) {
+    link.addEventListener("click", (e) => {
+      e.preventDefault();
+      scrollToSection(section);
+      history.replaceState(null, "", `#${id}`);
+      setActive(id);
+    });
+  }
+
+  let ticking = false;
+  function updateActive() {
+    ticking = false;
+    const scroller = getScroller();
+    const refTop = scroller === window ? 0 : main.getBoundingClientRect().top;
+    const probe = 80;
+    let currentId = entries[0].id;
+    for (const { id, section } of entries) {
+      const offset = section.getBoundingClientRect().top - refTop;
+      if (offset <= probe) currentId = id;
+      else break;
+    }
+    setActive(currentId);
+  }
+
+  function onScroll() {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(updateActive);
+  }
+
+  main.addEventListener("scroll", onScroll, { passive: true });
+  window.addEventListener("scroll", onScroll, { passive: true });
+
+  const initialHash = window.location.hash.slice(1);
+  const initialEntry = entries.find((e) => e.id === initialHash);
+  if (initialEntry) {
+    requestAnimationFrame(() => {
+      scrollToSection(initialEntry.section);
+      setActive(initialHash);
+    });
+  } else {
+    updateActive();
+  }
+})();
+
 loadAudioClips();

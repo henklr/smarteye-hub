@@ -2647,29 +2647,151 @@ body.settingsPage .topbar {
 
 .settingsShell {
   display: flex;
-  justify-content: center;
-  padding: 20px 16px 40px;
+  flex-direction: row;
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.settingsSidebar {
+  flex: 0 0 220px;
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
   overflow-y: auto;
+  padding: 22px 12px 32px;
+  border-right: 1px solid var(--stroke);
+}
+
+.settingsNavGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.settingsNavGroup + .settingsNavGroup {
+  border-top: 1px solid var(--stroke);
+  padding-top: 14px;
+}
+
+.settingsNavGroupTitle {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0 12px 6px;
+}
+
+.settingsNavRow {
+  display: block;
+  padding: 6px 12px;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.settingsNavRow:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.settingsNavRow.active {
+  color: var(--accent-strong);
+  background: var(--accent-2);
+}
+
+.settingsMain {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  padding: 24px 24px 60px;
 }
 
 .settingsContent {
   width: 100%;
-  max-width: 640px;
+  max-width: 720px;
   display: flex;
   flex-direction: column;
   gap: 0;
+  padding-bottom: 40vh;
 }
 
 .settingsCard {
   padding: 20px 0;
   border-bottom: 1px solid var(--stroke);
+  scroll-margin-top: 24px;
 }
 
-@media (max-width: 600px) {
+.settingsCard:first-child {
+  padding-top: 0;
+}
+
+.settingsCard:last-child {
+  border-bottom: none;
+}
+
+@media (max-width: 900px) {
+  .settingsSidebar {
+    flex: 0 0 190px;
+    width: 190px;
+    padding: 18px 8px 24px;
+  }
+
+  .settingsMain {
+    padding: 18px 18px 40px;
+  }
+}
+
+@media (max-width: 720px) {
   .settingsShell {
-    padding: 14px 10px;
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  .settingsSidebar {
+    flex: 0 0 auto;
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    padding: 10px 14px;
+    border-right: none;
+    border-bottom: 1px solid var(--stroke);
+    overflow: visible;
+  }
+
+  .settingsNavGroup {
+    display: contents;
+  }
+
+  .settingsNavGroupTitle {
+    display: none;
+  }
+
+  .settingsNavRow {
+    padding: 4px 10px;
+    font-size: 11px;
+    border: 1px solid var(--stroke);
+    border-radius: 999px;
+  }
+
+  .settingsNavRow.active {
+    border-color: var(--accent-3);
+  }
+
+  .settingsMain {
+    overflow: visible;
+    padding: 16px;
   }
 }
 
@@ -2683,7 +2805,7 @@ body.settingsPage .topbar {
     flex: none;
   }
 
-  .settingsShell {
+  .settingsMain {
     padding-bottom: calc(126px + env(safe-area-inset-bottom, 0px));
   }
 }
