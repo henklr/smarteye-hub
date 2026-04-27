@@ -2429,6 +2429,8 @@ function installSidebarDnD() {
     if (orderedIds.length) {
       applyDeviceOrder(orderedIds);
       syncTileOrderToDeviceOrder(false);
+      // Real-time mirror to playback so its tiles reorder during the drag too.
+      window.viewsPlayback?.onSidebarReorder?.(orderedIds);
     }
   });
 
@@ -2449,6 +2451,8 @@ function installSidebarDnD() {
       saveDeviceOrder();
       syncTileOrderToDeviceOrder(false);
       saveGridState();
+      // Notify playback so it can reorder its own tiles + state.
+      window.viewsPlayback?.onSidebarReorder?.(orderedIds);
     }
 
     originalSidebarOrder = [];
@@ -2769,6 +2773,8 @@ async function reconcileLiveStreamsToIds(targetIds) {
     if (!target.has(id)) stopPromises.push(stopDevice(id));
   }
   await Promise.allSettled([...startPromises, ...stopPromises]);
+  // Re-align tile order to current devices order (which reflects sidebar order).
+  syncTileOrderToDeviceOrder(false);
 }
 
 window.viewsLive = {

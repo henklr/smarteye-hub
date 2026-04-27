@@ -1174,7 +1174,22 @@ function syncTilesToActive() {
       grid.appendChild(tile.tile);
     }
   }
-  const ordered = state.activeDeviceIds.map((id) => tiles.get(id)?.tile).filter(Boolean);
+  // Order tiles to match the sidebar order so the layout stays 1:1 with what
+  // the user sees on the left (live owns the sidebar render, including any DnD).
+  const sidebarList = document.getElementById("viewsCameraList");
+  const sidebarOrder = sidebarList
+    ? Array.from(sidebarList.querySelectorAll(".liveSidebarRow[data-id]")).map((r) => r.getAttribute("data-id"))
+    : [];
+  const seen = new Set();
+  const orderedIds = [];
+  for (const id of sidebarOrder) {
+    if (tiles.has(id) && !seen.has(id)) { seen.add(id); orderedIds.push(id); }
+  }
+  // Append any tiles not yet in the sidebar (defensive — keeps them visible).
+  for (const id of state.activeDeviceIds) {
+    if (tiles.has(id) && !seen.has(id)) { seen.add(id); orderedIds.push(id); }
+  }
+  const ordered = orderedIds.map((id) => tiles.get(id).tile);
   if (ordered.length) grid.replaceChildren(...ordered);
 
   if (!state.activeDeviceIds.length) {
@@ -2379,6 +2394,25 @@ window.viewsPlayback = {
       row.classList.toggle("active", isSel);
       row.classList.remove("is-starting", "is-error");
     });
+  },
+  // Called by views-live.js when the user drag-reorders the shared sidebar.
+  // Mirror the new order into state.devices + state.activeDeviceIds and
+  // re-sort playback tiles so the grid stays 1:1 with the sidebar.
+  onSidebarReorder(orderedIds) {
+    if (!Array.isArray(orderedIds) || !orderedIds.length) return;
+    const byId = new Map(state.devices.map((d) => [d.id, d]));
+    const reordered = [];
+    for (const id of orderedIds) {
+      const d = byId.get(id);
+      if (d) { reordered.push(d); byId.delete(id); }
+    }
+    for (const d of state.devices) {
+      if (byId.has(d.id)) { reordered.push(d); byId.delete(d.id); }
+    }
+    state.devices = reordered;
+    const activeSet = new Set(state.activeDeviceIds);
+    state.activeDeviceIds = orderedIds.filter((id) => activeSet.has(id));
+    syncTilesToActive();
   },
   async onModeChange(next, prev) {
     if (next === "playback") {
