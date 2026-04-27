@@ -1,31 +1,6 @@
-const camListEl = document.getElementById("camList");
-const sidebarListStatus = document.getElementById("sidebarListStatus");
-const deviceFormStatus = document.getElementById("deviceFormStatus");
-const deviceFormTitle = document.getElementById("deviceFormTitle");
-const refreshDevicesBtn = document.getElementById("overlayRefreshDevices");
-
-const nameEl = document.getElementById("name");
-const ipEl = document.getElementById("ip");
-const portEl = document.getElementById("onvif_port");
-const userEl = document.getElementById("username");
-const passEl = document.getElementById("password");
-const fetchBtn = document.getElementById("fetchProfiles");
-const profilesSel = document.getElementById("profiles");
-const recordingProfilesSel = document.getElementById("recordingProfiles");
-const saveBtn = document.getElementById("save");
-const newBtn = document.getElementById("new");
-const clearBtn = document.getElementById("clear");
-const deleteBtn = document.getElementById("delete");
-
-const openDevicesBtn = document.getElementById("openDevicesBtn");
-const closeDevicesBtn = document.getElementById("closeDevicesBtn");
-const devicesOverlay = document.getElementById("devicesOverlay");
-const devicesOverlayBackdrop = document.getElementById("devicesOverlayBackdrop");
-
 const videoGrid = document.getElementById("videoGrid");
 
 const liveSidebarList = document.getElementById("viewsCameraList");
-const openDevicesBtn2 = document.getElementById("openDevicesBtn2");
 const sidebarStartAll = document.getElementById("sidebarStartAll");
 const sidebarStopAll = document.getElementById("sidebarStopAll");
 
@@ -56,20 +31,12 @@ function saveTileMuted(deviceId, muted) {
 const RETRY_DELAY_MS = 4000;
 
 let devices = [];
-let editingId = null;
-let lastProfiles = [];
 
 const streams = new Map();
 const ptzCapsCache = new Map();
 
 let restoringGrid = false;
 let desiredTileOrder = [];
-
-let originalListOrder = [];
-
-let draggedListId = null;
-let lastListDropId = null;
-let suppressListClickUntil = 0;
 
 let maximizedTile = null;
 
@@ -136,164 +103,15 @@ function escapeHtml(s) {
   }[c]));
 }
 
-function setListStatus(text) {
-  sidebarListStatus.textContent = text;
-}
-
-function setFormStatus(text) {
-  deviceFormStatus.textContent = text;
-}
-
-function updateListStatusSummary(prefix = "") {
-  if (prefix) {
-    setListStatus(prefix);
-    return;
-  }
-
-  const readyCount = devices.filter(profileReady).length;
-  const activeCount = streams.size;
-  setListStatus(`${devices.length} device(s). ${readyCount} ready. ${activeCount} streaming.`);
-}
-
-function openDevicesOverlay() {
-  devicesOverlay.classList.remove("hidden");
-  devicesOverlay.setAttribute("aria-hidden", "false");
-  document.body.classList.add("modalOpen");
-  openDevicesBtn?.classList.add("active");
-  startSystemLoadPolling();
-}
-
-function closeDevicesOverlay() {
-  devicesOverlay.classList.add("hidden");
-  devicesOverlay.setAttribute("aria-hidden", "true");
-  document.body.classList.remove("modalOpen");
-  openDevicesBtn?.classList.remove("active");
-  stopSystemLoadPolling();
-}
-
-let _systemLoadTimer = null;
-
-function _loadStatusClass(pct) {
-  if (pct >= 90) return "is-critical";
-  if (pct >= 70) return "is-warn";
-  return "";
-}
-
-function _setLoadBar(barEl, pct) {
-  if (!barEl) return;
-  const clamped = Math.max(0, Math.min(100, Number(pct) || 0));
-  barEl.style.width = clamped.toFixed(1) + "%";
-  barEl.classList.remove("is-warn", "is-critical");
-  const cls = _loadStatusClass(clamped);
-  if (cls) barEl.classList.add(cls);
-}
-
-const _camMetricCache = new Map();
-
-function _updateCameraMetrics(cameras) {
-  const root = document.getElementById("camList");
-  if (!root) return;
-  for (const c of cameras || []) {
-    const did = c.device_id || "";
-    const row = root.querySelector(`[data-cam-metrics="${CSS.escape(did)}"]`);
-    if (!row) continue;
-
-    const prev = _camMetricCache.get(did) || { cpu: null, mbps: null };
-    let cpu = c.recorder_cpu_pct == null ? null : Number(c.recorder_cpu_pct);
-    let mbps = c.recording_mbps == null ? null : Number(c.recording_mbps);
-
-    // If recorder is alive but a value is missing, hold the previous one
-    // rather than flashing "—" — keeps the UI stable across transient nulls
-    // (recorder restarts, brief proc-read failures, etc).
-    if (c.recorder_alive) {
-      if (cpu == null && prev.cpu != null) cpu = prev.cpu;
-      if (mbps == null && prev.mbps != null) mbps = prev.mbps;
-      _camMetricCache.set(did, { cpu, mbps });
-    } else {
-      _camMetricCache.delete(did);
-    }
-
-    const cpuPct = cpu == null ? 0 : Math.max(0, Math.min(100, cpu));
-    const cpuCls = _loadStatusClass(cpuPct);
-
-    const statusEl = row.querySelector('[data-cam-metric="status"]');
-    if (statusEl) {
-      statusEl.classList.toggle("is-rec", !!c.recorder_alive);
-      statusEl.classList.toggle("is-idle", !c.recorder_alive);
-      statusEl.title = c.recorder_alive ? "recording" : "idle";
-    }
-
-    const cpuBar = row.querySelector('[data-cam-metric="cpuBar"]');
-    if (cpuBar) {
-      cpuBar.style.width = cpuPct.toFixed(1) + "%";
-      cpuBar.classList.remove("is-warn", "is-critical");
-      if (cpuCls) cpuBar.classList.add(cpuCls);
-    }
-
-    const cpuVal = row.querySelector('[data-cam-metric="cpu"]');
-    if (cpuVal) cpuVal.textContent = cpu == null ? "—" : `${cpu.toFixed(0)}%`;
-
-    const mbpsVal = row.querySelector('[data-cam-metric="mbps"]');
-    if (mbpsVal) mbpsVal.textContent = mbps == null ? "—" : `${mbps.toFixed(1)} Mbps`;
-  }
-}
-
-async function refreshSystemLoad() {
-  const panel = document.getElementById("loadPanel");
-  if (!panel) return;
-  try {
-    const r = await fetch("/api/system/load", { cache: "no-store" });
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    const data = await r.json();
-
-    const cpu = data.cpu_count || 1;
-    const l1 = Number(data.load?.["1m"] || 0);
-    const l5 = Number(data.load?.["5m"] || 0);
-    const l15 = Number(data.load?.["15m"] || 0);
-    const cpuPct = Math.round((data.load_pct_1m || 0) * 100);
-    const memUsedPct = Math.round((data.memory?.used_pct || 0) * 100);
-    const memTotalGb = (data.memory?.total_kb || 0) / 1024 / 1024;
-    const memUsedGb = memTotalGb * (data.memory?.used_pct || 0);
-
-    const cpuValue = document.getElementById("loadCpuValue");
-    if (cpuValue) {
-      cpuValue.textContent =
-        `${cpuPct}% of ${cpu} core${cpu === 1 ? "" : "s"} · ` +
-        `${l1.toFixed(2)}, ${l5.toFixed(2)}, ${l15.toFixed(2)}`;
-    }
-    _setLoadBar(document.getElementById("loadCpuBar"), cpuPct);
-
-    const memValue = document.getElementById("loadMemValue");
-    if (memValue) {
-      memValue.textContent = `${memUsedPct}% · ${memUsedGb.toFixed(1)} / ${memTotalGb.toFixed(1)} GB`;
-    }
-    _setLoadBar(document.getElementById("loadMemBar"), memUsedPct);
-
-    _updateCameraMetrics(data.cameras || []);
-  } catch (e) {
-    const cpuValue = document.getElementById("loadCpuValue");
-    const memValue = document.getElementById("loadMemValue");
-    if (cpuValue) cpuValue.textContent = "unavailable";
-    if (memValue) memValue.textContent = "unavailable";
-  }
-}
-
-function startSystemLoadPolling() {
-  refreshSystemLoad();
-  if (_systemLoadTimer) clearInterval(_systemLoadTimer);
-  _systemLoadTimer = setInterval(refreshSystemLoad, 3000);
-}
-
-function stopSystemLoadPolling() {
-  if (_systemLoadTimer) {
-    clearInterval(_systemLoadTimer);
-    _systemLoadTimer = null;
-  }
-}
-
-function ensureDevicesVisibleWhenNoStreams() {
-  // no-op: sidebar is always visible, no need to auto-open the overlay
-}
+// No-op stubs left over from the old in-page devices overlay; living callers
+// in stream lifecycle / load paths invoke these but the UI now lives on /settings.
+function setListStatus() {}
+function updateListStatusSummary() {}
+function ensureDevicesVisibleWhenNoStreams() {}
+// renderList used to repaint the overlay's device list; with the overlay gone,
+// the sidebar is the visible list, so existing callers just trigger a sidebar
+// refresh.
+function renderList() { renderSidebar(); }
 
 function getTileOrder() {
   return Array.from(videoGrid.querySelectorAll(".tile[data-id]"))
@@ -719,55 +537,6 @@ function applyTileStateClasses(entry) {
   if (entry.state === STREAM_STATE.ERROR) entry.tileEl.classList.add("is-error");
 }
 
-function renderList() {
-  if (!devices.length) {
-    camListEl.innerHTML = `<div class="muted" style="padding:10px 2px;">No devices yet. Use the form below to add one.</div>`;
-    updateListStatusSummary();
-    return;
-  }
-
-  camListEl.innerHTML = devices.map((d) => {
-    const ready = profileReady(d);
-    const subtitleText = d.profile_label || d.profile_token || "No saved profile";
-    const ipPart = d.ip ? `${d.ip} • ` : "";
-
-    const cls = [
-      "camItem",
-      ready ? "ready" : "notReady",
-      editingId === d.id ? "is-editing" : "",
-    ].join(" ");
-
-    return `
-      <div class="${cls}" data-id="${escapeHtml(d.id)}">
-        <div class="camItemTop">
-          <div class="camItemTitleRow">
-            <div class="camName">${escapeHtml(d.name || d.ip || d.id)}</div>
-          </div>
-
-          <div class="camItemTopActions">
-            <div class="camBadge ${!ready ? '' : (getDeviceOnlineStatus(d.id) === 'down' ? 'badge-offline' : '')}">${escapeHtml(!ready ? "SETUP" : (getDeviceOnlineStatus(d.id) === 'down' ? "OFFLINE" : "ONLINE"))}</div>
-            <button class="camMiniBtn danger" type="button" data-action="delete" draggable="false">Delete</button>
-          </div>
-        </div>
-
-        <div class="camSub">${escapeHtml(ipPart + subtitleText)}</div>
-
-        <div class="camMetrics" data-cam-metrics="${escapeHtml(d.id)}">
-          <span class="camMetricStatus" data-cam-metric="status" title="recorder status"></span>
-          <span class="camMetricLabel">CPU</span>
-          <div class="loadBar small"><div class="loadBarFill" data-cam-metric="cpuBar"></div></div>
-          <span class="camMetricValue" data-cam-metric="cpu">—</span>
-          <span class="camMetricLabel">Rec</span>
-          <span class="camMetricValue" data-cam-metric="mbps">—</span>
-        </div>
-      </div>
-    `;
-  }).join("");
-
-  updateListStatusSummary();
-  renderSidebar();
-}
-
 function renderSidebar() {
   if (!liveSidebarList) return;
 
@@ -806,75 +575,14 @@ function renderSidebar() {
   }
 }
 
-function clearProfilesUI(msg = "Fetch profiles first…") {
-  lastProfiles = [];
-  profilesSel.disabled = true;
-  profilesSel.innerHTML = `<option>${escapeHtml(msg)}</option>`;
-  recordingProfilesSel.disabled = true;
-  recordingProfilesSel.innerHTML = `<option>${escapeHtml(msg)}</option>`;
-}
-
-function clearForm() {
-  editingId = null;
-  deviceFormTitle.textContent = "Create device";
-  nameEl.value = "";
-  ipEl.value = "";
-  portEl.value = "80";
-  userEl.value = "";
-  passEl.value = "";
-  deleteBtn.disabled = true;
-  clearProfilesUI();
-  renderList();
-  setFormStatus("Fill details, then Fetch profiles.");
-}
-
-function fillForm(d) {
-  editingId = d.id;
-  deviceFormTitle.textContent = `Edit device (${d.name || d.ip || d.id})`;
-
-  nameEl.value = d.name || "";
-  ipEl.value = d.ip || "";
-  portEl.value = String(d.onvif_port ?? 80);
-  userEl.value = d.username || "";
-  passEl.value = d.password || "";
-  deleteBtn.disabled = false;
-
-  clearProfilesUI("Fetch profiles to select…");
-
-  if (d.profile_token) {
-    profilesSel.innerHTML = `<option value="${escapeHtml(d.profile_token)}">${escapeHtml(d.profile_label || d.profile_token)}</option>`;
-    profilesSel.disabled = false;
-  }
-
-  if (d.recording_profile_token) {
-    recordingProfilesSel.innerHTML = `<option value="${escapeHtml(d.recording_profile_token)}">${escapeHtml(d.recording_profile_label || d.recording_profile_token)}</option>`;
-    recordingProfilesSel.disabled = false;
-  }
-
-  renderList();
-  setFormStatus(
-    d.profile_token
-      ? "Loaded. Fetch profiles to confirm you are using the right profiles."
-      : "Loaded. Fetch profiles to select profiles."
-  );
-}
-
 async function loadDevices() {
   try {
     const data = await api("/api/devices", { method: "GET" });
     devices = data.devices || [];
     applyDeviceOrder(loadDeviceOrder());
     saveDeviceOrder();
-    renderList();
-
-    if (editingId && !devices.some((d) => d.id === editingId)) {
-      clearForm();
-    } else {
-      updateListStatusSummary();
-    }
+    renderSidebar();
   } catch (e) {
-    camListEl.innerHTML = `<div class="muted" style="padding:10px 2px;">Failed to load devices: ${escapeHtml(e.message || e)}</div>`;
-    setListStatus(`Failed to load devices: ${String(e.message || e)}`);
     console.error("Failed to load devices", e);
   }
 }
@@ -1114,12 +822,6 @@ function installTileFullscreen(tile) {
 
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape") return;
-
-  if (!devicesOverlay.classList.contains("hidden")) {
-    closeDevicesOverlay();
-    return;
-  }
-
   if (maximizedTile) {
     toggleTileMaximized(maximizedTile);
   }
@@ -1254,151 +956,6 @@ function makeTile(device) {
       videoEl.removeEventListener("ended", stopAspectPoll);
     },
   };
-}
-
-function getListItemFromEventTarget(target) {
-  return target?.closest?.(".camItem[data-id]") || null;
-}
-
-function clearListDropMarkers() {
-  camListEl.querySelectorAll(".camItem.drop-before, .camItem.drop-after").forEach((el) => {
-    el.classList.remove("drop-before", "drop-after");
-  });
-}
-
-function clearListDraggingState() {
-  camListEl.querySelectorAll(".camItem.is-list-dragging").forEach((el) => {
-    el.classList.remove("is-list-dragging");
-  });
-  clearListDropMarkers();
-  draggedListId = null;
-  lastListDropId = null;
-}
-
-function getListDropTarget(clientY, draggingEl) {
-  const items = Array.from(camListEl.querySelectorAll(".camItem[data-id]"))
-    .filter((el) => el !== draggingEl);
-
-  if (!items.length) return null;
-
-  let best = null;
-  let bestScore = Infinity;
-
-  for (const item of items) {
-    const rect = item.getBoundingClientRect();
-    const cy = rect.top + rect.height / 2;
-    const dy = clientY - cy;
-    const score = Math.abs(dy);
-
-    if (score < bestScore) {
-      bestScore = score;
-      best = { item, rect };
-    }
-  }
-
-  if (!best) return null;
-
-  const { item, rect } = best;
-  const midY = rect.top + rect.height / 2;
-
-  return {
-    item,
-    before: clientY < midY,
-  };
-}
-
-function installListDnD() {
-  camListEl.addEventListener("dragstart", (ev) => {
-    const item = getListItemFromEventTarget(ev.target);
-    if (!item) return;
-
-    draggedListId = item.getAttribute("data-id");
-    lastListDropId = draggedListId;
-    originalListOrder = devices.map((d) => d.id);
-
-    item.classList.add("is-list-dragging");
-
-    if (ev.dataTransfer) {
-      ev.dataTransfer.effectAllowed = "move";
-      ev.dataTransfer.setData("text/plain", draggedListId || "");
-    }
-  });
-
-  camListEl.addEventListener("dragover", (ev) => {
-    ev.preventDefault();
-
-    const draggingEl = camListEl.querySelector(".camItem.is-list-dragging");
-    if (!draggingEl) return;
-
-    const target = getListDropTarget(ev.clientY, draggingEl);
-    if (!target) return;
-
-    clearListDropMarkers();
-    target.item.classList.add(target.before ? "drop-before" : "drop-after");
-
-    const dragId = draggingEl.getAttribute("data-id");
-    const targetId = target.item.getAttribute("data-id");
-    if (!dragId || !targetId || dragId === targetId) return;
-
-    const signature = `${targetId}:${target.before ? "b" : "a"}`;
-    if (signature === lastListDropId) return;
-
-    if (target.before) {
-      camListEl.insertBefore(draggingEl, target.item);
-    } else {
-      camListEl.insertBefore(draggingEl, target.item.nextSibling);
-    }
-
-    lastListDropId = signature;
-
-    const orderedIds = Array.from(camListEl.querySelectorAll(".camItem[data-id]"))
-      .map((el) => el.getAttribute("data-id"))
-      .filter(Boolean);
-
-    if (orderedIds.length) {
-      applyDeviceOrder(orderedIds);
-      syncTileOrderToDeviceOrder(false);
-    }
-  });
-
-  camListEl.addEventListener("drop", (ev) => {
-    ev.preventDefault();
-
-    const draggingEl = camListEl.querySelector(".camItem.is-list-dragging");
-    if (!draggingEl || !draggedListId) {
-      clearListDraggingState();
-      return;
-    }
-
-    const orderedIds = Array.from(camListEl.querySelectorAll(".camItem[data-id]"))
-      .map((el) => el.getAttribute("data-id"))
-      .filter(Boolean);
-
-    if (orderedIds.length) {
-      applyDeviceOrder(orderedIds);
-      saveDeviceOrder();
-      syncTileOrderToDeviceOrder(false);
-      saveGridState();
-    }
-
-    originalListOrder = [];
-    suppressListClickUntil = Date.now() + 250;
-    clearListDraggingState();
-  });
-
-  camListEl.addEventListener("dragend", () => {
-    requestAnimationFrame(() => {
-      if (originalListOrder.length) {
-        applyDeviceOrder(originalListOrder);
-        renderList();
-        syncTileOrderToDeviceOrder(false);
-      }
-
-      originalListOrder = [];
-      suppressListClickUntil = Date.now() + 250;
-      clearListDraggingState();
-    });
-  });
 }
 
 function scheduleRetry(device, entry) {
@@ -2024,253 +1581,6 @@ async function restoreGrid() {
   }
 }
 
-function readCredsOnly() {
-  const ip = ipEl.value.trim();
-  const onvif_port = parseInt((portEl.value || "80").trim(), 10);
-  const username = userEl.value.trim();
-  const password = passEl.value;
-
-  if (!ip) throw new Error("IP is required.");
-  if (!username) throw new Error("Username is required.");
-  if (!password) throw new Error("Password is required.");
-  if (!Number.isFinite(onvif_port) || onvif_port <= 0) throw new Error("Invalid ONVIF port.");
-
-  return { ip, onvif_port, username, password };
-}
-
-function profileLabel(p) {
-  const parts = [];
-  if (p.name) parts.push(p.name);
-  if (p.encoding) parts.push(String(p.encoding));
-  if (p.width && p.height) parts.push(`${p.width}x${p.height}`);
-  if (p.recommended) parts.push("recommended");
-  else if (p.browser_compatible === false) parts.push("not browser-safe");
-  return parts.length ? parts.join(" • ") : p.token;
-}
-
-function readFormFull() {
-  const name = nameEl.value.trim();
-  if (!name) throw new Error("Name is required.");
-
-  const creds = readCredsOnly();
-
-  const profile_token = profilesSel.disabled ? null : (profilesSel.value || null);
-  const selected = lastProfiles.find((p) => p.token === profile_token);
-  const profile_label = profile_token
-    ? (selected ? profileLabel(selected) : (profilesSel.selectedOptions?.[0]?.textContent || profile_token))
-    : null;
-
-  const recording_profile_token = recordingProfilesSel.disabled ? null : (recordingProfilesSel.value || null);
-  const recSelected = lastProfiles.find((p) => p.token === recording_profile_token);
-  const recording_profile_label = recording_profile_token
-    ? (recSelected ? profileLabel(recSelected) : (recordingProfilesSel.selectedOptions?.[0]?.textContent || recording_profile_token))
-    : null;
-
-  return { name, ...creds, profile_token, profile_label, recording_profile_token, recording_profile_label };
-}
-
-async function fetchProfiles() {
-  setFormStatus("Fetching profiles…");
-  clearProfilesUI("Loading…");
-
-  const creds = readCredsOnly();
-
-  const data = await api("/api/profiles", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(creds),
-  });
-
-  const profs = data.profiles || [];
-  if (!profs.length) throw new Error("No profiles returned.");
-
-  lastProfiles = profs;
-
-  // Populate live stream profile dropdown
-  profilesSel.innerHTML = "";
-  for (const p of profs) {
-    const opt = document.createElement("option");
-    opt.value = p.token;
-    opt.textContent = profileLabel(p);
-    profilesSel.appendChild(opt);
-  }
-  profilesSel.disabled = false;
-
-  // Populate recording profile dropdown (all profiles, not just H264)
-  recordingProfilesSel.innerHTML = "";
-  for (const p of profs) {
-    const opt = document.createElement("option");
-    opt.value = p.token;
-    opt.textContent = profileLabel(p);
-    recordingProfilesSel.appendChild(opt);
-  }
-  recordingProfilesSel.disabled = false;
-
-  if (editingId) {
-    const d = devices.find((x) => x.id === editingId);
-    if (d?.profile_token) profilesSel.value = d.profile_token;
-    if (d?.recording_profile_token) recordingProfilesSel.value = d.recording_profile_token;
-  }
-
-  const recommended = profs.find((p) => p.recommended);
-  if (recommended) {
-    profilesSel.value = recommended.token;
-    setFormStatus(`Profiles loaded (${profs.length}). Recommended H264 profile selected for live.`);
-  } else {
-    setFormStatus(`Profiles loaded (${profs.length}), but no browser-safe H264 profile was found.`);
-  }
-
-  // Default recording profile to highest resolution if not already set
-  const highestRes = [...profs].sort((a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0)))[0];
-  if (highestRes && !recordingProfilesSel.value) {
-    recordingProfilesSel.value = highestRes.token;
-  }
-}
-
-async function deleteDeviceById(deviceId) {
-  const d = devices.find((x) => x.id === deviceId);
-  if (!d) return;
-
-  const label = d.name || d.ip || d.id;
-  if (!window.confirm(`Delete device "${label}"?`)) return;
-
-  try {
-    setFormStatus("Deleting…");
-
-    if (isStreaming(deviceId)) {
-      await stopDevice(deviceId, { force: true });
-    }
-
-    await api(`/api/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
-
-    ptzCapsCache.delete(deviceId);
-    devices = devices.filter((x) => x.id !== deviceId);
-    saveDeviceOrder();
-
-    if (editingId === deviceId) {
-      clearForm();
-    }
-
-    await loadDevices();
-    setFormStatus("Deleted.");
-    ensureDevicesVisibleWhenNoStreams();
-  } catch (e) {
-    setFormStatus(`Error: ${String(e.message || e)}`);
-  }
-}
-
-camListEl.addEventListener("click", async (ev) => {
-  const item = getListItemFromEventTarget(ev.target);
-  if (!item) return;
-
-  const id = item.getAttribute("data-id");
-  const d = devices.find((x) => x.id === id);
-  if (!d) return;
-
-  const actionBtn = ev.target.closest("[data-action]");
-  if (actionBtn) {
-    ev.preventDefault();
-    ev.stopPropagation();
-
-    const action = actionBtn.getAttribute("data-action");
-    if (action === "delete") {
-      await deleteDeviceById(d.id);
-      return;
-    }
-    return;
-  }
-
-  // Clicking the row itself opens for edit
-  fillForm(d);
-});
-
-fetchBtn.addEventListener("click", async () => {
-  try {
-    await fetchProfiles();
-  } catch (e) {
-    clearProfilesUI("Fetch failed");
-    setFormStatus(`Error: ${String(e.message || e)}`);
-  }
-});
-
-saveBtn.addEventListener("click", async () => {
-  try {
-    setFormStatus("Saving…");
-    const payload = readFormFull();
-
-    if (!payload.profile_token) {
-      throw new Error("Select a profile before saving.");
-    }
-
-    if (editingId) {
-      const currentId = editingId;
-      const wasStreaming = isStreaming(currentId);
-
-      await api(`/api/devices/${encodeURIComponent(currentId)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      await api(`/api/devices/${encodeURIComponent(currentId)}/refresh-stream`, {
-        method: "POST",
-      });
-
-      if (wasStreaming) {
-        await stopDevice(currentId, { force: true });
-      }
-
-      await loadDevices();
-      clearForm();
-
-      if (wasStreaming) {
-        const refreshed = devices.find((d) => d.id === currentId);
-        if (refreshed?.profile_token) {
-          await startDevice(refreshed, { restore: true });
-        }
-      }
-
-      setFormStatus("Updated.");
-    } else {
-      await api("/api/devices", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      await loadDevices();
-      clearForm();
-      setFormStatus("Created.");
-    }
-  } catch (e) {
-    setFormStatus(`Error: ${String(e.message || e)}`);
-  }
-});
-
-newBtn.addEventListener("click", () => {
-  editingId = null;
-  deviceFormTitle.textContent = "Create device";
-  deleteBtn.disabled = true;
-  clearProfilesUI("Fetch profiles to select…");
-  renderList();
-  setFormStatus("Creating new device (fields copied). Fetch profiles and Save.");
-});
-
-clearBtn.addEventListener("click", () => {
-  clearForm();
-  setFormStatus("Form cleared.");
-});
-
-deleteBtn.addEventListener("click", async () => {
-  if (!editingId) return;
-  await deleteDeviceById(editingId);
-});
-
-refreshDevicesBtn?.addEventListener("click", async () => {
-  setListStatus("Refreshing devices…");
-  await loadDevices();
-});
-
 sidebarStartAll?.addEventListener("click", async () => {
   const ready = devices.filter(profileReady);
   const toStart = ready.filter((d) => !isStreaming(d.id));
@@ -2290,23 +1600,6 @@ sidebarStopAll?.addEventListener("click", async () => {
   );
 
   saveGridState();
-  ensureDevicesVisibleWhenNoStreams();
-});
-
-openDevicesBtn?.addEventListener("click", () => {
-  openDevicesOverlay();
-});
-
-closeDevicesBtn?.addEventListener("click", () => {
-  closeDevicesOverlay();
-});
-
-devicesOverlayBackdrop?.addEventListener("click", () => {
-  closeDevicesOverlay();
-});
-
-openDevicesBtn2?.addEventListener("click", () => {
-  openDevicesOverlay();
 });
 
 liveSidebarList?.addEventListener("click", async (ev) => {
@@ -2481,9 +1774,7 @@ window.addEventListener("resize", () => {
 });
 
 recomputeGrid();
-installListDnD();
 installSidebarDnD();
-clearForm();
 
 // ── Speaker / Audio clip sidebar ──────────────────────────────────────────────
 
@@ -2799,17 +2090,8 @@ window.viewsLive = {
   loadAudioClips();
   startSpeakerStatusPoll();
 
-  const params = new URLSearchParams(window.location.search);
-  if (params.get("devices") === "1") {
-    openDevicesOverlay();
-    params.delete("devices");
-    const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}${window.location.hash || ""}`;
-    window.history.replaceState({}, "", next);
-  }
-
   if (window.views?.mode === "live") {
     await restoreLiveGridOnce();
-    ensureDevicesVisibleWhenNoStreams();
   }
 
   window.addEventListener("focus", () => {

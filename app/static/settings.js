@@ -921,6 +921,298 @@ storageRefreshBtn?.addEventListener("click", loadStorageDevices);
 
 loadStorageDevices();
 
+// ── Cameras ───────────────────────────────────────────────────────────────────
+
+const cameraListEl              = document.getElementById("cameraList");
+const cameraFormEl              = document.getElementById("cameraForm");
+const cameraNameEl              = document.getElementById("cameraName");
+const cameraIpEl                = document.getElementById("cameraIp");
+const cameraOnvifPortEl         = document.getElementById("cameraOnvifPort");
+const cameraUsernameEl          = document.getElementById("cameraUsername");
+const cameraPasswordEl          = document.getElementById("cameraPassword");
+const cameraProfileSel          = document.getElementById("cameraProfile");
+const cameraRecordingProfileSel = document.getElementById("cameraRecordingProfile");
+const cameraFetchProfilesBtn    = document.getElementById("cameraFetchProfilesBtn");
+const addCameraBtn              = document.getElementById("addCameraBtn");
+const saveCameraBtn             = document.getElementById("saveCameraBtn");
+const cancelCameraBtn           = document.getElementById("cancelCameraBtn");
+const cameraStatusEl            = document.getElementById("cameraStatus");
+
+let _editingCameraId = null;
+let _lastCameraProfiles = [];
+let _camerasCache = [];
+
+function setCameraStatus(text) {
+  if (cameraStatusEl) cameraStatusEl.textContent = text || "";
+}
+
+function _profileLabel(p) {
+  const parts = [];
+  if (p.name) parts.push(p.name);
+  if (p.encoding) parts.push(String(p.encoding));
+  if (p.width && p.height) parts.push(`${p.width}x${p.height}`);
+  if (p.recommended) parts.push("recommended");
+  else if (p.browser_compatible === false) parts.push("not browser-safe");
+  return parts.length ? parts.join(" • ") : p.token;
+}
+
+function _setProfileSelect(sel, msg = "Fetch profiles first…") {
+  if (!sel) return;
+  sel.disabled = true;
+  sel.innerHTML = `<option>${escapeH(msg)}</option>`;
+}
+
+function renderCameraList(cameras) {
+  if (!cameraListEl) return;
+  if (!cameras.length) {
+    cameraListEl.innerHTML = '<span class="muted">No cameras configured.</span>';
+    return;
+  }
+  cameraListEl.innerHTML = cameras.map((d) => {
+    const ready = !!d.profile_token;
+    const badge = ready ? "READY" : "SETUP";
+    const sub = [d.ip, d.profile_label || d.profile_token || "no profile"].filter(Boolean).join(" · ");
+    return `
+      <div class="settingsListRow" style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--clr-border, #333);">
+        <div style="min-width:0;">
+          <strong>${escapeH(d.name || d.ip || d.id)}</strong>
+          <span class="muted" style="margin-left:8px;font-size:11px;">${escapeH(badge)}</span>
+          <div class="muted" style="margin-top:2px;font-size:12px;">${escapeH(sub)}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex:0 0 auto;">
+          <button class="btn btn-mini" onclick="window._editCamera('${escapeH(d.id)}')">Edit</button>
+          <button class="btn btn-mini btn-danger" onclick="window._deleteCamera('${escapeH(d.id)}')">Delete</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+async function loadCameras() {
+  try {
+    const data = await api("/api/devices");
+    _camerasCache = Array.isArray(data?.devices) ? data.devices : [];
+    renderCameraList(_camerasCache);
+  } catch (e) {
+    setCameraStatus(`Error: ${e.message || e}`);
+  }
+}
+
+function showCameraForm(camera) {
+  _editingCameraId = camera ? camera.id : null;
+  _lastCameraProfiles = [];
+  if (cameraNameEl)        cameraNameEl.value        = camera?.name        || "";
+  if (cameraIpEl)          cameraIpEl.value          = camera?.ip          || "";
+  if (cameraOnvifPortEl)   cameraOnvifPortEl.value   = camera?.onvif_port  || "80";
+  if (cameraUsernameEl)    cameraUsernameEl.value    = camera?.username    || "";
+  if (cameraPasswordEl)    cameraPasswordEl.value    = "";
+  _setProfileSelect(cameraProfileSel);
+  _setProfileSelect(cameraRecordingProfileSel);
+  if (cameraFormEl) cameraFormEl.style.display = "";
+  setCameraStatus(camera ? "Editing camera. Re-enter password and re-fetch profiles to change them." : "Fill details, then Fetch profiles before saving.");
+}
+
+function hideCameraForm() {
+  _editingCameraId = null;
+  _lastCameraProfiles = [];
+  if (cameraFormEl) cameraFormEl.style.display = "none";
+  setCameraStatus("");
+}
+
+function _readCameraCreds() {
+  const ip = (cameraIpEl?.value || "").trim();
+  const onvif_port = parseInt((cameraOnvifPortEl?.value || "80").trim(), 10);
+  const username = (cameraUsernameEl?.value || "").trim();
+  const password = cameraPasswordEl?.value || "";
+  if (!ip) throw new Error("IP is required.");
+  if (!username) throw new Error("Username is required.");
+  if (!password) throw new Error("Password is required.");
+  if (!Number.isFinite(onvif_port) || onvif_port <= 0) throw new Error("Invalid ONVIF port.");
+  return { ip, onvif_port, username, password };
+}
+
+async function fetchCameraProfiles() {
+  setCameraStatus("Fetching profiles…");
+  _setProfileSelect(cameraProfileSel, "Loading…");
+  _setProfileSelect(cameraRecordingProfileSel, "Loading…");
+
+  const creds = _readCameraCreds();
+  const data = await api("/api/profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(creds),
+  });
+  const profs = data?.profiles || [];
+  if (!profs.length) throw new Error("No profiles returned.");
+
+  _lastCameraProfiles = profs;
+
+  const populate = (sel) => {
+    sel.innerHTML = "";
+    for (const p of profs) {
+      const opt = document.createElement("option");
+      opt.value = p.token;
+      opt.textContent = _profileLabel(p);
+      sel.appendChild(opt);
+    }
+    sel.disabled = false;
+  };
+  populate(cameraProfileSel);
+  populate(cameraRecordingProfileSel);
+
+  if (_editingCameraId) {
+    const d = _camerasCache.find((x) => x.id === _editingCameraId);
+    if (d?.profile_token) cameraProfileSel.value = d.profile_token;
+    if (d?.recording_profile_token) cameraRecordingProfileSel.value = d.recording_profile_token;
+  }
+
+  const recommended = profs.find((p) => p.recommended);
+  if (recommended && !cameraProfileSel.value) cameraProfileSel.value = recommended.token;
+
+  // Default recording profile to highest resolution if not already set.
+  const highestRes = [...profs].sort((a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0)))[0];
+  if (highestRes && !cameraRecordingProfileSel.value) cameraRecordingProfileSel.value = highestRes.token;
+
+  setCameraStatus(recommended
+    ? `Profiles loaded (${profs.length}). Recommended H264 profile selected for live.`
+    : `Profiles loaded (${profs.length}), but no browser-safe H264 profile was found.`);
+}
+
+addCameraBtn?.addEventListener("click", () => showCameraForm(null));
+cancelCameraBtn?.addEventListener("click", hideCameraForm);
+
+cameraFetchProfilesBtn?.addEventListener("click", async () => {
+  try {
+    await fetchCameraProfiles();
+  } catch (e) {
+    _setProfileSelect(cameraProfileSel, "Fetch failed");
+    _setProfileSelect(cameraRecordingProfileSel, "Fetch failed");
+    setCameraStatus(`Error: ${e.message || e}`);
+  }
+});
+
+saveCameraBtn?.addEventListener("click", async () => {
+  try {
+    const name = (cameraNameEl?.value || "").trim();
+    if (!name) throw new Error("Name is required.");
+    const creds = _readCameraCreds();
+    const profile_token = cameraProfileSel?.disabled ? null : (cameraProfileSel?.value || null);
+    if (!profile_token) throw new Error("Select a live stream profile before saving.");
+    const recording_profile_token = cameraRecordingProfileSel?.disabled ? null : (cameraRecordingProfileSel?.value || null);
+
+    const selectedLive = _lastCameraProfiles.find((p) => p.token === profile_token);
+    const selectedRec = _lastCameraProfiles.find((p) => p.token === recording_profile_token);
+    const profile_label = selectedLive ? _profileLabel(selectedLive) : (cameraProfileSel?.selectedOptions?.[0]?.textContent || profile_token);
+    const recording_profile_label = recording_profile_token
+      ? (selectedRec ? _profileLabel(selectedRec) : (cameraRecordingProfileSel?.selectedOptions?.[0]?.textContent || recording_profile_token))
+      : null;
+
+    const payload = { name, ...creds, profile_token, profile_label, recording_profile_token, recording_profile_label };
+
+    setCameraStatus("Saving…");
+    if (_editingCameraId) {
+      await api(`/api/devices/${encodeURIComponent(_editingCameraId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      await api(`/api/devices/${encodeURIComponent(_editingCameraId)}/refresh-stream`, { method: "POST" });
+      setCameraStatus("Camera updated.");
+    } else {
+      await api("/api/devices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setCameraStatus("Camera added.");
+    }
+    hideCameraForm();
+    await loadCameras();
+  } catch (e) {
+    setCameraStatus(`Error: ${e.message || e}`);
+  }
+});
+
+window._editCamera = function (id) {
+  const d = _camerasCache.find((x) => x.id === id);
+  if (d) showCameraForm(d);
+};
+
+window._deleteCamera = async function (id) {
+  const d = _camerasCache.find((x) => x.id === id);
+  const label = d?.name || d?.ip || id;
+  if (!confirm(`Delete camera "${label}"?`)) return;
+  try {
+    await api(`/api/devices/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (_editingCameraId === id) hideCameraForm();
+    await loadCameras();
+    setCameraStatus("Camera deleted.");
+  } catch (e) {
+    setCameraStatus(`Error: ${e.message || e}`);
+  }
+};
+
+loadCameras();
+
+// ── System load ───────────────────────────────────────────────────────────────
+
+const _loadCpuValueEl = document.getElementById("loadCpuValue");
+const _loadCpuBarEl   = document.getElementById("loadCpuBar");
+const _loadMemValueEl = document.getElementById("loadMemValue");
+const _loadMemBarEl   = document.getElementById("loadMemBar");
+
+function _loadStatusClass(pct) {
+  if (!Number.isFinite(pct)) return "";
+  if (pct >= 85) return "is-critical";
+  if (pct >= 65) return "is-warn";
+  return "";
+}
+
+function _setLoadBar(barEl, pct) {
+  if (!barEl) return;
+  const clamped = Number.isFinite(pct) ? Math.max(0, Math.min(100, pct)) : 0;
+  barEl.style.width = `${clamped}%`;
+  barEl.classList.remove("is-warn", "is-critical");
+  const cls = _loadStatusClass(clamped);
+  if (cls) barEl.classList.add(cls);
+}
+
+async function refreshSystemLoad() {
+  try {
+    const data = await api("/api/system/load");
+    const cpuFrac = Number(data?.load_pct_1m);
+    const cpuPct = Number.isFinite(cpuFrac) ? Math.round(cpuFrac * 100) : null;
+    const cpuCount = Number(data?.cpu_count) || null;
+    const l1 = Number(data?.load?.["1m"] || 0);
+    const l5 = Number(data?.load?.["5m"] || 0);
+    const l15 = Number(data?.load?.["15m"] || 0);
+    if (_loadCpuValueEl) {
+      _loadCpuValueEl.textContent = cpuPct != null
+        ? `${cpuPct}%${cpuCount ? ` of ${cpuCount} core${cpuCount === 1 ? "" : "s"}` : ""} · ${l1.toFixed(2)}, ${l5.toFixed(2)}, ${l15.toFixed(2)}`
+        : "—";
+    }
+    _setLoadBar(_loadCpuBarEl, cpuPct ?? 0);
+
+    const memFrac = Number(data?.memory?.used_pct);
+    const memPct = Number.isFinite(memFrac) ? Math.round(memFrac * 100) : null;
+    const totalKb = Number(data?.memory?.total_kb) || 0;
+    const totalGb = totalKb / 1024 / 1024;
+    const usedGb = totalGb * (Number.isFinite(memFrac) ? memFrac : 0);
+    if (_loadMemValueEl) {
+      _loadMemValueEl.textContent = memPct != null
+        ? `${memPct}% · ${usedGb.toFixed(1)} / ${totalGb.toFixed(1)} GB`
+        : "—";
+    }
+    _setLoadBar(_loadMemBarEl, memPct ?? 0);
+  } catch (_) {
+    if (_loadCpuValueEl) _loadCpuValueEl.textContent = "unavailable";
+    if (_loadMemValueEl) _loadMemValueEl.textContent = "unavailable";
+  }
+}
+
+refreshSystemLoad();
+setInterval(refreshSystemLoad, 5000);
+
 // ── AXIS Speakers ─────────────────────────────────────────────────────────────
 
 const speakerListEl      = document.getElementById("speakerList");

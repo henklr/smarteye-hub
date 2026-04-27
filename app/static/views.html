@@ -54,7 +54,6 @@
               <button class="btn liveSidebarActionBtn" id="sidebarStartAll" type="button">Start All</button>
               <button class="btn liveSidebarActionBtn" id="sidebarStopAll" type="button">Stop All</button>
             </div>
-            <button class="btn liveSidebarManageBtn" id="openDevicesBtn2" type="button">Manage Devices</button>
           </div>
 
           <div class="liveSidebarFooter" data-views-mode-only="playback">
@@ -144,122 +143,6 @@
           <div class="playbackTimelineTrack" id="playbackTimelineTrack"></div>
         </div>
       </section>
-    </div>
-  </div>
-
-  <div class="overlayShell hidden" id="devicesOverlay" aria-hidden="true">
-    <div class="overlayBackdrop" id="devicesOverlayBackdrop"></div>
-
-    <div class="card overlayPanel devicesOverlayPanel" role="dialog" aria-modal="true"
-      aria-labelledby="devicesOverlayTitle">
-      <div class="overlayHeader">
-        <div>
-          <div class="listTitle" id="devicesOverlayTitle">Devices</div>
-          <div class="listSub">Add, edit and delete camera devices.</div>
-        </div>
-
-        <div class="overlayHeaderActions">
-          <button class="btn" id="overlayRefreshDevices" type="button">Refresh</button>
-          <button class="btn" id="closeDevicesBtn" type="button">Close</button>
-        </div>
-      </div>
-
-      <div class="overlayBody">
-        <section class="overlaySection">
-          <div class="statusLine compact" style="margin-top:0;">
-            <strong>Status:</strong> <span id="sidebarListStatus" class="muted">Loading devices…</span>
-          </div>
-          <div class="loadPanel" id="loadPanel">
-            <div class="loadPanelHead">System load</div>
-            <div class="loadMeter">
-              <div class="loadMeterLabel">
-                <span>CPU (1m)</span>
-                <span class="loadMeterValue" id="loadCpuValue">—</span>
-              </div>
-              <div class="loadBar"><div class="loadBarFill" id="loadCpuBar"></div></div>
-            </div>
-            <div class="loadMeter">
-              <div class="loadMeterLabel">
-                <span>Memory</span>
-                <span class="loadMeterValue" id="loadMemValue">—</span>
-              </div>
-              <div class="loadBar"><div class="loadBarFill" id="loadMemBar"></div></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="overlaySection">
-          <div class="sidebarSectionHead">
-            <div>Saved devices</div>
-            <div class="sidebarSectionSub">Use Edit/Delete to manage devices.</div>
-          </div>
-
-          <div id="camList" class="camList" style="margin-top:10px;">
-            <div class="muted" style="padding:10px 2px;">Loading…</div>
-          </div>
-        </section>
-
-        <section class="overlaySection">
-          <div class="sidebarSectionHead">
-            <div id="deviceFormTitle">Create device</div>
-            <div class="sidebarSectionSub">Fetch profiles before saving so a browser-compatible stream profile is stored.</div>
-          </div>
-
-          <div class="grid overlayFormGrid" style="margin-top:10px;">
-            <div data-full>
-              <label for="name">Name</label>
-              <input id="name" placeholder="Front Door" />
-            </div>
-
-            <div data-full>
-              <label for="ip">Camera IP</label>
-              <input id="ip" placeholder="192.168.1.108" />
-            </div>
-
-            <div>
-              <label for="onvif_port">ONVIF Port</label>
-              <input id="onvif_port" value="80" />
-            </div>
-
-            <div>
-              <label for="username">Username</label>
-              <input id="username" placeholder="admin" />
-            </div>
-
-            <div data-full>
-              <label for="password">Password</label>
-              <input id="password" type="password" placeholder="••••••••" />
-            </div>
-
-            <button class="btn" id="fetchProfiles" type="button" data-full>Fetch profiles</button>
-
-            <div data-full>
-              <label for="profiles">Live stream profile</label>
-              <select id="profiles" disabled>
-                <option>Fetch profiles first…</option>
-              </select>
-            </div>
-
-            <div data-full>
-              <label for="recordingProfiles">Recording profile</label>
-              <select id="recordingProfiles" disabled>
-                <option>Fetch profiles first…</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="row2" style="margin-top:12px;">
-            <button class="btn btn-primary" id="save" type="button">Save</button>
-            <button class="btn" id="new" type="button">New</button>
-            <button class="btn" id="clear" type="button">Clear</button>
-            <button class="btn btn-danger" id="delete" type="button" disabled>Delete</button>
-          </div>
-
-          <div class="statusLine compact" style="margin-top:12px;">
-            <strong>Status:</strong> <span id="deviceFormStatus" class="muted">Ready.</span>
-          </div>
-        </section>
-      </div>
     </div>
   </div>
 

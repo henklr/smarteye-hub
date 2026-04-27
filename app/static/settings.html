@@ -131,6 +131,68 @@
         <section class="settingsCard">
           <div class="listHeader compact">
             <div>
+              <div class="listTitle small">Cameras</div>
+              <div class="listSub">Manage ONVIF cameras used for live streaming and recording.</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex:0 0 auto;">
+              <button class="btn btn-mini btn-primary" id="addCameraBtn" type="button">Add camera</button>
+            </div>
+          </div>
+
+          <div id="cameraList" style="margin-top:14px;">
+            <span class="muted">Loading…</span>
+          </div>
+
+          <div id="cameraForm" style="margin-top:14px;display:none;">
+            <div class="grid overlayFormGrid">
+              <div data-full>
+                <label for="cameraName">Name</label>
+                <input id="cameraName" placeholder="Front Door" />
+              </div>
+              <div data-full>
+                <label for="cameraIp">Camera IP</label>
+                <input id="cameraIp" placeholder="192.168.1.108" />
+              </div>
+              <div>
+                <label for="cameraOnvifPort">ONVIF Port</label>
+                <input id="cameraOnvifPort" value="80" />
+              </div>
+              <div>
+                <label for="cameraUsername">Username</label>
+                <input id="cameraUsername" placeholder="admin" autocomplete="off" />
+              </div>
+              <div data-full>
+                <label for="cameraPassword">Password</label>
+                <input id="cameraPassword" type="password" placeholder="••••••••" autocomplete="off" />
+              </div>
+              <button class="btn" id="cameraFetchProfilesBtn" type="button" data-full>Fetch profiles</button>
+              <div data-full>
+                <label for="cameraProfile">Live stream profile</label>
+                <select id="cameraProfile" disabled>
+                  <option>Fetch profiles first…</option>
+                </select>
+              </div>
+              <div data-full>
+                <label for="cameraRecordingProfile">Recording profile</label>
+                <select id="cameraRecordingProfile" disabled>
+                  <option>Fetch profiles first…</option>
+                </select>
+              </div>
+            </div>
+            <div class="row2" style="margin-top:14px;">
+              <button class="btn btn-primary" id="saveCameraBtn" type="button">Save camera</button>
+              <button class="btn" id="cancelCameraBtn" type="button">Cancel</button>
+            </div>
+          </div>
+
+          <div class="statusLine compact" style="margin-top:12px;">
+            <span id="cameraStatus" class="muted"></span>
+          </div>
+        </section>
+
+        <section class="settingsCard">
+          <div class="listHeader compact">
+            <div>
               <div class="listTitle small">AXIS speakers</div>
               <div class="listSub">Manage AXIS network horn speakers for audio playback in flows.</div>
             </div>
@@ -311,6 +373,32 @@
 
           <div class="statusLine compact" style="margin-top:12px;">
             <span id="storageStatus" class="muted"></span>
+          </div>
+        </section>
+
+        <section class="settingsCard">
+          <div class="listHeader compact">
+            <div>
+              <div class="listTitle small">System load</div>
+              <div class="listSub">Live CPU and memory utilisation.</div>
+            </div>
+          </div>
+
+          <div class="loadPanel" id="loadPanel" style="margin-top:14px;">
+            <div class="loadMeter">
+              <div class="loadMeterLabel">
+                <span>CPU (1m)</span>
+                <span class="loadMeterValue" id="loadCpuValue">—</span>
+              </div>
+              <div class="loadBar"><div class="loadBarFill" id="loadCpuBar"></div></div>
+            </div>
+            <div class="loadMeter">
+              <div class="loadMeterLabel">
+                <span>Memory</span>
+                <span class="loadMeterValue" id="loadMemValue">—</span>
+              </div>
+              <div class="loadBar"><div class="loadBarFill" id="loadMemBar"></div></div>
+            </div>
           </div>
         </section>
 
