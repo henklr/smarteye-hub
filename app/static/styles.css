@@ -300,11 +300,10 @@ h1 {
 }
 
 .topbarCenter {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  margin-left: auto;
   pointer-events: auto;
 }
 
