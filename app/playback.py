@@ -10,9 +10,10 @@ On-disk layout (NVMe-preferred):
 else to `DATA_DIR` (/app/data). An explicit `recording_path` in settings.json
 overrides the base.
 
-Recording: one ffmpeg subprocess per camera, stream-copy the H.264 sub-stream
-into segmented MPEG-TS. A cross-process fcntl lock guarantees a single recorder
-owner across the HTTP/HTTPS uvicorn workers.
+Recording: one ffmpeg subprocess per camera with an active flow recording
+marker or configured pre-roll buffer, stream-copying the H.264 sub-stream into
+segmented MPEG-TS. A cross-process fcntl lock guarantees a single recorder owner
+across the HTTP/HTTPS uvicorn workers.
 
 Indexing: a background thread polls the recordings tree, ffprobes closed segments,
 and upserts rows into SQLite. The index is rebuildable from the filesystem.
@@ -25,7 +26,6 @@ or a single MP4 built on demand for download.
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
@@ -43,6 +43,11 @@ from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
@@ -77,9 +82,8 @@ SEGMENT_FINALIZE_GRACE_SECONDS = max(2.0, RECORDER_POLL_SECONDS)
 READINESS_GAP_TOLERANCE_SECONDS = 0.5
 
 # Untagged-segment pruner: how often to run, and the protective grace period
-# applied to fresh segments. The grace covers (1) segments ffmpeg just rolled
-# but the indexer hasn't probed yet, and (2) the small gap between recording
-# start and the flow upserting an event for that range.
+# applied to fresh segments. Event-only playback can still keep a hidden
+# rolling pre-roll buffer for flow nodes with "seconds before" configured.
 UNTAGGED_PRUNE_INTERVAL_SECONDS = max(15.0, float(os.getenv("UNTAGGED_PRUNE_INTERVAL_SECONDS", "60") or "60"))
 UNTAGGED_PRUNE_GRACE_SECONDS = max(0.0, float(os.getenv("UNTAGGED_PRUNE_GRACE_SECONDS", "60") or "60"))
 
@@ -95,7 +99,6 @@ PLAYBACK_CLIP_MODE = str(os.getenv("PLAYBACK_CLIP_MODE", "copy-first") or "copy-
 CLIP_ENCODING_PRESET = os.getenv("PLAYBACK_CLIP_PRESET", "ultrafast")
 CLIP_ENCODING_THREADS = max(1, int(os.getenv("PLAYBACK_CLIP_THREADS", "1") or "1"))
 PLAYBACK_CLIP_CACHE_LIMIT = max(0, int(os.getenv("PLAYBACK_CLIP_CACHE_LIMIT", "8") or "8"))
-PLAYBACK_RECORDING_SCOPE = str(os.getenv("PLAYBACK_RECORDING_SCOPE", "all") or "all").strip().lower()
 
 
 def _load_settings() -> Dict[str, Any]:
@@ -1098,8 +1101,24 @@ def _load_flows() -> List[Dict[str, Any]]:
     return [item for item in items if isinstance(item, dict)]
 
 
-def _recording_device_ids_from_flows() -> set[str]:
-    ids: set[str] = set()
+def _recording_node_device_ids(cfg: Dict[str, Any]) -> List[str]:
+    raw_ids = cfg.get("device_ids")
+    if not isinstance(raw_ids, list):
+        legacy = str(cfg.get("device_id") or "").strip()
+        raw_ids = [legacy] if legacy else []
+    out: List[str] = []
+    seen: set[str] = set()
+    for entry in raw_ids:
+        device_id = str(entry or "").strip()
+        if not device_id or device_id in seen or not _SAFE_ID_RE.match(device_id):
+            continue
+        seen.add(device_id)
+        out.append(device_id)
+    return out
+
+
+def _configured_preroll_seconds_by_device() -> Dict[str, float]:
+    seconds_by_device: Dict[str, float] = {}
     for flow in _load_flows():
         if not bool(flow.get("enabled", True)):
             continue
@@ -1107,9 +1126,47 @@ def _recording_device_ids_from_flows() -> set[str]:
             if not isinstance(node, dict) or str(node.get("type") or "") != "action.record":
                 continue
             cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
-            device_id = str(cfg.get("device_id") or "").strip()
-            if device_id:
-                ids.add(device_id)
+            try:
+                before = max(0.0, float(cfg.get("before_seconds") or 0))
+            except Exception:
+                before = 0.0
+            if before <= 0:
+                continue
+            for device_id in _recording_node_device_ids(cfg):
+                seconds_by_device[device_id] = max(seconds_by_device.get(device_id, 0.0), before)
+    return seconds_by_device
+
+
+def _preroll_buffer_seconds(device_id: str) -> float:
+    before = _configured_preroll_seconds_by_device().get(device_id, 0.0)
+    if before <= 0:
+        return 0.0
+    return before + RECORDING_SEGMENT_SECONDS + SEGMENT_FINALIZE_GRACE_SECONDS
+
+
+def _preroll_buffer_device_ids() -> set[str]:
+    return set(_configured_preroll_seconds_by_device().keys())
+
+
+def _active_recording_marker_device_ids(now: Optional[datetime] = None) -> set[str]:
+    now = now or _utc_now()
+    with _events_lock:
+        events = _load_events()
+    ids: set[str] = set()
+    for event in events:
+        device_id = str(event.get("device_id") or "").strip()
+        if not device_id or not _SAFE_ID_RE.match(device_id):
+            continue
+        raw_end = event.get("clip_end")
+        if raw_end in {None, ""}:
+            ids.add(device_id)
+            continue
+        try:
+            ended_at = _parse_iso(raw_end)
+        except Exception:
+            continue
+        if ended_at > now:
+            ids.add(device_id)
     return ids
 
 
@@ -1120,9 +1177,8 @@ def _desired_recorder_ids(devices: List[Dict[str, Any]]) -> set[str]:
         if str(d.get("profile_token") or "").strip()
     }
     configured.discard("")
-    if PLAYBACK_RECORDING_SCOPE == "all":
-        return configured
-    return configured & _recording_device_ids_from_flows()
+    desired = _active_recording_marker_device_ids() | _preroll_buffer_device_ids()
+    return configured & desired
 
 
 def _recording_source_url(device_id: str) -> str:
@@ -1217,6 +1273,8 @@ def _try_acquire_recorder_lock() -> bool:
     this process becomes the active recorder, False if another uvicorn worker
     already holds the lock."""
     global _recorder_lock_fd
+    if fcntl is None:
+        raise RuntimeError("Recorder locking requires fcntl/POSIX support")
     if _recorder_lock_fd is not None:
         return True
     lock_path = _lock_path()
@@ -1237,7 +1295,8 @@ def _release_recorder_lock() -> None:
     if _recorder_lock_fd is None:
         return
     try:
-        fcntl.flock(_recorder_lock_fd, fcntl.LOCK_UN)
+        if fcntl is not None:
+            fcntl.flock(_recorder_lock_fd, fcntl.LOCK_UN)
     except OSError:
         pass
     try:
@@ -1382,7 +1441,10 @@ def _prune_untagged_segments(device_id: str) -> int:
         return 0
 
     keep_windows = _device_keep_windows(device_id)
-    grace_cutoff = _utc_now() - timedelta(seconds=UNTAGGED_PRUNE_GRACE_SECONDS)
+    # Extend the cutoff to the configured pre-roll buffer so "seconds before"
+    # can be fulfilled without exposing non-event footage in playback.
+    keep_seconds = max(UNTAGGED_PRUNE_GRACE_SECONDS, _preroll_buffer_seconds(device_id))
+    grace_cutoff = _utc_now() - timedelta(seconds=keep_seconds)
 
     try:
         disk_files = sorted(
@@ -1911,6 +1973,7 @@ def create_recording_marker(
         "Recording marker created: device=%s id=%s title=%s",
         final.get("device_id"), final.get("id"), final.get("title"),
     )
+    request_recorders_refresh()
     return final
 
 
@@ -1942,6 +2005,7 @@ def stop_recording_marker(*, device_id: str) -> Dict[str, Any]:
             _log_recording.info(
                 "Recording marker stopped: device=%s id=%s", stopped.get("device_id"), stopped.get("id")
             )
+            request_recorders_refresh()
             return stopped
     _log_recording.warning("No active recording found for device %s", device_id)
     raise LookupError(f"No active recording found for device {device_id}")
@@ -2224,7 +2288,6 @@ def playback_timeline(
 ) -> Dict[str, Any]:
     selected_day, started_at, ended_at = _timeline_day_bounds(day)
     device_id = _validate_id(device_id, "device_id")
-    segments = _index_query_range(device_id, started_at, ended_at)
 
     with _events_lock:
         raw = _load_events()
@@ -2250,7 +2313,7 @@ def playback_timeline(
     return {
         "device_id": device_id,
         "day": selected_day.isoformat(),
-        "segments": [_serialize_segment(s) for s in segments],
+        "segments": [],
         "events": events_out,
     }
 

@@ -13,7 +13,6 @@ services:
       - MEDIAMTX_API_URL=http://mediamtx:9997
       - MEDIAMTX_API_USER=${MEDIAMTX_API_USER:-apiuser}
       - MEDIAMTX_API_PASS=${MEDIAMTX_API_PASS:-apipass}
-      - PLAYBACK_RECORDING_SCOPE=all
       - PLAYBACK_CLIP_MODE=copy-first
       - PLAYBACK_CLIP_PRESET=ultrafast
       - PLAYBACK_CLIP_THREADS=1

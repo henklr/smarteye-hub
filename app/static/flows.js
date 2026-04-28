@@ -2630,7 +2630,7 @@ function nodePreview(node) {
       } else {
         label = `${ids.length} cameras`;
       }
-      return `${label} · start · -${formatSecondsLabel(cfg.before_seconds ?? 0)}`;
+      return `${label} · start · -${formatSecondsLabel(cfg.before_seconds ?? 10)}`;
     }
 
     case "action.stop_recording": {
@@ -7330,7 +7330,7 @@ function applyNodeInspector(node) {
   }
 
   if (node.type === "action.record") {
-    cfg.before_seconds = Math.max(0, Number(cfg.before_seconds || 0));
+    cfg.before_seconds = Math.max(0, Number(cfg.before_seconds ?? 10) || 0);
     delete cfg.after_seconds;
     const color = String(cfg.color || "#c6a14b").trim().toLowerCase();
     cfg.color = /^#[0-9a-f]{6}$/.test(color) ? color : "#c6a14b";

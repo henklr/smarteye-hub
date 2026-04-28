@@ -15,10 +15,11 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 import unittest
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 from unittest.mock import patch
 
 
@@ -36,9 +37,12 @@ class _TempEnvTestCase(unittest.TestCase):
     """Fresh temp dir per test so tests don't bleed state."""
 
     def setUp(self):
-        self.tmpdir = tempfile.mkdtemp(prefix="dvr-test-")
-        self.data_dir = Path(self.tmpdir) / "data"
-        self.nvme_dir = Path(self.tmpdir) / "nvme"
+        temp_root = ROOT / ".tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        self.tmpdir = temp_root / f"dvr-test-{uuid.uuid4().hex[:8]}"
+        self.tmpdir.mkdir(parents=True)
+        self.data_dir = self.tmpdir / "data"
+        self.nvme_dir = self.tmpdir / "nvme"
         (self.data_dir).mkdir(parents=True, exist_ok=True)
         (self.nvme_dir).mkdir(parents=True, exist_ok=True)
 
@@ -160,6 +164,152 @@ class TestReconcile(_TempEnvTestCase):
         remaining_files = sorted(p.name for p in device_dir.glob("*.ts"))
         self.assertEqual(len(remaining_files), 1)
         self.assertEqual(remaining_files[0], tip.strftime("%Y%m%dT%H%M%SZ.ts"))
+
+
+class TestPruning(_TempEnvTestCase):
+    def _make_old_indexed_segments(self, device: str):
+        first = self.playback._utc_now().replace(microsecond=0) - timedelta(minutes=10)
+        second = first + timedelta(seconds=10)
+        first_path = self._make_segment_file(device, first, payload=b"\x00" * 2048)
+        second_path = self._make_segment_file(device, second, payload=b"\x00" * 2048)
+        self._insert_index_row(device, first, 10.0)
+        self._insert_index_row(device, second, 10.0)
+        return first_path, second_path
+
+    def test_untagged_prune_deletes_outside_event_windows(self):
+        device = "cam1"
+        first_path, second_path = self._make_old_indexed_segments(device)
+
+        result = self.playback._prune_all_untagged_segments()
+
+        self.assertEqual(result, {device: 1})
+        self.assertFalse(first_path.exists())
+        self.assertTrue(second_path.exists())
+
+    def test_untagged_prune_keeps_segments_inside_event_windows(self):
+        device = "cam1"
+        first_path, second_path = self._make_old_indexed_segments(device)
+        started_at = self.playback._parse_segment_name(first_path.name)
+        self.playback._save_events([{
+            "id": "event-cam1",
+            "device_id": device,
+            "title": "Recording",
+            "triggered_at": started_at.isoformat(),
+            "clip_start": started_at.isoformat(),
+            "clip_end": (started_at + timedelta(seconds=10)).isoformat(),
+        }])
+
+        result = self.playback._prune_all_untagged_segments()
+
+        self.assertEqual(result, {})
+        self.assertTrue(first_path.exists())
+        self.assertTrue(second_path.exists())
+        remaining = self.playback._index_all(device)
+        self.assertEqual([seg.filename for seg in remaining], [first_path.name, second_path.name])
+
+    def test_untagged_prune_keeps_configured_preroll_buffer(self):
+        device = "cam1"
+        old = self.playback._utc_now().replace(microsecond=0) - timedelta(minutes=5)
+        buffered = self.playback._utc_now().replace(microsecond=0) - timedelta(seconds=45)
+        tip = self.playback._utc_now().replace(microsecond=0) - timedelta(seconds=10)
+        old_path = self._make_segment_file(device, old, payload=b"\x00" * 2048)
+        buffered_path = self._make_segment_file(device, buffered, payload=b"\x00" * 2048)
+        tip_path = self._make_segment_file(device, tip, payload=b"\x00" * 2048)
+        self._insert_index_row(device, old, 10.0)
+        self._insert_index_row(device, buffered, 10.0)
+        self._insert_index_row(device, tip, 10.0)
+        self.playback.FLOWS_JSON.write_text(json.dumps({
+            "items": [{
+                "enabled": True,
+                "nodes": [{
+                    "type": "action.record",
+                    "config": {"device_ids": [device], "before_seconds": 120},
+                }],
+            }],
+        }))
+
+        result = self.playback._prune_all_untagged_segments()
+
+        self.assertEqual(result, {device: 1})
+        self.assertFalse(old_path.exists())
+        self.assertTrue(buffered_path.exists())
+        self.assertTrue(tip_path.exists())
+
+
+class TestRecorderSelection(_TempEnvTestCase):
+    def _devices(self):
+        return [
+            {"id": "cam1", "profile_token": "main"},
+            {"id": "cam2", "profile_token": "main"},
+            {"id": "cam3", "profile_token": ""},
+        ]
+
+    def _event(self, device: str, start: datetime, end: Optional[datetime]):
+        return {
+            "id": f"event-{device}",
+            "device_id": device,
+            "title": "Recording",
+            "triggered_at": start.isoformat(),
+            "clip_start": start.isoformat(),
+            "clip_end": end.isoformat() if end is not None else None,
+        }
+
+    def _save_flows(self, nodes):
+        self.playback.FLOWS_JSON.write_text(json.dumps({
+            "items": [{"enabled": True, "nodes": nodes}]
+        }))
+
+    def test_no_marker_means_no_recorder(self):
+        self.playback._save_events([])
+        self.assertEqual(self.playback._desired_recorder_ids(self._devices()), set())
+
+    def test_preroll_flow_starts_hidden_buffer_recorder(self):
+        self.playback._save_events([])
+        self._save_flows([{
+            "type": "action.record",
+            "config": {"device_ids": ["cam1", "cam2"], "before_seconds": 10},
+        }])
+        self.assertEqual(self.playback._desired_recorder_ids(self._devices()), {"cam1", "cam2"})
+
+    def test_zero_preroll_flow_does_not_start_recorder_until_marker(self):
+        self.playback._save_events([])
+        self._save_flows([{
+            "type": "action.record",
+            "config": {"device_ids": ["cam1"], "before_seconds": 0},
+        }])
+        self.assertEqual(self.playback._desired_recorder_ids(self._devices()), set())
+
+    def test_open_marker_starts_recorder_for_that_camera_only(self):
+        now = self.playback._utc_now()
+        self.playback._save_events([self._event("cam1", now, None)])
+        self.assertEqual(self.playback._desired_recorder_ids(self._devices()), {"cam1"})
+
+    def test_past_closed_marker_does_not_keep_recorder_running(self):
+        now = self.playback._utc_now()
+        self.playback._save_events([
+            self._event("cam1", now - timedelta(minutes=5), now - timedelta(minutes=4))
+        ])
+        self.assertEqual(self.playback._desired_recorder_ids(self._devices()), set())
+
+    def test_future_closed_marker_keeps_recorder_running_until_end(self):
+        now = self.playback._utc_now()
+        self.playback._save_events([
+            self._event("cam1", now, now + timedelta(minutes=1)),
+            self._event("cam3", now, now + timedelta(minutes=1)),
+        ])
+        self.assertEqual(self.playback._desired_recorder_ids(self._devices()), {"cam1"})
+
+    def test_record_marker_honors_preroll(self):
+        event = self.playback.create_recording_marker(
+            device_id="cam1",
+            before_seconds=10,
+            after_seconds=None,
+            color="#c6a14b",
+            title="Recording",
+        )
+        triggered_at = self.playback._parse_iso(event["triggered_at"])
+        clip_start = self.playback._parse_iso(event["clip_start"])
+        self.assertAlmostEqual((triggered_at - clip_start).total_seconds(), 10.0, places=3)
 
 
 class TestHLSPlaylist(_TempEnvTestCase):

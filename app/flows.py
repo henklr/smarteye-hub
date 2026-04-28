@@ -1952,7 +1952,8 @@ def _normalize_node_config(
         cfg["preset_name"] = str(cfg.get("preset_name") or "").strip()
         cfg["name"] = str(cfg.get("name") or cfg.get("preset_name") or "").strip()
         try:
-            cfg["before_seconds"] = float(cfg.get("before_seconds") or 0)
+            raw_before = cfg.get("before_seconds")
+            cfg["before_seconds"] = float(10 if raw_before in {None, ""} else raw_before)
         except Exception:
             raise HTTPException(status_code=400, detail="Record seconds before must be numeric")
         if cfg["before_seconds"] < 0:
