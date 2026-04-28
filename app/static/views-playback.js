@@ -64,9 +64,21 @@ const tiles = new Map();
 
 let _shuttleDragging = false;
 let _shuttleAnimRafId = 0;
+let playbackPageDisposed = false;
+let playbackAbortController = new AbortController();
+
+function playbackAbortSignal() {
+  return playbackAbortController.signal;
+}
+
+function isAbortError(error) {
+  return error?.name === "AbortError";
+}
 
 async function api(url, opts = {}) {
-  const res = await fetch(url, opts);
+  const requestOpts = { ...opts };
+  if (!requestOpts.signal && !requestOpts.keepalive) requestOpts.signal = playbackAbortSignal();
+  const res = await fetch(url, requestOpts);
   if (res.status === 401) { window.location.href = "/login"; return; }
   const text = await res.text();
   let data = null;
@@ -673,6 +685,7 @@ function nextTimelineAutoRefreshDelay() {
 
 function scheduleTimelineAutoRefresh() {
   clearTimelineAutoRefresh();
+  if (playbackPageDisposed) return;
   if (!state.activeDeviceIds.length) return;
   const delay = document.visibilityState === "visible"
     ? nextTimelineAutoRefreshDelay()
@@ -680,6 +693,7 @@ function scheduleTimelineAutoRefresh() {
   state.persistence.timelineRefreshTimer = window.setTimeout(() => {
     state.persistence.timelineRefreshTimer = 0;
     loadTimeline({ background: true, preservePlayback: true, autoSelectLatest: false }).catch((error) => {
+      if (isAbortError(error) || playbackPageDisposed) return;
       setStatus(error.message || String(error));
       scheduleTimelineAutoRefresh();
     });
@@ -1166,6 +1180,10 @@ function destroyTile(deviceId) {
   detachTileSource(tile, { destroy: true });
   if (tile.tile?.parentElement) tile.tile.parentElement.removeChild(tile.tile);
   tiles.delete(deviceId);
+}
+
+function destroyAllTiles() {
+  for (const id of [...tiles.keys()]) destroyTile(id);
 }
 
 function syncTilesToActive() {
@@ -1875,6 +1893,7 @@ function updatePlaybackHeader(event = null) {
 // ── Loading: devices + per-device timelines (merged) ──────────────────
 
 async function loadDevices() {
+  if (playbackPageDisposed) return;
   const out = await api("/api/devices");
   state.devices = Array.isArray(out?.devices) ? out.devices : [];
   state.activeDeviceIds = state.activeDeviceIds.filter((id) => state.devices.some((d) => d.id === id && d.profile_token));
@@ -2042,6 +2061,7 @@ async function selectEvent(eventId, options = {}) {
 }
 
 async function loadTimeline(options = {}) {
+  if (playbackPageDisposed) return;
   const background = options.background === true;
   const preservePlayback = options.preservePlayback === true;
   const autoSelectLatest = options.autoSelectLatest !== false;
@@ -2136,6 +2156,7 @@ async function refreshAll() {
     syncTilesToActive();
     await loadTimeline();
   } catch (error) {
+    if (isAbortError(error) || playbackPageDisposed) return;
     showVideoEmpty("Playback unavailable", "Playback data could not be loaded right now. Try again in a moment.", { state: "error" });
     setStatus(error.message || String(error));
   }
@@ -2230,13 +2251,17 @@ function bindUi() {
   });
 
   window.addEventListener("pagehide", () => {
-    clearTimelineAutoRefresh();
-    savePlaybackStateNow();
+    disposePlaybackPage();
+  });
+
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted && playbackPageDisposed) window.location.reload();
   });
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       loadTimeline({ background: true, preservePlayback: true, autoSelectLatest: false }).catch((error) => {
+        if (isAbortError(error) || playbackPageDisposed) return;
         setStatus(error.message || String(error));
       });
       return;
@@ -2383,6 +2408,21 @@ function pauseAllTileVideos() {
       try { entry.video.pause(); } catch (_) {}
     }
   });
+}
+
+function disposePlaybackPage() {
+  if (playbackPageDisposed) return;
+  playbackPageDisposed = true;
+  playbackAbortController.abort();
+  clearTimelineAutoRefresh();
+  clearForwardPlaybackBoundarySchedule();
+  cancelShuttleAnim();
+  stopPlaybackCursorLoop();
+  stopReversePlayback();
+  stopSimulatedForwardPlayback();
+  pauseAllTileVideos();
+  destroyAllTiles();
+  savePlaybackStateNow();
 }
 
 window.viewsPlayback = {

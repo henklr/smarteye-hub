@@ -50,13 +50,51 @@ const STREAM_STATE = {
   ERROR: "error",
 };
 
+let livePageDisposed = false;
+let livePageAbortController = new AbortController();
+
+function liveAbortSignal() {
+  return livePageAbortController.signal;
+}
+
+function isAbortError(error) {
+  return error?.name === "AbortError";
+}
+
+function throwAbortError() {
+  throw new DOMException("Page is unloading", "AbortError");
+}
+
+function abortableDelay(ms, signal = liveAbortSignal()) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Page is unloading", "AbortError"));
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.("abort", onAbort);
+      resolve();
+    }, ms);
+
+    function onAbort() {
+      clearTimeout(timer);
+      reject(new DOMException("Page is unloading", "AbortError"));
+    }
+
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+  });
+}
+
 function getWhepUrl(deviceId) {
   // Proxy WHEP through our server to avoid mixed-content issues on HTTPS
   return `/api/whep/cam-${encodeURIComponent(deviceId)}/whep`;
 }
 
-async function api(url, opts) {
-  const res = await fetch(url, opts);
+async function api(url, opts = {}) {
+  const requestOpts = { ...opts };
+  if (!requestOpts.signal && !requestOpts.keepalive) requestOpts.signal = liveAbortSignal();
+  const res = await fetch(url, requestOpts);
   if (res.status === 401) { window.location.href = "/login"; return; }
   const text = await res.text();
   let data = null;
@@ -73,11 +111,14 @@ async function api(url, opts) {
   return data;
 }
 
-async function ptzPost(url, body = null) {
+async function ptzPost(url, body = null, opts = {}) {
+  const requestOpts = { ...opts };
+  if (!requestOpts.signal && !requestOpts.keepalive) requestOpts.signal = liveAbortSignal();
   const res = await fetch(url, {
     method: "POST",
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
+    ...requestOpts,
   });
 
   if (!res.ok) {
@@ -419,6 +460,7 @@ function getDeviceOnlineStatus(deviceId) {
 }
 
 async function pollDeviceStatus() {
+  if (livePageDisposed) return;
   try {
     const data = await api("/api/device-status", { method: "GET" });
     const items = data?.items || [];
@@ -432,6 +474,7 @@ async function pollDeviceStatus() {
 }
 
 function startStatusPoll() {
+  if (livePageDisposed) return;
   stopStatusPoll();
   pollDeviceStatus();
   statusPollTimer = setInterval(pollDeviceStatus, STATUS_POLL_MS);
@@ -576,6 +619,7 @@ function renderSidebar() {
 }
 
 async function loadDevices() {
+  if (livePageDisposed) return;
   try {
     const data = await api("/api/devices", { method: "GET" });
     devices = data.devices || [];
@@ -623,9 +667,15 @@ function waitIceGatheringComplete(pc, timeoutMs = 2000) {
 }
 
 async function startWhep(deviceId, videoEl, onState, opts = {}) {
-  const { max404Retries = 5, retryDelayMs = 700 } = opts;
+  const { max404Retries = 5, retryDelayMs = 700, signal = liveAbortSignal() } = opts;
+  if (signal?.aborted) throwAbortError();
 
   const pc = new RTCPeerConnection();
+  let returnedPc = false;
+  const closeOnAbort = () => {
+    try { pc.close(); } catch {}
+  };
+  signal?.addEventListener?.("abort", closeOnAbort, { once: true });
 
   pc.ontrack = (e) => {
     videoEl.srcObject = e.streams[0];
@@ -636,37 +686,46 @@ async function startWhep(deviceId, videoEl, onState, opts = {}) {
   pc.addTransceiver("audio", { direction: "recvonly" });
 
   const offer = await pc.createOffer();
+  if (signal?.aborted) throwAbortError();
   await pc.setLocalDescription(offer);
   await waitIceGatheringComplete(pc, 2000);
+  if (signal?.aborted) throwAbortError();
 
   let lastError = "Unknown WHEP error";
 
-  for (let attempt = 0; attempt <= max404Retries; attempt += 1) {
-    const res = await fetch(getWhepUrl(deviceId), {
-      method: "POST",
-      headers: { "Content-Type": "application/sdp" },
-      body: pc.localDescription.sdp,
-    });
-
-    if (res.ok) {
-      const answerSdp = await res.text();
-      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
-      return pc;
-    }
-
-    const t = await res.text().catch(() => "");
-    lastError = `WHEP failed (${res.status}): ${t || res.statusText}`;
-
-    if (res.status !== 404 || attempt === max404Retries) {
-      break;
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-  }
-
   try {
-    pc.close();
-  } catch {}
+    for (let attempt = 0; attempt <= max404Retries; attempt += 1) {
+      if (signal?.aborted) throwAbortError();
+      const res = await fetch(getWhepUrl(deviceId), {
+        method: "POST",
+        headers: { "Content-Type": "application/sdp" },
+        body: pc.localDescription.sdp,
+        signal,
+      });
+
+      if (res.ok) {
+        const answerSdp = await res.text();
+        if (signal?.aborted) throwAbortError();
+        await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+        returnedPc = true;
+        return pc;
+      }
+
+      const t = await res.text().catch(() => "");
+      lastError = `WHEP failed (${res.status}): ${t || res.statusText}`;
+
+      if (res.status !== 404 || attempt === max404Retries) {
+        break;
+      }
+
+      await abortableDelay(retryDelayMs, signal);
+    }
+  } finally {
+    signal?.removeEventListener?.("abort", closeOnAbort);
+    if (!returnedPc) {
+      try { pc.close(); } catch {}
+    }
+  }
 
   throw new Error(lastError);
 }
@@ -977,6 +1036,7 @@ function scheduleRetry(device, entry) {
 
 function handleEntryFailure(device, entry, error) {
   if (!entry || entry.cancelled) return;
+  if (livePageDisposed || isAbortError(error)) return;
 
   clearDisconnectTimer(entry);
   entry.retryCount = (entry.retryCount || 0) + 1;
@@ -994,6 +1054,7 @@ function handleEntryFailure(device, entry, error) {
 
 async function connectEntry(device, entry) {
   if (!entry || entry.cancelled || entry.connecting) return;
+  if (livePageDisposed) return;
   if (!profileReady(device)) return;
 
   clearRetryTimer(entry);
@@ -1123,6 +1184,7 @@ async function connectEntry(device, entry) {
     cur.pc = pc;
     cur.connecting = false;
   } catch (e) {
+    if (livePageDisposed || isAbortError(e)) return;
     handleEntryFailure(device, entry, e);
   } finally {
     const cur = getEntry(device.id);
@@ -1429,6 +1491,7 @@ function installPtzControls(device, entry, caps) {
 }
 
 async function startDevice(device, { restore = false } = {}) {
+  if (livePageDisposed) return Promise.resolve();
   if (restore) {
     try {
       const data = await api("/api/devices", { method: "GET" });
@@ -1792,6 +1855,7 @@ let mediaRecorder = null;
 let recordedChunks = [];
 
 async function loadSpeakers() {
+  if (livePageDisposed) return;
   try {
     const data = await api("/api/speakers", { method: "GET" });
     speakers = data.speakers || [];
@@ -1800,6 +1864,7 @@ async function loadSpeakers() {
 }
 
 async function loadAudioClips() {
+  if (livePageDisposed) return;
   try {
     const data = await api("/api/audio-clips", { method: "GET" });
     audioClips = data.clips || [];
@@ -1890,6 +1955,7 @@ function renderSpeakerSidebar() {
 }
 
 async function pollSpeakerStatus() {
+  if (livePageDisposed) return;
   try {
     const data = await api("/api/speaker-status", { method: "GET" });
     const items = data?.items || [];
@@ -1903,9 +1969,17 @@ async function pollSpeakerStatus() {
 }
 
 function startSpeakerStatusPoll() {
+  if (livePageDisposed) return;
   if (speakerStatusTimer) clearInterval(speakerStatusTimer);
   pollSpeakerStatus();
   speakerStatusTimer = setInterval(pollSpeakerStatus, SPEAKER_STATUS_POLL_MS);
+}
+
+function stopSpeakerStatusPoll() {
+  if (speakerStatusTimer) {
+    clearInterval(speakerStatusTimer);
+    speakerStatusTimer = null;
+  }
 }
 
 async function playClipOnSpeaker(speakerId, filename) {
@@ -2085,6 +2159,7 @@ window.viewsLive = {
 
 (async function init() {
   await loadDevices();
+  if (livePageDisposed) return;
   startStatusPoll();
   loadSpeakers();
   loadAudioClips();
@@ -2099,28 +2174,43 @@ window.viewsLive = {
   });
 })();
 
-// Stop polling and notify the backend of active streams as we navigate away.
-// Without this, the browser closes RTCPeerConnections locally but MediaMTX waits
-// for ICE timeout — and any in-flight polls keep the event loop busy while the
-// next page tries to load, producing the "freeze on fast page switch" symptom.
-window.addEventListener("pagehide", () => {
-  try {
-    if (statusPollTimer) { clearInterval(statusPollTimer); statusPollTimer = null; }
-  } catch {}
-  try {
-    if (typeof speakerStatusTimer !== "undefined" && speakerStatusTimer) {
-      clearInterval(speakerStatusTimer);
-      speakerStatusTimer = null;
-    }
-  } catch {}
-  for (const id of streams.keys()) {
-    try {
-      const url = `/api/stop/${encodeURIComponent(id)}`;
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon(url, new Blob([], { type: "application/json" }));
-      } else {
-        fetch(url, { method: "POST", keepalive: true }).catch(() => {});
-      }
-    } catch {}
+// Stop polling, media, and in-flight requests as navigation begins.
+// Normal teardown can leave WHEP/fetch work occupying connection slots while
+// the next page is trying to load.
+function notifyBackendStreamStop(deviceId) {
+  const url = `/api/stop/${encodeURIComponent(deviceId)}`;
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon(url, new Blob([], { type: "application/json" }));
+    return;
   }
+  fetch(url, { method: "POST", keepalive: true }).catch(() => {});
+}
+
+function disposeLiveEntry(deviceId, entry) {
+  if (!entry) return;
+  entry.cancelled = true;
+  clearRetryTimer(entry);
+  clearDisconnectTimer(entry);
+  entry.retryScheduled = false;
+  entry.connecting = false;
+  try { entry.cleanupPtzListeners?.(); } catch {}
+  try { entry.cleanupVideoAspect?.(); } catch {}
+  try { stopPc(entry.pc, entry.videoEl); } catch {}
+  notifyBackendStreamStop(deviceId);
+}
+
+window.addEventListener("pagehide", () => {
+  if (livePageDisposed) return;
+  livePageDisposed = true;
+  livePageAbortController.abort();
+  try { stopStatusPoll(); } catch {}
+  try { stopSpeakerStatusPoll(); } catch {}
+  for (const [id, entry] of Array.from(streams.entries())) {
+    disposeLiveEntry(id, entry);
+  }
+  streams.clear();
+});
+
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted && livePageDisposed) window.location.reload();
 });

@@ -13,6 +13,10 @@
   // Inject badge span into the Events tab if not present
   var eventsTab = document.querySelector('.tab[href="/events"]');
   var badgeEl = null;
+  var notifySource = null;
+  var notifyReconnectTimer = null;
+  var badgeRefreshController = null;
+  var pageClosing = false;
   if (eventsTab) {
     badgeEl = eventsTab.querySelector(".tabBadge");
     if (!badgeEl) {
@@ -55,9 +59,15 @@
 
   // Expose globally so events.js can call after acknowledge
   window.__smarteyeRefreshEventBadge = function () {
-    fetch("/api/events").then(function (r) { return r.json(); }).then(function (data) {
+    if (pageClosing) return;
+    if (badgeRefreshController) badgeRefreshController.abort();
+    badgeRefreshController = new AbortController();
+    var controller = badgeRefreshController;
+    fetch("/api/events", { cache: "no-store", signal: controller.signal }).then(function (r) { return r.json(); }).then(function (data) {
       refreshBadgeFromEvents(data.items || data);
-    }).catch(function () {});
+    }).catch(function () {}).finally(function () {
+      if (badgeRefreshController === controller) badgeRefreshController = null;
+    });
   };
 
   // Initial check – fetch current events to set badge state
@@ -65,8 +75,11 @@
 
   // Listen for new events via SSE – show badge immediately
   function startNotifySSE() {
-    var src = new EventSource("/api/events/stream");
-    src.onmessage = function (e) {
+    if (pageClosing) return;
+    if (notifySource) notifySource.close();
+
+    notifySource = new EventSource("/api/events/stream");
+    notifySource.onmessage = function (e) {
       try {
         var event = JSON.parse(e.data);
         // New event is always unacknowledged, so just upgrade badge if needed
@@ -90,11 +103,40 @@
         applyBadge("medium");
       }
     };
-    src.onerror = function () {
-      src.close();
-      setTimeout(startNotifySSE, 10000);
+    notifySource.onerror = function () {
+      if (notifySource) {
+        notifySource.close();
+        notifySource = null;
+      }
+      if (!pageClosing) {
+        notifyReconnectTimer = setTimeout(startNotifySSE, 10000);
+      }
     };
   }
+
+  function stopNotifySSE() {
+    pageClosing = true;
+    if (notifyReconnectTimer) {
+      clearTimeout(notifyReconnectTimer);
+      notifyReconnectTimer = null;
+    }
+    if (notifySource) {
+      notifySource.close();
+      notifySource = null;
+    }
+    if (badgeRefreshController) {
+      badgeRefreshController.abort();
+      badgeRefreshController = null;
+    }
+  }
+
+  window.addEventListener("pagehide", stopNotifySSE);
+  window.addEventListener("pageshow", function (event) {
+    if (!event.persisted) return;
+    pageClosing = false;
+    window.__smarteyeRefreshEventBadge();
+    startNotifySSE();
+  });
 
   startNotifySSE();
 })();

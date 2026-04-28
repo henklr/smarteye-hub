@@ -2961,7 +2961,7 @@ def _schedule_ptz_watchdog_stop(device_id: str) -> None:
 
 
 @app.get("/api/events/stream/{device_id}")
-async def events_stream(device_id: str):
+async def events_stream(device_id: str, request: Request):
     device_id = device_id.strip()
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
@@ -2975,7 +2975,13 @@ async def events_stream(device_id: str):
         yield f"event: hello\ndata: {json.dumps({'device_id': device_id, 'event_debug': EVENT_DEBUG})}\n\n"
         try:
             while True:
-                item = await q.get()
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.wait_for(q.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
                 yield f"data: {json.dumps(item)}\n\n"
         except asyncio.CancelledError:
             pass
@@ -4416,14 +4422,20 @@ def api_archived_event_delete(event_id: str):
 
 
 @app.get("/api/events/stream")
-async def api_events_stream():
+async def api_events_stream(request: Request):
     queue: asyncio.Queue = asyncio.Queue()
     with _event_page_sub_lock:
         _event_page_subscribers.append(queue)
     async def generate():
         try:
             while True:
-                event = await queue.get()
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
                 yield f"data: {json.dumps(event)}\n\n"
         except asyncio.CancelledError:
             pass

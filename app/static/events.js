@@ -2,6 +2,10 @@
   "use strict";
 
   const el = (id) => document.getElementById(id);
+  let eventsPageClosing = false;
+  let eventsLoadController = null;
+  let eventsSource = null;
+  let eventsReconnectTimer = 0;
 
   function escapeHtml(str) {
     const div = document.createElement("div");
@@ -607,21 +611,29 @@
   }, 30000);
 
   async function loadEvents() {
+    if (eventsPageClosing) return;
     const list = el("eventsList");
     const empty = el("eventsEmpty");
     if (empty) empty.style.display = "none";
     if (_renderAbort) { _renderAbort.abort = true; _renderAbort = null; }
     list.innerHTML = '<div class="eventsLoadingBar"><div class="eventsLoadingSpinner"></div><span>Loading events\u2026</span></div>';
+    if (eventsLoadController) eventsLoadController.abort();
+    eventsLoadController = new AbortController();
+    const controller = eventsLoadController;
     try {
-      const resp = await fetch("/api/events");
+      const resp = await fetch("/api/events", { cache: "no-store", signal: controller.signal });
       if (!resp.ok) return;
       const data = await resp.json();
+      if (eventsPageClosing) return;
       allEvents = data.items || [];
       updateSummary();
       updateFlowFilter();
       applyFilters();
     } catch (err) {
+      if (err?.name === "AbortError") return;
       console.error("Failed to load events:", err);
+    } finally {
+      if (eventsLoadController === controller) eventsLoadController = null;
     }
   }
 
@@ -642,8 +654,10 @@
   }
 
   function startSSE() {
-    const evtSource = new EventSource("/api/events/stream");
-    evtSource.onmessage = (e) => {
+    if (eventsPageClosing || eventsSource) return;
+
+    eventsSource = new EventSource("/api/events/stream");
+    eventsSource.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data);
         addEventToList(event);
@@ -651,11 +665,45 @@
         console.error("SSE parse error:", err);
       }
     };
-    evtSource.onerror = () => {
-      evtSource.close();
-      setTimeout(startSSE, 5000);
+    eventsSource.onerror = () => {
+      stopSSE();
+      if (!eventsPageClosing) {
+        eventsReconnectTimer = setTimeout(startSSE, 5000);
+      }
     };
   }
+
+  function stopSSE() {
+    if (eventsReconnectTimer) {
+      clearTimeout(eventsReconnectTimer);
+      eventsReconnectTimer = 0;
+    }
+    if (eventsSource) {
+      eventsSource.close();
+      eventsSource = null;
+    }
+  }
+
+  function disposeEventsPage() {
+    eventsPageClosing = true;
+    stopSSE();
+    if (eventsLoadController) {
+      eventsLoadController.abort();
+      eventsLoadController = null;
+    }
+    if (_renderAbort) {
+      _renderAbort.abort = true;
+      _renderAbort = null;
+    }
+  }
+
+  window.addEventListener("pagehide", disposeEventsPage);
+  window.addEventListener("pageshow", (event) => {
+    if (!event.persisted) return;
+    eventsPageClosing = false;
+    loadEvents();
+    startSSE();
+  });
 
   // ── Init ──
 
