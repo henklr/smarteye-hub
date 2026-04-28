@@ -117,6 +117,13 @@ body.playbackPage {
   display: none;
 }
 
+.playbackPage .playbackVideoShell[data-empty-state="empty"] .playbackVideoGrid,
+.playbackPage .playbackVideoShell[data-empty-state="waiting"] .playbackVideoGrid,
+.playbackPage .playbackVideoShell[data-empty-state="error"] .playbackVideoGrid {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .playbackPage .playbackVideoGrid .tileOverlay {
   flex-direction: column;
   gap: 10px;

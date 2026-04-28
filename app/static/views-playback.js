@@ -229,11 +229,14 @@ function playbackEmptyBadgeLabel(value) {
 }
 
 function showVideoEmpty(title, text, options = {}) {
+  const shell = el("playbackVideoShell");
   const empty = el("playbackVideoEmpty");
   const emptyBadge = el("playbackVideoEmptyBadge");
   const emptyText = el("playbackVideoEmptyText");
   const titleNode = empty?.querySelector(".playbackVideoEmptyTitle");
   const emptyState = normalizePlaybackEmptyDisplayState(options.state);
+  const grid = el("playbackVideoGrid");
+  const suppressOverlay = emptyState === "loading" && !!grid?.querySelector(".tile[data-id]");
 
   stopPlaybackCursorLoop();
   stopSimulatedForwardPlayback();
@@ -246,17 +249,20 @@ function showVideoEmpty(title, text, options = {}) {
 
   if (empty) {
     empty.dataset.state = emptyState;
-    empty.setAttribute("aria-busy", emptyState === "loading" ? "true" : "false");
+    empty.setAttribute("aria-busy", emptyState === "loading" && !suppressOverlay ? "true" : "false");
   }
+  if (shell) shell.dataset.emptyState = emptyState;
   if (emptyBadge) emptyBadge.textContent = options.badge || playbackEmptyBadgeLabel(emptyState);
   if (titleNode) titleNode.textContent = title || "No clip selected";
   if (emptyText) emptyText.textContent = text || "Choose a colored marker from the timeline below to load a recording.";
-  empty?.classList.remove("hidden");
+  empty?.classList.toggle("hidden", suppressOverlay);
   syncPlaybackTransport();
 }
 
 function hideVideoEmpty() {
+  const shell = el("playbackVideoShell");
   const empty = el("playbackVideoEmpty");
+  if (shell) delete shell.dataset.emptyState;
   if (empty) {
     empty.classList.add("hidden");
     empty.setAttribute("aria-busy", "false");
