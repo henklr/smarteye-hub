@@ -1512,3 +1512,950 @@ window._deleteAudioClip = async function(filename) {
 })();
 
 loadAudioClips();
+
+// ── NOX integration ──────────────────────────────────────────────────────────
+
+const noxEnabledEl        = document.getElementById("noxEnabled");
+const noxModbusEnabledEl  = document.getElementById("noxModbusEnabled");
+const noxModbusHostEl     = document.getElementById("noxModbusHost");
+const noxModbusPortEl     = document.getElementById("noxModbusPort");
+const noxModbusUnitEl     = document.getElementById("noxModbusUnit");
+const noxModbusPollEl     = document.getElementById("noxModbusPoll");
+const noxTioEnabledEl     = document.getElementById("noxTioEnabled");
+const noxTioHostEl        = document.getElementById("noxTioHost");
+const noxTioPortEl        = document.getElementById("noxTioPort");
+const noxInputsListEl     = document.getElementById("noxInputsList");
+const noxInputsEmptyEl    = document.getElementById("noxInputsEmpty");
+const noxAddInputBtn      = document.getElementById("noxAddInputBtn");
+const noxSaveBtn          = document.getElementById("noxSaveBtn");
+const noxRefreshBtn       = document.getElementById("noxRefreshBtn");
+const noxStatusEl         = document.getElementById("noxStatus");
+const noxStatusBadgeEl    = document.getElementById("noxStatusBadge");
+
+let noxInputsModel = []; // [{module, input, label}]
+let noxAreasModel = [];  // [{area_id, label}]
+let noxLastState = null;
+
+function noxFlagsSummary(flags) {
+  if (!flags) return "—";
+  const parts = [];
+  if (flags.alarm) parts.push("ALARM");
+  if (flags.sabotage) parts.push("sabotage");
+  if (flags.deactivated) parts.push("deactivated");
+  parts.push(flags.open ? "open" : "closed");
+  if (!flags.defined) parts.push("undefined");
+  return parts.join(", ");
+}
+
+function noxLiveEntryFor(module, input) {
+  if (!noxLastState) return null;
+  const inputs = noxLastState.modbus?.inputs || [];
+  return inputs.find(e => Number(e.module) === Number(module) && Number(e.input) === Number(input)) || null;
+}
+
+function renderNoxInputs() {
+  if (!noxInputsListEl) return;
+  noxInputsListEl.innerHTML = "";
+
+  if (!noxInputsModel.length) {
+    if (noxInputsEmptyEl) {
+      noxInputsListEl.appendChild(noxInputsEmptyEl);
+      noxInputsEmptyEl.style.display = "";
+    }
+    return;
+  }
+
+  noxInputsModel.forEach((row, idx) => {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "display:grid;grid-template-columns:90px 70px 1fr 110px 1fr 32px;gap:8px;align-items:center;";
+
+    const moduleEl = document.createElement("input");
+    moduleEl.type = "number"; moduleEl.min = "1"; moduleEl.max = "9999";
+    moduleEl.value = row.module ?? "";
+    moduleEl.placeholder = "1001";
+    moduleEl.addEventListener("change", () => { row.module = Number(moduleEl.value) || 0; renderNoxInputs(); });
+
+    const inputEl = document.createElement("input");
+    inputEl.type = "number"; inputEl.min = "0"; inputEl.max = "9";
+    inputEl.value = row.input ?? "";
+    inputEl.placeholder = "1";
+    inputEl.addEventListener("change", () => { row.input = Number(inputEl.value) || 0; renderNoxInputs(); });
+
+    const labelEl = document.createElement("input");
+    labelEl.type = "text"; labelEl.placeholder = "Front door PIR";
+    labelEl.value = row.label || "";
+    labelEl.addEventListener("change", () => { row.label = labelEl.value; });
+
+    const addr = document.createElement("span");
+    addr.className = "muted";
+    const addrVal = (Number(row.module) || 0) * 10 + (Number(row.input) || 0);
+    addr.textContent = addrVal > 0 ? String(addrVal) : "—";
+
+    const stateEl = document.createElement("span");
+    stateEl.className = "muted";
+    const live = noxLiveEntryFor(row.module, row.input);
+    stateEl.textContent = live ? noxFlagsSummary(live.flags) : "—";
+
+    const removeEl = document.createElement("button");
+    removeEl.type = "button"; removeEl.className = "btn btn-secondary"; removeEl.textContent = "×";
+    removeEl.title = "Remove";
+    removeEl.addEventListener("click", () => { noxInputsModel.splice(idx, 1); renderNoxInputs(); });
+
+    wrap.append(moduleEl, inputEl, labelEl, addr, stateEl, removeEl);
+    noxInputsListEl.appendChild(wrap);
+  });
+
+  if (noxInputsEmptyEl) noxInputsEmptyEl.style.display = "none";
+}
+
+function applyNoxConfig(cfg) {
+  if (!cfg) return;
+  if (noxEnabledEl)       noxEnabledEl.checked = !!cfg.enabled;
+  const mb = cfg.modbus || {};
+  if (noxModbusEnabledEl) noxModbusEnabledEl.checked = !!mb.enabled;
+  if (noxModbusHostEl)    noxModbusHostEl.value = mb.host || "";
+  if (noxModbusPortEl)    noxModbusPortEl.value = mb.port ?? 502;
+  if (noxModbusUnitEl)    noxModbusUnitEl.value = mb.unit_id ?? 1;
+  if (noxModbusPollEl)    noxModbusPollEl.value = mb.poll_seconds ?? 1.0;
+  noxInputsModel = (mb.inputs || []).map(i => ({
+    module: Number(i.module) || 0,
+    input: Number(i.input) || 0,
+    label: i.label || "",
+  }));
+  noxAreasModel = (mb.areas || []).map(a => ({
+    area_id: Number(a.area_id) || 0,
+    label: a.label || "",
+  }));
+
+  const tio = cfg.tio || {};
+  if (noxTioEnabledEl) noxTioEnabledEl.checked = !!tio.enabled;
+  if (noxTioHostEl)    noxTioHostEl.value = tio.listen_host || "0.0.0.0";
+  if (noxTioPortEl)    noxTioPortEl.value = tio.listen_port ?? 9760;
+
+  renderNoxInputs();
+  renderNoxAreas();
+}
+
+function applyNoxState(state) {
+  noxLastState = state || null;
+  if (!noxStatusEl) return;
+
+  if (!state) {
+    noxStatusEl.textContent = "Loading…";
+    return;
+  }
+
+  const lines = [];
+  if (!state.enabled) {
+    lines.push("Disabled.");
+  } else {
+    if (state.modbus?.enabled) {
+      const mb = state.modbus;
+      if (mb.connected) {
+        lines.push(`Modbus: connected to ${mb.host}:${mb.port}, last poll ${mb.last_poll_at || "—"}`);
+      } else {
+        lines.push(`Modbus: disconnected${mb.error ? ` — ${mb.error}` : ""}`);
+      }
+    } else {
+      lines.push("Modbus: off");
+    }
+    if (state.tio?.enabled) {
+      const tio = state.tio;
+      if (tio.listening) {
+        lines.push(`TIO: listening on ${tio.listen_host}:${tio.listen_port}, last message ${tio.last_message_at || "—"}`);
+      } else {
+        lines.push(`TIO: not listening${tio.error ? ` — ${tio.error}` : ""}`);
+      }
+    } else {
+      lines.push("TIO: off");
+    }
+  }
+  noxStatusEl.textContent = lines.join(" · ");
+
+  if (noxStatusBadgeEl) {
+    const ok = state.enabled && (
+      (!state.modbus?.enabled || state.modbus.connected) &&
+      (!state.tio?.enabled || state.tio.listening)
+    );
+    noxStatusBadgeEl.textContent = state.enabled ? (ok ? "Connected" : "Issues") : "Disabled";
+    noxStatusBadgeEl.style.color = state.enabled
+      ? (ok ? "var(--clr-success, #2ecc71)" : "var(--clr-warning, #f39c12)")
+      : "";
+  }
+
+  renderNoxInputs();
+  renderNoxAreas();
+}
+
+async function loadNoxConfig() {
+  try {
+    const data = await api("/api/nox/config", { method: "GET" });
+    applyNoxConfig(data?.config);
+  } catch (e) {
+    if (noxStatusEl) noxStatusEl.textContent = `Error loading config: ${e.message || e}`;
+  }
+}
+
+async function loadNoxState() {
+  try {
+    const data = await api("/api/nox/state", { method: "GET" });
+    applyNoxState(data?.state);
+  } catch (e) {
+    if (noxStatusEl) noxStatusEl.textContent = `Error loading status: ${e.message || e}`;
+  }
+}
+
+function collectNoxConfig() {
+  return {
+    enabled: !!noxEnabledEl?.checked,
+    modbus: {
+      enabled: !!noxModbusEnabledEl?.checked,
+      host: (noxModbusHostEl?.value || "").trim(),
+      port: Number(noxModbusPortEl?.value) || 502,
+      unit_id: Number(noxModbusUnitEl?.value) || 1,
+      poll_seconds: Number(noxModbusPollEl?.value) || 1.0,
+      inputs: noxInputsModel
+        .filter(r => r.module > 0 && r.input >= 0 && r.input <= 9)
+        .map(r => ({ module: r.module, input: r.input, label: r.label || "" })),
+      areas: noxAreasModel
+        .filter(r => r.area_id > 0)
+        .map(r => ({ area_id: r.area_id, label: r.label || "" })),
+    },
+    tio: {
+      enabled: !!noxTioEnabledEl?.checked,
+      listen_host: (noxTioHostEl?.value || "0.0.0.0").trim(),
+      listen_port: Number(noxTioPortEl?.value) || 9760,
+    },
+  };
+}
+
+noxAddInputBtn?.addEventListener("click", () => {
+  noxInputsModel.push({ module: 0, input: 0, label: "" });
+  renderNoxInputs();
+});
+
+noxSaveBtn?.addEventListener("click", async () => {
+  noxSaveBtn.disabled = true;
+  if (noxStatusEl) noxStatusEl.textContent = "Saving…";
+  try {
+    const data = await api("/api/nox/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectNoxConfig()),
+    });
+    applyNoxConfig(data?.config);
+    applyNoxState(data?.state);
+    setTimeout(loadNoxState, 1500);
+  } catch (e) {
+    if (noxStatusEl) noxStatusEl.textContent = `Error: ${e.message || e}`;
+  } finally {
+    noxSaveBtn.disabled = false;
+  }
+});
+
+noxRefreshBtn?.addEventListener("click", loadNoxState);
+
+const noxAckAllBtn = document.getElementById("noxAckAllBtn");
+noxAckAllBtn?.addEventListener("click", async () => {
+  const formHost = (noxModbusHostEl?.value || "").trim();
+  if (!formHost) {
+    if (noxWriteResultEl) noxWriteResultEl.textContent = "Enter NOX panel IP first.";
+    return;
+  }
+  if (!confirm("Send 'Acknowledge all alarms' (writes 1 to register 1000)? This is a NOX-documented operation.")) return;
+  noxAckAllBtn.disabled = true;
+  if (noxWriteResultEl) noxWriteResultEl.textContent = "Writing 1 → register 1000…";
+  try {
+    const data = await api("/api/nox/test-ack-all-alarms", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        host: formHost,
+        port: Number(noxModbusPortEl?.value) || 502,
+        unit_id: Number(noxModbusUnitEl?.value) || 1,
+      }),
+    });
+    const lines = [
+      `register 1000 ← 1 (ack-all-alarms diagnostic)`,
+      `write_ok: ${data.write_ok}`,
+    ];
+    if (data.error) lines.push(`error:    ${data.error}`);
+    if (data.response) {
+      lines.push("");
+      lines.push("response: " + JSON.stringify(data.response));
+    }
+    lines.push("");
+    if (data.write_ok) {
+      lines.push("✓ FC16 write to register 1000 succeeded.");
+      lines.push("  This means the Modbus write path itself works — the area-arm reject is");
+      lines.push("  almost certainly a per-area permission, not a global Modbus issue.");
+    } else {
+      lines.push("✖ Even ack-all-alarms is being silently dropped.");
+      lines.push("  This points to a global Modbus write permission missing in NoxConfig,");
+      lines.push("  or the connecting IP isn't trusted by the panel.");
+    }
+    if (noxWriteResultEl) noxWriteResultEl.textContent = lines.join("\n");
+  } catch (e) {
+    if (noxWriteResultEl) noxWriteResultEl.textContent = `Error: ${e.message || e}`;
+  } finally {
+    noxAckAllBtn.disabled = false;
+  }
+});
+
+// ── NOX areas ────────────────────────────────────────────────────────────────
+
+const noxAreasListEl       = document.getElementById("noxAreasList");
+const noxAreasEmptyEl      = document.getElementById("noxAreasEmpty");
+const noxAddAreaBtn        = document.getElementById("noxAddAreaBtn");
+const noxDiscoverAreasBtn  = document.getElementById("noxDiscoverAreasBtn");
+const noxAreasStatusEl     = document.getElementById("noxAreasStatus");
+
+function noxLiveAreaFor(areaId) {
+  if (!noxLastState) return null;
+  const areas = noxLastState.modbus?.areas || [];
+  return areas.find(a => Number(a.area_id) === Number(areaId)) || null;
+}
+
+function renderNoxAreas() {
+  if (!noxAreasListEl) return;
+  noxAreasListEl.innerHTML = "";
+
+  if (!noxAreasModel.length) {
+    if (noxAreasEmptyEl) {
+      noxAreasListEl.appendChild(noxAreasEmptyEl);
+      noxAreasEmptyEl.style.display = "";
+    }
+    return;
+  }
+
+  noxAreasModel.forEach((row, idx) => {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "display:grid;grid-template-columns:80px 1fr 90px 1fr auto 32px;gap:8px;align-items:center;";
+
+    const idEl = document.createElement("input");
+    idEl.type = "number"; idEl.min = "1"; idEl.max = "999";
+    idEl.value = row.area_id ?? "";
+    idEl.placeholder = "1";
+    idEl.addEventListener("change", () => { row.area_id = Number(idEl.value) || 0; renderNoxAreas(); });
+
+    const labelEl = document.createElement("input");
+    labelEl.type = "text"; labelEl.placeholder = "Beboelse";
+    labelEl.value = row.label || "";
+    labelEl.addEventListener("change", () => { row.label = labelEl.value; });
+
+    const addrEl = document.createElement("span");
+    addrEl.className = "muted";
+    addrEl.textContent = (Number(row.area_id) || 0) > 0 ? `addr ${row.area_id}` : "—";
+
+    const stateEl = document.createElement("span");
+    const live = noxLiveAreaFor(row.area_id);
+    let liveStateText = null;
+    if (live) {
+      liveStateText = live.state || "—";
+      stateEl.textContent = `${liveStateText} (raw 0x${(live.raw || 0).toString(16).padStart(4, "0")})`;
+      const ALARM = new Set(["forced_open", "door_held_alarm"]);
+      const ARMED = new Set(["armed", "partly_armed"]);
+      const WARNING = new Set(["door_held_open", "door_open", "door_held_warning", "off"]);
+      const TRANSITIONAL = new Set(["disarmed_exit", "disarmed_exit_wait", "disarmed_entry", "pending"]);
+      const NEUTRAL_OK = new Set(["disarmed", "on", "door_closed", "access_granted"]);
+
+      if (ALARM.has(liveStateText)) {
+        stateEl.style.color = "var(--clr-danger, #e74c3c)";
+        stateEl.style.fontWeight = "600";
+      } else if (ARMED.has(liveStateText)) {
+        stateEl.style.color = "var(--clr-warning, #f39c12)";
+      } else if (WARNING.has(liveStateText)) {
+        stateEl.style.color = "var(--clr-warning, #f39c12)";
+      } else if (TRANSITIONAL.has(liveStateText)) {
+        stateEl.style.color = "var(--clr-info, #4f8cff)";
+      } else if (NEUTRAL_OK.has(liveStateText)) {
+        stateEl.style.color = "var(--clr-success, #2ecc71)";
+      }
+    } else {
+      stateEl.className = "muted";
+      stateEl.textContent = "—";
+    }
+
+    // Inline arm / disarm controls — only meaningful when an area_id is set
+    const controls = document.createElement("div");
+    controls.style.cssText = "display:flex;gap:4px;";
+    const armBtn = document.createElement("button");
+    armBtn.type = "button"; armBtn.className = "btn btn-secondary";
+    armBtn.style.cssText = "padding:4px 10px;font-size:12px;";
+    armBtn.textContent = "Arm";
+    const disarmBtn = document.createElement("button");
+    disarmBtn.type = "button"; disarmBtn.className = "btn btn-secondary";
+    disarmBtn.style.cssText = "padding:4px 10px;font-size:12px;";
+    disarmBtn.textContent = "Disarm";
+    if (!Number(row.area_id)) {
+      armBtn.disabled = true;
+      disarmBtn.disabled = true;
+    } else {
+      armBtn.addEventListener("click", () => noxControlArea(row, true));
+      disarmBtn.addEventListener("click", () => noxControlArea(row, false));
+    }
+    controls.append(armBtn, disarmBtn);
+
+    const remove = document.createElement("button");
+    remove.type = "button"; remove.className = "btn btn-secondary"; remove.textContent = "×";
+    remove.addEventListener("click", () => { noxAreasModel.splice(idx, 1); renderNoxAreas(); });
+
+    wrap.append(idEl, labelEl, addrEl, stateEl, controls, remove);
+    noxAreasListEl.appendChild(wrap);
+  });
+
+  if (noxAreasEmptyEl) noxAreasEmptyEl.style.display = "none";
+}
+
+noxAddAreaBtn?.addEventListener("click", () => {
+  noxAreasModel.push({ area_id: 0, label: "" });
+  renderNoxAreas();
+});
+
+async function noxControlArea(row, arm) {
+  const id = Number(row.area_id);
+  if (!id) return;
+  const verb = arm ? "Arm" : "Disarm";
+  const label = row.label ? ` (${row.label})` : "";
+  if (!confirm(`${verb} area ${id}${label}?`)) return;
+  if (noxAreasStatusEl) noxAreasStatusEl.textContent = `${verb}ing area ${id}…`;
+  try {
+    const data = await api(`/api/nox/areas/${id}/${arm ? "arm" : "disarm"}`, { method: "POST" });
+    if (data.write_ok) {
+      const after = data.after?.state || "?";
+      if (noxAreasStatusEl) noxAreasStatusEl.textContent = `Area ${id}: ${verb.toLowerCase()}ed (now ${after}).`;
+    } else {
+      const flags = (data.captured_failure_flags || []).join(", ");
+      if (noxAreasStatusEl) {
+        noxAreasStatusEl.textContent =
+          `Area ${id}: ${verb.toLowerCase()} rejected by NOX${flags ? ` (${flags})` : " (no failure flags captured)"}.`;
+      }
+    }
+    setTimeout(loadNoxState, 600);
+  } catch (e) {
+    if (noxAreasStatusEl) noxAreasStatusEl.textContent = `${verb} failed: ${e.message || e}`;
+  }
+}
+
+// ── NOX area write test ──────────────────────────────────────────────────────
+
+const noxWriteAreaIdEl = document.getElementById("noxWriteAreaId");
+const noxWriteCodeEl   = document.getElementById("noxWriteCode");
+const noxWriteBtn      = document.getElementById("noxWriteBtn");
+const noxWriteResultEl = document.getElementById("noxWriteResult");
+
+function refreshNoxWriteAreaOptions() {
+  if (!noxWriteAreaIdEl) return;
+  const previous = noxWriteAreaIdEl.value;
+  noxWriteAreaIdEl.innerHTML = "";
+  if (!noxAreasModel.length) {
+    const opt = document.createElement("option");
+    opt.value = ""; opt.textContent = "(no areas configured)";
+    noxWriteAreaIdEl.appendChild(opt);
+    return;
+  }
+  for (const a of noxAreasModel) {
+    if (!a.area_id) continue;
+    const opt = document.createElement("option");
+    opt.value = String(a.area_id);
+    opt.textContent = `Area ${a.area_id}${a.label ? " — " + a.label : ""}`;
+    noxWriteAreaIdEl.appendChild(opt);
+  }
+  if (previous && [...noxWriteAreaIdEl.options].some(o => o.value === previous)) {
+    noxWriteAreaIdEl.value = previous;
+  }
+}
+
+const _origRenderNoxAreas = renderNoxAreas;
+renderNoxAreas = function() {
+  _origRenderNoxAreas();
+  refreshNoxWriteAreaOptions();
+};
+
+noxWriteBtn?.addEventListener("click", async () => {
+  const areaId = Number(noxWriteAreaIdEl?.value);
+  const code = Number(noxWriteCodeEl?.value);
+  if (!areaId) {
+    if (noxWriteResultEl) noxWriteResultEl.textContent = "Configure an area first.";
+    return;
+  }
+  const formHost = (noxModbusHostEl?.value || "").trim();
+  if (!formHost) {
+    if (noxWriteResultEl) noxWriteResultEl.textContent = "Enter NOX panel IP first.";
+    return;
+  }
+  const opt = noxWriteAreaIdEl.options[noxWriteAreaIdEl.selectedIndex];
+  const codeLabels = {1: "disarm", 5: "arm", 6: "partial-arm"};
+  if (!confirm(`Write code ${code} (${codeLabels[code] || "?"}) to area ${areaId} (${opt?.textContent || ""})?`)) return;
+
+  noxWriteBtn.disabled = true;
+  if (noxWriteResultEl) noxWriteResultEl.textContent = `Writing ${code} → area ${areaId}…`;
+
+  try {
+    const data = await api("/api/nox/test-area-write", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        area_id: areaId,
+        code,
+        host: formHost,
+        port: Number(noxModbusPortEl?.value) || 502,
+        unit_id: Number(noxModbusUnitEl?.value) || 1,
+      }),
+    });
+    const fmt = s => {
+      if (!s) return "n/a";
+      const flags = [];
+      if (s.fail_blocking_time)     flags.push("blocking");
+      if (s.fail_no_rights)         flags.push("no_rights");
+      if (s.fail_active_detectors)  flags.push("active_detectors");
+      if (s.fail_active_alarms)     flags.push("active_alarms");
+      if (s.alarm_active)           flags.push("ALARM");
+      const flagStr = flags.length ? ` ⚠ ${flags.join(",")}` : "";
+      return `raw=0x${s.raw.toString(16).padStart(4,"0")} code=${s.code} state=${s.state}${flagStr}`;
+    };
+
+    const lines = [
+      `area ${data.area_id} (addr ${data.address}) ← code ${data.code_written}`,
+      `write_ok: ${data.write_ok}` + (data.successful_strategy ? ` (via ${data.successful_strategy})` : ""),
+      `before:   ${fmt(data.before)}`,
+      `after:    ${fmt(data.after)}`,
+    ];
+
+    // Top-level diagnosis if a write was rejected
+    if (!data.write_ok && Array.isArray(data.captured_failure_flags) && data.captured_failure_flags.length) {
+      lines.push("");
+      const reasons = data.captured_failure_flags.map(f => {
+        switch (f) {
+          case "blocking_time":     return "area is in blocking time";
+          case "no_rights":         return "no rights (Modbus user lacks permission)";
+          case "active_detectors":  return "detector(s) currently active in this area";
+          case "active_alarms":     return "active alarms in this area (ack first)";
+          default: return f;
+        }
+      });
+      lines.push(`✖ NOX rejected the write — reason: ${reasons.join(", ")}`);
+    } else if (!data.write_ok) {
+      lines.push("");
+      lines.push("✖ Write didn't take effect, and no failure bits were captured. Possible causes:");
+      lines.push("   - Live poller cleared the failure bits before we read them (try again)");
+      lines.push("   - Modbus user has no write permission (check NoxConfig)");
+      lines.push("   - Area is currently in transitional state");
+    }
+
+    if (Array.isArray(data.attempts)) {
+      lines.push("");
+      lines.push("attempts:");
+      for (const a of data.attempts) {
+        const protocolStatus = a.protocol_ok ? "ok" : `FAIL (${a.error || "?"})`;
+        const rb = a.readback;
+        const flags = (a.failure_flags || []).join(",");
+        const rbStr = rb
+          ? `code=${rb.code} state=${rb.state}${flags ? ` ⚠ ${flags}` : ""}`
+          : "no readback";
+        lines.push(`  ${a.strategy.padEnd(13)} → protocol ${protocolStatus} → ${rbStr}`);
+      }
+    }
+
+    if (noxWriteResultEl) noxWriteResultEl.textContent = lines.join("\n");
+    setTimeout(loadNoxState, 800);
+  } catch (e) {
+    if (noxWriteResultEl) noxWriteResultEl.textContent = `Error: ${e.message || e}`;
+  } finally {
+    noxWriteBtn.disabled = false;
+  }
+});
+
+refreshNoxWriteAreaOptions();
+
+noxDiscoverAreasBtn?.addEventListener("click", async () => {
+  const formHost = (noxModbusHostEl?.value || "").trim();
+  if (!formHost) {
+    if (noxAreasStatusEl) noxAreasStatusEl.textContent = "Enter NOX panel IP first.";
+    return;
+  }
+  noxDiscoverAreasBtn.disabled = true;
+  if (noxAreasStatusEl) noxAreasStatusEl.textContent = "Discovering areas (1–64)…";
+  try {
+    const data = await api("/api/nox/discover-areas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        max_area_id: 64,
+        host: formHost,
+        port: Number(noxModbusPortEl?.value) || 502,
+        unit_id: Number(noxModbusUnitEl?.value) || 1,
+      }),
+    });
+    const found = data?.found || [];
+    let added = 0;
+    for (const a of found) {
+      if (!noxAreasModel.some(r => Number(r.area_id) === Number(a.area_id))) {
+        noxAreasModel.push({ area_id: a.area_id, label: `Area ${a.area_id}` });
+        added += 1;
+      }
+    }
+    if (noxAreasStatusEl) {
+      noxAreasStatusEl.textContent = `Found ${found.length} defined area(s); added ${added} new (remember to save).`;
+    }
+    renderNoxAreas();
+  } catch (e) {
+    if (noxAreasStatusEl) noxAreasStatusEl.textContent = `Discover failed: ${e.message || e}`;
+  } finally {
+    noxDiscoverAreasBtn.disabled = false;
+  }
+});
+
+// ── NOX discovery scan ──────────────────────────────────────────────────────
+
+const noxScanStartEl    = document.getElementById("noxScanStart");
+const noxScanEndEl      = document.getElementById("noxScanEnd");
+const noxScanOnlyDefEl  = document.getElementById("noxScanOnlyDefined");
+const noxScanBtn        = document.getElementById("noxScanBtn");
+const noxScanAddAllBtn  = document.getElementById("noxScanAddAllBtn");
+const noxScanStatusEl   = document.getElementById("noxScanStatus");
+const noxScanResultsEl  = document.getElementById("noxScanResults");
+
+let noxScanResults = [];
+
+function isInputAlreadyMonitored(module, input) {
+  return noxInputsModel.some(r => Number(r.module) === Number(module) && Number(r.input) === Number(input));
+}
+
+function addDiscoveredInput(item) {
+  if (isInputAlreadyMonitored(item.module, item.input)) return false;
+  noxInputsModel.push({
+    module: Number(item.module),
+    input: Number(item.input),
+    label: `Module ${item.module} input ${item.input}`,
+  });
+  return true;
+}
+
+function renderNoxScanResults() {
+  if (!noxScanResultsEl) return;
+  noxScanResultsEl.innerHTML = "";
+
+  if (!noxScanResults.length) {
+    if (noxScanAddAllBtn) noxScanAddAllBtn.style.display = "none";
+    return;
+  }
+
+  const newOnes = noxScanResults.filter(r => !isInputAlreadyMonitored(r.module, r.input));
+  if (noxScanAddAllBtn) noxScanAddAllBtn.style.display = newOnes.length ? "" : "none";
+
+  noxScanResults.forEach(item => {
+    const row = document.createElement("div");
+    row.style.cssText = "display:grid;grid-template-columns:90px 70px 110px 1fr 110px;gap:8px;align-items:center;";
+
+    const module = document.createElement("span");
+    module.textContent = `mod ${item.module}`;
+
+    const input = document.createElement("span");
+    input.textContent = `in ${item.input}`;
+
+    const addr = document.createElement("span");
+    addr.className = "muted";
+    addr.textContent = String(item.address);
+
+    const summary = document.createElement("span");
+    summary.textContent = noxFlagsSummary(item.flags);
+    if (item.flags?.alarm) {
+      summary.style.color = "var(--clr-danger, #e74c3c)";
+      summary.style.fontWeight = "600";
+    }
+
+    const action = document.createElement("button");
+    action.type = "button";
+    action.className = "btn btn-secondary";
+    if (isInputAlreadyMonitored(item.module, item.input)) {
+      action.textContent = "Already added";
+      action.disabled = true;
+    } else {
+      action.textContent = "Add to monitored";
+      action.addEventListener("click", () => {
+        if (addDiscoveredInput(item)) {
+          renderNoxInputs();
+          renderNoxScanResults();
+        }
+      });
+    }
+
+    row.append(module, input, addr, summary, action);
+    noxScanResultsEl.appendChild(row);
+  });
+}
+
+noxScanBtn?.addEventListener("click", async () => {
+  const start = Number(noxScanStartEl?.value) || 1001;
+  const end = Number(noxScanEndEl?.value) || 1020;
+  const onlyDefined = !!noxScanOnlyDefEl?.checked;
+
+  if (end < start) {
+    if (noxScanStatusEl) noxScanStatusEl.textContent = "End module must be ≥ start module.";
+    return;
+  }
+
+  // Use whatever's in the form right now — works without saving first.
+  const formHost = (noxModbusHostEl?.value || "").trim();
+  const formPort = Number(noxModbusPortEl?.value);
+  const formUnit = Number(noxModbusUnitEl?.value);
+
+  if (!formHost) {
+    if (noxScanStatusEl) noxScanStatusEl.textContent = "Enter NOX panel IP first.";
+    return;
+  }
+
+  noxScanBtn.disabled = true;
+  if (noxScanStatusEl) noxScanStatusEl.textContent = `Scanning modules ${start}–${end} on ${formHost}:${formPort || 502}…`;
+  noxScanResults = [];
+  renderNoxScanResults();
+
+  try {
+    const data = await api("/api/nox/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        start_module: start,
+        end_module: end,
+        only_defined: onlyDefined,
+        host: formHost,
+        port: formPort || 502,
+        unit_id: Number.isFinite(formUnit) ? formUnit : 1,
+      }),
+    });
+    noxScanResults = data?.found || [];
+    const errCount = (data?.errors || []).length;
+    const fcUsed = data?.function_code_used;
+    const warning = data?.warning;
+    const diag = data?.diagnostics || [];
+    const errs = data?.errors || [];
+
+    if (noxScanStatusEl) {
+      const parts = [];
+      if (warning) {
+        parts.push(`⚠ ${warning}`);
+        if (diag.length) {
+          parts.push("Probe results: " + diag.map(d =>
+            `FC ${d.function_code === "input" ? "04" : "03"}${d.address ? ` @${d.address}` : ""} → ${d.ok ? "ok" : d.error}`
+          ).join("; "));
+        }
+      } else {
+        const fcLabel = fcUsed === "input" ? "FC04 (input registers)" : fcUsed === "holding" ? "FC03 (holding registers)" : "?";
+        parts.push(`Found ${noxScanResults.length} input(s) using ${fcLabel}`);
+        if (errCount) {
+          parts.push(`${errCount} chunk(s) returned errors`);
+          // Show the first distinct error so we can see the actual exception code.
+          const sample = errs.find(e => e.error) || null;
+          if (sample) parts.push(`first error: ${sample.error} @${sample.address}`);
+        }
+      }
+      noxScanStatusEl.textContent = parts.join(" · ");
+    }
+    renderNoxScanResults();
+  } catch (e) {
+    if (noxScanStatusEl) noxScanStatusEl.textContent = `Scan failed: ${e.message || e}`;
+  } finally {
+    noxScanBtn.disabled = false;
+  }
+});
+
+noxScanAddAllBtn?.addEventListener("click", () => {
+  let added = 0;
+  for (const item of noxScanResults) {
+    if (addDiscoveredInput(item)) added += 1;
+  }
+  if (noxScanStatusEl && added > 0) {
+    const prev = noxScanStatusEl.textContent || "";
+    noxScanStatusEl.textContent = `${prev} · added ${added} to monitored list (remember to save).`;
+  }
+  renderNoxInputs();
+  renderNoxScanResults();
+});
+
+// ── NOX raw register probe (for area-state block discovery) ──────────────────
+
+const noxProbeStartEl       = document.getElementById("noxProbeStart");
+const noxProbeEndEl         = document.getElementById("noxProbeEnd");
+const noxProbeFcEl          = document.getElementById("noxProbeFc");
+const noxProbeOnlyNonzeroEl = document.getElementById("noxProbeOnlyNonzero");
+const noxProbeBtn           = document.getElementById("noxProbeBtn");
+const noxProbeSweepBtn      = document.getElementById("noxProbeSweepBtn");
+const noxProbeStatusEl      = document.getElementById("noxProbeStatus");
+const noxProbeResultsEl     = document.getElementById("noxProbeResults");
+
+const NOX_PROBE_PRESETS = [
+  [0, 200], [200, 1000], [5000, 5200], [9000, 9200],
+  [20000, 20200], [30000, 30200], [40000, 40200],
+  [50000, 50200], [90000, 90200],
+];
+
+function findAreaCandidateBlocks(values, expectedCount = 21) {
+  // Look for clusters of small-integer registers (value <= 15) where at least
+  // `expectedCount/2` registers fall within a span of ~2*expectedCount.
+  if (!values.length) return [];
+  const small = values.filter(v => v.value <= 15).sort((a, b) => a.address - b.address);
+  if (small.length < Math.max(2, Math.floor(expectedCount / 2))) return [];
+
+  const candidates = [];
+  const span = expectedCount * 2;
+  for (let i = 0; i < small.length; i += 1) {
+    const start = small[i].address;
+    let count = 0;
+    let lastIdx = i;
+    for (let j = i; j < small.length && small[j].address - start <= span; j += 1) {
+      count += 1;
+      lastIdx = j;
+    }
+    if (count >= Math.max(3, Math.floor(expectedCount / 3))) {
+      candidates.push({ start, end: small[lastIdx].address, count });
+      i = lastIdx; // skip overlap
+    }
+  }
+  return candidates;
+}
+
+function renderProbeResults(values, errors, range, fc) {
+  if (!noxProbeResultsEl) return;
+  noxProbeResultsEl.innerHTML = "";
+
+  if (!values.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.textContent = errors?.length
+      ? `${errors.length} chunk(s) returned errors. First: ${errors[0].error} @${errors[0].address}.`
+      : "No non-zero registers in this range.";
+    noxProbeResultsEl.appendChild(empty);
+    return;
+  }
+
+  const candidates = findAreaCandidateBlocks(values, 21);
+  const flagged = new Set();
+  for (const c of candidates) {
+    for (const v of values) {
+      if (v.address >= c.start && v.address <= c.end && v.value <= 15) flagged.add(v.address);
+    }
+  }
+
+  if (candidates.length) {
+    const hint = document.createElement("div");
+    hint.style.color = "var(--clr-warning, #f39c12)";
+    hint.style.fontFamily = "inherit";
+    hint.textContent = "Possible area-state block(s): " +
+      candidates.map(c => `${c.start}–${c.end} (${c.count} small ints)`).join(", ");
+    noxProbeResultsEl.appendChild(hint);
+  }
+
+  // Show all values, highlighting flagged ones
+  for (const v of values) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:grid;grid-template-columns:90px 70px 1fr;gap:8px;";
+    if (flagged.has(v.address)) {
+      row.style.color = "var(--clr-warning, #f39c12)";
+      row.style.fontWeight = "600";
+    }
+    const a = document.createElement("span"); a.textContent = String(v.address);
+    const d = document.createElement("span"); d.textContent = String(v.value);
+    const h = document.createElement("span"); h.textContent = "0x" + v.value.toString(16).padStart(4, "0");
+    row.append(a, d, h);
+    noxProbeResultsEl.appendChild(row);
+  }
+}
+
+async function noxRunProbe(start, end) {
+  const formHost = (noxModbusHostEl?.value || "").trim();
+  if (!formHost) {
+    if (noxProbeStatusEl) noxProbeStatusEl.textContent = "Enter NOX panel IP first.";
+    return null;
+  }
+  const fc = noxProbeFcEl?.value || "holding";
+  const onlyNonzero = !!noxProbeOnlyNonzeroEl?.checked;
+
+  if (noxProbeStatusEl) noxProbeStatusEl.textContent = `Probing ${start}–${end} (${fc})…`;
+
+  try {
+    const data = await api("/api/nox/probe-registers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        start_addr: start,
+        end_addr: end,
+        function_code: fc,
+        only_nonzero: onlyNonzero,
+        host: formHost,
+        port: Number(noxModbusPortEl?.value) || 502,
+        unit_id: Number(noxModbusUnitEl?.value) || 1,
+      }),
+    });
+    const values = data?.values || [];
+    const errors = data?.errors || [];
+    if (noxProbeStatusEl) {
+      noxProbeStatusEl.textContent =
+        `${start}–${end}: ${values.length} non-zero` +
+        (errors.length ? `, ${errors.length} chunk error(s)` : "");
+    }
+    return { start, end, values, errors };
+  } catch (e) {
+    if (noxProbeStatusEl) noxProbeStatusEl.textContent = `Probe failed: ${e.message || e}`;
+    return null;
+  }
+}
+
+noxProbeBtn?.addEventListener("click", async () => {
+  const start = Number(noxProbeStartEl?.value) || 0;
+  const end = Number(noxProbeEndEl?.value) || 200;
+  if (end < start) {
+    if (noxProbeStatusEl) noxProbeStatusEl.textContent = "End must be ≥ start.";
+    return;
+  }
+  noxProbeBtn.disabled = true;
+  const result = await noxRunProbe(start, end);
+  noxProbeBtn.disabled = false;
+  if (result) renderProbeResults(result.values, result.errors, [start, end], noxProbeFcEl?.value);
+});
+
+noxProbeSweepBtn?.addEventListener("click", async () => {
+  noxProbeSweepBtn.disabled = true;
+  noxProbeBtn.disabled = true;
+  if (noxProbeResultsEl) noxProbeResultsEl.innerHTML = "";
+  const allValues = [];
+  let totalErrors = 0;
+  const summaryParts = [];
+
+  for (const [s, e] of NOX_PROBE_PRESETS) {
+    const result = await noxRunProbe(s, e);
+    if (!result) continue;
+    if (result.values.length) {
+      summaryParts.push(`${s}–${e}: ${result.values.length}`);
+      allValues.push(...result.values);
+    }
+    totalErrors += result.errors.length;
+  }
+  if (noxProbeStatusEl) {
+    noxProbeStatusEl.textContent =
+      `Sweep complete. Non-zero by range: ${summaryParts.length ? summaryParts.join(" · ") : "none found"}` +
+      (totalErrors ? ` · ${totalErrors} total chunk error(s)` : "");
+  }
+  renderProbeResults(allValues, [], null, noxProbeFcEl?.value);
+
+  noxProbeSweepBtn.disabled = false;
+  noxProbeBtn.disabled = false;
+});
+
+// Preset shortcut buttons.
+document.querySelectorAll("[data-nox-probe]").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    const [s, e] = btn.getAttribute("data-nox-probe").split(",").map(Number);
+    if (noxProbeStartEl) noxProbeStartEl.value = s;
+    if (noxProbeEndEl) noxProbeEndEl.value = e;
+    btn.disabled = true;
+    const result = await noxRunProbe(s, e);
+    btn.disabled = false;
+    if (result) renderProbeResults(result.values, result.errors, [s, e], noxProbeFcEl?.value);
+  });
+});
+
+if (document.getElementById("nox")) {
+  loadNoxConfig().then(loadNoxState);
+  setInterval(loadNoxState, 5000);
+}

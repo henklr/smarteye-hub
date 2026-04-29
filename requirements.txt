@@ -7,3 +7,4 @@ ntplib
 websockets>=12.0
 openai>=1.0
 python-multipart
+pymodbus>=3.6

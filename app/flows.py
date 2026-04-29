@@ -420,6 +420,33 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "defaults": {"speaker_id": "", "audio_type": "any", "name": ""},
     },
     {
+        "type": "trigger.nox_input_changed",
+        "category": "trigger",
+        "label": "NOX input changed",
+        "description": "Starts when a NOX detector input changes state (Modbus or TIO).",
+        "color": "#4f8cff",
+        "ports": {"inputs": [], "outputs": ["out"]},
+        "defaults": {"match_by": "modbus", "module": "", "input": "", "tio_id": "", "name": ""},
+    },
+    {
+        "type": "trigger.nox_alarm_changed",
+        "category": "trigger",
+        "label": "NOX alarm changed",
+        "description": "Starts when a NOX detector's alarm bit transitions (Modbus only).",
+        "color": "#4f8cff",
+        "ports": {"inputs": [], "outputs": ["out"]},
+        "defaults": {"module": "", "input": "", "alarm_state": "any", "name": ""},
+    },
+    {
+        "type": "trigger.nox_area_changed",
+        "category": "trigger",
+        "label": "NOX area changed",
+        "description": "Starts when a NOX area's state changes (TIO message).",
+        "color": "#4f8cff",
+        "ports": {"inputs": [], "outputs": ["out"]},
+        "defaults": {"area_id": "", "state": "any", "name": ""},
+    },
+    {
         "type": "condition.compare",
         "category": "condition",
         "label": "Compare",
@@ -494,6 +521,33 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
         "defaults": {"target_kind": "output", "channel": "1", "mode": "pulse", "pulse_seconds": 2, "name": ""},
+    },
+    {
+        "type": "action.nox_arm_area",
+        "category": "action",
+        "label": "Arm NOX area",
+        "description": "Arms a NOX area via Modbus (writes state code 5 to the area register).",
+        "color": "#ff8c42",
+        "ports": {"inputs": ["in"], "outputs": ["out"]},
+        "defaults": {"area_id": "", "name": ""},
+    },
+    {
+        "type": "action.nox_disarm_area",
+        "category": "action",
+        "label": "Disarm NOX area",
+        "description": "Disarms a NOX area via Modbus (writes state code 1 to the area register).",
+        "color": "#ff8c42",
+        "ports": {"inputs": ["in"], "outputs": ["out"]},
+        "defaults": {"area_id": "", "name": ""},
+    },
+    {
+        "type": "action.nox_ack_alarms",
+        "category": "action",
+        "label": "Acknowledge NOX alarms",
+        "description": "Acknowledges all NOX alarms (writes 1 to register 1000, per NOX Modbus doc §1.8).",
+        "color": "#ff8c42",
+        "ports": {"inputs": ["in"], "outputs": ["out"]},
+        "defaults": {"name": ""},
     },
     {
         "type": "action.record",
@@ -2715,6 +2769,57 @@ def _trigger_matches_node(node: Dict[str, Any], trigger: Dict[str, Any]) -> bool
             return False
         return True
 
+    if node_type == "trigger.nox_input_changed":
+        if kind != "nox_input_changed":
+            return False
+        match_by = str(cfg.get("match_by") or "modbus").strip().lower()
+        source = str(trigger.get("source") or "").strip().lower()
+        if match_by == "modbus":
+            if source != "modbus":
+                return False
+            cfg_module = str(cfg.get("module") or "").strip()
+            cfg_input = str(cfg.get("input") or "").strip()
+            if cfg_module and cfg_module != str(trigger.get("module") or ""):
+                return False
+            if cfg_input and cfg_input != str(trigger.get("input") or ""):
+                return False
+            return True
+        if match_by == "tio":
+            if source != "tio":
+                return False
+            cfg_id = str(cfg.get("tio_id") or "").strip()
+            if cfg_id and cfg_id != str(trigger.get("id") or ""):
+                return False
+            return True
+        return False
+
+    if node_type == "trigger.nox_alarm_changed":
+        if kind != "nox_alarm_changed":
+            return False
+        cfg_module = str(cfg.get("module") or "").strip()
+        cfg_input = str(cfg.get("input") or "").strip()
+        if cfg_module and cfg_module != str(trigger.get("module") or ""):
+            return False
+        if cfg_input and cfg_input != str(trigger.get("input") or ""):
+            return False
+        wanted = str(cfg.get("alarm_state") or "any").strip().lower()
+        if wanted == "alarm":
+            return bool(trigger.get("alarm"))
+        if wanted == "clear":
+            return not bool(trigger.get("alarm"))
+        return True
+
+    if node_type == "trigger.nox_area_changed":
+        if kind != "nox_area_changed":
+            return False
+        cfg_area = str(cfg.get("area_id") or "").strip()
+        if cfg_area and cfg_area != str(trigger.get("id") or ""):
+            return False
+        wanted = str(cfg.get("state") or "any").strip().lower()
+        if wanted != "any" and wanted != str(trigger.get("state") or "").strip().lower():
+            return False
+        return True
+
     return False
 
 
@@ -3100,6 +3205,64 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
             result["ok"] = False
             result["error"] = str(exc)
             _log_flows.warning("Physical output action failed in flow: %s", exc)
+        result["next_handles"] = ["out"]
+        return result
+
+    if node_type in {"action.nox_arm_area", "action.nox_disarm_area"}:
+        try:
+            area_id = int(str(cfg.get("area_id") or "").strip())
+        except Exception:
+            result["ok"] = False
+            result["error"] = "area_id is required"
+            result["next_handles"] = ["out"]
+            return result
+        try:
+            from nox_connector import arm_area as _nox_arm, disarm_area as _nox_disarm
+            outcome = _nox_arm(area_id) if node_type == "action.nox_arm_area" else _nox_disarm(area_id)
+            result["area_id"] = area_id
+            result["write_ok"] = bool(outcome.get("write_ok"))
+            result["before"] = outcome.get("before")
+            result["after"] = outcome.get("after")
+            result["captured_failure_flags"] = outcome.get("captured_failure_flags") or []
+            if not outcome.get("write_ok"):
+                result["ok"] = False
+                flags = outcome.get("captured_failure_flags") or []
+                result["error"] = (
+                    f"NOX rejected the write ({', '.join(flags)})"
+                    if flags else "NOX silently dropped the write"
+                )
+                _log_flows.warning(
+                    "NOX %s area %d failed: %s",
+                    "arm" if node_type == "action.nox_arm_area" else "disarm",
+                    area_id, result["error"],
+                )
+            else:
+                result["message"] = (
+                    f"Armed area {area_id}" if node_type == "action.nox_arm_area"
+                    else f"Disarmed area {area_id}"
+                )
+        except Exception as exc:
+            result["ok"] = False
+            result["error"] = str(exc)
+            _log_flows.warning("NOX area action failed in flow: %s", exc)
+        result["next_handles"] = ["out"]
+        return result
+
+    if node_type == "action.nox_ack_alarms":
+        try:
+            from nox_connector import ack_all_alarms as _nox_ack
+            outcome = _nox_ack()
+            result["write_ok"] = bool(outcome.get("write_ok"))
+            if not outcome.get("write_ok"):
+                result["ok"] = False
+                result["error"] = outcome.get("error") or "ack_all_alarms write failed"
+                _log_flows.warning("NOX ack_all_alarms failed: %s", result["error"])
+            else:
+                result["message"] = "Acknowledged all NOX alarms"
+        except Exception as exc:
+            result["ok"] = False
+            result["error"] = str(exc)
+            _log_flows.warning("NOX ack action failed in flow: %s", exc)
         result["next_handles"] = ["out"]
         return result
 

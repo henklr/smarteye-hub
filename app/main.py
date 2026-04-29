@@ -56,6 +56,7 @@ from playback import (
 )
 from physical_io import start_physical_io_monitor, stop_physical_io_monitor
 import dashboard_connector
+import nox_connector
 
 app = FastAPI()
 
@@ -131,6 +132,7 @@ _log_buffer: collections.deque = collections.deque(maxlen=_LOG_BUFFER_SIZE)
 _LOG_CATEGORIES = {
     "system", "devices", "streams", "onvif", "ptz",
     "flows", "recording", "playback", "physical_io", "schedule",
+    "nox",
     "uvicorn", "uvicorn.error", "uvicorn.access",
 }
 
@@ -3103,6 +3105,245 @@ def dashboard_unregister():
     return {"ok": True, **dashboard_connector.get_status()}
 
 
+# ── NOX integration ────────────────────────────────────────────────────────────
+
+class NoxModbusInputIn(BaseModel):
+    module: int
+    input: int
+    label: Optional[str] = ""
+
+
+class NoxModbusAreaIn(BaseModel):
+    area_id: int
+    label: Optional[str] = ""
+
+
+class NoxModbusConfigIn(BaseModel):
+    enabled: bool = False
+    host: str = ""
+    port: int = 502
+    unit_id: int = 1
+    poll_seconds: float = 1.0
+    inputs: List[NoxModbusInputIn] = Field(default_factory=list)
+    areas: List[NoxModbusAreaIn] = Field(default_factory=list)
+
+
+class NoxTioConfigIn(BaseModel):
+    enabled: bool = False
+    listen_host: str = "0.0.0.0"
+    listen_port: int = 9760
+
+
+class NoxConfigIn(BaseModel):
+    enabled: bool = False
+    modbus: NoxModbusConfigIn = Field(default_factory=NoxModbusConfigIn)
+    tio: NoxTioConfigIn = Field(default_factory=NoxTioConfigIn)
+
+
+@app.get("/api/nox/config")
+def nox_get_config():
+    return {"ok": True, "config": nox_connector.load_nox_config()}
+
+
+@app.put("/api/nox/config")
+def nox_put_config(cfg: NoxConfigIn):
+    saved = nox_connector.save_nox_config(_dump(cfg))
+    try:
+        nox_connector.restart_nox_connector(dispatch_flow_trigger)
+    except Exception as exc:
+        _log_system.error("Failed to restart NOX connector after config change: %s", exc)
+    return {"ok": True, "config": saved, "state": nox_connector.nox_state()}
+
+
+@app.get("/api/nox/state")
+def nox_get_state():
+    return {"ok": True, "state": nox_connector.nox_state()}
+
+
+@app.post("/api/nox/restart")
+def nox_restart():
+    nox_connector.restart_nox_connector(dispatch_flow_trigger)
+    return {"ok": True, "state": nox_connector.nox_state()}
+
+
+class NoxScanIn(BaseModel):
+    start_module: int = 1001
+    end_module: int = 1020
+    only_defined: bool = True
+    host: Optional[str] = None
+    port: Optional[int] = None
+    unit_id: Optional[int] = None
+    function_code: str = "auto"  # "auto" | "holding" | "input"
+
+
+class NoxProbeIn(BaseModel):
+    start_addr: int = 0
+    end_addr: int = 200
+    function_code: str = "holding"  # "holding" | "input"
+    only_nonzero: bool = True
+    host: Optional[str] = None
+    port: Optional[int] = None
+    unit_id: Optional[int] = None
+
+
+class NoxAreaWriteIn(BaseModel):
+    area_id: int
+    code: int
+    enforce_allowlist: bool = True
+    host: Optional[str] = None
+    port: Optional[int] = None
+    unit_id: Optional[int] = None
+
+
+class NoxAckAllIn(BaseModel):
+    host: Optional[str] = None
+    port: Optional[int] = None
+    unit_id: Optional[int] = None
+
+
+@app.post("/api/nox/test-ack-all-alarms")
+def nox_test_ack_all(req: NoxAckAllIn):
+    try:
+        result = nox_connector.ack_all_alarms(
+            host=req.host,
+            port=req.port,
+            unit_id=req.unit_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (ConnectionError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"NOX ack_all failed: {exc}")
+    return {"ok": True, **result}
+
+
+@app.post("/api/nox/areas/{area_id}/arm")
+def nox_arm_area_endpoint(area_id: int):
+    try:
+        result = nox_connector.arm_area(area_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (ConnectionError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Arm failed: {exc}")
+    return {"ok": True, **result}
+
+
+@app.post("/api/nox/areas/{area_id}/disarm")
+def nox_disarm_area_endpoint(area_id: int):
+    try:
+        result = nox_connector.disarm_area(area_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (ConnectionError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Disarm failed: {exc}")
+    return {"ok": True, **result}
+
+
+@app.post("/api/nox/ack-all-alarms")
+def nox_ack_all_alarms_endpoint():
+    try:
+        result = nox_connector.ack_all_alarms()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (ConnectionError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Ack-all failed: {exc}")
+    return {"ok": True, **result}
+
+
+@app.post("/api/nox/test-area-write")
+def nox_test_area_write(req: NoxAreaWriteIn):
+    try:
+        result = nox_connector.write_area_state(
+            area_id=req.area_id,
+            code=req.code,
+            host=req.host,
+            port=req.port,
+            unit_id=req.unit_id,
+            enforce_allowlist=req.enforce_allowlist,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (ConnectionError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"NOX area write failed: {exc}")
+    return {"ok": True, **result}
+
+
+class NoxDiscoverAreasIn(BaseModel):
+    max_area_id: int = 64
+    host: Optional[str] = None
+    port: Optional[int] = None
+    unit_id: Optional[int] = None
+
+
+@app.post("/api/nox/discover-areas")
+def nox_discover_areas(req: NoxDiscoverAreasIn):
+    try:
+        result = nox_connector.discover_areas(
+            host=req.host,
+            port=req.port,
+            unit_id=req.unit_id,
+            max_area_id=req.max_area_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (ConnectionError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"NOX area discover failed: {exc}")
+    return {"ok": True, **result}
+
+
+@app.post("/api/nox/probe-registers")
+def nox_probe_registers(req: NoxProbeIn):
+    try:
+        result = nox_connector.probe_registers(
+            host=req.host,
+            port=req.port,
+            unit_id=req.unit_id,
+            start_addr=req.start_addr,
+            end_addr=req.end_addr,
+            function_code=req.function_code,
+            only_nonzero=req.only_nonzero,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (ConnectionError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"NOX probe failed: {exc}")
+    return {"ok": True, **result}
+
+
+@app.post("/api/nox/scan")
+def nox_scan(req: NoxScanIn):
+    try:
+        result = nox_connector.scan_modbus_range(
+            host=req.host,
+            port=req.port,
+            unit_id=req.unit_id,
+            start_module=req.start_module,
+            end_module=req.end_module,
+            only_defined=req.only_defined,
+            function_code=req.function_code,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (ConnectionError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"NOX scan failed: {exc}")
+    return {"ok": True, **result}
+
+
 @app.get("/api/devices")
 def list_devices():
     devs = _load_devices()
@@ -4501,6 +4742,12 @@ def _on_startup():
         _log_system.error("Failed to start physical I/O monitor: %s", e)
 
     try:
+        nox_connector.start_nox_connector(dispatch_flow_trigger)
+        _log_system.info("NOX connector started")
+    except Exception as e:
+        _log_system.error("Failed to start NOX connector: %s", e)
+
+    try:
         _ensure_event_workers(devs)
         _log_system.info("Event workers initialized for %d device(s)", len(devs))
     except Exception as e:
@@ -4543,6 +4790,10 @@ def _on_shutdown():
     stop_schedule_monitor()
     stop_physical_io_monitor()
     stop_recording_service()
+    try:
+        nox_connector.stop_nox_connector()
+    except Exception:
+        pass
     try:
         dashboard_connector.stop_connector()
     except Exception:

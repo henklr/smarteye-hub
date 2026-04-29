@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:pastebin.com)",
+      "WebFetch(domain:noxsystems.com)",
+      "WebFetch(domain:partner.noxsystems.com)",
+      "Bash(python -m py_compile app/nox_connector.py)",
+      "Bash(python -m py_compile app/flows.py)",
+      "Bash(python -m py_compile app/main.py)",
+      "Bash(python -c ' *)"
+    ]
+  }
+}
