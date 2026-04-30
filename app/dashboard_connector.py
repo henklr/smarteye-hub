@@ -50,9 +50,9 @@ import websockets.exceptions
 log = logging.getLogger("dashboard_connector")
 
 # Local API server the connector forwards dashboard requests to. The hub binds
-# its FastAPI app on 127.0.0.1:8000 by default in docker-compose; override with
-# CONNECTOR_LOCAL_API to test against a different bind.
-LOCAL_API_BASE = os.getenv("CONNECTOR_LOCAL_API", "http://127.0.0.1:8000").rstrip("/")
+# its FastAPI app on port 80 inside its container (see Dockerfile). Override
+# with CONNECTOR_LOCAL_API to test against a different bind.
+LOCAL_API_BASE = os.getenv("CONNECTOR_LOCAL_API", "http://127.0.0.1:80").rstrip("/")
 RPC_REQUEST_TIMEOUT = 30.0
 
 # ── Configuration ─────────────────────────────────────────────────────────────
