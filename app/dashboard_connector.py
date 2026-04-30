@@ -48,6 +48,11 @@ from typing import Any, Optional
 import websockets
 import websockets.exceptions
 
+try:
+    import fcntl  # POSIX only; the Pi container is Linux so this is fine.
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
+
 # Set CONNECTOR_INSECURE_TLS=1 when testing against a dev dashboard with a
 # self-signed cert (e.g. ASP.NET Core's localhost dev cert). Never enable in
 # production — it disables both cert verification and hostname checks.
@@ -577,6 +582,57 @@ async def _connector_loop(stop_event: asyncio.Event) -> None:
             pass
 
 
+# ── Single-process gate ───────────────────────────────────────────────────────
+#
+# The container's CMD launches two uvicorn instances (port 80 and 443) that
+# both load this module and both fire the FastAPI startup event. Without a
+# gate, each one would spin up its own connector → both would race, each
+# displacing the other's WebSocket on the dashboard side, and we'd see a
+# tight reconnect loop. An exclusive fcntl lock on a per-container file lets
+# the first uvicorn process win and the second one stand down cleanly.
+
+SINGLETON_LOCK_PATH = os.getenv("CONNECTOR_LOCK_PATH",
+                                "/tmp/smarteye-dashboard-connector.lock")
+_singleton_fd: Optional[int] = None
+
+
+def _acquire_singleton_lock() -> bool:
+    global _singleton_fd
+    if _singleton_fd is not None:
+        return True
+    if fcntl is None:
+        return True  # Non-POSIX host; nothing to gate on.
+    try:
+        fd = os.open(SINGLETON_LOCK_PATH, os.O_WRONLY | os.O_CREAT, 0o644)
+    except OSError as exc:
+        log.warning("Could not open singleton lock %s: %s",
+                    SINGLETON_LOCK_PATH, exc)
+        return True  # Fail open — better to risk a duplicate than be silent.
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, BlockingIOError):
+        os.close(fd)
+        return False
+    _singleton_fd = fd
+    return True
+
+
+def _release_singleton_lock() -> None:
+    global _singleton_fd
+    if _singleton_fd is None:
+        return
+    try:
+        if fcntl is not None:
+            fcntl.flock(_singleton_fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(_singleton_fd)
+    except OSError:
+        pass
+    _singleton_fd = None
+
+
 # ── Background thread management ──────────────────────────────────────────────
 
 _thread: Optional[threading.Thread] = None
@@ -590,10 +646,18 @@ def is_running() -> bool:
 
 
 def start_connector() -> None:
-    """Start the background connector thread (idempotent)."""
+    """Start the background connector thread (idempotent).
+
+    Stands down silently if another process in the same container already
+    holds the singleton lock, so only one uvicorn instance runs the loops.
+    """
     global _thread, _loop, _stop_event
     with _lock:
         if _thread and _thread.is_alive():
+            return
+        if not _acquire_singleton_lock():
+            log.info("Dashboard connector: another process owns the lock; "
+                     "this uvicorn instance will not run the connector loops")
             return
 
         loop = asyncio.new_event_loop()
@@ -643,6 +707,7 @@ def stop_connector(timeout: float = 5.0) -> None:
         _stop_event = None
 
     if not thread:
+        _release_singleton_lock()
         return
 
     if loop and stop_event and loop.is_running():
@@ -650,6 +715,7 @@ def stop_connector(timeout: float = 5.0) -> None:
 
     deadline = time.time() + timeout
     thread.join(timeout=max(0.1, deadline - time.time()))
+    _release_singleton_lock()
     log.info("Dashboard connector thread stopped")
 
 
