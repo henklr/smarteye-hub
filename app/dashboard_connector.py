@@ -359,14 +359,27 @@ async def _stream_session(creds: dict[str, str]) -> None:
 
         async def _pump() -> None:
             assert proc and proc.stdout is not None
+            chunks = 0
+            total = 0
             while True:
                 chunk = await proc.stdout.read(CHUNK_SIZE)
                 if not chunk:
-                    log.info("ffmpeg ended (rc=%s)",
+                    log.info("ffmpeg ended after %d chunks/%d bytes (rc=%s)",
+                             chunks, total,
                              proc.returncode if proc.returncode is not None else "?")
                     return
-                # Bound the send so a wedged TCP path can't stall us forever.
-                await asyncio.wait_for(ws.send(chunk), timeout=SEND_TIMEOUT_SEC)
+                chunks += 1
+                total += len(chunk)
+                if chunks <= 3 or chunks % 200 == 0:
+                    log.info("ffmpeg pumped chunk #%d (%d bytes; running total %d)",
+                             chunks, len(chunk), total)
+                try:
+                    # Bound the send so a wedged TCP path can't stall us forever.
+                    await asyncio.wait_for(ws.send(chunk), timeout=SEND_TIMEOUT_SEC)
+                except Exception as exc:
+                    log.warning("ws.send failed at chunk #%d: %s: %s",
+                                chunks, type(exc).__name__, exc)
+                    raise
 
         pump = asyncio.create_task(_pump())
         try:
