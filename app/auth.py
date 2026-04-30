@@ -36,6 +36,13 @@ AUTH_COOKIE_NAME = "smarteye_session"
 # Secret key for signing cookies — generated once per process start
 _COOKIE_SECRET = os.getenv("COOKIE_SECRET", "").encode() or secrets.token_bytes(32)
 
+# Per-process internal token used by `dashboard_connector` (running in the same
+# process) to call the hub's own API on 127.0.0.1 without a session cookie.
+# The middleware accepts the bypass only when the request originates locally
+# AND carries this exact token, so it cannot be exercised from the LAN.
+INTERNAL_BYPASS_HEADER = "X-Connector-Internal"
+INTERNAL_BYPASS_TOKEN = secrets.token_urlsafe(32)
+
 # ── PAM authentication ────────────────────────────────────────────────────────
 
 def _load_libpam():
@@ -291,6 +298,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Allow public paths
         if _is_public_path(path):
+            return await call_next(request)
+
+        # Internal bypass: the in-process dashboard_connector passes our
+        # per-process token from a 127.0.0.1 connection. This is how the
+        # connector forwards dashboard-originated requests through to local
+        # API handlers without inventing a parallel auth path.
+        client_host = request.client.host if request.client else ""
+        if client_host in ("127.0.0.1", "::1") and \
+                request.headers.get(INTERNAL_BYPASS_HEADER) == INTERNAL_BYPASS_TOKEN:
+            request.state.user = "_connector_"
             return await call_next(request)
 
         # Check session cookie

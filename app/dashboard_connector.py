@@ -32,6 +32,7 @@ Persisted state lives in `${DATA_DIR}/dashboard_credentials.json`:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -47,6 +48,12 @@ import websockets
 import websockets.exceptions
 
 log = logging.getLogger("dashboard_connector")
+
+# Local API server the connector forwards dashboard requests to. The hub binds
+# its FastAPI app on 127.0.0.1:8000 by default in docker-compose; override with
+# CONNECTOR_LOCAL_API to test against a different bind.
+LOCAL_API_BASE = os.getenv("CONNECTOR_LOCAL_API", "http://127.0.0.1:8000").rstrip("/")
+RPC_REQUEST_TIMEOUT = 30.0
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -335,6 +342,175 @@ async def _stream_session(creds: dict[str, str]) -> None:
                 pass
 
 
+# ── RPC tunnel ────────────────────────────────────────────────────────────────
+#
+# A second outbound WebSocket to `{backend_url}/Device/Rpc` over which the
+# dashboard forwards hub-bound HTTP requests as JSON envelopes:
+#
+#   request : {"id", "method", "path", "headers"?, "body"?, "body_b64"?}
+#   response: {"id", "status", "headers"?, "body"?, "body_b64"?}
+#
+# We hit our own FastAPI app at 127.0.0.1 with the auth-bypass header so the
+# hub's existing routes serve us without us re-implementing every endpoint.
+
+def _local_request(method: str, path: str, headers: dict[str, str],
+                   body: Optional[bytes]) -> tuple[int, dict[str, str], bytes]:
+    """Issue a blocking HTTP call to the local hub. Returns (status, headers, body)."""
+    # Lazy import so a circular import (auth.py → ... → connector) is impossible.
+    from auth import INTERNAL_BYPASS_HEADER, INTERNAL_BYPASS_TOKEN
+
+    if not path.startswith("/"):
+        path = "/" + path
+    url = f"{LOCAL_API_BASE}{path}"
+
+    out_headers = {k: v for k, v in (headers or {}).items() if k.lower() not in
+                   {"host", "content-length", "transfer-encoding"}}
+    out_headers[INTERNAL_BYPASS_HEADER] = INTERNAL_BYPASS_TOKEN
+    out_headers.setdefault("User-Agent", "SmartEye-Connector/1.0")
+
+    req = urllib.request.Request(url, data=body, headers=out_headers,
+                                 method=method.upper())
+    try:
+        with urllib.request.urlopen(req, timeout=RPC_REQUEST_TIMEOUT) as resp:
+            data = resp.read()
+            resp_headers = {k: v for k, v in resp.headers.items()
+                            if k.lower() not in {"transfer-encoding", "connection"}}
+            return resp.status, resp_headers, data
+    except urllib.error.HTTPError as exc:
+        try:
+            data = exc.read() if exc.fp else b""
+        except Exception:
+            data = b""
+        resp_headers = dict(exc.headers.items()) if exc.headers else {}
+        return exc.code, resp_headers, data
+
+
+def _encode_body(data: bytes, content_type: str) -> dict[str, Any]:
+    """Pick text vs base64 based on Content-Type so JSON stays JSON over the wire."""
+    if not data:
+        return {"body": ""}
+    ct = (content_type or "").lower()
+    is_text = ct.startswith("text/") or "json" in ct or "xml" in ct or \
+              ct.startswith("application/javascript") or ct == ""
+    if is_text:
+        try:
+            return {"body": data.decode("utf-8")}
+        except UnicodeDecodeError:
+            pass
+    return {"body_b64": base64.b64encode(data).decode("ascii")}
+
+
+def _decode_body(envelope: dict[str, Any]) -> bytes:
+    if envelope.get("body_b64"):
+        return base64.b64decode(envelope["body_b64"])
+    body = envelope.get("body")
+    if isinstance(body, str):
+        return body.encode("utf-8")
+    return b""
+
+
+async def _handle_rpc_envelope(env: dict[str, Any]) -> dict[str, Any]:
+    req_id = env.get("id")
+    method = (env.get("method") or "GET").upper()
+    path = env.get("path") or "/"
+    headers = env.get("headers") or {}
+    body = _decode_body(env)
+
+    try:
+        status, resp_headers, resp_body = await asyncio.to_thread(
+            _local_request, method, path, headers, body if body else None
+        )
+        content_type = resp_headers.get("Content-Type") or resp_headers.get("content-type", "")
+        return {"id": req_id, "status": status, "headers": resp_headers,
+                **_encode_body(resp_body, content_type)}
+    except Exception as exc:
+        log.exception("RPC handler failed for %s %s", method, path)
+        return {"id": req_id, "status": 502,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"detail": f"connector error: {exc}"})}
+
+
+async def _rpc_session(creds: dict[str, str]) -> None:
+    """One full RPC WebSocket session: receive request envelopes, respond."""
+    ws_url = _backend_to_ws_url(creds["backend_url"], "/Device/Rpc")
+    headers = {
+        "X-Device-MAC": creds["mac_address"],
+        "X-Device-Password": creds["device_password"],
+    }
+
+    connect_kwargs = dict(ping_interval=10, ping_timeout=10, close_timeout=5,
+                          open_timeout=15, max_size=8 * 1024 * 1024)
+    try:
+        ws_ctx = websockets.connect(ws_url, additional_headers=headers,
+                                    **connect_kwargs)
+    except TypeError:
+        ws_ctx = websockets.connect(ws_url, extra_headers=headers,
+                                    **connect_kwargs)
+
+    async with ws_ctx as ws:
+        log.info("Dashboard RPC connected")
+        send_lock = asyncio.Lock()
+
+        async def _serve(env: dict[str, Any]) -> None:
+            response = await _handle_rpc_envelope(env)
+            payload = json.dumps(response)
+            async with send_lock:
+                await asyncio.wait_for(ws.send(payload), timeout=SEND_TIMEOUT_SEC)
+
+        async for raw in ws:
+            if isinstance(raw, bytes):
+                # We don't expect binary on the RPC channel.
+                continue
+            try:
+                env = json.loads(raw)
+            except (TypeError, ValueError):
+                log.warning("RPC: invalid JSON envelope, dropping")
+                continue
+            # Run each request in its own task so a slow handler doesn't block
+            # the receive loop or other concurrent requests.
+            asyncio.create_task(_serve(env))
+
+
+async def _rpc_loop(stop_event: asyncio.Event) -> None:
+    """Background loop that keeps the RPC WS connected with backoff."""
+    backoff = RECONNECT_MIN_SEC
+    while not stop_event.is_set():
+        creds = load_credentials()
+        if not creds or not creds.get("device_password"):
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=RECONNECT_MAX_SEC)
+            except asyncio.TimeoutError:
+                pass
+            continue
+
+        connected_ok = False
+        try:
+            await _rpc_session(creds)
+            connected_ok = True
+        except asyncio.CancelledError:
+            raise
+        except websockets.exceptions.InvalidStatusCode as exc:
+            log.warning("Dashboard RPC rejected: %s", exc)
+        except websockets.exceptions.ConnectionClosed as exc:
+            log.warning("Dashboard RPC closed: %s", exc)
+            connected_ok = True
+        except (OSError, asyncio.TimeoutError, websockets.exceptions.WebSocketException) as exc:
+            log.warning("Dashboard RPC connection failed: %s", exc)
+        except Exception:
+            log.exception("Unexpected error in dashboard RPC loop")
+
+        if connected_ok:
+            backoff = RECONNECT_MIN_SEC
+        else:
+            backoff = min(backoff * 2, RECONNECT_MAX_SEC)
+
+        log.info("Reconnecting RPC in %ds", backoff)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=backoff)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def _connector_loop(stop_event: asyncio.Event) -> None:
     backoff = RECONNECT_MIN_SEC
     while not stop_event.is_set():
@@ -404,7 +580,14 @@ def start_connector() -> None:
         def _run() -> None:
             asyncio.set_event_loop(loop)
             try:
-                loop.run_until_complete(_connector_loop(stop_event))
+                # Run the stream and RPC loops concurrently so a stall on one
+                # WebSocket doesn't block the other from delivering / serving.
+                async def _both() -> None:
+                    await asyncio.gather(
+                        _connector_loop(stop_event),
+                        _rpc_loop(stop_event),
+                    )
+                loop.run_until_complete(_both())
             except Exception:
                 log.exception("Dashboard connector loop crashed")
             finally:
