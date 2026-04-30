@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<script>(function(){var d=document.documentElement,m=matchMedia('(prefers-color-scheme:light)');function a(){var t=localStorage.getItem('theme')||'dark';d.setAttribute('data-theme',t==='system'?(m.matches?'light':'dark'):t)}a();m.addEventListener('change',a)})()</script>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Control</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png" />
+  <link rel="manifest" href="/static/site.webmanifest" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/control.css" />
+</head>
+
+<body class="controlPage">
+  <div class="wrap full">
+    <div class="topbar">
+      <div class="topbarLeft">
+        <img src="/static/smarteye-light.png" alt="SmartEye" class="topbarLogo">
+        <img src="/static/smarteye-dark.png" alt="SmartEye" class="topbarLogoDark">
+      </div>
+      <div class="topbarCenter">
+        <div class="tabs">
+          <a class="tab" href="/views"><span class="tabDot"></span>Views</a>
+          <a class="tab" href="/events"><span class="tabDot"></span>Events</a>
+          <a class="tab active" href="/control"><span class="tabDot"></span>Control</a>
+          <a class="tab" href="/flows"><span class="tabDot"></span>Flows</a>
+          <a class="tab" href="/settings"><span class="tabDot"></span>System</a>
+        </div>
+      </div>
+      <div class="topbarActions">
+        <button class="btn logoutBtn" id="logoutBtn" type="button" title="Sign out">Logout</button>
+      </div>
+    </div>
+
+    <div class="controlShell">
+      <header class="controlHeader">
+        <div class="controlHeaderText">
+          <h1>Control</h1>
+          <p class="muted" id="controlSub">Quick access to alarms, doors, and appliances.</p>
+        </div>
+        <div class="controlHeaderActions">
+          <button id="controlAddBtn" class="btn hidden" type="button">Add tile</button>
+          <button id="controlEditToggle" class="btn" type="button">Edit</button>
+        </div>
+      </header>
+
+      <section id="controlGrid" class="controlGrid"></section>
+
+      <div id="controlEmpty" class="controlEmpty hidden">
+        <div class="controlEmptyTitle">No tiles yet.</div>
+        <div class="controlEmptyText">Click <strong>Edit</strong> &rarr; <strong>Add tile</strong> to bind a control to a NOX area, public variable, or flow.</div>
+      </div>
+    </div>
+
+    <div id="tileModal" class="ctrlModal hidden" role="dialog" aria-modal="true" aria-labelledby="tileModalTitle">
+      <div class="ctrlModalBackdrop" data-modal-close></div>
+      <div class="ctrlModalCard">
+        <header class="ctrlModalHead">
+          <h2 id="tileModalTitle">New tile</h2>
+          <button class="ctrlModalClose" data-modal-close aria-label="Close" type="button">&times;</button>
+        </header>
+        <div class="ctrlModalBody" id="tileModalBody"></div>
+        <footer class="ctrlModalFoot">
+          <button class="btn btn-danger ctrlModalDelete hidden" id="tileDeleteBtn" type="button">Delete</button>
+          <span class="ctrlModalSpacer"></span>
+          <button class="btn" data-modal-close type="button">Cancel</button>
+          <button class="btn btn-primary" id="tileSaveBtn" type="button">Save</button>
+        </footer>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById("logoutBtn")?.addEventListener("click", async () => {
+      await fetch("/api/auth/logout", { method: "POST" });
+      window.location.href = "/login";
+    });
+  </script>
+  <script src="/static/event-notify.js"></script>
+  <script src="/static/control.js"></script>
+</body>
+
+</html>

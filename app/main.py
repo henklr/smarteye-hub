@@ -443,6 +443,70 @@ def events_page():
     return (STATIC_DIR / "events.html").read_text(encoding="utf-8")
 
 
+@app.get("/control", response_class=HTMLResponse)
+def control_page():
+    return (STATIC_DIR / "control.html").read_text(encoding="utf-8")
+
+
+CONTROLS_JSON = DATA_DIR / "controls.json"
+_VALID_CONTROL_KINDS = {"alarm_area", "door", "appliance"}
+
+
+def _load_controls() -> List[Dict[str, Any]]:
+    try:
+        payload = json.loads(CONTROLS_JSON.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    items = payload.get("items") if isinstance(payload, dict) else None
+    return list(items) if isinstance(items, list) else []
+
+
+def _save_controls(items: List[Dict[str, Any]]) -> None:
+    tmp = CONTROLS_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"items": items}, indent=2), encoding="utf-8")
+    tmp.replace(CONTROLS_JSON)
+
+
+def _normalize_control_item(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    kind = str(raw.get("kind") or "").strip().lower()
+    if kind not in _VALID_CONTROL_KINDS:
+        return None
+    label = str(raw.get("label") or "").strip()
+    if not label:
+        return None
+    binding = raw.get("binding") if isinstance(raw.get("binding"), dict) else {}
+    item_id = str(raw.get("id") or "").strip() or f"tile_{uuid.uuid4().hex[:10]}"
+    icon = str(raw.get("icon") or "").strip() or kind
+    return {"id": item_id, "kind": kind, "label": label, "icon": icon, "binding": binding}
+
+
+@app.get("/api/controls")
+def list_controls():
+    return {"items": _load_controls()}
+
+
+class ControlsIn(BaseModel):
+    items: List[Dict[str, Any]] = []
+
+
+@app.put("/api/controls")
+def save_controls(req: ControlsIn):
+    seen_ids: set = set()
+    out: List[Dict[str, Any]] = []
+    for raw in req.items or []:
+        item = _normalize_control_item(raw)
+        if item is None:
+            continue
+        if item["id"] in seen_ids:
+            item["id"] = f"tile_{uuid.uuid4().hex[:10]}"
+        seen_ids.add(item["id"])
+        out.append(item)
+    _save_controls(out)
+    return {"ok": True, "items": out}
+
+
 @app.post("/api/system/reboot")
 def system_reboot():
     _log_system.warning("System reboot initiated")
@@ -467,6 +531,7 @@ _DEFAULT_FILES = {
     "public_variables.json":  '{}',
     "events.json":            '{"items": []}',
     "scenarios.json":          '{"items": []}',
+    "controls.json":          '{"items": []}',
 }
 
 
