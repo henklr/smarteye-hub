@@ -262,17 +262,25 @@ async def _spawn_ffmpeg(camera_id: str) -> asyncio.subprocess.Process:
     cam_path = camera_id if str(camera_id).startswith("cam-") else f"cam-{camera_id}"
     rtsp_url = f"{MEDIAMTX_RTSP}/{cam_path}"
     log.info("Starting ffmpeg for %s", rtsp_url)
+    # ``-nostdin`` (and stdin=DEVNULL for belt-and-braces) stops ffmpeg from
+    # reading stdin to look for keystrokes like 'q'. Under Docker, uvicorn's
+    # stdin is /dev/null and ffmpeg interprets the immediate EOF as a clean
+    # quit before any packets are processed — the connector then sees rc=0
+    # plus "Output file is empty, nothing was encoded".
     return await asyncio.create_subprocess_exec(
         "ffmpeg",
+        "-nostdin",
         "-loglevel", "warning",
         "-rtsp_transport", "tcp",
         "-i", rtsp_url,
+        "-map", "0:v:0",
         "-c:v", "copy",
         "-an",
         "-f", "mp4",
         "-movflags",
         "frag_keyframe+empty_moov+default_base_moof+omit_tfhd_offset",
         "pipe:1",
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
