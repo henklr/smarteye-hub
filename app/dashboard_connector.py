@@ -264,7 +264,7 @@ async def _spawn_ffmpeg(camera_id: str) -> asyncio.subprocess.Process:
     log.info("Starting ffmpeg for %s", rtsp_url)
     return await asyncio.create_subprocess_exec(
         "ffmpeg",
-        "-loglevel", "error",
+        "-loglevel", "warning",
         "-rtsp_transport", "tcp",
         "-i", rtsp_url,
         "-c:v", "copy",
@@ -274,8 +274,26 @@ async def _spawn_ffmpeg(camera_id: str) -> asyncio.subprocess.Process:
         "frag_keyframe+empty_moov+default_base_moof+omit_tfhd_offset",
         "pipe:1",
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
     )
+
+
+async def _drain_ffmpeg_stderr(proc: asyncio.subprocess.Process) -> None:
+    """Stream ffmpeg's stderr to our log so failures aren't silent."""
+    if proc.stderr is None:
+        return
+    try:
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                return
+            text = line.decode("utf-8", errors="replace").rstrip()
+            if text:
+                log.warning("ffmpeg: %s", text)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        pass
 
 
 async def _stream_session(creds: dict[str, str]) -> None:
@@ -313,6 +331,10 @@ async def _stream_session(creds: dict[str, str]) -> None:
         log.info("Dashboard stream connected")
         proc = await _spawn_ffmpeg(camera_id)
 
+        # Drain ffmpeg's stderr in parallel so failures (rtsp errors, codec
+        # mismatches, etc.) surface in our log instead of dying silently.
+        stderr_task = asyncio.create_task(_drain_ffmpeg_stderr(proc))
+
         # A sentinel task that resolves the moment the peer closes the WS or
         # any protocol-level error occurs.  When it resolves, we cancel the
         # ffmpeg pump so the session tears down immediately instead of
@@ -332,7 +354,8 @@ async def _stream_session(creds: dict[str, str]) -> None:
             while True:
                 chunk = await proc.stdout.read(CHUNK_SIZE)
                 if not chunk:
-                    log.info("ffmpeg ended")
+                    log.info("ffmpeg ended (rc=%s)",
+                             proc.returncode if proc.returncode is not None else "?")
                     return
                 # Bound the send so a wedged TCP path can't stall us forever.
                 await asyncio.wait_for(ws.send(chunk), timeout=SEND_TIMEOUT_SEC)
@@ -351,7 +374,7 @@ async def _stream_session(creds: dict[str, str]) -> None:
                 if exc:
                     raise exc
         finally:
-            for t in (pump, closer):
+            for t in (pump, closer, stderr_task):
                 if not t.done():
                     t.cancel()
                     try:
