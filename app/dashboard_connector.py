@@ -73,6 +73,12 @@ log = logging.getLogger("dashboard_connector")
 # its FastAPI app on port 80 inside its container (see Dockerfile). Override
 # with CONNECTOR_LOCAL_API to test against a different bind.
 LOCAL_API_BASE = os.getenv("CONNECTOR_LOCAL_API", "http://127.0.0.1:80").rstrip("/")
+
+# mediamtx exposes HLS for each "cam-*" path on port 8888 by default; the
+# dashboard routes its multi-camera grid traffic through us under the
+# `/_hls/` prefix so we can forward it to mediamtx instead of the hub API.
+MEDIAMTX_HLS_BASE = os.getenv("CONNECTOR_MEDIAMTX_HLS", "http://mediamtx:8888").rstrip("/")
+HLS_PATH_PREFIX = "/_hls/"
 RPC_REQUEST_TIMEOUT = 30.0
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -474,17 +480,31 @@ async def _stream_session(creds: dict[str, str]) -> None:
 
 def _local_request(method: str, path: str, headers: dict[str, str],
                    body: Optional[bytes]) -> tuple[int, dict[str, str], bytes]:
-    """Issue a blocking HTTP call to the local hub. Returns (status, headers, body)."""
+    """Issue a blocking HTTP call to a local backend. Returns (status, headers, body).
+
+    Routing:
+      * paths under `/_hls/` go to mediamtx (no auth bypass header — mediamtx
+        has its own auth and doesn't speak our internal token).
+      * everything else goes to the hub's FastAPI app with the auth-bypass
+        header so the hub's own routes serve us.
+    """
     # Lazy import so a circular import (auth.py → ... → connector) is impossible.
     from auth import INTERNAL_BYPASS_HEADER, INTERNAL_BYPASS_TOKEN
 
     if not path.startswith("/"):
         path = "/" + path
-    url = f"{LOCAL_API_BASE}{path}"
+
+    is_hls = path.startswith(HLS_PATH_PREFIX)
+    if is_hls:
+        # /_hls/cam-aabbcc/index.m3u8  →  http://mediamtx:8888/cam-aabbcc/index.m3u8
+        url = f"{MEDIAMTX_HLS_BASE}/{path[len(HLS_PATH_PREFIX):].lstrip('/')}"
+    else:
+        url = f"{LOCAL_API_BASE}{path}"
 
     out_headers = {k: v for k, v in (headers or {}).items() if k.lower() not in
                    {"host", "content-length", "transfer-encoding"}}
-    out_headers[INTERNAL_BYPASS_HEADER] = INTERNAL_BYPASS_TOKEN
+    if not is_hls:
+        out_headers[INTERNAL_BYPASS_HEADER] = INTERNAL_BYPASS_TOKEN
     out_headers.setdefault("User-Agent", "SmartEye-Connector/1.0")
 
     req = urllib.request.Request(url, data=body, headers=out_headers,
