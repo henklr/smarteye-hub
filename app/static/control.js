@@ -1,7 +1,8 @@
 (() => {
   "use strict";
 
-  const POLL_INTERVAL_MS = 4000;
+  const POLL_INTERVAL_MS = 1500;
+  const POST_ACTION_REFRESH_DELAYS_MS = [200, 600, 1500];
 
   const state = {
     items: [],
@@ -354,7 +355,7 @@
       }
     } else if (door) {
       stateLabel = "Ready";
-      subState = `${door.target_kind} #${door.channel}`;
+      subState = door.flow_name ? `via ${door.flow_name}` : "";
     } else if (doorRef) {
       stateLabel = "Door missing";
       badge = "bad";
@@ -445,8 +446,11 @@
         else if (actionId === "appliance_off") await fireFlow(item.binding.off_flow_id);
         else if (actionId === "appliance_toggle") await fireFlow(item.binding.toggle_flow_id);
       }
-      // Live state polls quickly on its own; trigger an immediate refresh.
-      setTimeout(refreshLiveState, 350);
+      // Live state polls in the background; schedule a few quick refreshes
+      // so the UI catches up sooner than the regular poll cadence.
+      for (const delay of POST_ACTION_REFRESH_DELAYS_MS) {
+        setTimeout(refreshLiveState, delay);
+      }
     } catch (e) {
       state.tileErrors[item.id] = e.message || String(e);
     } finally {

@@ -523,13 +523,13 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "defaults": {"target_kind": "output", "channel": "1", "mode": "pulse", "pulse_seconds": 2, "name": ""},
     },
     {
-        "type": "action.door",
-        "category": "action",
+        "type": "trigger.door",
+        "category": "trigger",
         "label": "Door",
-        "description": "Defines a door: pulses an Automation HAT Mini output or relay to unlock. Listed on the Control page so a tile can fire it directly.",
-        "color": "#ff8c42",
-        "ports": {"inputs": ["in"], "outputs": ["out"]},
-        "defaults": {"name": "", "target_kind": "relay", "channel": "1", "pulse_seconds": 3},
+        "description": "Fires when the matching Door tile on the Control page is opened. Wire downstream nodes (relay pulse, NOX TIO, HTTP, audio, etc.) to define what the door actually does.",
+        "color": "#4f8cff",
+        "ports": {"inputs": [], "outputs": ["out"]},
+        "defaults": {"name": ""},
     },
     {
         "type": "action.nox_set_area_state",
@@ -938,8 +938,10 @@ def run_manual_flow(flow_id: str, req: FlowTestRequest) -> Dict[str, Any]:
 def list_doors() -> Dict[str, Any]:
     items: List[Dict[str, Any]] = []
     for flow in _load_flows():
+        if not flow.get("enabled", True):
+            continue
         for node in flow.get("nodes", []):
-            if node.get("type") != "action.door":
+            if node.get("type") != "trigger.door":
                 continue
             cfg = node.get("config") or {}
             name = str(cfg.get("name") or "").strip() or str(node.get("label") or "Door").strip()
@@ -949,9 +951,6 @@ def list_doors() -> Dict[str, Any]:
                 "node_id": node["id"],
                 "name": name,
                 "flow_name": flow.get("name"),
-                "target_kind": cfg.get("target_kind"),
-                "channel": cfg.get("channel"),
-                "pulse_seconds": cfg.get("pulse_seconds"),
             })
     items.sort(key=lambda d: (d["name"].lower(), d["flow_name"] or ""))
     return {"items": items}
@@ -970,13 +969,24 @@ def fire_door(req: DoorFireRequest) -> Dict[str, Any]:
     node = _node_by_id(flow, req.node_id)
     if node is None:
         raise HTTPException(status_code=404, detail="Door node not found")
-    if node.get("type") != "action.door":
+    if node.get("type") != "trigger.door":
         raise HTTPException(status_code=400, detail="Selected node is not a door")
 
-    context = {"flow": {"id": flow["id"], "name": flow.get("name")}}
-    result = _execute_node(node, "in", context)
-    if not result.get("ok", True):
-        raise HTTPException(status_code=502, detail=result.get("error") or "Door action failed")
+    door_name = str((node.get("config") or {}).get("name") or "").strip()
+    trigger = {
+        "kind": "door_pressed",
+        "flow_id": flow["id"],
+        "node_id": node["id"],
+        "door_name": door_name,
+    }
+    result = _run_flow_from_trigger(
+        flow,
+        trigger,
+        start_node_id=node["id"],
+        manual=True,
+        persist_runtime=True,
+        append_log=True,
+    )
     return {"ok": True, "result": result}
 
 
@@ -2052,21 +2062,10 @@ def _normalize_node_config(
             raise HTTPException(status_code=400, detail=f"{label} pulse_seconds must be greater than 0")
         return cfg
 
-    if node_type == "action.door":
+    if node_type == "trigger.door":
         cfg["name"] = str(cfg.get("name") or "").strip()
         if not cfg["name"]:
             raise HTTPException(status_code=400, detail="Door needs a name")
-        physical_kind = str(cfg.get("target_kind") or "relay").strip().lower()
-        if physical_kind not in {"output", "relay"}:
-            physical_kind = "relay"
-        cfg["target_kind"] = physical_kind
-        cfg["channel"] = _normalize_physical_channel(cfg.get("channel"), physical_kind)
-        try:
-            cfg["pulse_seconds"] = float(cfg.get("pulse_seconds") or 3)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Door pulse_seconds must be numeric")
-        if cfg["pulse_seconds"] <= 0:
-            raise HTTPException(status_code=400, detail="Door pulse_seconds must be greater than 0")
         return cfg
 
     if node_type == "action.record":
@@ -2734,6 +2733,12 @@ def _trigger_matches_node(node: Dict[str, Any], trigger: Dict[str, Any]) -> bool
     if node_type == "trigger.manual":
         return kind == "manual"
 
+    if node_type == "trigger.door":
+        return (
+            kind == "door_pressed"
+            and str(trigger.get("node_id") or "") == str(node["id"])
+        )
+
     if node_type == "trigger.schedule_active":
         return (
             kind == "schedule_active_changed"
@@ -3296,32 +3301,6 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
             result["ok"] = False
             result["error"] = str(exc)
             _log_flows.warning("Physical output action failed in flow: %s", exc)
-        result["next_handles"] = ["out"]
-        return result
-
-    if node_type == "action.door":
-        physical_kind = str(cfg.get("target_kind") or "relay").strip().lower()
-        if physical_kind not in {"output", "relay"}:
-            physical_kind = "relay"
-        channel = _normalize_physical_channel(cfg.get("channel"), physical_kind)
-        pulse_seconds = float(cfg.get("pulse_seconds") or 3)
-        door_name = str(cfg.get("name") or "").strip()
-        try:
-            switch_result = (
-                activate_physical_output(int(channel), "pulse", pulse_seconds)
-                if physical_kind == "output"
-                else activate_physical_relay(int(channel), "pulse", pulse_seconds)
-            )
-            result["door_name"] = door_name
-            result["channel"] = channel
-            result["pulse_seconds"] = pulse_seconds
-            result["target_kind"] = physical_kind
-            result[physical_kind] = switch_result
-            result["message"] = f"Opened door {door_name!r}" if door_name else "Door pulse sent"
-        except Exception as exc:
-            result["ok"] = False
-            result["error"] = str(exc)
-            _log_flows.warning("Door action failed in flow: %s", exc)
         result["next_handles"] = ["out"]
         return result
 
