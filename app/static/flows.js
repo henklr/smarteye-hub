@@ -2760,6 +2760,13 @@ function nodePreview(node) {
     case "action.activate_physical_relay":
       return `${physicalLabel("relay", cfg.channel || "1")} · ${cfg.mode || "pulse"}${cfg.mode === "pulse" ? ` for ${cfg.pulse_seconds || 0}s` : ""} · now ${physicalLiveValueText("relay", cfg.channel || "1")}`;
 
+    case "action.door": {
+      const targetKind = String(cfg.target_kind || "relay").trim().toLowerCase() === "output" ? "output" : "relay";
+      const channel = cfg.channel || "1";
+      const name = cfg.name ? `"${cfg.name}" · ` : "";
+      return `${name}${physicalLabel(targetKind, channel)} · pulse ${cfg.pulse_seconds || 0}s`;
+    }
+
     case "action.record": {
       const ids = recordDeviceIds(cfg);
       let label;
@@ -6946,6 +6953,41 @@ function renderNodeInspector(node) {
       });
       break;
 
+    case "action.door": {
+      const selectedKind = String(cfg.target_kind || "relay").trim().toLowerCase() === "output" ? "output" : "relay";
+      const selectedChannel = normalizePhysicalChannelSelection(selectedKind, cfg.channel || "1");
+      const channelOptions = selectedKind === "relay"
+        ? physicalRelayOptionsHtml(selectedChannel)
+        : physicalOutputOptionsHtml(selectedChannel);
+      const selectionLabel = selectedKind === "relay" ? "Relay" : "Output";
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Door</div>
+          <div class="inspectorHint">Pulses the configured relay/output to unlock. Listed by name on the Control page so a Door tile can fire it directly.</div>
+          <div class="fieldGrid">
+            <div class="full">
+              <label>Door name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="e.g. Front door" />
+            </div>
+            <div>
+              <label>Target type</label>
+              <select id="cfg_target_kind">${physicalTargetKindOptionsHtml(selectedKind)}</select>
+            </div>
+            <div>
+              <label>${escapeHtml(selectionLabel)}</label>
+              <select id="cfg_channel">${channelOptions}</select>
+            </div>
+            <div>
+              <label>Pulse seconds</label>
+              <input id="cfg_pulse_seconds" type="number" min="0.1" step="0.1" value="${escapeHtml(cfgValueOrDefault(cfg.pulse_seconds, 3))}" />
+            </div>
+            ${renderPhysicalLiveField(selectedKind, selectedChannel, selectedKind === "relay" ? "Current relay state" : "Current output state")}
+          </div>
+        </div>
+      `;
+      break;
+    }
+
     case "action.record":
       {
         const selectedPreset = recordingPresetByName(cfg.preset_name || cfg.name);
@@ -7253,6 +7295,13 @@ function bindNodeInspector(node) {
     });
   }
 
+  if (node.type === "action.door") {
+    document.getElementById("cfg_target_kind")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+  }
+
   if (node.type === "condition.compare") {
     for (const button of document.querySelectorAll("[data-trigger-path-insert]")) {
       button.addEventListener("click", () => {
@@ -7329,7 +7378,7 @@ function bindNodeInspector(node) {
     });
   }
 
-  if (["trigger.digital_input_changed", "trigger.analog_input_above", "trigger.analog_input_below", "trigger.physical_output_changed", "action.activate_physical_output", "action.activate_physical_relay"].includes(node.type)) {
+  if (["trigger.digital_input_changed", "trigger.analog_input_above", "trigger.analog_input_below", "trigger.physical_output_changed", "action.activate_physical_output", "action.activate_physical_relay", "action.door"].includes(node.type)) {
     document.getElementById("cfg_channel")?.addEventListener("change", () => {
       applyNodeInspector(node);
       renderInspector();
@@ -7604,6 +7653,12 @@ function applyNodeInspector(node) {
       set("target_kind");
       set("channel");
       set("mode");
+      set("pulse_seconds");
+      break;
+    case "action.door":
+      set("name");
+      set("target_kind");
+      set("channel");
       set("pulse_seconds");
       break;
     case "action.record":

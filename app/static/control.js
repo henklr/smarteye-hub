@@ -6,6 +6,7 @@
   const state = {
     items: [],
     flows: [],
+    doors: [],
     publicVariables: [],
     nox: { areas: [], tio_areas: [], configured: false },
     editing: false,
@@ -90,14 +91,19 @@
   }
 
   async function loadCatalog() {
-    const [flowsRes, varsRes, noxRes] = await Promise.allSettled([
+    const [flowsRes, doorsRes, varsRes, noxRes] = await Promise.allSettled([
       api("/api/flows"),
+      api("/api/doors"),
       api("/api/public-variables"),
       api("/api/nox/state"),
     ]);
 
     if (flowsRes.status === "fulfilled") {
       state.flows = (flowsRes.value?.items || []).map((f) => ({ id: f.id, name: f.name }));
+    }
+
+    if (doorsRes.status === "fulfilled") {
+      state.doors = doorsRes.value?.items || [];
     }
 
     if (varsRes.status === "fulfilled") {
@@ -325,9 +331,9 @@
 
   function liveDoor(item) {
     const areaId = item.binding?.area_id;
-    const flowId = item.binding?.open_flow_id;
-    const incomplete = !areaId && !flowId;
-    if (incomplete) {
+    const doorRef = item.binding?.door_ref;
+    const door = doorRef ? state.doors.find((d) => d.flow_id === doorRef.flow_id && d.node_id === doorRef.node_id) : null;
+    if (!areaId && !doorRef) {
       return { stateLabel: "Not configured", badge: "", actions: [], cssClass: "", incomplete: true };
     }
     let stateLabel = "Ready";
@@ -346,17 +352,24 @@
         stateLabel = state.nox.configured ? "No data" : "NOX offline";
         badge = "";
       }
-    } else {
+    } else if (door) {
       stateLabel = "Ready";
-      subState = "Triggers a flow";
+      subState = `${door.target_kind} #${door.channel}`;
+    } else if (doorRef) {
+      stateLabel = "Door missing";
+      badge = "bad";
+      subState = "Bound door no longer exists";
     }
+
+    const doorAvailable = !!door;
+    const incompleteForOpen = !doorAvailable;
     return {
       stateLabel,
       subState,
       badge,
       cssClass: badge === "on" ? "armed" : (badge === "bad" ? "alarm" : ""),
-      actions: flowId ? [{ id: "open_door", label: "Open", primary: true }] : [],
-      incomplete: !flowId,
+      actions: doorAvailable ? [{ id: "open_door", label: "Open", primary: true }] : [],
+      incomplete: incompleteForOpen,
     };
   }
 
@@ -425,7 +438,7 @@
         }
       } else if (item.kind === "door") {
         if (actionId === "open_door") {
-          await fireFlow(item.binding.open_flow_id);
+          await fireDoor(item.binding.door_ref);
         }
       } else if (item.kind === "appliance") {
         if (actionId === "appliance_on") await fireFlow(item.binding.on_flow_id);
@@ -448,6 +461,15 @@
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ trigger_payload: { source: "control_page" } }),
+    });
+  }
+
+  async function fireDoor(doorRef) {
+    if (!doorRef || !doorRef.flow_id || !doorRef.node_id) throw new Error("No door bound");
+    await api("/api/doors/fire", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ flow_id: doorRef.flow_id, node_id: doorRef.node_id }),
     });
   }
 
@@ -568,14 +590,17 @@
       ));
     } else if (currentEdit.kind === "door") {
       group.appendChild(buildField(
-        "NOX area for state (optional)",
-        buildNoxAreaSelect(currentEdit.binding.area_id, (v) => { currentEdit.binding.area_id = v; }, { allowEmpty: true }),
-        "Pick a NOX access-control area to display open/locked state. Leave empty for action-only tiles.",
+        "Door",
+        buildDoorSelect(currentEdit.binding.door_ref, (v) => { currentEdit.binding.door_ref = v; }),
+        state.doors.length === 0
+          ? "No Door nodes found. Add a Door node to a flow on the Flows page first."
+          : "Pulses the configured relay/output when Open is clicked.",
+        state.doors.length === 0 ? "warn" : null,
       ));
       group.appendChild(buildField(
-        "Open flow",
-        buildFlowSelect(currentEdit.binding.open_flow_id, (v) => { currentEdit.binding.open_flow_id = v; }),
-        "Manual trigger flow that opens the door (e.g. pulses a relay).",
+        "NOX area for state (optional)",
+        buildNoxAreaSelect(currentEdit.binding.area_id, (v) => { currentEdit.binding.area_id = v; }, { allowEmpty: true }),
+        "Pick a NOX access-control area to display open/locked state.",
       ));
     } else if (currentEdit.kind === "appliance") {
       group.appendChild(buildField(
@@ -642,6 +667,30 @@
     }
     if (currentValue && !state.flows.some((f) => f.id === currentValue)) {
       const orphan = el("option", { value: currentValue, text: `(missing flow ${currentValue})` });
+      orphan.setAttribute("selected", "");
+      sel.appendChild(orphan);
+    }
+    return sel;
+  }
+
+  function buildDoorSelect(currentValue, onChange) {
+    const sel = el("select", {
+      onchange: (e) => {
+        const v = e.target.value;
+        if (!v) return onChange(null);
+        const door = state.doors.find((d) => d.id === v);
+        onChange(door ? { flow_id: door.flow_id, node_id: door.node_id } : null);
+      },
+    });
+    sel.appendChild(el("option", { value: "", text: "— Select a door —" }));
+    const currentId = currentValue ? `${currentValue.flow_id}:${currentValue.node_id}` : "";
+    for (const d of state.doors) {
+      const opt = el("option", { value: d.id, text: `${d.name} (${d.flow_name})` });
+      if (currentId === d.id) opt.setAttribute("selected", "");
+      sel.appendChild(opt);
+    }
+    if (currentId && !state.doors.some((d) => d.id === currentId)) {
+      const orphan = el("option", { value: currentId, text: `(missing door ${currentId})` });
       orphan.setAttribute("selected", "");
       sel.appendChild(orphan);
     }
