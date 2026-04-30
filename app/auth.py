@@ -36,12 +36,18 @@ AUTH_COOKIE_NAME = "smarteye_session"
 # Secret key for signing cookies — generated once per process start
 _COOKIE_SECRET = os.getenv("COOKIE_SECRET", "").encode() or secrets.token_bytes(32)
 
-# Per-process internal token used by `dashboard_connector` (running in the same
-# process) to call the hub's own API on 127.0.0.1 without a session cookie.
-# The middleware accepts the bypass only when the request originates locally
-# AND carries this exact token, so it cannot be exercised from the LAN.
+# Internal token used by `dashboard_connector` to call the hub's own API on
+# 127.0.0.1 without a session cookie. The middleware accepts the bypass only
+# when the request originates locally AND carries this exact token, so it
+# cannot be exercised from the LAN.
+#
+# The container launches two uvicorn instances, so a per-process random
+# value would diverge between them and leave the connector hitting an
+# instance with a different token (→ 401). Derive deterministically from
+# COOKIE_SECRET, which the Dockerfile exports before forking either uvicorn,
+# so both processes end up with the same value.
 INTERNAL_BYPASS_HEADER = "X-Connector-Internal"
-INTERNAL_BYPASS_TOKEN = secrets.token_urlsafe(32)
+INTERNAL_BYPASS_TOKEN = hashlib.sha256(_COOKIE_SECRET + b"connector-internal-bypass").hexdigest()
 
 # ── PAM authentication ────────────────────────────────────────────────────────
 
