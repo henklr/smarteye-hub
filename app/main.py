@@ -446,7 +446,14 @@ def events_page():
 
 @app.get("/control", response_class=HTMLResponse)
 def control_page():
-    return (STATIC_DIR / "control.html").read_text(encoding="utf-8")
+    html = (STATIC_DIR / "control.html").read_text(encoding="utf-8")
+    # Cache-bust the page's own static assets on each deploy. Mtimes change
+    # whenever the files are edited, so the browser refetches them.
+    css_v = int((STATIC_DIR / "control.css").stat().st_mtime)
+    js_v = int((STATIC_DIR / "control.js").stat().st_mtime)
+    html = html.replace('href="/static/control.css"', f'href="/static/control.css?v={css_v}"')
+    html = html.replace('src="/static/control.js"', f'src="/static/control.js?v={js_v}"')
+    return html
 
 
 CONTROLS_JSON = DATA_DIR / "controls.json"
