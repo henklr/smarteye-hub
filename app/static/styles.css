@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --bg: #0a0a0a;
   --bg-elevated: #111111;
   --surface: rgba(255, 255, 255, 0.025);
@@ -543,6 +544,18 @@ select:focus {
   border-color: rgba(212, 170, 79, 0.45);
   box-shadow: 0 0 0 3px rgba(212, 170, 79, 0.08), var(--accent-glow);
   background: rgba(255, 255, 255, 0.04);
+}
+
+option {
+  background-color: #111111;
+  color: var(--text);
+}
+
+optgroup {
+  background-color: #0a0a0a;
+  color: var(--muted);
+  font-weight: 600;
+  font-style: normal;
 }
 
 input[type="checkbox"] {
@@ -2901,6 +2914,7 @@ body.settingsPage .topbar {
    ══════════════════════════════════════════════════════════════════════════════ */
 
 [data-theme="light"] {
+  color-scheme: light;
   --bg: #f4f4f5;
   --bg-elevated: #ffffff;
   --surface: rgba(0, 0, 0, 0.02);
@@ -2989,6 +3003,14 @@ body.settingsPage .topbar {
 }
 [data-theme="light"] input::placeholder {
   color: #b0b0b0;
+}
+[data-theme="light"] option {
+  background-color: #ffffff;
+  color: var(--text);
+}
+[data-theme="light"] optgroup {
+  background-color: #f4f4f5;
+  color: var(--muted);
 }
 
 /* ── Buttons ── */

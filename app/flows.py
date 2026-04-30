@@ -432,10 +432,10 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "type": "trigger.nox_alarm_changed",
         "category": "trigger",
         "label": "NOX alarm changed",
-        "description": "Starts when a NOX detector's alarm bit transitions (Modbus only).",
+        "description": "Starts when a NOX alarm bit transitions on a detector (input register bit 3) or area (area register bit 14).",
         "color": "#4f8cff",
         "ports": {"inputs": [], "outputs": ["out"]},
-        "defaults": {"module": "", "input": "", "alarm_state": "any", "name": ""},
+        "defaults": {"scope": "any", "module": "", "input": "", "area_id": "", "alarm_state": "any", "name": ""},
     },
     {
         "type": "trigger.nox_area_changed",
@@ -523,22 +523,13 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "defaults": {"target_kind": "output", "channel": "1", "mode": "pulse", "pulse_seconds": 2, "name": ""},
     },
     {
-        "type": "action.nox_arm_area",
+        "type": "action.nox_set_area_state",
         "category": "action",
-        "label": "Arm NOX area",
-        "description": "Arms a NOX area via Modbus (writes state code 5 to the area register).",
+        "label": "Set NOX area state",
+        "description": "Arms or disarms a NOX area via Modbus (FC16 write to the area register).",
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
-        "defaults": {"area_id": "", "name": ""},
-    },
-    {
-        "type": "action.nox_disarm_area",
-        "category": "action",
-        "label": "Disarm NOX area",
-        "description": "Disarms a NOX area via Modbus (writes state code 1 to the area register).",
-        "color": "#ff8c42",
-        "ports": {"inputs": ["in"], "outputs": ["out"]},
-        "defaults": {"area_id": "", "name": ""},
+        "defaults": {"area_id": "", "command": "arm", "name": ""},
     },
     {
         "type": "action.nox_ack_alarms",
@@ -548,6 +539,15 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "color": "#ff8c42",
         "ports": {"inputs": ["in"], "outputs": ["out"]},
         "defaults": {"name": ""},
+    },
+    {
+        "type": "action.nox_tio_send",
+        "category": "action",
+        "label": "Send NOX TIO message",
+        "description": "Sends a templated ASCII message to a NOX TIO virtual-input listener (TCP). Format is whatever NoxConfig expects.",
+        "color": "#ff8c42",
+        "ports": {"inputs": ["in"], "outputs": ["out"]},
+        "defaults": {"message": "", "name": ""},
     },
     {
         "type": "action.record",
@@ -643,6 +643,15 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
 NODE_LIBRARY_BY_TYPE = {item["type"]: item for item in NODE_LIBRARY}
 
 
+def _nox_catalog_safe() -> Dict[str, Any]:
+    try:
+        from nox_connector import nox_catalog
+        return nox_catalog()
+    except Exception as exc:
+        _log_flows.debug("NOX catalog unavailable: %s", exc)
+        return {"inputs": [], "areas": [], "configured": False}
+
+
 @router.get("/flows", response_class=HTMLResponse)
 def flows_page() -> HTMLResponse:
     return HTMLResponse((STATIC_DIR / "flows.html").read_text(encoding="utf-8"))
@@ -658,6 +667,7 @@ def flows_catalog() -> Dict[str, Any]:
         "audio_clips": _list_audio_clips(),
         "recording_presets": recording_presets,
         "physical_io": physical_io_catalog(),
+        "nox": _nox_catalog_safe(),
         "http_methods": sorted(_VALID_HTTP_METHODS),
         "operators": [
             {"value": "equals", "label": "Equals"},
@@ -2796,12 +2806,21 @@ def _trigger_matches_node(node: Dict[str, Any], trigger: Dict[str, Any]) -> bool
     if node_type == "trigger.nox_alarm_changed":
         if kind != "nox_alarm_changed":
             return False
-        cfg_module = str(cfg.get("module") or "").strip()
-        cfg_input = str(cfg.get("input") or "").strip()
-        if cfg_module and cfg_module != str(trigger.get("module") or ""):
+        cfg_scope = str(cfg.get("scope") or "any").strip().lower()
+        trig_scope = str(trigger.get("scope") or "input").strip().lower()
+        if cfg_scope != "any" and cfg_scope != trig_scope:
             return False
-        if cfg_input and cfg_input != str(trigger.get("input") or ""):
-            return False
+        if cfg_scope in ("input", "any"):
+            cfg_module = str(cfg.get("module") or "").strip()
+            cfg_input = str(cfg.get("input") or "").strip()
+            if cfg_module and trig_scope == "input" and cfg_module != str(trigger.get("module") or ""):
+                return False
+            if cfg_input and trig_scope == "input" and cfg_input != str(trigger.get("input") or ""):
+                return False
+        if cfg_scope in ("area", "any"):
+            cfg_area = str(cfg.get("area_id") or "").strip()
+            if cfg_area and trig_scope == "area" and cfg_area != str(trigger.get("area_id") or ""):
+                return False
         wanted = str(cfg.get("alarm_state") or "any").strip().lower()
         if wanted == "alarm":
             return bool(trigger.get("alarm"))
@@ -3208,7 +3227,8 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         result["next_handles"] = ["out"]
         return result
 
-    if node_type in {"action.nox_arm_area", "action.nox_disarm_area"}:
+    if node_type in {"action.nox_set_area_state", "action.nox_arm_area", "action.nox_disarm_area"}:
+        # Backwards compat: nox_arm_area / nox_disarm_area still routed here.
         try:
             area_id = int(str(cfg.get("area_id") or "").strip())
         except Exception:
@@ -3216,10 +3236,25 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
             result["error"] = "area_id is required"
             result["next_handles"] = ["out"]
             return result
+
+        if node_type == "action.nox_arm_area":
+            command = "arm"
+        elif node_type == "action.nox_disarm_area":
+            command = "disarm"
+        else:
+            command = str(cfg.get("command") or "arm").strip().lower()
+
+        if command not in {"arm", "disarm"}:
+            result["ok"] = False
+            result["error"] = f"Unknown command {command!r} (expected arm or disarm)"
+            result["next_handles"] = ["out"]
+            return result
+
         try:
             from nox_connector import arm_area as _nox_arm, disarm_area as _nox_disarm
-            outcome = _nox_arm(area_id) if node_type == "action.nox_arm_area" else _nox_disarm(area_id)
+            outcome = _nox_arm(area_id) if command == "arm" else _nox_disarm(area_id)
             result["area_id"] = area_id
+            result["command"] = command
             result["write_ok"] = bool(outcome.get("write_ok"))
             result["before"] = outcome.get("before")
             result["after"] = outcome.get("after")
@@ -3231,16 +3266,9 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
                     f"NOX rejected the write ({', '.join(flags)})"
                     if flags else "NOX silently dropped the write"
                 )
-                _log_flows.warning(
-                    "NOX %s area %d failed: %s",
-                    "arm" if node_type == "action.nox_arm_area" else "disarm",
-                    area_id, result["error"],
-                )
+                _log_flows.warning("NOX %s area %d failed: %s", command, area_id, result["error"])
             else:
-                result["message"] = (
-                    f"Armed area {area_id}" if node_type == "action.nox_arm_area"
-                    else f"Disarmed area {area_id}"
-                )
+                result["message"] = f"{'Armed' if command == 'arm' else 'Disarmed'} area {area_id}"
         except Exception as exc:
             result["ok"] = False
             result["error"] = str(exc)
@@ -3265,6 +3293,34 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
             _log_flows.warning("NOX ack action failed in flow: %s", exc)
         result["next_handles"] = ["out"]
         return result
+
+    if node_type == "action.nox_tio_send":
+        rendered = _render_template(str(cfg.get("message") or ""), context)
+        if not rendered.strip():
+            result["ok"] = False
+            result["error"] = "TIO message is empty"
+            result["next_handles"] = ["out"]
+            return result
+        try:
+            from nox_connector import tio_send as _nox_tio_send
+            outcome = _nox_tio_send(rendered)
+            result["sent_ok"] = bool(outcome.get("sent_ok"))
+            result["message_sent"] = rendered
+            result["target"] = f"{outcome.get('host')}:{outcome.get('port')}"
+            if not outcome.get("sent_ok"):
+                result["ok"] = False
+                result["error"] = outcome.get("error") or "TIO send failed"
+                _log_flows.warning("NOX TIO send failed: %s", result["error"])
+        except ValueError as exc:
+            result["ok"] = False
+            result["error"] = str(exc)
+        except Exception as exc:
+            result["ok"] = False
+            result["error"] = str(exc)
+            _log_flows.warning("NOX TIO send action failed in flow: %s", exc)
+        result["next_handles"] = ["out"]
+        return result
+
 
     if node_type == "action.log_message":
         result["message"] = _render_template(str(cfg.get("message") or ""), context)

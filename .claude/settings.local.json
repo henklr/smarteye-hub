@@ -8,7 +8,9 @@
       "Bash(python -m py_compile app/nox_connector.py)",
       "Bash(python -m py_compile app/flows.py)",
       "Bash(python -m py_compile app/main.py)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(node --check app/static/flows.js)",
+      "Bash(node --check app/static/settings.js)"
     ]
   }
 }

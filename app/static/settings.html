@@ -483,7 +483,7 @@
           <div class="listHeader compact" style="margin-top:18px;">
             <div>
               <div class="listTitle small">Test area write (Phase 2 verification)</div>
-              <div class="listSub">Writes via FC16 (the only documented NOX write FC). Reads back rapidly to capture transient failure bits if the panel rejects the write. Allowed codes: 1 (disarm), 5 (arm). Per doc, code 6 is auto-only and not user-writable.</div>
+              <div class="listSub">Writes via FC16 (the only documented NOX write FC). Reads back rapidly to capture transient failure bits if the panel rejects the write. Useful codes: 1 (disarm), 5 (arm) — codes 2/3/4 are transitional states the panel manages itself during an arm/disarm sequence; code 6 is auto-only.</div>
             </div>
           </div>
 
@@ -496,7 +496,6 @@
               <label for="noxWriteCode">Code to write</label>
               <select id="noxWriteCode">
                 <option value="1">1 — disarm (Frakoblet)</option>
-                <option value="2">2 — exit-time (Udgangstid) — try if 5 fails</option>
                 <option value="5">5 — arm (Tilkoblet)</option>
               </select>
             </div>
@@ -531,6 +530,20 @@
               <label for="noxTioPort">Listen port</label>
               <input id="noxTioPort" type="number" min="1" max="65535" value="9760" />
             </div>
+            <div data-full>
+              <label class="checkboxRow">
+                <input type="checkbox" id="noxTioSendEnabled" />
+                <span>Enable TIO outbound (send messages to a NOX TIO virtual-input listener)</span>
+              </label>
+            </div>
+            <div>
+              <label for="noxTioSendHost">Send target host</label>
+              <input id="noxTioSendHost" placeholder="172.16.0.80" />
+            </div>
+            <div>
+              <label for="noxTioSendPort">Send target port</label>
+              <input id="noxTioSendPort" type="number" min="1" max="65535" value="9761" />
+            </div>
           </div>
 
           <div class="row2" style="margin-top:14px;">
@@ -541,6 +554,49 @@
           <div class="statusLine compact" style="margin-top:12px;">
             <strong>Status:</strong>&nbsp;<span id="noxStatus" class="muted">Loading…</span>
           </div>
+
+          <div class="listHeader compact" style="margin-top:18px;">
+            <div>
+              <div class="listTitle small">Discovered TIO entities</div>
+              <div class="listSub">Inputs and areas that have pushed at least one message via TIO since the connector started. State updates live as messages arrive.</div>
+            </div>
+            <button class="btn btn-secondary" id="noxTioRefreshDiscoveredBtn" type="button">Refresh</button>
+          </div>
+
+          <div id="noxTioDiscovered" style="display:flex;flex-direction:column;gap:6px;margin-top:8px;font-size:12px;">
+            <div class="muted">No TIO messages received yet.</div>
+          </div>
+
+          <div class="listHeader compact" style="margin-top:18px;">
+            <div>
+              <div class="listTitle small">Recent TIO messages</div>
+              <div class="listSub">Last 100 parsed lines. Useful for verifying NoxConfig output formats and debugging.</div>
+            </div>
+          </div>
+
+          <div id="noxTioRecent" style="display:flex;flex-direction:column;gap:2px;margin-top:8px;font-family:ui-monospace,monospace;font-size:12px;max-height:240px;overflow-y:auto;">
+            <div class="muted">No messages yet.</div>
+          </div>
+
+          <div class="listHeader compact" style="margin-top:18px;">
+            <div>
+              <div class="listTitle small">Send TIO message (test)</div>
+              <div class="listSub">Sends a single ASCII line to the configured TIO send target. The exact format depends on the virtual-input definition in your NoxConfig.</div>
+            </div>
+          </div>
+
+          <div class="grid overlayFormGrid" style="margin-top:8px;">
+            <div data-full>
+              <label for="noxTioSendMessage">Message</label>
+              <input id="noxTioSendMessage" placeholder="e.g. CMD|RELEASE_DOOR|1" />
+            </div>
+          </div>
+
+          <div class="row2" style="margin-top:10px;">
+            <button class="btn btn-secondary" id="noxTioSendBtn" type="button">Send</button>
+          </div>
+
+          <div id="noxTioSendResult" class="muted" style="margin-top:8px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;"></div>
         </section>
 
         <section id="datetime" class="settingsCard">

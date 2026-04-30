@@ -2076,6 +2076,147 @@ function physicalRelayOptionsHtml(selected = "") {
   return physicalChannelOptionsHtml("relay", selected);
 }
 
+function noxInputs() {
+  return (state.catalog?.nox?.inputs) || [];
+}
+
+function noxAreas() {
+  return (state.catalog?.nox?.areas) || [];
+}
+
+function noxTioInputs() {
+  return (state.catalog?.nox?.tio_inputs) || [];
+}
+
+function noxTioAreas() {
+  return (state.catalog?.nox?.tio_areas) || [];
+}
+
+function noxTioInputOptionsHtml(selectedId = "") {
+  const value = selectedId == null ? "" : String(selectedId);
+  const blank = `<option value="" ${value === "" ? "selected" : ""}>— Any TIO input —</option>`;
+  const items = noxTioInputs().map(i => {
+    const v = String(i.id);
+    const label = `${i.label || `Input #${i.id}`}${i.state ? ` · ${i.state}` : ""}`;
+    return `<option value="${v}"${v === value ? " selected" : ""}>${escapeHtml(label)}</option>`;
+  }).join("");
+  return blank + items;
+}
+
+function noxTioAreaOptionsHtml(selectedId = "") {
+  const value = selectedId == null ? "" : String(selectedId);
+  const blank = `<option value="" ${value === "" ? "selected" : ""}>— Any TIO area —</option>`;
+  const items = noxTioAreas().map(a => {
+    const v = String(a.id);
+    const label = `${a.label || `Area #${a.id}`}${a.state ? ` · ${a.state}` : ""}`;
+    return `<option value="${v}"${v === value ? " selected" : ""}>${escapeHtml(label)}</option>`;
+  }).join("");
+  return blank + items;
+}
+
+function noxAnyAreaOptionsHtml(selectedId = "") {
+  // Combined dropdown for triggers: Modbus-configured areas + TIO-discovered
+  // ones (deduped by id). Used where the source can be either Modbus or TIO.
+  const value = selectedId == null ? "" : String(selectedId);
+  const blank = `<option value="" ${value === "" ? "selected" : ""}>— Any area —</option>`;
+
+  const seen = new Set();
+  const modbusEntries = [];
+  for (const a of noxAreas()) {
+    seen.add(String(a.area_id));
+    modbusEntries.push({
+      id: String(a.area_id),
+      label: `${a.label || `Area ${a.area_id}`} (#${a.area_id})${a.live?.state ? ` · ${a.live.state}` : ""}`,
+    });
+  }
+  const tioOnly = [];
+  for (const a of noxTioAreas()) {
+    if (seen.has(String(a.id))) continue;
+    tioOnly.push({
+      id: String(a.id),
+      label: `${a.label || `TIO Area #${a.id}`} (#${a.id})${a.state ? ` · ${a.state}` : ""}`,
+    });
+  }
+
+  const html = (entries) => entries.map(e =>
+    `<option value="${e.id}"${e.id === value ? " selected" : ""}>${escapeHtml(e.label)}</option>`
+  ).join("");
+
+  let groups = "";
+  if (modbusEntries.length) groups += `<optgroup label="Configured (Modbus)">${html(modbusEntries)}</optgroup>`;
+  if (tioOnly.length)       groups += `<optgroup label="TIO-discovered">${html(tioOnly)}</optgroup>`;
+  return blank + groups;
+}
+
+function noxInputOptionsHtml(selectedModule = "", selectedInput = "") {
+  const value = (selectedModule !== "" && selectedInput !== "" && selectedModule != null && selectedInput != null)
+    ? `${selectedModule}-${selectedInput}` : "";
+  const blank = `<option value="" ${value === "" ? "selected" : ""}>— Any input —</option>`;
+
+  // Group by module for readability when there are many inputs.
+  const groups = new Map();
+  for (const i of noxInputs()) {
+    const key = `Module ${i.module}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(i);
+  }
+  const groupHtml = Array.from(groups.entries()).map(([groupLabel, items]) => {
+    const opts = items.map(i => {
+      const v = `${i.module}-${i.input}`;
+      const labelText = i.label
+        ? `${i.label} — input ${i.input}`
+        : `Input ${i.input} (addr ${i.address})`;
+      return `<option value="${v}"${v === value ? " selected" : ""}>${escapeHtml(labelText)}</option>`;
+    }).join("");
+    return `<optgroup label="${escapeHtml(groupLabel)}">${opts}</optgroup>`;
+  }).join("");
+
+  return blank + groupHtml;
+}
+
+function noxAreaKindLabel(kind) {
+  switch (kind) {
+    case "intrusion": return "Intrusion areas (writable)";
+    case "virtual":   return "Virtual indicators (read-only)";
+    case "adk":       return "ADK / door areas (read-only)";
+    default:          return "Unknown / not yet polled";
+  }
+}
+
+function noxAreaOptionsHtml(selectedAreaId = "", { allowAny = true, writableOnly = false } = {}) {
+  const value = selectedAreaId === "" || selectedAreaId == null ? "" : String(selectedAreaId);
+  const blank = allowAny
+    ? `<option value="" ${value === "" ? "selected" : ""}>— Any area —</option>`
+    : `<option value="" ${value === "" ? "selected" : ""}>— Select area —</option>`;
+
+  // Group by kind so users immediately see which areas can actually be controlled.
+  const order = ["intrusion", "unknown", "virtual", "adk"];
+  const buckets = { intrusion: [], virtual: [], adk: [], unknown: [] };
+  for (const a of noxAreas()) {
+    buckets[a.kind || "unknown"].push(a);
+  }
+  const groupHtml = order
+    .filter(kind => buckets[kind].length)
+    .map(kind => {
+      const opts = buckets[kind].map(a => {
+        const v = String(a.area_id);
+        const stateBit = a.live && a.live.state ? ` · ${a.live.state}` : "";
+        const labelText = `${a.label || `Area ${a.area_id}`} (#${a.area_id}${stateBit})`;
+        const disabled = writableOnly && !a.writable ? " disabled" : "";
+        return `<option value="${v}"${v === value ? " selected" : ""}${disabled}>${escapeHtml(labelText)}</option>`;
+      }).join("");
+      return `<optgroup label="${escapeHtml(noxAreaKindLabel(kind))}">${opts}</optgroup>`;
+    }).join("");
+
+  return blank + groupHtml;
+}
+
+function noxSplitInputValue(value) {
+  if (!value || typeof value !== "string") return { module: "", input: "" };
+  const [m, i] = value.split("-");
+  return { module: m || "", input: i || "" };
+}
+
 function physicalTargetKindOptionsHtml(selected = "output") {
   return [
     ["output", "Output"],
@@ -6489,6 +6630,188 @@ function renderNodeInspector(node) {
       break;
     }
 
+    case "trigger.nox_input_changed": {
+      const matchBy = String(cfg.match_by || "modbus").trim().toLowerCase();
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">NOX input changed</div>
+          <div class="inspectorHint">Fires when a NOX detector input changes state.</div>
+          <div class="fieldGrid mt-10">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+            <div class="full">
+              <label>Source</label>
+              <select id="cfg_match_by">
+                <option value="modbus"${matchBy === "modbus" ? " selected" : ""}>Modbus poller (configured inputs)</option>
+                <option value="tio"${matchBy === "tio" ? " selected" : ""}>TIO ASCII push</option>
+              </select>
+            </div>
+            ${matchBy === "modbus" ? `
+              <div class="full">
+                <label>Input</label>
+                <select id="cfg_nox_input">${noxInputOptionsHtml(cfg.module, cfg.input)}</select>
+              </div>` : `
+              <div class="full">
+                <label>TIO input (auto-discovered)</label>
+                <select id="cfg_tio_id">${noxTioInputOptionsHtml(cfg.tio_id)}</select>
+              </div>`}
+          </div>
+        </div>
+      `;
+      break;
+    }
+
+    case "trigger.nox_alarm_changed": {
+      const scope = String(cfg.scope || "any").trim().toLowerCase();
+      const alarmState = String(cfg.alarm_state || "any").trim().toLowerCase();
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">NOX alarm changed</div>
+          <div class="inspectorHint">Fires when an alarm bit transitions on a detector or area. Modbus only exposes the alarm bit — not which alarm type from NoxConfig.</div>
+          <div class="fieldGrid mt-10">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+            <div class="full">
+              <label>Scope</label>
+              <select id="cfg_scope">
+                <option value="any"${scope === "any" ? " selected" : ""}>Any (input or area)</option>
+                <option value="input"${scope === "input" ? " selected" : ""}>Detector input</option>
+                <option value="area"${scope === "area" ? " selected" : ""}>Area</option>
+              </select>
+            </div>
+            ${scope === "area" ? `
+              <div class="full">
+                <label>Area</label>
+                <select id="cfg_area_id">${noxAnyAreaOptionsHtml(cfg.area_id)}</select>
+              </div>` : ""}
+            ${scope === "input" ? `
+              <div class="full">
+                <label>Input</label>
+                <select id="cfg_nox_input">${noxInputOptionsHtml(cfg.module, cfg.input)}</select>
+              </div>` : ""}
+            <div class="full">
+              <label>State</label>
+              <select id="cfg_alarm_state">
+                <option value="any"${alarmState === "any" ? " selected" : ""}>Any change</option>
+                <option value="alarm"${alarmState === "alarm" ? " selected" : ""}>Going into alarm</option>
+                <option value="clear"${alarmState === "clear" ? " selected" : ""}>Clearing alarm</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      `;
+      break;
+    }
+
+    case "trigger.nox_area_changed": {
+      const wantedState = String(cfg.state || "any").trim().toLowerCase();
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">NOX area changed</div>
+          <div class="inspectorHint">Fires when a NOX area's state code changes (Modbus poller or TIO push).</div>
+          <div class="fieldGrid mt-10">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+            <div class="full">
+              <label>Area</label>
+              <select id="cfg_area_id">${noxAnyAreaOptionsHtml(cfg.area_id)}</select>
+            </div>
+            <div class="full">
+              <label>Filter to state (optional)</label>
+              <select id="cfg_state">
+                <option value="any"${wantedState === "any" ? " selected" : ""}>Any change</option>
+                <option value="disarmed"${wantedState === "disarmed" ? " selected" : ""}>disarmed (Frakoblet)</option>
+                <option value="armed"${wantedState === "armed" ? " selected" : ""}>armed (Tilkoblet)</option>
+                <option value="partly_armed"${wantedState === "partly_armed" ? " selected" : ""}>partly_armed (Delvis tilkoblet)</option>
+                <option value="disarmed_exit"${wantedState === "disarmed_exit" ? " selected" : ""}>disarmed_exit (Udgangstid)</option>
+                <option value="disarmed_entry"${wantedState === "disarmed_entry" ? " selected" : ""}>disarmed_entry (Indgangstid)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      `;
+      break;
+    }
+
+    case "action.nox_set_area_state":
+    case "action.nox_arm_area":
+    case "action.nox_disarm_area": {
+      // Migrate legacy nodes silently for the UI: show as the unified node.
+      let command = String(cfg.command || "").trim().toLowerCase();
+      if (!command) {
+        if (node.type === "action.nox_arm_area") command = "arm";
+        else if (node.type === "action.nox_disarm_area") command = "disarm";
+        else command = "arm";
+      }
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Set NOX area state</div>
+          <div class="inspectorHint">Arm or disarm a NOX area via Modbus FC16. Per the NOX doc, only intrusion-type areas (state codes 0–6) accept writes — ADK doors and virtual indicators are shown disabled.</div>
+          <div class="fieldGrid mt-10">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+            <div class="full">
+              <label>Area</label>
+              <select id="cfg_area_id">${noxAreaOptionsHtml(cfg.area_id, { allowAny: false, writableOnly: true })}</select>
+            </div>
+            <div class="full">
+              <label>Command</label>
+              <select id="cfg_command">
+                <option value="arm"${command === "arm" ? " selected" : ""}>Arm (Tilkoblet)</option>
+                <option value="disarm"${command === "disarm" ? " selected" : ""}>Disarm (Frakoblet)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      `;
+      break;
+    }
+
+    case "action.nox_ack_alarms": {
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Acknowledge NOX alarms</div>
+          <div class="inspectorHint">Writes 1 to register 1000 (per NOX Modbus doc §1.8: ack all alarms that the panel allows to be acked).</div>
+          <div class="fieldGrid mt-10">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+          </div>
+        </div>
+      `;
+      break;
+    }
+
+    case "action.nox_tio_send": {
+      body = `
+        <div class="inspectorCard">
+          <div class="inspectorTitle">Send NOX TIO message</div>
+          <div class="inspectorHint">Sends a single ASCII line via TCP to the configured TIO send target. The format depends on your NoxConfig virtual-input definition. Templates supported (e.g. {{trigger.id}}).</div>
+          <div class="fieldGrid mt-10">
+            <div class="full">
+              <label>Name</label>
+              <input id="cfg_name" value="${escapeHtml(cfg.name || "")}" placeholder="Optional label" />
+            </div>
+            <div class="full">
+              <label>Message</label>
+              <input id="cfg_message" value="${escapeHtml(cfg.message || "")}" placeholder="e.g. CMD|RELEASE_DOOR|Garage" />
+            </div>
+          </div>
+        </div>
+      `;
+      break;
+    }
+
+
     case "condition.compare":
       const leftSource = cfg.left_source || "variable";
       const rightSource = cfg.right_source || "literal";
@@ -7013,6 +7336,30 @@ function bindNodeInspector(node) {
     });
   }
 
+  // NOX nodes: re-render inspector when scope/match_by change so the right
+  // sub-fields (input vs area) appear.
+  if (node.type === "trigger.nox_input_changed") {
+    document.getElementById("cfg_match_by")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+  }
+  if (node.type === "trigger.nox_alarm_changed") {
+    document.getElementById("cfg_scope")?.addEventListener("change", () => {
+      applyNodeInspector(node);
+      renderInspector();
+    });
+  }
+  if (["trigger.nox_input_changed", "trigger.nox_alarm_changed", "trigger.nox_area_changed",
+       "action.nox_set_area_state", "action.nox_arm_area", "action.nox_disarm_area"].includes(node.type)) {
+    ["cfg_nox_input", "cfg_area_id", "cfg_command"].forEach(id => {
+      document.getElementById(id)?.addEventListener("change", () => {
+        applyNodeInspector(node);
+        renderCanvas();
+      });
+    });
+  }
+
   if (node.type === "action.record") {
     document.getElementById("cfg_preset_name")?.addEventListener("change", (event) => {
       const selectedName = String(event.target?.value || "").trim();
@@ -7161,6 +7508,58 @@ function applyNodeInspector(node) {
       set("name");
       set("speaker_id");
       set("audio_type");
+      break;
+    case "trigger.nox_input_changed":
+      set("name");
+      set("match_by");
+      {
+        const inputSel = document.getElementById("cfg_nox_input");
+        if (inputSel) {
+          const { module, input } = noxSplitInputValue(inputSel.value);
+          cfg.module = module;
+          cfg.input = input;
+        }
+        const tioEl = document.getElementById("cfg_tio_id");
+        if (tioEl) cfg.tio_id = tioEl.value;
+      }
+      break;
+    case "trigger.nox_alarm_changed":
+      set("name");
+      set("scope");
+      set("alarm_state");
+      {
+        const inputSel = document.getElementById("cfg_nox_input");
+        if (inputSel) {
+          const { module, input } = noxSplitInputValue(inputSel.value);
+          cfg.module = module;
+          cfg.input = input;
+        }
+        const areaSel = document.getElementById("cfg_area_id");
+        if (areaSel) cfg.area_id = areaSel.value;
+      }
+      break;
+    case "trigger.nox_area_changed":
+      set("name");
+      set("area_id");
+      set("state");
+      break;
+    case "action.nox_set_area_state":
+    case "action.nox_arm_area":
+    case "action.nox_disarm_area":
+      set("name");
+      set("area_id");
+      set("command");
+      // Auto-migrate legacy types to the unified node so they stop accumulating.
+      if (node.type !== "action.nox_set_area_state") {
+        node.type = "action.nox_set_area_state";
+      }
+      break;
+    case "action.nox_ack_alarms":
+      set("name");
+      break;
+    case "action.nox_tio_send":
+      set("name");
+      set("message");
       break;
     case "condition.compare":
       set("name");

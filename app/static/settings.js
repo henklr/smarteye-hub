@@ -1524,6 +1524,9 @@ const noxModbusPollEl     = document.getElementById("noxModbusPoll");
 const noxTioEnabledEl     = document.getElementById("noxTioEnabled");
 const noxTioHostEl        = document.getElementById("noxTioHost");
 const noxTioPortEl        = document.getElementById("noxTioPort");
+const noxTioSendEnabledEl = document.getElementById("noxTioSendEnabled");
+const noxTioSendHostEl    = document.getElementById("noxTioSendHost");
+const noxTioSendPortEl    = document.getElementById("noxTioSendPort");
 const noxInputsListEl     = document.getElementById("noxInputsList");
 const noxInputsEmptyEl    = document.getElementById("noxInputsEmpty");
 const noxAddInputBtn      = document.getElementById("noxAddInputBtn");
@@ -1628,9 +1631,12 @@ function applyNoxConfig(cfg) {
   }));
 
   const tio = cfg.tio || {};
-  if (noxTioEnabledEl) noxTioEnabledEl.checked = !!tio.enabled;
-  if (noxTioHostEl)    noxTioHostEl.value = tio.listen_host || "0.0.0.0";
-  if (noxTioPortEl)    noxTioPortEl.value = tio.listen_port ?? 9760;
+  if (noxTioEnabledEl)     noxTioEnabledEl.checked = !!tio.enabled;
+  if (noxTioHostEl)        noxTioHostEl.value = tio.listen_host || "0.0.0.0";
+  if (noxTioPortEl)        noxTioPortEl.value = tio.listen_port ?? 9760;
+  if (noxTioSendEnabledEl) noxTioSendEnabledEl.checked = !!tio.send_enabled;
+  if (noxTioSendHostEl)    noxTioSendHostEl.value = tio.send_target_host || "";
+  if (noxTioSendPortEl)    noxTioSendPortEl.value = tio.send_target_port ?? 9761;
 
   renderNoxInputs();
   renderNoxAreas();
@@ -1725,6 +1731,9 @@ function collectNoxConfig() {
       enabled: !!noxTioEnabledEl?.checked,
       listen_host: (noxTioHostEl?.value || "0.0.0.0").trim(),
       listen_port: Number(noxTioPortEl?.value) || 9760,
+      send_enabled: !!noxTioSendEnabledEl?.checked,
+      send_target_host: (noxTioSendHostEl?.value || "").trim(),
+      send_target_port: Number(noxTioSendPortEl?.value) || 9761,
     },
   };
 }
@@ -1754,6 +1763,144 @@ noxSaveBtn?.addEventListener("click", async () => {
 });
 
 noxRefreshBtn?.addEventListener("click", loadNoxState);
+
+// ── TIO discovered entities + recent messages ────────────────────────────────
+
+const noxTioDiscoveredEl  = document.getElementById("noxTioDiscovered");
+const noxTioRecentEl      = document.getElementById("noxTioRecent");
+const noxTioRefreshDiscoveredBtn = document.getElementById("noxTioRefreshDiscoveredBtn");
+
+function renderTioDiscovered(state) {
+  if (!noxTioDiscoveredEl) return;
+  noxTioDiscoveredEl.innerHTML = "";
+  const tio = state?.tio || {};
+  const inputs = Object.values(tio.inputs || {});
+  const areas = Object.values(tio.areas || {});
+
+  if (!inputs.length && !areas.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "No TIO messages received yet.";
+    noxTioDiscoveredEl.appendChild(empty);
+    return;
+  }
+
+  if (areas.length) {
+    const heading = document.createElement("div");
+    heading.style.cssText = "font-weight:600;margin-top:4px;";
+    heading.textContent = `Areas (${areas.length})`;
+    noxTioDiscoveredEl.appendChild(heading);
+    areas.sort((a, b) => Number(a.id) - Number(b.id) || (a.label || "").localeCompare(b.label || ""));
+    for (const a of areas) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:grid;grid-template-columns:60px 1fr 120px 1fr;gap:8px;";
+      row.append(
+        Object.assign(document.createElement("span"), { textContent: `#${a.id}`, className: "muted" }),
+        Object.assign(document.createElement("span"), { textContent: a.label || "—" }),
+        Object.assign(document.createElement("span"), { textContent: a.state || "—" }),
+        Object.assign(document.createElement("span"), { textContent: a.last_seen || "", className: "muted" }),
+      );
+      noxTioDiscoveredEl.appendChild(row);
+    }
+  }
+
+  if (inputs.length) {
+    const heading = document.createElement("div");
+    heading.style.cssText = "font-weight:600;margin-top:8px;";
+    heading.textContent = `Inputs (${inputs.length})`;
+    noxTioDiscoveredEl.appendChild(heading);
+    inputs.sort((a, b) => Number(a.id) - Number(b.id) || (a.label || "").localeCompare(b.label || ""));
+    for (const i of inputs) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:grid;grid-template-columns:60px 1fr 120px 1fr;gap:8px;";
+      row.append(
+        Object.assign(document.createElement("span"), { textContent: `#${i.id}`, className: "muted" }),
+        Object.assign(document.createElement("span"), { textContent: (i.label || "—") + (i.module_input ? ` (${i.module_input})` : "") }),
+        Object.assign(document.createElement("span"), { textContent: i.state || "—" }),
+        Object.assign(document.createElement("span"), { textContent: i.last_seen || "", className: "muted" }),
+      );
+      noxTioDiscoveredEl.appendChild(row);
+    }
+  }
+}
+
+function renderTioRecent(state) {
+  if (!noxTioRecentEl) return;
+  const recent = state?.tio?.recent_messages || [];
+  noxTioRecentEl.innerHTML = "";
+  if (!recent.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "No messages yet.";
+    noxTioRecentEl.appendChild(empty);
+    return;
+  }
+  // Newest first
+  for (const msg of recent.slice().reverse()) {
+    const row = document.createElement("div");
+    const ts = msg.ts || "";
+    const tsShort = ts ? ts.slice(11, 19) : "—";
+    const type = msg.type || "?";
+    row.textContent = `${tsShort}  [${type.padEnd(5)}]  ${msg.raw || ""}`;
+    if (type === "unknown") row.style.color = "var(--clr-warning, #f39c12)";
+    noxTioRecentEl.appendChild(row);
+  }
+}
+
+noxTioRefreshDiscoveredBtn?.addEventListener("click", loadNoxState);
+
+// Hook into existing applyNoxState by calling our renderers whenever state updates.
+const _origApplyNoxState = applyNoxState;
+applyNoxState = function(state) {
+  _origApplyNoxState(state);
+  renderTioDiscovered(state);
+  renderTioRecent(state);
+};
+
+// ── TIO send test ────────────────────────────────────────────────────────────
+
+const noxTioSendMessageEl = document.getElementById("noxTioSendMessage");
+const noxTioSendBtn       = document.getElementById("noxTioSendBtn");
+const noxTioSendResult    = document.getElementById("noxTioSendResult");
+
+noxTioSendBtn?.addEventListener("click", async () => {
+  const message = (noxTioSendMessageEl?.value || "").trim();
+  if (!message) {
+    if (noxTioSendResult) noxTioSendResult.textContent = "Enter a message to send.";
+    return;
+  }
+  const targetHost = (noxTioSendHostEl?.value || "").trim();
+  if (!targetHost) {
+    if (noxTioSendResult) noxTioSendResult.textContent = "Enter a TIO send target host first.";
+    return;
+  }
+  if (!confirm(`Send to ${targetHost}:${noxTioSendPortEl?.value || 9761}:\n\n${message}`)) return;
+
+  noxTioSendBtn.disabled = true;
+  if (noxTioSendResult) noxTioSendResult.textContent = "Sending…";
+  try {
+    const data = await api("/api/nox/tio/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        host: targetHost,
+        port: Number(noxTioSendPortEl?.value) || 9761,
+      }),
+    });
+    const lines = [
+      `→ ${data.host}:${data.port}`,
+      `   ${data.message}`,
+      `sent_ok: ${data.sent_ok}`,
+    ];
+    if (data.error) lines.push(`error:   ${data.error}`);
+    if (noxTioSendResult) noxTioSendResult.textContent = lines.join("\n");
+  } catch (e) {
+    if (noxTioSendResult) noxTioSendResult.textContent = `Error: ${e.message || e}`;
+  } finally {
+    noxTioSendBtn.disabled = false;
+  }
+});
 
 const noxAckAllBtn = document.getElementById("noxAckAllBtn");
 noxAckAllBtn?.addEventListener("click", async () => {

@@ -58,6 +58,9 @@ DEFAULT_MODBUS_UNIT = 1
 DEFAULT_MODBUS_POLL_SEC = 1.0
 DEFAULT_TIO_LISTEN_HOST = "0.0.0.0"
 DEFAULT_TIO_LISTEN_PORT = 9760
+DEFAULT_TIO_SEND_PORT = 9761          # used as a default if user enables send without specifying
+TIO_RECENT_MESSAGE_LIMIT = 100         # ring buffer size for diagnostics
+TIO_SEND_TIMEOUT_SEC = 3.0
 RECONNECT_BACKOFF_MIN = 2.0
 RECONNECT_BACKOFF_MAX = 30.0
 
@@ -170,11 +173,16 @@ _state: Dict[str, Any] = {
         "listening": False,
         "listen_host": DEFAULT_TIO_LISTEN_HOST,
         "listen_port": DEFAULT_TIO_LISTEN_PORT,
+        "send_target_host": "",
+        "send_target_port": 0,
         "last_message_at": None,
         "last_message": None,
+        "last_send_at": None,
+        "last_send": None,
         "error": None,
-        "inputs": {},   # id -> last frame
-        "areas": {},    # id -> last frame
+        "inputs": {},          # id -> {label, state, last_seen, raw, module_input, count}
+        "areas": {},           # id -> {label, state, flags, last_seen, raw, count}
+        "recent_messages": [], # bounded ring buffer of last RECENT_MESSAGE_LIMIT parsed frames
     },
 }
 
@@ -220,6 +228,9 @@ def _default_config() -> Dict[str, Any]:
             "enabled": False,
             "listen_host": DEFAULT_TIO_LISTEN_HOST,
             "listen_port": DEFAULT_TIO_LISTEN_PORT,
+            "send_enabled": False,
+            "send_target_host": "",
+            "send_target_port": DEFAULT_TIO_SEND_PORT,
         },
     }
 
@@ -293,6 +304,12 @@ def _validate_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         tio["listen_port"] = int(raw_tio.get("listen_port") or DEFAULT_TIO_LISTEN_PORT)
     except Exception:
         tio["listen_port"] = DEFAULT_TIO_LISTEN_PORT
+    tio["send_enabled"] = bool(raw_tio.get("send_enabled", False))
+    tio["send_target_host"] = str(raw_tio.get("send_target_host") or "").strip()
+    try:
+        tio["send_target_port"] = int(raw_tio.get("send_target_port") or DEFAULT_TIO_SEND_PORT)
+    except Exception:
+        tio["send_target_port"] = DEFAULT_TIO_SEND_PORT
 
     return base
 
@@ -327,6 +344,119 @@ def save_nox_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
 def nox_state() -> Dict[str, Any]:
     with _state_lock:
         return deepcopy(_state)
+
+
+def _classify_area_kind(state_code: Optional[int]) -> str:
+    """Categorise an area by its last-seen state code.
+
+    - "intrusion"   : codes 0-6 — user-writable to 1 (disarm) or 5 (arm)
+    - "virtual"     : codes 7-8 — virtual indicator (not user-writable)
+    - "adk"         : codes 9-15 — door / access-control (not state-writable)
+    - "unknown"     : we haven't seen a state yet
+    """
+    if state_code is None:
+        return "unknown"
+    if 0 <= state_code <= 6:
+        return "intrusion"
+    if state_code in (7, 8):
+        return "virtual"
+    return "adk"
+
+
+def nox_catalog() -> Dict[str, Any]:
+    """Return configured NOX inputs and areas for use in flow node UIs.
+
+    Each input/area entry includes the most recent live state (from the poller
+    snapshot) so the UI can categorise writable vs read-only areas without
+    needing a separate API call.
+    """
+    cfg = load_nox_config()
+    mb = cfg.get("modbus") or {}
+
+    # Snapshot live state once for the join below.
+    snap = nox_state()
+    snap_inputs = {
+        (e.get("module"), e.get("input")): e
+        for e in (snap.get("modbus") or {}).get("inputs") or []
+    }
+    snap_areas = {
+        e.get("area_id"): e
+        for e in (snap.get("modbus") or {}).get("areas") or []
+    }
+
+    inputs: List[Dict[str, Any]] = []
+    for entry in mb.get("inputs") or []:
+        try:
+            module = int(entry.get("module"))
+            input_idx = int(entry.get("input"))
+        except Exception:
+            continue
+        live = snap_inputs.get((module, input_idx)) or {}
+        inputs.append({
+            "module": module,
+            "input": input_idx,
+            "address": _modbus_register_address(module, input_idx),
+            "label": str(entry.get("label") or "").strip(),
+            "live": {
+                "raw": live.get("raw"),
+                "flags": live.get("flags") or {},
+                "updated_at": live.get("updated_at"),
+            },
+        })
+
+    areas: List[Dict[str, Any]] = []
+    for entry in mb.get("areas") or []:
+        try:
+            area_id = int(entry.get("area_id"))
+        except Exception:
+            continue
+        live = snap_areas.get(area_id) or {}
+        code = live.get("code")
+        kind = _classify_area_kind(code if isinstance(code, int) else None)
+        areas.append({
+            "area_id": area_id,
+            "address": area_id,
+            "label": str(entry.get("label") or "").strip(),
+            "kind": kind,
+            "writable": kind == "intrusion",
+            "live": {
+                "raw": live.get("raw"),
+                "code": code,
+                "state": live.get("state"),
+                "alarm_active": live.get("alarm_active"),
+                "updated_at": live.get("updated_at"),
+            },
+        })
+    # TIO-discovered entities — these may exist even when no Modbus inputs are
+    # configured. They're populated as messages arrive from the panel.
+    tio_inputs: List[Dict[str, Any]] = []
+    tio_areas: List[Dict[str, Any]] = []
+    tio_state = (snap.get("tio") or {})
+    for tid, info in (tio_state.get("inputs") or {}).items():
+        tio_inputs.append({
+            "id": tid,
+            "label": info.get("label") or "",
+            "state": info.get("state"),
+            "module_input": info.get("module_input"),
+            "last_seen": info.get("last_seen"),
+        })
+    for tid, info in (tio_state.get("areas") or {}).items():
+        tio_areas.append({
+            "id": tid,
+            "label": info.get("label") or "",
+            "state": info.get("state"),
+            "last_seen": info.get("last_seen"),
+        })
+    tio_inputs.sort(key=lambda e: int(e["id"]) if str(e["id"]).isdigit() else 999999)
+    tio_areas.sort(key=lambda e: int(e["id"]) if str(e["id"]).isdigit() else 999999)
+
+    return {
+        "inputs": inputs,
+        "areas": areas,
+        "tio_inputs": tio_inputs,
+        "tio_areas": tio_areas,
+        "configured": bool(cfg.get("enabled")) and (bool(inputs) or bool(areas) or bool(tio_inputs) or bool(tio_areas)),
+    }
 
 
 # ── Modbus polling ─────────────────────────────────────────────────────────────
@@ -398,8 +528,9 @@ def _modbus_loop(cfg_modbus: Dict[str, Any]) -> None:
 
     previous: Dict[int, int] = {}      # address -> last raw value
     previous_flags: Dict[int, Dict[str, bool]] = {}
-    previous_area: Dict[int, int] = {}        # area_id -> last raw
-    previous_area_state: Dict[int, str] = {}  # area_id -> last state name
+    previous_area: Dict[int, int] = {}             # area_id -> last raw
+    previous_area_state: Dict[int, str] = {}       # area_id -> last state name
+    previous_area_alarm: Dict[int, bool] = {}      # area_id -> last alarm_active flag
     backoff = RECONNECT_BACKOFF_MIN
     client: Optional[Any] = None
 
@@ -474,6 +605,7 @@ def _modbus_loop(cfg_modbus: Dict[str, Any]) -> None:
                         _safe_dispatch({
                             "kind": "nox_alarm_changed",
                             "source": "modbus",
+                            "scope": "input",
                             "module": entry["module"],
                             "input": entry["input"],
                             "address": addr,
@@ -482,6 +614,7 @@ def _modbus_loop(cfg_modbus: Dict[str, Any]) -> None:
                             "previous_alarm": prev_flags.get("alarm"),
                             "ts": ts,
                             "extra": {
+                                "scope": "input",
                                 "module": entry["module"],
                                 "input": entry["input"],
                                 "alarm": flags["alarm"],
@@ -522,8 +655,10 @@ def _modbus_loop(cfg_modbus: Dict[str, Any]) -> None:
 
                 prev_raw = previous_area.get(area_id)
                 prev_state = previous_area_state.get(area_id)
+                prev_alarm = previous_area_alarm.get(area_id)
+                cur_alarm = bool(decoded.get("alarm_active"))
 
-                if prev_raw is not None and prev_raw != raw:
+                if prev_state is not None and prev_state != decoded["state"]:
                     _safe_dispatch({
                         "kind": "nox_area_changed",
                         "source": "modbus",
@@ -535,17 +670,43 @@ def _modbus_loop(cfg_modbus: Dict[str, Any]) -> None:
                         "code": decoded["code"],
                         "state": decoded["state"],
                         "previous_state": prev_state,
+                        "alarm_active": cur_alarm,
                         "ts": ts,
                         "extra": {
                             "area_id": area_id,
                             "raw": raw,
                             "state": decoded["state"],
                             "code": decoded["code"],
+                            "alarm_active": cur_alarm,
+                        },
+                    })
+
+                # Independent alarm-bit (14) tracking: this can flip without the
+                # state code changing — e.g. an area enters alarm while armed.
+                if prev_alarm is not None and prev_alarm != cur_alarm:
+                    _safe_dispatch({
+                        "kind": "nox_alarm_changed",
+                        "source": "modbus_area",
+                        "scope": "area",
+                        "id": str(area_id),
+                        "area_id": area_id,
+                        "label": area_entry["label"],
+                        "alarm": cur_alarm,
+                        "previous_alarm": prev_alarm,
+                        "state": decoded["state"],
+                        "raw": raw,
+                        "ts": ts,
+                        "extra": {
+                            "scope": "area",
+                            "area_id": area_id,
+                            "alarm": cur_alarm,
+                            "state": decoded["state"],
                         },
                     })
 
                 previous_area[area_id] = raw
                 previous_area_state[area_id] = decoded["state"]
+                previous_area_alarm[area_id] = cur_alarm
 
             _set_modbus_areas(updated_areas)
             area_entries = updated_areas
@@ -584,11 +745,55 @@ def _set_tio_runtime(**fields) -> None:
         _state["tio"].update(fields)
 
 
-def _record_tio_frame(category: str, frame_id: str, payload: Dict[str, Any]) -> None:
+def _record_tio_input(frame_id: str, payload: Dict[str, Any], ts: str) -> Tuple[Optional[str], Optional[str]]:
+    """Upsert a TIO input entity. Returns (previous_state, current_state) for change detection."""
     with _state_lock:
-        bucket = _state["tio"].get(category)
-        if isinstance(bucket, dict):
-            bucket[frame_id] = payload
+        bucket = _state["tio"].setdefault("inputs", {})
+        existing = bucket.get(frame_id) or {}
+        prev_state = existing.get("state")
+        cur_state = payload.get("state")
+        bucket[frame_id] = {
+            "id": frame_id,
+            "label": payload.get("description") or existing.get("label") or "",
+            "module_input": payload.get("module_input") or existing.get("module_input") or "",
+            "state": cur_state,
+            "previous_state": prev_state,
+            "raw": payload.get("raw"),
+            "first_seen": existing.get("first_seen") or ts,
+            "last_seen": ts,
+            "count": int(existing.get("count") or 0) + 1,
+        }
+    return prev_state, cur_state
+
+
+def _record_tio_area(frame_id: str, payload: Dict[str, Any], ts: str) -> Tuple[Optional[str], Optional[str]]:
+    with _state_lock:
+        bucket = _state["tio"].setdefault("areas", {})
+        existing = bucket.get(frame_id) or {}
+        prev_state = existing.get("state")
+        cur_state = payload.get("state")
+        bucket[frame_id] = {
+            "id": frame_id,
+            "label": payload.get("name") or existing.get("label") or "",
+            "state": cur_state,
+            "previous_state": prev_state,
+            "flags": payload.get("flags"),
+            "raw": payload.get("raw"),
+            "first_seen": existing.get("first_seen") or ts,
+            "last_seen": ts,
+            "count": int(existing.get("count") or 0) + 1,
+        }
+    return prev_state, cur_state
+
+
+def _record_tio_recent(payload: Dict[str, Any]) -> None:
+    """Append to the bounded ring buffer of recent messages (newest last)."""
+    with _state_lock:
+        buf = _state["tio"].setdefault("recent_messages", [])
+        buf.append(payload)
+        excess = len(buf) - TIO_RECENT_MESSAGE_LIMIT
+        if excess > 0:
+            del buf[:excess]
 
 
 def _parse_tio_message(line: str) -> Optional[Dict[str, Any]]:
@@ -664,38 +869,49 @@ def _handle_tio_client(conn: socket.socket, addr: Tuple[str, int]) -> None:
 
                 ts = _utc_now_iso()
                 parsed["ts"] = ts
+                parsed["from"] = f"{addr[0]}:{addr[1]}"
                 _set_tio_runtime(last_message_at=ts, last_message=parsed)
+                _record_tio_recent(parsed)
 
                 if parsed["type"] == "input":
-                    _record_tio_frame("inputs", parsed["id"] or parsed["raw"], parsed)
+                    frame_id = parsed["id"] or parsed["raw"]
+                    prev_state, cur_state = _record_tio_input(frame_id, parsed, ts)
+                    # Always dispatch (even if state didn't change) — it's an explicit
+                    # status push from the panel and downstream flows can choose to
+                    # filter on previous_state vs state.
                     _safe_dispatch({
                         "kind": "nox_input_changed",
                         "source": "tio",
                         "id": parsed["id"],
                         "module_input": parsed.get("module_input"),
                         "label": parsed.get("description"),
-                        "state": parsed.get("state"),
+                        "state": cur_state,
+                        "previous_state": prev_state,
                         "ts": ts,
                         "extra": {
                             "id": parsed["id"],
                             "module_input": parsed.get("module_input"),
-                            "state": parsed.get("state"),
+                            "state": cur_state,
+                            "previous_state": prev_state,
                         },
                     })
                 elif parsed["type"] == "area":
-                    _record_tio_frame("areas", parsed["id"] or parsed["raw"], parsed)
+                    frame_id = parsed["id"] or parsed["raw"]
+                    prev_state, cur_state = _record_tio_area(frame_id, parsed, ts)
                     _safe_dispatch({
                         "kind": "nox_area_changed",
                         "source": "tio",
                         "id": parsed["id"],
                         "label": parsed.get("name"),
-                        "state": parsed.get("state"),
+                        "state": cur_state,
+                        "previous_state": prev_state,
                         "flags": parsed.get("flags"),
                         "ts": ts,
                         "extra": {
                             "id": parsed["id"],
                             "name": parsed.get("name"),
-                            "state": parsed.get("state"),
+                            "state": cur_state,
+                            "previous_state": prev_state,
                             "flags": parsed.get("flags"),
                         },
                     })
@@ -786,6 +1002,8 @@ def start_nox_connector(dispatch_trigger: Callable[[Dict[str, Any]], int]) -> No
         _state["tio"]["enabled"] = bool(cfg["tio"].get("enabled"))
         _state["tio"]["listen_host"] = cfg["tio"].get("listen_host", DEFAULT_TIO_LISTEN_HOST)
         _state["tio"]["listen_port"] = cfg["tio"].get("listen_port", DEFAULT_TIO_LISTEN_PORT)
+        _state["tio"]["send_target_host"] = cfg["tio"].get("send_target_host", "")
+        _state["tio"]["send_target_port"] = cfg["tio"].get("send_target_port", DEFAULT_TIO_SEND_PORT)
         _state["tio"]["error"] = None
 
     if not cfg["enabled"]:
@@ -856,6 +1074,79 @@ def restart_nox_connector(dispatch_trigger: Callable[[Dict[str, Any]], int]) -> 
     # Allow OS time to release the listening socket before rebinding.
     time.sleep(0.2)
     start_nox_connector(dispatch_trigger)
+
+
+# ── TIO outbound send ──────────────────────────────────────────────────────────
+
+
+def tio_send(
+    message: str,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    append_newline: bool = True,
+    encoding: str = "utf-8",
+) -> Dict[str, Any]:
+    """Send a single ASCII message to a NOX TIO virtual-input listener.
+
+    NOX TIO can be configured with virtual *inputs* on the panel side that
+    accept incoming TCP messages and trigger NoxConfig-side logic. The exact
+    message format is whatever the installer configured in NoxConfig — this
+    function is intentionally format-agnostic and just ships the raw string.
+
+    By default appends `\\n` so the panel sees a complete line. The connection
+    is closed immediately after the send.
+    """
+    cfg = load_nox_config()
+    tio_cfg = cfg.get("tio") or {}
+    host = (host if host is not None else tio_cfg.get("send_target_host", "")).strip()
+    try:
+        port = int(port if port is not None else tio_cfg.get("send_target_port", DEFAULT_TIO_SEND_PORT))
+    except Exception:
+        port = DEFAULT_TIO_SEND_PORT
+
+    if not host:
+        raise ValueError("TIO send target host is not configured")
+    if not (0 < port < 65536):
+        raise ValueError("TIO send target port is invalid")
+
+    payload = message
+    if append_newline and not payload.endswith(("\n", "\r\n", "\r")):
+        payload = payload + "\n"
+
+    ts = _utc_now_iso()
+    sock: Optional[socket.socket] = None
+    sent_ok = False
+    error: Optional[str] = None
+    try:
+        sock = socket.create_connection((host, port), timeout=TIO_SEND_TIMEOUT_SEC)
+        sock.settimeout(TIO_SEND_TIMEOUT_SEC)
+        sock.sendall(payload.encode(encoding, errors="replace"))
+        sent_ok = True
+    except Exception as exc:
+        error = str(exc)
+        _log.warning("TIO send to %s:%d failed: %s", host, port, exc)
+    finally:
+        try:
+            if sock is not None:
+                sock.close()
+        except Exception:
+            pass
+
+    record = {
+        "host": host,
+        "port": port,
+        "message": message,
+        "sent_ok": sent_ok,
+        "error": error,
+        "ts": ts,
+    }
+    with _state_lock:
+        _state["tio"]["last_send_at"] = ts
+        _state["tio"]["last_send"] = record
+
+    if sent_ok:
+        _log.info("TIO sent to %s:%d (%d bytes)", host, port, len(payload))
+    return record
 
 
 # ── Discovery scan ─────────────────────────────────────────────────────────────
@@ -977,6 +1268,21 @@ def _write_coil(client, address: int, value: bool, unit_id: int):
 def _write_coils(client, address: int, values: List[bool], unit_id: int):
     """FC15 (write_multiple_coils)."""
     return _call_with_unit_kw(client.write_coils, address, [bool(v) for v in values], unit_id=unit_id)
+
+
+def _mask_write_register(client, address: int, and_mask: int, or_mask: int, unit_id: int):
+    """FC22 (mask_write_register).
+
+    new_value = (current & and_mask) | (or_mask & ~and_mask)
+
+    Used by NOX for: setting/clearing bit 7 (input deactivation) and bit 6
+    (single-alarm acknowledge) per the official doc.
+    """
+    return _call_with_unit_kw(
+        client.mask_write_register,
+        address, int(and_mask) & 0xFFFF, int(or_mask) & 0xFFFF,
+        unit_id=unit_id,
+    )
 
 
 def _format_modbus_error(rr) -> str:
@@ -1441,13 +1747,200 @@ def disarm_area(area_id: int) -> Dict[str, Any]:
     return _set_area_state(int(area_id), 1)
 
 
+# ── Input activate / deactivate / pulse (NOX command channel) ──────────────────
+
+INPUT_DEACTIVATE_BIT = 7   # per NOX doc §1.6
+INPUT_ACK_ALARM_BIT = 6    # per NOX doc §1.7
+
+
+def set_input_active(
+    module: int,
+    input_idx: int,
+    active: bool,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    unit_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Activate or deactivate a NOX detector input via FC22 mask-write of bit 7.
+
+    Per NOX doc §1.6:
+      bit 7 = 1 → deactivated
+      bit 7 = 0 → activated
+
+    NoxConfig can be configured so that flipping bit 7 of a 'command' input
+    triggers panel-side actions (door release, toggle a virtual indicator, etc.).
+    This is the primary mechanism for controlling ADK doors and virtual on/off
+    areas via Modbus.
+    """
+    if ModbusTcpClient is None:
+        raise RuntimeError(f"pymodbus not available: {_PYMODBUS_IMPORT_ERROR}")
+
+    cfg = load_nox_config()
+    mb = cfg.get("modbus") or {}
+    host = (host if host is not None else mb.get("host", "")).strip()
+    port = int(port if port is not None else mb.get("port", DEFAULT_MODBUS_PORT))
+    unit_id = int(unit_id if unit_id is not None else mb.get("unit_id", DEFAULT_MODBUS_UNIT))
+
+    if not host:
+        raise ValueError("NOX Modbus host is not configured")
+
+    try:
+        module = int(module)
+        input_idx = int(input_idx)
+    except Exception:
+        raise ValueError("module and input must be integers")
+
+    if not (0 < module <= 9999):
+        raise ValueError("module out of range")
+    if not (0 <= input_idx <= 9):
+        raise ValueError("input index must be 0-9")
+
+    address = _modbus_register_address(module, input_idx)
+    bit_mask = 1 << INPUT_DEACTIVATE_BIT  # 0x0080
+
+    # To DEACTIVATE (set bit 7=1): and_mask = 0xFFFF, or_mask = 0x0080
+    # To ACTIVATE   (clear bit 7):  and_mask = ~0x0080 & 0xFFFF, or_mask = 0
+    if active:
+        and_mask = (~bit_mask) & 0xFFFF
+        or_mask = 0x0000
+    else:
+        and_mask = 0xFFFF
+        or_mask = bit_mask
+
+    poller_was_running = _modbus_thread is not None and _modbus_thread.is_alive()
+    if poller_was_running:
+        _modbus_paused.set()
+        time.sleep(0.15)
+
+    before = None
+    after = None
+    write_ok = False
+    error: Optional[str] = None
+    response_info: Dict[str, Any] = {}
+
+    client = ModbusTcpClient(host, port=port, timeout=3.0)
+    try:
+        if not client.connect():
+            raise ConnectionError(f"Could not connect to NOX Modbus at {host}:{port}")
+
+        # Read current
+        try:
+            rr = _read_registers(client, "holding", address, 1, unit_id)
+            if rr is not None and not getattr(rr, "isError", lambda: True)():
+                raw = int(rr.registers[0]) & 0xFFFF
+                before = {"raw": raw, "deactivated": bool(raw & bit_mask), "flags": _decode_status_word(raw)}
+        except Exception as exc:
+            error = f"read-before failed: {exc}"
+
+        # Mask-write
+        try:
+            wr = _mask_write_register(client, address, and_mask, or_mask, unit_id)
+        except Exception as exc:
+            error = (error + "; " if error else "") + f"mask-write raised: {exc}"
+            wr = None
+        response_info = _describe_modbus_response(wr)
+        if wr is None or getattr(wr, "isError", lambda: True)():
+            error = (error + "; " if error else "") + (_format_modbus_error(wr) or "mask-write failed")
+        else:
+            write_ok = True
+
+        # Brief pause then read back
+        if write_ok:
+            time.sleep(0.2)
+        try:
+            rr = _read_registers(client, "holding", address, 1, unit_id)
+            if rr is not None and not getattr(rr, "isError", lambda: True)():
+                raw = int(rr.registers[0]) & 0xFFFF
+                after = {"raw": raw, "deactivated": bool(raw & bit_mask), "flags": _decode_status_word(raw)}
+        except Exception:
+            pass
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+        if poller_was_running:
+            _modbus_paused.clear()
+
+    _log.info(
+        "NOX set_input_active module=%d input=%d active=%s write_ok=%s",
+        module, input_idx, active, write_ok,
+    )
+    return {
+        "module": module,
+        "input": input_idx,
+        "address": address,
+        "requested_active": active,
+        "write_ok": write_ok,
+        "before": before,
+        "after": after,
+        "response": response_info,
+        "error": error,
+        "ts": _utc_now_iso(),
+    }
+
+
+def pulse_input(
+    module: int,
+    input_idx: int,
+    pulse_seconds: float = 1.0,
+    deactivate_first: bool = True,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    unit_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Toggle bit 7 of an input for `pulse_seconds`, then toggle it back.
+
+    Useful for momentary triggers: e.g. configure NoxConfig so deactivating a
+    'command' input releases a door for a few seconds; this pulses the bit and
+    restores it automatically.
+
+    deactivate_first=True  → set bit 7 to 1 (deactivate), wait, clear it.
+    deactivate_first=False → clear bit 7 (activate),     wait, set it.
+
+    Always returns a consistent shape with `first` and `second` populated
+    (second may be None if the first write failed).
+    """
+    pulse_seconds = max(0.05, min(60.0, float(pulse_seconds)))
+
+    first = set_input_active(
+        module, input_idx,
+        active=not deactivate_first,
+        host=host, port=port, unit_id=unit_id,
+    )
+
+    second: Optional[Dict[str, Any]] = None
+    if first.get("write_ok"):
+        time.sleep(pulse_seconds)
+        second = set_input_active(
+            module, input_idx,
+            active=deactivate_first,
+            host=host, port=port, unit_id=unit_id,
+        )
+
+    return {
+        "module": module,
+        "input": input_idx,
+        "pulse_seconds": pulse_seconds,
+        "deactivate_first": deactivate_first,
+        "ok": bool(first.get("write_ok") and second and second.get("write_ok")),
+        "first": first,
+        "second": second,
+        "error": first.get("error") or (second.get("error") if second else None),
+        "ts": _utc_now_iso(),
+    }
+
+
 # ── Phase 2 (writes) ───────────────────────────────────────────────────────────
 
 # Codes accepted by the test-write endpoint. Conservative allowlist to avoid
 # accidentally writing arbitrary values during testing — extend as we verify
 # more codes work.
-NOX_AREA_WRITE_ALLOWED_CODES = {1, 2, 3, 4, 5}  # per doc: states 1-5 are user-writable;
-                                                # 6 = partly_armed is auto-only.
+NOX_AREA_WRITE_ALLOWED_CODES = {1, 5}  # In practice only disarm (1) and arm (5) are
+                                       # useful direct writes. Codes 2/3/4 are
+                                       # transitional and panel-managed (you write 5
+                                       # and the panel cycles through them automatically).
+                                       # 6 = partly_armed is auto-only.
 
 
 def _read_one_area(client, address: int, unit_id: int) -> Optional[Dict[str, Any]]:

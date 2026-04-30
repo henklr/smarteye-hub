@@ -3132,6 +3132,9 @@ class NoxTioConfigIn(BaseModel):
     enabled: bool = False
     listen_host: str = "0.0.0.0"
     listen_port: int = 9760
+    send_enabled: bool = False
+    send_target_host: str = ""
+    send_target_port: int = 9761
 
 
 class NoxConfigIn(BaseModel):
@@ -3241,6 +3244,69 @@ def nox_disarm_area_endpoint(area_id: int):
         raise HTTPException(status_code=502, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Disarm failed: {exc}")
+    return {"ok": True, **result}
+
+
+class NoxInputStateIn(BaseModel):
+    active: Optional[bool] = None    # set/clear bit 7
+    pulse_seconds: Optional[float] = None  # if set, do a pulse instead
+    deactivate_first: bool = True
+
+
+@app.post("/api/nox/inputs/{module}/{input_idx}/state")
+def nox_set_input_state_endpoint(module: int, input_idx: int, req: NoxInputStateIn):
+    if req.pulse_seconds and req.pulse_seconds > 0:
+        try:
+            result = nox_connector.pulse_input(
+                module=module, input_idx=input_idx,
+                pulse_seconds=req.pulse_seconds,
+                deactivate_first=req.deactivate_first,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except (ConnectionError, RuntimeError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Pulse failed: {exc}")
+        return {"ok": True, "mode": "pulse", **result}
+
+    if req.active is None:
+        raise HTTPException(status_code=400, detail="Provide either 'active' or 'pulse_seconds'")
+    try:
+        result = nox_connector.set_input_active(
+            module=module, input_idx=input_idx, active=bool(req.active),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (ConnectionError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Set input state failed: {exc}")
+    return {"ok": True, "mode": "set", **result}
+
+
+class NoxTioSendIn(BaseModel):
+    message: str
+    host: Optional[str] = None
+    port: Optional[int] = None
+    append_newline: bool = True
+
+
+@app.post("/api/nox/tio/send")
+def nox_tio_send_endpoint(req: NoxTioSendIn):
+    try:
+        result = nox_connector.tio_send(
+            message=req.message,
+            host=req.host,
+            port=req.port,
+            append_newline=req.append_newline,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"TIO send failed: {exc}")
+    if not result.get("sent_ok"):
+        raise HTTPException(status_code=502, detail=result.get("error") or "TIO send failed")
     return {"ok": True, **result}
 
 
