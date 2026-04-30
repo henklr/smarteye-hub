@@ -36,6 +36,7 @@ import base64
 import json
 import logging
 import os
+import ssl
 import threading
 import time
 import urllib.error
@@ -46,6 +47,20 @@ from typing import Any, Optional
 
 import websockets
 import websockets.exceptions
+
+# Set CONNECTOR_INSECURE_TLS=1 when testing against a dev dashboard with a
+# self-signed cert (e.g. ASP.NET Core's localhost dev cert). Never enable in
+# production — it disables both cert verification and hostname checks.
+INSECURE_TLS = os.getenv("CONNECTOR_INSECURE_TLS", "").lower() in ("1", "true", "yes")
+
+
+def _make_ssl_context() -> Optional[ssl.SSLContext]:
+    if not INSECURE_TLS:
+        return None
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
 
 log = logging.getLogger("dashboard_connector")
 
@@ -173,8 +188,9 @@ def register_device(backend_url: str, registration_key: str) -> dict[str, Any]:
         method="POST",
     )
 
+    ssl_ctx = _make_ssl_context()
     try:
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as response:
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -277,6 +293,9 @@ async def _stream_session(creds: dict[str, str]) -> None:
     # ``extra_headers``.  Fall back transparently.
     connect_kwargs = dict(ping_interval=10, ping_timeout=10, close_timeout=5,
                           open_timeout=15, max_size=None)
+    ssl_ctx = _make_ssl_context()
+    if ssl_ctx is not None and ws_url.startswith("wss://"):
+        connect_kwargs["ssl"] = ssl_ctx
     try:
         ws_ctx = websockets.connect(ws_url, additional_headers=headers,
                                     **connect_kwargs)
@@ -440,6 +459,9 @@ async def _rpc_session(creds: dict[str, str]) -> None:
 
     connect_kwargs = dict(ping_interval=10, ping_timeout=10, close_timeout=5,
                           open_timeout=15, max_size=8 * 1024 * 1024)
+    ssl_ctx = _make_ssl_context()
+    if ssl_ctx is not None and ws_url.startswith("wss://"):
+        connect_kwargs["ssl"] = ssl_ctx
     try:
         ws_ctx = websockets.connect(ws_url, additional_headers=headers,
                                     **connect_kwargs)
