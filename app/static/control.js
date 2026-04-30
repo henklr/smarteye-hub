@@ -1,8 +1,12 @@
 (() => {
   "use strict";
 
-  const POLL_INTERVAL_MS = 1500;
-  const POST_ACTION_REFRESH_DELAYS_MS = [200, 600, 1500];
+  // SSE pushes invalidation messages from the server (NOX state, variables,
+  // doors list, tiles). We keep a slow background poll as a safety net in
+  // case the SSE connection drops and reconnect handling misses something.
+  const FALLBACK_POLL_INTERVAL_MS = 15000;
+  const POST_ACTION_REFRESH_DELAYS_MS = [200, 600];
+  const SSE_RECONNECT_DELAY_MS = 3000;
 
   const state = {
     items: [],
@@ -14,11 +18,13 @@
     busyTiles: new Set(),
     tileErrors: {},
     pollTimer: null,
+    eventSource: null,
+    sseReconnectTimer: null,
   };
 
   const ICONS = {
     shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5l-8-3z"/></svg>',
-    door: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"/><path d="M3 21h18"/><circle cx="15" cy="12" r="0.8" fill="currentColor"/></svg>',
+    door: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16" fill="currentColor" fill-opacity="0.08"/><path d="M3 21h18"/><circle cx="14.5" cy="12.5" r="1" fill="currentColor" stroke="none"/><path d="M9 7h6" stroke-opacity="0.35"/><path d="M9 10h6" stroke-opacity="0.35"/></svg>',
     lightbulb: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.6.5.9 1.2.9 2v.3h6.2v-.3c0-.8.3-1.5.9-2A7 7 0 0 0 12 2z"/></svg>',
     plug: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6"/><path d="M15 2v6"/><path d="M6 8h12v4a6 6 0 0 1-6 6 6 6 0 0 1-6-6V8z"/><path d="M12 18v4"/></svg>',
     fan: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 2a4 4 0 0 1 4 4c0 2-2 4-4 6-2-2-4-4-4-6a4 4 0 0 1 4-4z"/><path d="M2 12a4 4 0 0 1 4-4c2 0 4 2 6 4-2 2-4 4-6 4a4 4 0 0 1-4-4z"/><path d="M22 12a4 4 0 0 1-4 4c-2 0-4-2-6-4 2-2 4-4 6-4a4 4 0 0 1 4 4z"/><path d="M12 22a4 4 0 0 1-4-4c0-2 2-4 4-6 2 2 4 4 4 6a4 4 0 0 1-4 4z"/></svg>',
@@ -88,7 +94,11 @@
       console.warn("Control: bootstrap failed", e);
     }
     render();
+    openControlStream();
     startPolling();
+    window.addEventListener("beforeunload", () => {
+      try { state.eventSource?.close(); } catch (e) {}
+    });
   }
 
   async function loadCatalog() {
@@ -112,18 +122,7 @@
     }
 
     if (noxRes.status === "fulfilled") {
-      const nox = noxRes.value?.state || {};
-      const modbusAreas = (nox.modbus?.areas) || [];
-      const tioAreas = Object.entries(nox.tio?.areas || {}).map(([id, info]) => ({
-        id,
-        label: info.label || `Area ${id}`,
-        state: info.state,
-      }));
-      state.nox = {
-        configured: !!nox.enabled,
-        areas: modbusAreas,
-        tio_areas: tioAreas,
-      };
+      applyNoxState(noxRes.value?.state || {});
     }
   }
 
@@ -142,7 +141,68 @@
 
   function startPolling() {
     if (state.pollTimer) clearInterval(state.pollTimer);
-    state.pollTimer = setInterval(refreshLiveState, POLL_INTERVAL_MS);
+    state.pollTimer = setInterval(refreshLiveState, FALLBACK_POLL_INTERVAL_MS);
+  }
+
+  function openControlStream() {
+    if (state.eventSource) {
+      try { state.eventSource.close(); } catch (e) {}
+    }
+    if (state.sseReconnectTimer) {
+      clearTimeout(state.sseReconnectTimer);
+      state.sseReconnectTimer = null;
+    }
+    let es;
+    try {
+      es = new EventSource("/api/control/stream");
+    } catch (e) {
+      console.warn("Control: SSE unavailable, falling back to poll only", e);
+      return;
+    }
+    state.eventSource = es;
+    es.onmessage = (ev) => {
+      let payload;
+      try { payload = JSON.parse(ev.data); } catch (e) { return; }
+      handleStreamMessage(payload);
+    };
+    es.onerror = () => {
+      try { es.close(); } catch (e) {}
+      state.eventSource = null;
+      // Reconnect with a short delay; the fallback poll keeps the UI alive
+      // in the meantime.
+      state.sseReconnectTimer = setTimeout(openControlStream, SSE_RECONNECT_DELAY_MS);
+    };
+  }
+
+  async function handleStreamMessage(payload) {
+    const source = payload?.source;
+    if (!source || source === "connected") return;
+    try {
+      if (source === "nox") {
+        const res = await api("/api/nox/state");
+        applyNoxState(res?.state || {});
+      } else if (source === "variables") {
+        const res = await api("/api/public-variables");
+        state.publicVariables = res?.items || [];
+      } else if (source === "doors") {
+        const res = await api("/api/doors");
+        state.doors = res?.items || [];
+      } else if (source === "tiles") {
+        const res = await api("/api/controls");
+        state.items = res?.items || [];
+      }
+      renderTilesOnly();
+    } catch (e) {
+      console.warn(`Control: refresh after SSE (${source}) failed`, e);
+    }
+  }
+
+  function applyNoxState(nox) {
+    state.nox.areas = (nox.modbus?.areas) || [];
+    state.nox.tio_areas = Object.entries(nox.tio?.areas || {}).map(([id, info]) => ({
+      id, label: info.label || `Area ${id}`, state: info.state,
+    }));
+    state.nox.configured = !!nox.enabled;
   }
 
   async function refreshLiveState() {
@@ -155,12 +215,7 @@
         state.publicVariables = varsRes.value?.items || [];
       }
       if (noxRes.status === "fulfilled") {
-        const nox = noxRes.value?.state || {};
-        state.nox.areas = (nox.modbus?.areas) || [];
-        state.nox.tio_areas = Object.entries(nox.tio?.areas || {}).map(([id, info]) => ({
-          id, label: info.label || `Area ${id}`, state: info.state,
-        }));
-        state.nox.configured = !!nox.enabled;
+        applyNoxState(noxRes.value?.state || {});
       }
       renderTilesOnly();
     } catch (e) {

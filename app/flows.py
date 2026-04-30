@@ -11,7 +11,7 @@ import uuid
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
@@ -201,6 +201,28 @@ _schedule_monitor_thread: Optional[threading.Thread] = None
 _schedule_monitor_state: Dict[str, bool] = {}
 
 router = APIRouter(tags=["flows"])
+
+
+# ── Control-page invalidation hook ─────────────────────────────────────────────
+# main.py registers a callback that pushes "stale" notifications down the
+# /api/control/stream SSE channel. We just call it when something the Control
+# page cares about changes. Sources: "nox", "variables", "doors", "tiles".
+_control_invalidate_cb: Optional[Callable[[str], None]] = None
+
+
+def set_control_invalidator(cb: Optional[Callable[[str], None]]) -> None:
+    global _control_invalidate_cb
+    _control_invalidate_cb = cb
+
+
+def _invalidate_control(source: str) -> None:
+    cb = _control_invalidate_cb
+    if cb is None:
+        return
+    try:
+        cb(source)
+    except Exception as exc:
+        _log_flows.debug("Control invalidate (%s) failed: %s", source, exc)
 
 
 class FlowVariableModel(BaseModel):
@@ -846,6 +868,7 @@ def create_flow(req: FlowIn) -> Dict[str, Any]:
         _save_flows(items)
         _merge_recording_presets(_collect_recording_presets_from_flows(items))
     _log_flows.info("Flow created: '%s' (%s)", item.get("name"), item.get("id"))
+    _invalidate_control("doors")
     return {"ok": True, "item": item}
 
 
@@ -862,6 +885,7 @@ def update_flow(flow_id: str, req: FlowIn) -> Dict[str, Any]:
                 )
                 _save_flows(items)
                 _merge_recording_presets(_collect_recording_presets_from_flows(items))
+                _invalidate_control("doors")
                 _log_flows.info("Flow updated: '%s' (%s)", items[idx].get("name"), flow_id)
                 return {"ok": True, "item": items[idx]}
     raise HTTPException(status_code=404, detail="Flow not found")
@@ -878,6 +902,7 @@ def delete_flow(flow_id: str) -> Dict[str, Any]:
         _merge_recording_presets(_collect_recording_presets_from_flows(new_items))
         _delete_runtime_state_for_flow(flow_id)
     _log_flows.info("Flow deleted: %s", flow_id)
+    _invalidate_control("doors")
     return {"ok": True}
 
 
@@ -2722,6 +2747,7 @@ def _set_public_variable_value(key: str, value: Any) -> None:
         public_state["values"] = saved
         public_state["updated_at"] = _utc_now_iso()
         _save_runtime_state(payload)
+    _invalidate_control("variables")
 
 
 
@@ -2921,6 +2947,9 @@ def _trigger_matches_node(node: Dict[str, Any], trigger: Dict[str, Any]) -> bool
 
 
 def dispatch_flow_trigger(trigger: Dict[str, Any]) -> int:
+    kind = str(trigger.get("kind") or "")
+    if kind.startswith("nox_"):
+        _invalidate_control("nox")
     matched = 0
     for flow in _load_flows():
         if not flow.get("enabled", True):

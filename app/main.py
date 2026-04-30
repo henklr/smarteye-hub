@@ -43,6 +43,7 @@ from flows import (
     router as flows_router,
     dispatch_flow_trigger,
     get_flow_topics_for_device,
+    set_control_invalidator,
     start_schedule_monitor,
     stop_schedule_monitor,
 )
@@ -504,7 +505,64 @@ def save_controls(req: ControlsIn):
         seen_ids.add(item["id"])
         out.append(item)
     _save_controls(out)
+    _broadcast_control_invalidate("tiles")
     return {"ok": True, "items": out}
+
+
+# ── Control SSE ────────────────────────────────────────────────────────────────
+_control_subscribers: List[asyncio.Queue] = []
+_control_subs_lock = threading.Lock()
+
+
+def _broadcast_control_invalidate(source: str) -> None:
+    """Push a 'data is stale' signal to every connected /api/control/stream
+    subscriber. The client refetches the matching endpoint on receipt.
+
+    Sources: "nox", "variables", "doors", "tiles".
+    """
+    payload = {"source": source}
+    with _control_subs_lock:
+        subs = list(_control_subscribers)
+    for q in subs:
+        try:
+            q.put_nowait(payload)
+        except Exception:
+            pass
+
+
+@app.get("/api/control/stream")
+async def api_control_stream(request: Request):
+    queue: asyncio.Queue = asyncio.Queue()
+    with _control_subs_lock:
+        _control_subscribers.append(queue)
+
+    async def generate():
+        try:
+            # Send a hello so the client knows the channel is open.
+            yield f"data: {json.dumps({'source': 'connected'})}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                yield f"data: {json.dumps(event)}\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            with _control_subs_lock:
+                try:
+                    _control_subscribers.remove(queue)
+                except ValueError:
+                    pass
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# Wire flows.py's invalidator hook to the SSE broadcaster.
+set_control_invalidator(_broadcast_control_invalidate)
 
 
 @app.post("/api/system/reboot")
