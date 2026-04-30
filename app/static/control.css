@@ -126,8 +126,13 @@
 }
 
 .tile.tile-incomplete {
-  opacity: 0.7;
   border-style: dashed;
+}
+
+.tile.tile-incomplete .tileState,
+.tile.tile-incomplete .tileActions,
+.tile.tile-incomplete .tileIncompleteHint {
+  opacity: 0.7;
 }
 
 .tileHead {
