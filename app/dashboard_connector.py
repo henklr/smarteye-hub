@@ -267,7 +267,7 @@ async def _spawn_ffmpeg(camera_id: str) -> asyncio.subprocess.Process:
     # stdin is /dev/null and ffmpeg interprets the immediate EOF as a clean
     # quit before any packets are processed — the connector then sees rc=0
     # plus "Output file is empty, nothing was encoded".
-    return await asyncio.create_subprocess_exec(
+    proc = await asyncio.create_subprocess_exec(
         "ffmpeg",
         "-nostdin",
         "-loglevel", "warning",
@@ -284,6 +284,21 @@ async def _spawn_ffmpeg(camera_id: str) -> asyncio.subprocess.Process:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    # Grow the kernel pipe buffer so ffmpeg can keep writing while the WS
+    # send loop is slow. Default is 64 KB; with HD-ish video that fills
+    # within a single keyframe interval, ffmpeg blocks on write, and after
+    # a while it gives up and exits cleanly with rc=0 (no error logged).
+    # 1 MB is the per-process limit on Linux without /proc/sys tweaks.
+    if fcntl is not None and proc.stdout is not None:
+        try:
+            F_SETPIPE_SZ = 1031  # not in fcntl module on all builds
+            transport = proc.stdout._transport  # type: ignore[attr-defined]
+            pipe = transport.get_extra_info("pipe")
+            if pipe is not None:
+                fcntl.fcntl(pipe.fileno(), F_SETPIPE_SZ, 1024 * 1024)
+        except Exception as exc:
+            log.debug("Couldn't grow ffmpeg stdout pipe buffer: %s", exc)
+    return proc
 
 
 async def _drain_ffmpeg_stderr(proc: asyncio.subprocess.Process) -> None:
@@ -357,7 +372,16 @@ async def _stream_session(creds: dict[str, str]) -> None:
 
         closer = asyncio.create_task(_wait_close())
 
-        async def _pump() -> None:
+        # Decouple "read from ffmpeg" from "send over WS": a bounded queue
+        # between the two means the reader can always drain ffmpeg's stdout
+        # at line speed (preventing pipe-full → ffmpeg-clean-exit), while the
+        # sender feeds the WS at whatever rate it can. If the WS truly can't
+        # keep up, the queue eventually fills and only THEN does the reader
+        # back off — but with a 256-slot queue that's ~8 MB of buffer.
+        send_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=256)
+
+        async def _read_into_queue() -> int:
+            """Drain ffmpeg's stdout into the queue. Returns the chunk count."""
             assert proc and proc.stdout is not None
             chunks = 0
             total = 0
@@ -367,19 +391,46 @@ async def _stream_session(creds: dict[str, str]) -> None:
                     log.info("ffmpeg ended after %d chunks/%d bytes (rc=%s)",
                              chunks, total,
                              proc.returncode if proc.returncode is not None else "?")
-                    return
+                    await send_queue.put(None)  # sentinel
+                    return chunks
                 chunks += 1
                 total += len(chunk)
                 if chunks <= 3 or chunks % 200 == 0:
-                    log.info("ffmpeg pumped chunk #%d (%d bytes; running total %d)",
-                             chunks, len(chunk), total)
+                    log.info("ffmpeg pumped chunk #%d (%d bytes; running total %d; queue=%d)",
+                             chunks, len(chunk), total, send_queue.qsize())
+                await send_queue.put(chunk)
+
+        async def _send_from_queue() -> None:
+            chunks = 0
+            while True:
+                chunk = await send_queue.get()
+                if chunk is None:
+                    return  # EOF sentinel — reader is done
+                chunks += 1
                 try:
-                    # Bound the send so a wedged TCP path can't stall us forever.
                     await asyncio.wait_for(ws.send(chunk), timeout=SEND_TIMEOUT_SEC)
                 except Exception as exc:
                     log.warning("ws.send failed at chunk #%d: %s: %s",
                                 chunks, type(exc).__name__, exc)
                     raise
+
+        async def _pump() -> None:
+            reader = asyncio.create_task(_read_into_queue())
+            sender = asyncio.create_task(_send_from_queue())
+            try:
+                done, pending = await asyncio.wait(
+                    {reader, sender}, return_when=asyncio.FIRST_COMPLETED)
+                for t in pending:
+                    t.cancel()
+                for t in done:
+                    if t.exception():
+                        raise t.exception()  # type: ignore[misc]
+            finally:
+                for t in (reader, sender):
+                    if not t.done():
+                        t.cancel()
+                        try: await t
+                        except BaseException: pass
 
         pump = asyncio.create_task(_pump())
         try:
