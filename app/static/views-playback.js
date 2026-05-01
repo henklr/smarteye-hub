@@ -1346,17 +1346,35 @@ async function startVideoPlayback(video) {
   // autoplay heuristics, post-seek stall, late buffer warmup). Verify by
   // waiting for the `playing` event briefly and retrying a couple times.
   for (let attempt = 0; attempt < 3; attempt++) {
+    let playErr = null;
     try {
       const r = video.play();
       if (r && typeof r.then === "function") await r;
-    } catch { /* fall through to retry */ }
-    if (!video.paused) return true;
+    } catch (err) {
+      playErr = err;
+    }
+    if (!video.paused) {
+      console.debug("[playback] play() succeeded on attempt", attempt + 1);
+      return true;
+    }
     const started = await new Promise((resolve) => {
-      const t = setTimeout(() => resolve(false), 500);
+      const t = setTimeout(() => resolve(false), 800);
       const onPlaying = () => { clearTimeout(t); resolve(true); };
       video.addEventListener("playing", onPlaying, { once: true });
     });
-    if (started || !video.paused) return true;
+    if (started || !video.paused) {
+      console.debug("[playback] play() got `playing` on attempt", attempt + 1);
+      return true;
+    }
+    console.warn("[playback] attempt", attempt + 1, "still paused", {
+      readyState: video.readyState,
+      currentTime: video.currentTime,
+      duration: video.duration,
+      buffered: video.buffered.length ? `${video.buffered.start(0)}-${video.buffered.end(video.buffered.length - 1)}` : "empty",
+      muted: video.muted,
+      error: video.error?.code,
+      playErr: playErr?.message,
+    });
   }
   return !video.paused;
 }
@@ -2433,20 +2451,21 @@ function bindTimelineInteractions() {
     if (state.scrub.active && event.pointerId === state.scrub.pointerId) {
       const rect = track.getBoundingClientRect();
       if (!rect.width) return;
-      const minute = timelineMinuteFromClientX(event.clientX, rect);
+      // Free-drag across the whole day window; we no longer clamp to the
+      // currently-selected event so the cursor can move into empty space
+      // (or over another clip). Date label always reflects the cursor's
+      // wall-clock position via minuteLabel.
+      const minute = clamp(timelineMinuteFromClientX(event.clientX, rect), 0, DAY_MINUTES);
+      setPlaybackCursor({ minute, label: minuteLabel(minute) });
+      // Only seek the underlying video while the cursor is INSIDE the
+      // selected event's range — outside it there's nothing to play, so we
+      // just let the cursor float visually. On release we may switch to the
+      // event under the drop point.
       const ev = state.timeline.events.find((item) => item.id === state.scrub.eventId);
       if (!ev) return;
       const range = dayRange(ev.clip_start, ev.clip_end);
-      const clamped = clamp(minute, range.startMinute, range.endMinute);
-      const elapsedSeconds = clamp((clamped - range.startMinute) * 60, 0, eventDurationSeconds(ev));
-      const startMs = Date.parse(ev.clip_start);
-      setPlaybackCursor({
-        minute: clamped,
-        label: Number.isFinite(startMs) ? clockLabel(startMs + (elapsedSeconds * 1000)) : minuteLabel(clamped),
-      });
-      // Throttle the actual seek via rAF — setting currentTime mid-drag is
-      // expensive (each call triggers a re-buffer / decoder re-prime).
-      state.scrub.pendingMinute = clamped;
+      if (minute < range.startMinute || minute > range.endMinute) return;
+      state.scrub.pendingMinute = minute;
       if (!state.scrub.rafId) {
         state.scrub.rafId = requestAnimationFrame(() => {
           state.scrub.rafId = 0;
@@ -2476,25 +2495,42 @@ function bindTimelineInteractions() {
       cancelAnimationFrame(state.scrub.rafId);
       state.scrub.rafId = 0;
     }
-    // Final commit of the last position so we always end exactly under the cursor.
-    const ev = state.timeline.events.find((item) => item.id === state.scrub.eventId);
-    if (ev && Number.isFinite(state.playbackCursor.minute)) {
-      const range = dayRange(ev.clip_start, ev.clip_end);
-      const elapsed = clamp((state.playbackCursor.minute - range.startMinute) * 60, 0, eventDurationSeconds(ev));
-      for (const tile of tiles.values()) setTileElapsed(tile, elapsed);
-    }
     const cursorEl = el("playbackTimelineTrack")?.querySelector("[data-playback-cursor]");
     cursorEl?.classList.remove("is-scrubbing");
     if (track.hasPointerCapture(event.pointerId)) track.releasePointerCapture(event.pointerId);
     const wasPlaying = state.scrub.wasPlaying;
+    const dropMinute = Number.isFinite(state.playbackCursor.minute) ? state.playbackCursor.minute : null;
+    const sourceEv = state.timeline.events.find((item) => item.id === state.scrub.eventId);
     state.scrub.active = false;
     state.scrub.pointerId = null;
     state.scrub.wasPlaying = false;
     state.scrub.eventId = null;
     state.scrub.pendingMinute = null;
-    if (wasPlaying && ev) {
-      startConfiguredPlayback(ev).catch(() => {});
+
+    if (dropMinute == null) return true;
+
+    // Did we land inside the same event we started in?
+    if (sourceEv) {
+      const range = dayRange(sourceEv.clip_start, sourceEv.clip_end);
+      if (dropMinute >= range.startMinute && dropMinute <= range.endMinute) {
+        const elapsed = clamp((dropMinute - range.startMinute) * 60, 0, eventDurationSeconds(sourceEv));
+        for (const tile of tiles.values()) setTileElapsed(tile, elapsed);
+        if (wasPlaying) startConfiguredPlayback(sourceEv).catch(() => {});
+        return true;
+      }
     }
+
+    // Land on a different playable event under the drop point — switch to it.
+    const dropEv = eventAtTimelineMinute(dropMinute);
+    if (dropEv) {
+      const seekSeconds = eventSeekSecondsForMinute(dropEv, dropMinute);
+      selectEvent(dropEv.id, { seekSeconds, autoplay: wasPlaying }).catch(() => {});
+      return true;
+    }
+
+    // Empty space — pause and leave the cursor parked there.
+    pauseAllTiles();
+    setStatus("No recording at this point — release on a clip to play.");
     return true;
   };
 
