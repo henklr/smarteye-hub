@@ -953,9 +953,18 @@ body.playbackPage {
   position: absolute;
   top: 8px;
   bottom: 8px;
-  width: 0;
+  /* Invisible grab zone wider than the visible line so the cursor is easy
+     to grab and drag. The visible 2px line is drawn by ::before. */
+  width: 14px;
+  margin-left: -7px;
   z-index: 3;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.playbackPage .playbackTimelineCursor.is-scrubbing {
+  cursor: grabbing;
 }
 
 .playbackPage .playbackTimelineCursor::before {
@@ -969,6 +978,7 @@ body.playbackPage {
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.92);
   box-shadow: 0 0 0 1px rgba(13, 13, 13, 0.42), 0 0 18px rgba(198, 161, 75, 0.22);
+  pointer-events: none;
 }
 
 .playbackPage .playbackTimelineCursorLabel {

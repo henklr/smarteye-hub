@@ -41,6 +41,7 @@ const state = {
     reversePlayback: { active: false, rafId: 0, lastTs: 0 },
   },
   playbackCursor: { minute: null, label: "", rafId: 0 },
+  scrub: { active: false, pointerId: null, wasPlaying: false, eventId: null, pendingMinute: null, rafId: 0 },
   timelineView: {
     startMinute: 0,
     endMinute: DAY_MINUTES,
@@ -1341,11 +1342,23 @@ async function startVideoPlayback(video) {
       video.addEventListener("loadeddata", finish, { once: true });
     });
   }
-  try {
-    const r = video.play();
-    if (r && typeof r.then === "function") await r;
-    return !video.paused;
-  } catch { return false; }
+  // play() can resolve "successfully" while the video stays paused (browser
+  // autoplay heuristics, post-seek stall, late buffer warmup). Verify by
+  // waiting for the `playing` event briefly and retrying a couple times.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = video.play();
+      if (r && typeof r.then === "function") await r;
+    } catch { /* fall through to retry */ }
+    if (!video.paused) return true;
+    const started = await new Promise((resolve) => {
+      const t = setTimeout(() => resolve(false), 500);
+      const onPlaying = () => { clearTimeout(t); resolve(true); };
+      video.addEventListener("playing", onPlaying, { once: true });
+    });
+    if (started || !video.paused) return true;
+  }
+  return !video.paused;
 }
 
 async function startAllTilesPlayback() {
@@ -2386,6 +2399,27 @@ function bindTimelineInteractions() {
   track.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     const target = event.target instanceof Element ? event.target : null;
+    // Cursor grab — start scrubbing instead of pan/click.
+    if (target?.closest("[data-playback-cursor]")) {
+      const ev = selectedEvent();
+      if (!ev) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const video = primaryVideoEl();
+      state.scrub.active = true;
+      state.scrub.pointerId = event.pointerId;
+      state.scrub.wasPlaying = !!(video && !video.paused && !video.ended);
+      state.scrub.eventId = ev.id;
+      state.scrub.pendingMinute = null;
+      pauseAllTiles();
+      stopPlaybackCursorLoop();
+      stopReversePlayback();
+      stopSimulatedForwardPlayback();
+      const cursorEl = target.closest("[data-playback-cursor]");
+      cursorEl?.classList.add("is-scrubbing");
+      track.setPointerCapture(event.pointerId);
+      return;
+    }
     if (target?.closest("[data-event-id]") || target?.closest("[data-playback-track-base]")) return;
     state.timelineView.pointerId = event.pointerId;
     state.timelineView.dragOriginX = event.clientX;
@@ -2396,6 +2430,35 @@ function bindTimelineInteractions() {
   });
 
   track.addEventListener("pointermove", (event) => {
+    if (state.scrub.active && event.pointerId === state.scrub.pointerId) {
+      const rect = track.getBoundingClientRect();
+      if (!rect.width) return;
+      const minute = timelineMinuteFromClientX(event.clientX, rect);
+      const ev = state.timeline.events.find((item) => item.id === state.scrub.eventId);
+      if (!ev) return;
+      const range = dayRange(ev.clip_start, ev.clip_end);
+      const clamped = clamp(minute, range.startMinute, range.endMinute);
+      const elapsedSeconds = clamp((clamped - range.startMinute) * 60, 0, eventDurationSeconds(ev));
+      const startMs = Date.parse(ev.clip_start);
+      setPlaybackCursor({
+        minute: clamped,
+        label: Number.isFinite(startMs) ? clockLabel(startMs + (elapsedSeconds * 1000)) : minuteLabel(clamped),
+      });
+      // Throttle the actual seek via rAF — setting currentTime mid-drag is
+      // expensive (each call triggers a re-buffer / decoder re-prime).
+      state.scrub.pendingMinute = clamped;
+      if (!state.scrub.rafId) {
+        state.scrub.rafId = requestAnimationFrame(() => {
+          state.scrub.rafId = 0;
+          if (!state.scrub.active || state.scrub.pendingMinute == null) return;
+          const m = state.scrub.pendingMinute;
+          state.scrub.pendingMinute = null;
+          const elapsed = clamp((m - range.startMinute) * 60, 0, eventDurationSeconds(ev));
+          for (const tile of tiles.values()) setTileElapsed(tile, elapsed);
+        });
+      }
+      return;
+    }
     if (event.pointerId !== state.timelineView.pointerId) return;
     const rect = track.getBoundingClientRect();
     if (!rect.width) return;
@@ -2407,7 +2470,36 @@ function bindTimelineInteractions() {
     setTimelineViewport(state.timelineView.dragOriginStartMinute - deltaMinutes, state.timelineView.dragOriginDuration);
   });
 
+  const finishScrub = (event) => {
+    if (!state.scrub.active || event.pointerId !== state.scrub.pointerId) return false;
+    if (state.scrub.rafId) {
+      cancelAnimationFrame(state.scrub.rafId);
+      state.scrub.rafId = 0;
+    }
+    // Final commit of the last position so we always end exactly under the cursor.
+    const ev = state.timeline.events.find((item) => item.id === state.scrub.eventId);
+    if (ev && Number.isFinite(state.playbackCursor.minute)) {
+      const range = dayRange(ev.clip_start, ev.clip_end);
+      const elapsed = clamp((state.playbackCursor.minute - range.startMinute) * 60, 0, eventDurationSeconds(ev));
+      for (const tile of tiles.values()) setTileElapsed(tile, elapsed);
+    }
+    const cursorEl = el("playbackTimelineTrack")?.querySelector("[data-playback-cursor]");
+    cursorEl?.classList.remove("is-scrubbing");
+    if (track.hasPointerCapture(event.pointerId)) track.releasePointerCapture(event.pointerId);
+    const wasPlaying = state.scrub.wasPlaying;
+    state.scrub.active = false;
+    state.scrub.pointerId = null;
+    state.scrub.wasPlaying = false;
+    state.scrub.eventId = null;
+    state.scrub.pendingMinute = null;
+    if (wasPlaying && ev) {
+      startConfiguredPlayback(ev).catch(() => {});
+    }
+    return true;
+  };
+
   const finishDrag = (event) => {
+    if (finishScrub(event)) return;
     if (event.pointerId !== state.timelineView.pointerId) return;
     if (state.timelineView.isDragging) {
       state.timelineView.suppressClickUntil = Date.now() + CLICK_SUPPRESSION_MS;
