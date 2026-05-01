@@ -2087,6 +2087,18 @@ def clear_all_recordings() -> Dict[str, int]:
             if acquired:
                 _events_lock.release()
 
+        # Drop cached SQLite connections before renaming the index dir.
+        # Otherwise the cached handles keep writing to the orphaned (renamed
+        # then rm'd) inode, and the next reconcile/query reads stale data
+        # from a file no other process can see.
+        with _index_db_locks_lock:
+            for did, (_path, conn) in list(_index_db_connections.items()):
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            _index_db_connections.clear()
+
         _clear_directory_contents(_recordings_root())
         _clear_directory_contents(_clips_root())
         _clear_directory_contents(_index_root())
