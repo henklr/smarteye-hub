@@ -391,7 +391,12 @@ function eventState(event) {
   return String(event?.state || "ready").trim().toLowerCase() || "ready";
 }
 function eventIsReady(event) { return eventState(event) === "ready"; }
-function eventIsPending(event) { return !eventIsReady(event); }
+function eventIsLive(event) { return event?.live === true || eventState(event) === "recording"; }
+// "Playable" is the test we use to gate clicking-to-play: ready clips and
+// in-progress live recordings both stream over HLS. Pending = anything we
+// can't play yet (still finalizing, or whose footage is missing).
+function eventIsPlayable(event) { return eventIsReady(event) || eventIsLive(event); }
+function eventIsPending(event) { return !eventIsPlayable(event); }
 function pendingEventCount() {
   return state.timeline.events.filter((event) => eventIsPending(event)).length;
 }
@@ -529,6 +534,7 @@ function eventPresetKey(event) {
 
 function eventTagSegments(event) {
   const raw = Array.isArray(event?.tag_segments) ? event.tag_segments : [];
+  const live = eventIsLive(event);
   const normalized = raw.map((segment) => {
     const clipStart = segment?.clip_start || event?.clip_start || null;
     const clipEnd = segment?.clip_end || event?.clip_end || null;
@@ -545,6 +551,8 @@ function eventTagSegments(event) {
       clip_end: clipEnd,
       state: eventState(event),
       ready: eventIsReady(event),
+      live,
+      playable: eventIsPlayable(event),
     };
   }).filter(Boolean);
 
@@ -563,6 +571,8 @@ function eventTagSegments(event) {
     clip_end: event.clip_end,
     state: eventState(event),
     ready: eventIsReady(event),
+    live,
+    playable: eventIsPlayable(event),
   }];
 }
 
@@ -620,7 +630,7 @@ function timelineMinuteFromClientX(clientX, rect) {
 
 function eventAtTimelineMinute(minute) {
   const selected = selectedEvent();
-  if (selected && eventIsReady(selected)) {
+  if (selected && eventIsPlayable(selected)) {
     const visibleSelectedSegment = visibleTimelineSegments().find((segment) => segment.eventId === selected.id);
     if (visibleSelectedSegment) {
       const range = dayRange(visibleSelectedSegment.clip_start, visibleSelectedSegment.clip_end);
@@ -628,7 +638,7 @@ function eventAtTimelineMinute(minute) {
     }
   }
   const matchingSegment = visibleTimelineSegmentsOrdered().find((segment) => {
-    if (!segment.ready) return false;
+    if (!(segment.playable ?? segment.ready)) return false;
     const range = dayRange(segment.clip_start, segment.clip_end);
     return minute >= range.startMinute && minute <= range.endMinute;
   }) || null;
@@ -637,7 +647,7 @@ function eventAtTimelineMinute(minute) {
 }
 
 function nextEventAtTimelineMinute(minute) {
-  const nextSegment = visibleTimelineSegmentsOrdered().find((segment) => segment.ready && dayRange(segment.clip_start, segment.clip_end).startMinute >= minute) || null;
+  const nextSegment = visibleTimelineSegmentsOrdered().find((segment) => (segment.playable ?? segment.ready) && dayRange(segment.clip_start, segment.clip_end).startMinute >= minute) || null;
   if (!nextSegment) return null;
   return state.timeline.events.find((event) => event.id === nextSegment.eventId) || null;
 }
@@ -653,13 +663,13 @@ function timelineBaseSelection(minute) {
 function nextTimelineEvent(currentEventId) {
   const currentIndex = state.timeline.events.findIndex((event) => event.id === currentEventId);
   if (currentIndex < 0) return null;
-  return state.timeline.events.slice(currentIndex + 1).find((event) => eventIsReady(event)) || null;
+  return state.timeline.events.slice(currentIndex + 1).find((event) => eventIsPlayable(event)) || null;
 }
 
 function previousTimelineEvent(currentEventId) {
   const currentIndex = state.timeline.events.findIndex((event) => event.id === currentEventId);
   if (currentIndex <= 0) return null;
-  return [...state.timeline.events.slice(0, currentIndex)].reverse().find((event) => eventIsReady(event)) || null;
+  return [...state.timeline.events.slice(0, currentIndex)].reverse().find((event) => eventIsPlayable(event)) || null;
 }
 
 function eventSeekSecondsForMinute(event, minute) {
@@ -848,6 +858,12 @@ function hlsPlaylistUrlForRange(deviceId, fromIso, toIso) {
   return `/api/playback/hls/${encodeURIComponent(deviceId)}/index.m3u8?${params.toString()}`;
 }
 
+function hlsPlaylistUrlForEvent(deviceId, eventId) {
+  if (!deviceId || !eventId) return null;
+  const params = new URLSearchParams({ event_id: eventId, ts: String(Date.now()) });
+  return `/api/playback/hls/${encodeURIComponent(deviceId)}/index.m3u8?${params.toString()}`;
+}
+
 function deviceHasEventInRange(deviceId, fromIso, toIso) {
   const fromMs = Date.parse(fromIso);
   const toMs = Date.parse(toIso);
@@ -864,7 +880,12 @@ function deviceHasEventInRange(deviceId, fromIso, toIso) {
 function attachTileSource(tile, event) {
   if (!tile || !event) return;
 
-  const url = hlsPlaylistUrlForRange(tile.deviceId, event.clip_start, event.clip_end);
+  const live = eventIsLive(event);
+  // Live events use the by-event URL so the server returns an EVENT-type
+  // playlist tied to this event id (and caches finalized closed clips).
+  const url = live
+    ? hlsPlaylistUrlForEvent(tile.deviceId, event.id)
+    : hlsPlaylistUrlForRange(tile.deviceId, event.clip_start, event.clip_end);
   if (!url) {
     setTileOverlay(tile, "No source", true, { state: "error" });
     return;
@@ -872,8 +893,8 @@ function attachTileSource(tile, event) {
 
   // Only play if this camera has its own event covering the master window —
   // even if untagged footage is still on disk inside the pruner grace window,
-  // we don't want it visible.
-  if (!deviceHasEventInRange(tile.deviceId, event.clip_start, event.clip_end)) {
+  // we don't want it visible. (Live events match by id, not by range.)
+  if (!live && !deviceHasEventInRange(tile.deviceId, event.clip_start, event.clip_end)) {
     detachTileSource(tile, { destroy: false });
     setTileOverlay(tile, "No event in this range", true, { state: "error" });
     return;
@@ -1863,13 +1884,19 @@ function renderTimeline() {
             const left = visibleTimelinePercent(clippedStart);
             const width = visibleTimelineWidth(clippedStart, clippedEnd);
             const active = segment.eventId === state.selectedEventId ? "is-active" : "";
-            const pending = !segment.ready ? `is-pending is-${escapeHtml(segment.state)}` : "";
+            const playable = segment.playable ?? segment.ready;
+            const liveCls = segment.live ? "is-live" : "";
+            const pendingCls = (!playable) ? `is-pending is-${escapeHtml(segment.state)}` : (segment.live ? `is-${escapeHtml(segment.state)}` : "");
             const readiness = !segment.ready ? ` · ${eventStateLabel(segment)}` : "";
             const camLabel = segment.deviceId ? ` · ${deviceName(segment.deviceId)}` : "";
-            return `<button class="playbackMarker ${active} ${pending}" type="button" data-event-id="${escapeHtml(segment.eventId)}" aria-disabled="${segment.ready ? "false" : "true"}" style="left:${left}%; width:${width}%; background:${escapeHtml(segment.color)};" title="${escapeHtml(`${segment.presetName}${camLabel} · ${clockLabel(segment.triggeredAt)}${readiness}`)}"></button>`;
+            return `<button class="playbackMarker ${active} ${liveCls} ${pendingCls}" type="button" data-event-id="${escapeHtml(segment.eventId)}" aria-disabled="${playable ? "false" : "true"}" style="left:${left}%; width:${width}%; background:${escapeHtml(segment.color)};" title="${escapeHtml(`${segment.presetName}${camLabel} · ${clockLabel(segment.triggeredAt)}${readiness}`)}"></button>`;
           }).join("")}
         </div>
-      `).join("") : `<div class="playbackTimelineEmpty">${timelinePresetRows().length ? "No tags selected." : "No recordings in this range."}</div>`}
+      `).join("") : `<div class="playbackTimelineEmpty">${
+        isTimelineLoading() ? "Loading recordings…"
+          : timelinePresetRows().length ? "No tags selected."
+          : "No recordings in this range."
+      }</div>`}
     </div>
     <div class="playbackTimelineCursor hidden" data-playback-cursor>
       <span class="playbackTimelineCursorLabel" data-playback-cursor-label></span>
@@ -1919,10 +1946,43 @@ function applyTimelineData(merged, options = {}) {
     .filter((value) => availablePresetKeys.has(value)))];
 }
 
+let _timelineProgressInflight = 0;
+
+function isTimelineLoading() {
+  return _timelineProgressInflight > 0;
+}
+
+function setTimelineProgressActive(active) {
+  const node = el("playbackTimelineProgress");
+  if (!node) return;
+  node.dataset.active = active ? "true" : "false";
+  node.setAttribute("aria-hidden", active ? "false" : "true");
+}
+
+function beginTimelineProgress() {
+  _timelineProgressInflight += 1;
+  if (_timelineProgressInflight === 1) {
+    setTimelineProgressActive(true);
+    // Refresh the timeline strip so its empty text switches to "Loading…"
+    // instead of "No recordings in this range."
+    renderTimeline();
+  }
+}
+
+function endTimelineProgress() {
+  _timelineProgressInflight = Math.max(0, _timelineProgressInflight - 1);
+  if (_timelineProgressInflight === 0) setTimelineProgressActive(false);
+}
+
 async function fetchTimelineForDevice(deviceId, day) {
   const query = new URLSearchParams({ device_id: deviceId, day: day || todayString() });
   query.set("ts", String(Date.now()));
-  return await api(`/api/playback/timeline?${query.toString()}`, { cache: "no-store" });
+  beginTimelineProgress();
+  try {
+    return await api(`/api/playback/timeline?${query.toString()}`, { cache: "no-store" });
+  } finally {
+    endTimelineProgress();
+  }
 }
 
 function mergeTimelines(payloads) {
@@ -1946,23 +2006,31 @@ function mergeTimelines(payloads) {
 
 function syncTimelineSelection(options = {}) {
   const preferredEventId = typeof options.preferredEventId === "string" ? options.preferredEventId : "";
-  const preferredEvent = state.timeline.events.find((item) => item.id === preferredEventId && eventIsReady(item)) || null;
+  const preferredEvent = state.timeline.events.find((item) => item.id === preferredEventId && eventIsPlayable(item)) || null;
   if (preferredEvent) {
     state.selectedEventId = preferredEvent.id;
     return preferredEvent;
   }
   const currentSelected = state.timeline.events.find((item) => item.id === state.selectedEventId) || null;
-  if (currentSelected && eventIsReady(currentSelected)) return currentSelected;
+  if (currentSelected && eventIsPlayable(currentSelected)) return currentSelected;
   if (options.autoSelectLatest) {
-    const latestReady = [...state.timeline.events].reverse().find((item) => eventIsReady(item)) || null;
-    state.selectedEventId = latestReady?.id || null;
-    return latestReady;
+    const latestPlayable = [...state.timeline.events].reverse().find((item) => eventIsPlayable(item)) || null;
+    state.selectedEventId = latestPlayable?.id || null;
+    return latestPlayable;
   }
   state.selectedEventId = null;
   return null;
 }
 
 function timelineEmptyState() {
+  if (isTimelineLoading()) {
+    return {
+      state: "loading",
+      title: "Loading playback...",
+      text: "Fetching recorded clips for the selected day.",
+      status: "Loading timeline…",
+    };
+  }
   const pending = pendingEventCount();
   if (pending) {
     return {
@@ -2009,7 +2077,7 @@ async function selectEvent(eventId, options = {}) {
     if (refreshed) event = refreshed;
   } catch {}
 
-  if (!eventIsReady(event) && options.allowPending !== true) {
+  if (!eventIsPlayable(event) && options.allowPending !== true) {
     renderTimeline();
     renderPlaybackEmptyState();
     scheduleTimelineAutoRefresh();
@@ -2343,7 +2411,7 @@ function bindTimelineInteractions() {
       if (target) {
         const targetEvent = state.timeline.events.find((item) => item.id === target.dataset.eventId) || null;
         if (!targetEvent) return;
-        if (!eventIsReady(targetEvent)) {
+        if (!eventIsPlayable(targetEvent)) {
           setStatus(
             eventState(targetEvent) === "missing"
               ? `${targetEvent.title} is unavailable because recorded video does not cover that time range.`

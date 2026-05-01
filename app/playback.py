@@ -277,6 +277,7 @@ class Segment:
 
 _index_db_locks: Dict[str, threading.Lock] = {}
 _index_db_locks_lock = threading.Lock()
+_index_db_connections: Dict[str, Tuple[str, sqlite3.Connection]] = {}
 
 
 def _index_db_path(device_id: str) -> Path:
@@ -294,21 +295,34 @@ def _index_db_lock(device_id: str) -> threading.Lock:
 
 @contextmanager
 def _index_connect(device_id: str):
-    """Serialize writes per device via an in-process lock. SQLite's WAL mode
-    permits concurrent readers."""
+    """Serialize access per device via an in-process lock. The connection is
+    cached across calls — opening SQLite + running PRAGMAs and DDL on every
+    query was a measurable share of timeline-load time once the index grew."""
     path = _index_db_path(device_id)
     lock = _index_db_lock(device_id)
     lock.acquire()
     try:
-        conn = sqlite3.connect(str(path), timeout=5.0, isolation_level=None)
-        try:
+        cached = _index_db_connections.get(device_id)
+        if cached is not None and cached[0] != str(path):
+            # Storage root changed (settings.recording_path or NVMe swap).
+            try:
+                cached[1].close()
+            except Exception:
+                pass
+            cached = None
+        if cached is None:
+            conn = sqlite3.connect(
+                str(path), timeout=5.0, isolation_level=None, check_same_thread=False
+            )
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA busy_timeout=3000")
+            conn.row_factory = sqlite3.Row
             _index_migrate(conn)
-            yield conn
-        finally:
-            conn.close()
+            _index_db_connections[device_id] = (str(path), conn)
+        else:
+            conn = cached[1]
+        yield conn
     finally:
         lock.release()
 
@@ -956,6 +970,10 @@ def _delete_clip_cache(event_ids: Iterable[str]) -> None:
             (_clips_root() / f"{eid}.mp4").unlink(missing_ok=True)
         except Exception:
             pass
+        try:
+            _hls_playlist_cache_path(eid).unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def _load_events_normalized() -> List[Dict[str, Any]]:
@@ -1038,6 +1056,14 @@ def _serialize_event(event: Dict[str, Any]) -> Dict[str, Any]:
                 except Exception:
                     pass
         local_tags.append(t)
+    is_open = _event_is_open(event)
+    # Open events have no real clip_end yet. Surface a synthesized "now" so
+    # the timeline can render and play them live, plus a `live` flag so the
+    # frontend can style them as ongoing rather than ready clips.
+    if is_open:
+        clip_end_iso = _to_local(_utc_now())
+    else:
+        clip_end_iso = _to_local(_parse_iso(event.get("clip_end"))) if event.get("clip_end") else None
     return {
         "id": event.get("id"),
         "device_id": event.get("device_id"),
@@ -1047,7 +1073,7 @@ def _serialize_event(event: Dict[str, Any]) -> Dict[str, Any]:
         "preset_name": _event_preset_name(event),
         "triggered_at": _to_local(_parse_iso(event.get("triggered_at"))) if event.get("triggered_at") else None,
         "clip_start": _to_local(_parse_iso(event.get("clip_start"))) if event.get("clip_start") else None,
-        "clip_end": _to_local(_parse_iso(event.get("clip_end"))) if event.get("clip_end") else None,
+        "clip_end": clip_end_iso,
         "before_seconds": float(event.get("before_seconds") or 0),
         "after_seconds": float(event.get("after_seconds") or 0),
         "flow_id": event.get("flow_id"),
@@ -1056,6 +1082,7 @@ def _serialize_event(event: Dict[str, Any]) -> Dict[str, Any]:
         "tag_segments": local_tags,
         "state": state,
         "ready": state == "ready",
+        "live": is_open,
     }
 
 
@@ -1647,6 +1674,16 @@ def _indexer_loop() -> None:
                         device_ids.append(child.name)
 
             if not startup_reconciled:
+                # Drop untagged segments before the first reconcile so we don't
+                # ffprobe thousands of files that are about to be deleted. The
+                # prune's defensive on-disk sweep works without an index.
+                try:
+                    pruned = _prune_all_untagged_segments()
+                    total = sum(pruned.values()) if pruned else 0
+                    if total:
+                        _log_index.info("Startup pruned %d untagged segment(s)", total)
+                except Exception as exc:
+                    _log_index.warning("Startup untagged-prune failed: %s", exc)
                 _log_index.info("Startup reconciliation over %d device(s)", len(device_ids))
                 startup_reconciled = True
 
@@ -1928,7 +1965,6 @@ def create_recording_marker(
     *,
     device_id: str,
     before_seconds: float,
-    after_seconds: Optional[float],
     color: str,
     title: str,
     preset_key: Optional[str] = None,
@@ -1939,9 +1975,10 @@ def create_recording_marker(
 ) -> Dict[str, Any]:
     trigger_at = _utc_now()
     before = max(0.0, float(before_seconds or 0))
-    after = None if after_seconds is None else max(0.0, float(after_seconds or 0))
     clip_start = trigger_at - timedelta(seconds=before)
-    clip_end = None if after is None else _clip_end_after(clip_start, trigger_at + timedelta(seconds=after))
+    # Recording markers are always born open. The flow author closes them
+    # explicitly with stop_recording_marker (typically a Delay → Stop chain,
+    # or never, for 24/7 recording).
     event = {
         "id": uuid.uuid4().hex[:12],
         "device_id": str(device_id or "").strip(),
@@ -1950,17 +1987,15 @@ def create_recording_marker(
         "preset_name": str(preset_name or title or "Recording").strip() or "Recording",
         "preset_key": str(preset_key or "").strip() or _recording_preset_key(preset_name or title),
         "before_seconds": before,
-        "after_seconds": after,
+        "after_seconds": None,
         "triggered_at": trigger_at.isoformat(),
         "clip_start": clip_start.isoformat(),
-        "clip_end": clip_end.isoformat() if clip_end is not None else None,
+        "clip_end": None,
         "flow_id": str(flow_id or "").strip() or None,
         "flow_name": str(flow_name or "").strip() or None,
         "node_id": str(node_id or "").strip() or None,
     }
     event["tag_segments"] = _event_tag_segments(event)
-    if after is not None:
-        event, _ = _trim_event_to_coverage(event)
 
     with _events_lock:
         items = _load_events_normalized()
@@ -2072,16 +2107,9 @@ def clear_all_recordings() -> Dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def _build_hls_playlist(device_id: str, started_at: datetime, ended_at: datetime) -> str:
-    """Return an HLS VOD-style media playlist covering [started_at, ended_at]."""
-    if (ended_at - started_at).total_seconds() > HLS_MAX_WINDOW_SECONDS:
-        raise HTTPException(status_code=400, detail="HLS window too large")
-
-    segments = _index_query_range(device_id, started_at, ended_at)
-    # Sort; drop any not ready for playback (very small or zero-duration).
-    segments = [s for s in segments if s.duration_seconds > 0.0 and s.size_bytes >= MIN_SEGMENT_BYTES]
-    segments.sort(key=lambda s: s.started_at)
-
+def _format_hls_playlist(
+    segments: List["Segment"], *, playlist_type: str, ended: bool
+) -> str:
     max_dur = max((s.duration_seconds for s in segments), default=float(HLS_TARGET_DURATION))
     target = max(1, int(round(max_dur + 0.5)))
 
@@ -2089,7 +2117,7 @@ def _build_hls_playlist(device_id: str, started_at: datetime, ended_at: datetime
         "#EXTM3U",
         "#EXT-X-VERSION:6",
         f"#EXT-X-TARGETDURATION:{target}",
-        "#EXT-X-PLAYLIST-TYPE:VOD",
+        f"#EXT-X-PLAYLIST-TYPE:{playlist_type}",
         "#EXT-X-MEDIA-SEQUENCE:0",
         "#EXT-X-INDEPENDENT-SEGMENTS",
     ]
@@ -2106,8 +2134,68 @@ def _build_hls_playlist(device_id: str, started_at: datetime, ended_at: datetime
         lines.append(f"seg/{seg.filename}")
         prev_end = seg.ended_at
 
-    lines.append("#EXT-X-ENDLIST")
+    if ended:
+        lines.append("#EXT-X-ENDLIST")
     return "\n".join(lines) + "\n"
+
+
+def _build_hls_playlist(device_id: str, started_at: datetime, ended_at: datetime) -> str:
+    """Return an HLS VOD-style media playlist covering [started_at, ended_at]."""
+    if (ended_at - started_at).total_seconds() > HLS_MAX_WINDOW_SECONDS:
+        raise HTTPException(status_code=400, detail="HLS window too large")
+
+    segments = _index_query_range(device_id, started_at, ended_at)
+    # Drop anything not ready for playback (very small or zero-duration).
+    segments = [s for s in segments if s.duration_seconds > 0.0 and s.size_bytes >= MIN_SEGMENT_BYTES]
+    segments.sort(key=lambda s: s.started_at)
+    return _format_hls_playlist(segments, playlist_type="VOD", ended=True)
+
+
+def _build_live_hls_playlist(device_id: str, started_at: datetime) -> str:
+    """Live (EVENT-type) playlist for an open recording event. Includes only
+    finalized segments — the in-progress tip is excluded so we never advertise
+    a fragment ffmpeg is still writing. The player polls for new entries."""
+    ended_at = _utc_now()
+    if (ended_at - started_at).total_seconds() > HLS_MAX_WINDOW_SECONDS:
+        # An open event older than 24h is well past the auto-close threshold,
+        # but we still serve the most recent 24h window to keep playback usable.
+        started_at = ended_at - timedelta(seconds=HLS_MAX_WINDOW_SECONDS)
+    segments = _index_query_range(device_id, started_at, ended_at, finalized_only=True)
+    segments = [s for s in segments if s.duration_seconds > 0.0 and s.size_bytes >= MIN_SEGMENT_BYTES]
+    segments.sort(key=lambda s: s.started_at)
+    return _format_hls_playlist(segments, playlist_type="EVENT", ended=False)
+
+
+def _hls_playlist_cache_path(event_id: str) -> Path:
+    return _clips_root() / "playlists" / f"{event_id}.m3u8"
+
+
+def _build_hls_playlist_for_event(device_id: str, event: Dict[str, Any]) -> str:
+    """Generate the HLS playlist for an event, caching finalized ones on disk.
+    Closed+ready events have a deterministic playlist that never changes, so
+    re-issuing the file from cache cuts hundreds of ms off repeat loads of
+    long clips."""
+    event_id = str(event.get("id") or "").strip()
+    started_at = _parse_iso(event.get("clip_start"))
+    if event.get("clip_end"):
+        ended_at = _parse_iso(event.get("clip_end"))
+        # Cache only events whose every segment is finalized — until then the
+        # playlist can still change as the indexer probes the tail.
+        cache_path = _hls_playlist_cache_path(event_id) if event_id else None
+        if cache_path is not None and cache_path.is_file():
+            try:
+                return cache_path.read_text(encoding="utf-8")
+            except Exception:
+                pass
+        playlist = _build_hls_playlist(device_id, started_at, ended_at)
+        if cache_path is not None and _event_state(event) == "ready":
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(playlist, encoding="utf-8")
+            except Exception:
+                pass
+        return playlist
+    return _build_live_hls_playlist(device_id, started_at)
 
 
 # ---------------------------------------------------------------------------
@@ -2296,18 +2384,55 @@ def playback_timeline(
     for item in raw:
         if str(item.get("device_id") or "").strip() != device_id:
             continue
+        # Cheap pre-filter on raw bounds before paying for a SQLite roundtrip.
+        # Trim can only shrink an event, never expand it, so anything whose
+        # raw range falls outside the day window is safe to skip.
+        try:
+            raw_start, raw_end = _event_compare_bounds(item)
+        except Exception:
+            continue
+        if raw_start >= ended_at:
+            continue
+        if raw_end is not None and raw_end <= started_at:
+            continue
         normalized, _ = _trim_event_to_coverage(item)
         filtered.append(normalized)
     merged, _, _ = _merge_overlapping_events(filtered)
 
     events_out: List[Dict[str, Any]] = []
+    now = _utc_now()
+    day_start_local = _to_local(started_at)
+    day_end_local = _to_local(ended_at)
     for item in merged:
         try:
-            e_start, e_end = _event_clip_bounds(item)
+            e_start, raw_end = _event_compare_bounds(item)
         except Exception:
             continue
-        if e_start < ended_at and e_end > started_at:
-            events_out.append(_serialize_event(item))
+        # Open (still-recording) events have no clip_end yet — treat them as
+        # extending to "now" for the day-overlap check so they show up live in
+        # the timeline instead of being silently dropped.
+        e_end = raw_end if raw_end is not None else now
+        if not (e_start < ended_at and e_end > started_at):
+            continue
+        serialized = _serialize_event(item)
+        # Clamp the bar to the requested day so an event spanning across
+        # midnight (or a stale open event from a previous day) doesn't
+        # midnight-wrap and visually bleed past "now" on today's timeline.
+        if e_start < started_at:
+            serialized["clip_start"] = day_start_local
+        if e_end > ended_at:
+            serialized["clip_end"] = day_end_local
+        for tag in serialized.get("tag_segments") or []:
+            try:
+                t_start = _parse_iso(tag.get("clip_start"))
+                t_end = _parse_iso(tag.get("clip_end"))
+            except Exception:
+                continue
+            if t_start < started_at:
+                tag["clip_start"] = day_start_local
+            if t_end > ended_at:
+                tag["clip_end"] = day_end_local
+        events_out.append(serialized)
     events_out.sort(key=lambda e: str(e.get("triggered_at") or ""))
 
     return {
@@ -2332,6 +2457,11 @@ def playback_event_clip(event_id: str):
             status_code=404,
             detail="Recording clip is unavailable because recorded video does not cover the requested time range",
         )
+    if state == "recording":
+        raise HTTPException(
+            status_code=409,
+            detail="Recording is still in progress — stop it before downloading the clip",
+        )
     if state != "ready":
         raise HTTPException(status_code=409, detail="Recording clip is still being finalized")
     clip_path = _build_event_clip(event)
@@ -2351,19 +2481,27 @@ def playback_hls_playlist(
         if str(event.get("device_id") or "").strip() != device_id:
             raise HTTPException(status_code=400, detail="Event does not belong to this device")
         try:
-            started_at, ended_at = _event_clip_bounds(event)
+            playlist = _build_hls_playlist_for_event(device_id, event)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid event bounds")
-    else:
-        if not from_ or not to:
-            raise HTTPException(status_code=400, detail="from and to (or event_id) are required")
-        try:
-            started_at = _parse_iso(from_)
-            ended_at = _parse_iso(to)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid from/to")
-        if ended_at <= started_at:
-            raise HTTPException(status_code=400, detail="to must be after from")
+        # Open events serve a growing EVENT-type playlist, so the player needs
+        # to re-fetch. Closed events are deterministic — the browser may cache.
+        cache_header = "no-store" if not event.get("clip_end") else "public, max-age=300"
+        return PlainTextResponse(
+            playlist,
+            media_type="application/vnd.apple.mpegurl",
+            headers={"Cache-Control": cache_header},
+        )
+
+    if not from_ or not to:
+        raise HTTPException(status_code=400, detail="from and to (or event_id) are required")
+    try:
+        started_at = _parse_iso(from_)
+        ended_at = _parse_iso(to)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid from/to")
+    if ended_at <= started_at:
+        raise HTTPException(status_code=400, detail="to must be after from")
 
     playlist = _build_hls_playlist(device_id, started_at, ended_at)
     return PlainTextResponse(

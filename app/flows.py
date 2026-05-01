@@ -2118,15 +2118,10 @@ def _normalize_node_config(
             raise HTTPException(status_code=400, detail="Record seconds before must be numeric")
         if cfg["before_seconds"] < 0:
             raise HTTPException(status_code=400, detail="Record seconds before cannot be negative")
-        if cfg.get("after_seconds") in {None, ""}:
-            cfg.pop("after_seconds", None)
-        else:
-            try:
-                cfg["after_seconds"] = float(cfg.get("after_seconds") or 0)
-            except Exception:
-                raise HTTPException(status_code=400, detail="Record seconds after must be numeric")
-            if cfg["after_seconds"] < 0:
-                raise HTTPException(status_code=400, detail="Record seconds after cannot be negative")
+        # `after_seconds` is no longer part of the action — recordings stay
+        # open until an explicit Stop Recording (use a Delay node in front of
+        # it for the "record for N seconds" pattern).
+        cfg.pop("after_seconds", None)
         color = _normalize_record_color(cfg.get("color"))
         if str(cfg.get("color") or "").strip() and color != str(cfg.get("color") or "").strip().lower():
             raw_color = str(cfg.get("color") or "").strip().lower()
@@ -3647,11 +3642,6 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
                 device_ids.append(did)
 
         before = float(cfg.get("before_seconds") or 0)
-        after = (
-            float(cfg.get("after_seconds"))
-            if cfg.get("after_seconds") not in {None, ""}
-            else None
-        )
         flow_id = str((context.get("flow") or {}).get("id") or "").strip() or None
         flow_name = str((context.get("flow") or {}).get("name") or "").strip() or None
         node_id = str(node.get("id") or "").strip() or None
@@ -3663,7 +3653,6 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
                 event = create_recording_marker(
                     device_id=did,
                     before_seconds=before,
-                    after_seconds=after,
                     color=color,
                     title=title,
                     preset_key=preset_key,
