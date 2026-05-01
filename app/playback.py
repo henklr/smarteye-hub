@@ -439,6 +439,19 @@ def _index_latest_started_at(device_id: str) -> Optional[datetime]:
     return _dt_from_us(int(row[0]))
 
 
+def _index_latest_finalized_end(device_id: str) -> Optional[datetime]:
+    """End-of-stream timestamp for the live edge of a recording — the latest
+    point a player can actually reach for this device. Excludes the
+    in-progress tip segment (ffmpeg is still writing it)."""
+    with _index_connect(device_id) as conn:
+        row = conn.execute(
+            "SELECT MAX(ended_at_us) FROM segments WHERE finalized = 1"
+        ).fetchone()
+    if not row or row[0] is None:
+        return None
+    return _dt_from_us(int(row[0]))
+
+
 # ---------------------------------------------------------------------------
 # ffprobe / segment reconciliation
 # ---------------------------------------------------------------------------
@@ -1057,11 +1070,29 @@ def _serialize_event(event: Dict[str, Any]) -> Dict[str, Any]:
                     pass
         local_tags.append(t)
     is_open = _event_is_open(event)
-    # Open events have no real clip_end yet. Surface a synthesized "now" so
-    # the timeline can render and play them live, plus a `live` flag so the
-    # frontend can style them as ongoing rather than ready clips.
+    # Open events have no real clip_end yet. Use the latest finalized
+    # segment's end (clamped to >= clip_start) as the visible edge so the
+    # bar lines up with what the player can actually stream. Wallclock "now"
+    # would overshoot the live edge by a few seconds (the in-progress tip
+    # ffmpeg is writing isn't playable until it closes). When no segment has
+    # closed yet, fall back to wallclock "now" so the marker is at least
+    # visible — it'll snap to the real edge as soon as the first segment
+    # finalizes.
     if is_open:
-        clip_end_iso = _to_local(_utc_now())
+        device_id = str(event.get("device_id") or "").strip()
+        try:
+            clip_start_dt = _parse_iso(event.get("clip_start"))
+        except Exception:
+            clip_start_dt = _utc_now()
+        live_edge: Optional[datetime] = None
+        if device_id:
+            try:
+                live_edge = _index_latest_finalized_end(device_id)
+            except Exception:
+                live_edge = None
+        if live_edge is None or live_edge < clip_start_dt:
+            live_edge = _utc_now()
+        clip_end_iso = _to_local(live_edge)
     else:
         clip_end_iso = _to_local(_parse_iso(event.get("clip_end"))) if event.get("clip_end") else None
     return {
