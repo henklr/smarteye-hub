@@ -1321,10 +1321,30 @@ async function seekAllTilesToSeconds(elapsedSeconds) {
 
 async function startVideoPlayback(video) {
   if (!video) return false;
+  // Wait for the player to actually have data ready, otherwise play()
+  // resolves while the video sits paused on the first decoded frame —
+  // visible especially on live (EVENT-type) HLS playlists where the
+  // manifest + first fragment haven't landed yet.
+  if (video.readyState < 3) {
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        video.removeEventListener("canplay", finish);
+        video.removeEventListener("loadeddata", finish);
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(finish, 4000);
+      video.addEventListener("canplay", finish, { once: true });
+      video.addEventListener("loadeddata", finish, { once: true });
+    });
+  }
   try {
     const r = video.play();
     if (r && typeof r.then === "function") await r;
-    return true;
+    return !video.paused;
   } catch { return false; }
 }
 
