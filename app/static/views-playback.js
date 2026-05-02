@@ -1936,11 +1936,10 @@ function renderTimeline() {
             const width = visibleTimelineWidth(clippedStart, clippedEnd);
             const active = segment.eventId === state.selectedEventId ? "is-active" : "";
             const playable = segment.playable ?? segment.ready;
-            const liveCls = segment.live ? "is-live" : "";
-            const pendingCls = (!playable) ? `is-pending is-${escapeHtml(segment.state)}` : (segment.live ? `is-${escapeHtml(segment.state)}` : "");
+            const pendingCls = (!playable) ? `is-pending is-${escapeHtml(segment.state)}` : "";
             const readiness = !segment.ready ? ` · ${eventStateLabel(segment)}` : "";
             const camLabel = segment.deviceId ? ` · ${deviceName(segment.deviceId)}` : "";
-            return `<button class="playbackMarker ${active} ${liveCls} ${pendingCls}" type="button" data-event-id="${escapeHtml(segment.eventId)}" aria-disabled="${playable ? "false" : "true"}" style="left:${left}%; width:${width}%; background:${escapeHtml(segment.color)};" title="${escapeHtml(`${segment.presetName}${camLabel} · ${clockLabel(segment.triggeredAt)}${readiness}`)}"></button>`;
+            return `<button class="playbackMarker ${active} ${pendingCls}" type="button" data-event-id="${escapeHtml(segment.eventId)}" aria-disabled="${playable ? "false" : "true"}" style="left:${left}%; width:${width}%; background:${escapeHtml(segment.color)};" title="${escapeHtml(`${segment.presetName}${camLabel} · ${clockLabel(segment.triggeredAt)}${readiness}`)}"></button>`;
           }).join("")}
         </div>
       `).join("") : `<div class="playbackTimelineEmpty">${

@@ -1043,34 +1043,9 @@ body.playbackPage {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24);
 }
 
-.playbackPage .playbackMarker.is-live {
-  cursor: pointer;
-  position: relative;
-  /* Calm, no glow on the bar itself — for 24/7 recordings the bar can span
-     the entire day, so a pulsing red border would be obnoxious. */
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
-}
-
-/* Small blinking dot at the leading (right) edge — the only thing that
-   says "this is being recorded right now". */
-.playbackPage .playbackMarker.is-live::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  right: 2px;
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background: #ef4444;
-  transform: translateY(-50%);
-  box-shadow: 0 0 4px rgba(239, 68, 68, 0.85);
-  animation: playbackMarkerLiveBlink 1.4s ease-in-out infinite;
-}
-
-@keyframes playbackMarkerLiveBlink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
+/* Live (open) recordings are styled identically to finalized clips — the
+   bar already extends to the live edge, so we don't need a separate dot or
+   pulse to communicate "in progress". */
 
 .playbackPage .playbackMarkerList {
   display: flex;
