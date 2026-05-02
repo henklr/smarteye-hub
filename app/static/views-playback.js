@@ -897,6 +897,7 @@ function attachTileSource(tile, event) {
     : hlsPlaylistUrlForRange(tile.deviceId, event.clip_start, event.clip_end);
   if (!url) {
     setTileOverlay(tile, "No source", true, { state: "error" });
+    tile.readyPromise = Promise.resolve(false);
     return;
   }
 
@@ -904,47 +905,66 @@ function attachTileSource(tile, event) {
   // even if untagged footage is still on disk inside the pruner grace window,
   // we don't want it visible. (Live events match by id, not by range.)
   if (!live && !deviceHasEventInRange(tile.deviceId, event.clip_start, event.clip_end)) {
-    detachTileSource(tile, { destroy: false });
+    detachTileSource(tile, { destroy: true });
     setTileOverlay(tile, "No event in this range", true, { state: "error" });
+    tile.readyPromise = Promise.resolve(false);
     return;
   }
 
   const video = tile.video;
 
-  // Cancel any in-flight load and bump token. Don't destroy the Hls instance
-  // — reusing it across event switches avoids MediaSource detach/reattach,
-  // which is the bulk of the per-switch latency.
-  detachTileSource(tile, { destroy: false });
+  // Always destroy the previous Hls instance — reusing it across event
+  // switches was leaking MediaSource buffer state (black-screen + stalled
+  // playback after a switch). The destroy/attach round-trip costs a few
+  // hundred ms but eliminates the bug class entirely.
+  detachTileSource(tile, { destroy: true });
   tile.loadToken += 1;
+  const myToken = tile.loadToken;
 
   setTileOverlay(tile, "", true, { state: "loading" });
 
   const hideOverlay = () => setTileOverlay(tile, "", false);
   const showError = (msg) => setTileOverlay(tile, msg, true, { state: "error" });
 
-  // Reset offset; will be computed once the manifest/metadata reports the
-  // first segment's wall-clock start.
   tile.currentEvent = event;
   tile.startOffsetSeconds = null;
+  tile.pendingSeekElapsed = null;
 
   if (window.Hls && window.Hls.isSupported && window.Hls.isSupported()) {
-    let hls = tile.hls;
-    if (!hls) {
-      hls = new window.Hls(HLS_VOD_CONFIG);
-      tile.hls = hls;
-      hls.on(window.Hls.Events.ERROR, (_evt, data) => {
-        if (data?.fatal) showError("No recording in this range");
-      });
-      hls.on(window.Hls.Events.LEVEL_LOADED, (_evt, data) => {
-        const firstFrag = data?.details?.fragments?.[0];
-        const segStartMs = firstFrag?.programDateTime;
-        if (Number.isFinite(segStartMs)) applyTileOffsetFromProgramDateTime(tile, segStartMs);
-      });
-      hls.attachMedia(video);
-    }
-    // First decoded frame is the most reliable "video is actually showing" signal.
+    const hls = new window.Hls(HLS_VOD_CONFIG);
+    tile.hls = hls;
+    hls.on(window.Hls.Events.ERROR, (_evt, data) => {
+      if (data?.fatal) showError("No recording in this range");
+    });
+    hls.on(window.Hls.Events.LEVEL_LOADED, (_evt, data) => {
+      const firstFrag = data?.details?.fragments?.[0];
+      const segStartMs = firstFrag?.programDateTime;
+      if (Number.isFinite(segStartMs)) applyTileOffsetFromProgramDateTime(tile, segStartMs);
+    });
     video.addEventListener("playing", hideOverlay, { once: true });
     video.addEventListener("loadeddata", hideOverlay, { once: true });
+
+    // Resolves when the first fragment has actually been buffered into the
+    // MediaSource — that's when canplay fires reliably. Used by selectEvent
+    // to gate seek + play(), so we never seek into an empty buffer.
+    tile.readyPromise = new Promise((resolve) => {
+      let done = false;
+      const finish = (ok) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        hls.off(window.Hls.Events.FRAG_BUFFERED, onFragBuffered);
+        video.removeEventListener("canplay", onCanplay);
+        resolve(ok && tile.loadToken === myToken);
+      };
+      const onFragBuffered = () => finish(true);
+      const onCanplay = () => finish(true);
+      const timer = setTimeout(() => finish(false), 6000);
+      hls.on(window.Hls.Events.FRAG_BUFFERED, onFragBuffered);
+      video.addEventListener("canplay", onCanplay, { once: true });
+    });
+
+    hls.attachMedia(video);
     hls.loadSource(url);
     try { hls.startLoad(); } catch {}
   } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
@@ -964,9 +984,23 @@ function attachTileSource(tile, event) {
     video.addEventListener("error", () => {
       if (!isIgnorableTileError(tile)) showError("No recording in this range");
     });
+    tile.readyPromise = new Promise((resolve) => {
+      let done = false;
+      const finish = (ok) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        video.removeEventListener("canplay", onCanplay);
+        resolve(ok && tile.loadToken === myToken);
+      };
+      const onCanplay = () => finish(true);
+      const timer = setTimeout(() => finish(false), 6000);
+      video.addEventListener("canplay", onCanplay, { once: true });
+    });
     try { video.load(); } catch {}
   } else {
     showError("HLS not supported in this browser");
+    tile.readyPromise = Promise.resolve(false);
   }
 }
 
@@ -1120,6 +1154,7 @@ function getOrCreateTile(deviceId) {
     // EXT-X-PROGRAM-DATE-TIME (hls.js) or HTMLMediaElement.getStartDate()
     // (Safari) and translate via tileElapsedSeconds / setTileElapsed.
     currentEvent: null,
+    readyPromise: Promise.resolve(true),  // resolves once first fragment buffered
     startOffsetSeconds: null,  // (eventStart - firstSegmentStart) in seconds
     pendingSeekElapsed: null,  // seek requested before manifest parsed
   };
@@ -2147,6 +2182,11 @@ async function selectEvent(eventId, options = {}) {
     setStatus(`Loading ${event.title}…`);
     reloadAllTileSourcesForEvent(event);
   }
+
+  // Wait for each tile's first fragment to actually be buffered before
+  // seeking + playing. Otherwise we seek into an empty MediaSource and the
+  // video either shows a black screen or never starts.
+  await Promise.all([...tiles.values()].map((t) => t.readyPromise || Promise.resolve(true)));
 
   await seekAllTilesToSeconds(seekSeconds);
 
