@@ -809,10 +809,13 @@ async function setAllTilesElapsed(elapsedSeconds) {
       tile.pendingSeekElapsed = elapsedSeconds;
       await new Promise((resolve) => {
         const apply = () => {
-          if (tile.startOffsetSeconds != null) {
-            tile.video.currentTime = Math.max(0, tile.startOffsetSeconds + elapsedSeconds);
-            tile.pendingSeekElapsed = null;
-          }
+          // Even if hls.js hasn't reported the segment offset yet, seek with
+          // an offset of 0 — for live events that start at clip_start the
+          // offset is 0 anyway, and being a few seconds off is far better
+          // than letting hls.js leave currentTime parked at the live edge.
+          const offset = tile.startOffsetSeconds || 0;
+          tile.video.currentTime = Math.max(0, offset + elapsedSeconds);
+          tile.pendingSeekElapsed = null;
           resolve();
         };
         tile.video.addEventListener("loadedmetadata", apply, { once: true });
@@ -841,6 +844,11 @@ function applyTileOffsetFromProgramDateTime(tile, segStartMs) {
 const HLS_VOD_CONFIG = {
   enableWorker: true,
   lowLatencyMode: false,
+  // Force playback to start at the head of the playlist instead of hls.js's
+  // default of "live edge" for EVENT-type (live) playlists. Without this, an
+  // open recording loads with currentTime at the end and play()+seek-back-to-0
+  // races, leaving the video paused on the first frame.
+  startPosition: 0,
   // VOD start-latency tuning: prefetch fragment metadata, keep buffers tight
   // so the first fragment is fetched + decoded fast.
   startFragPrefetch: true,
@@ -1322,6 +1330,10 @@ async function seekAllTilesToSeconds(elapsedSeconds) {
 
 async function startVideoPlayback(video) {
   if (!video) return false;
+  // Browsers only allow autoplay on muted video unless the user has
+  // recently interacted. Click-to-play counts as interaction, but enforcing
+  // muted is the most reliable way to make autoplay actually start.
+  if (!video.muted) video.muted = true;
   // Wait for the player to actually have data ready, otherwise play()
   // resolves while the video sits paused on the first decoded frame —
   // visible especially on live (EVENT-type) HLS playlists where the
@@ -1333,48 +1345,18 @@ async function startVideoPlayback(video) {
         if (done) return;
         done = true;
         video.removeEventListener("canplay", finish);
-        video.removeEventListener("loadeddata", finish);
         clearTimeout(timer);
         resolve();
       };
       const timer = setTimeout(finish, 4000);
       video.addEventListener("canplay", finish, { once: true });
-      video.addEventListener("loadeddata", finish, { once: true });
     });
   }
-  // play() can resolve "successfully" while the video stays paused (browser
-  // autoplay heuristics, post-seek stall, late buffer warmup). Verify by
-  // waiting for the `playing` event briefly and retrying a couple times.
-  for (let attempt = 0; attempt < 3; attempt++) {
-    let playErr = null;
-    try {
-      const r = video.play();
-      if (r && typeof r.then === "function") await r;
-    } catch (err) {
-      playErr = err;
-    }
-    if (!video.paused) {
-      console.debug("[playback] play() succeeded on attempt", attempt + 1);
-      return true;
-    }
-    const started = await new Promise((resolve) => {
-      const t = setTimeout(() => resolve(false), 800);
-      const onPlaying = () => { clearTimeout(t); resolve(true); };
-      video.addEventListener("playing", onPlaying, { once: true });
-    });
-    if (started || !video.paused) {
-      console.debug("[playback] play() got `playing` on attempt", attempt + 1);
-      return true;
-    }
-    console.warn("[playback] attempt", attempt + 1, "still paused", {
-      readyState: video.readyState,
-      currentTime: video.currentTime,
-      duration: video.duration,
-      buffered: video.buffered.length ? `${video.buffered.start(0)}-${video.buffered.end(video.buffered.length - 1)}` : "empty",
-      muted: video.muted,
-      error: video.error?.code,
-      playErr: playErr?.message,
-    });
+  try {
+    const r = video.play();
+    if (r && typeof r.then === "function") await r;
+  } catch (err) {
+    console.warn("[playback] play() rejected:", err?.name, err?.message);
   }
   return !video.paused;
 }
