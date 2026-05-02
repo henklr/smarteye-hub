@@ -426,7 +426,19 @@ def live_redirect():
 
 @app.get("/views", response_class=HTMLResponse)
 def views_page():
-    return (STATIC_DIR / "views.html").read_text(encoding="utf-8")
+    html = (STATIC_DIR / "views.html").read_text(encoding="utf-8")
+    # Cache-bust the page's static assets on each deploy. Mtime changes
+    # whenever the files are edited, so the browser refetches them — without
+    # this the no-cache header gets ignored by some browsers across reloads
+    # of the same tab.
+    for name in ("playback.css", "views.css", "styles.css", "views.js", "views-live.js", "views-playback.js", "event-notify.js"):
+        try:
+            v = int((STATIC_DIR / name).stat().st_mtime)
+        except OSError:
+            continue
+        html = html.replace(f'href="/static/{name}"', f'href="/static/{name}?v={v}"')
+        html = html.replace(f'src="/static/{name}"', f'src="/static/{name}?v={v}"')
+    return html
 
 
 @app.get("/devices", response_class=HTMLResponse)
