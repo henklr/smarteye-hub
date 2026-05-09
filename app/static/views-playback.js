@@ -1,105 +1,118 @@
-// Views: playback module. Wrapped in an IIFE so its top-level globals
-// (api, escapeHtml, loadTileMuted/saveTileMuted, state, tiles, …) don't
-// collide with views-live.js.
+// Views: playback module.
+// Wall-clock cursor model: a single UTC milliseconds cursor drives every tile;
+// each device runs one HLS playlist covering a window around the cursor and is
+// reloaded only when the cursor approaches the edge. Timeline is a continuous
+// wall-clock ruler with zoom presets (5m/1h/6h/24h/7d), coverage bars per
+// device, gap hatching, and event markers as overlay bookmarks.
 (function () {
 
 const el = (id) => document.getElementById(id);
 
-const DAY_MINUTES = 24 * 60;
-const MIN_VISIBLE_MINUTES = 5;
-const CLICK_SUPPRESSION_MS = 250;
-const PAN_DRAG_THRESHOLD_PX = 6;
-const MAX_NATIVE_PLAYBACK_RATE = 16;
-const PLAYBACK_STORAGE_KEY = "sei.playback.timelineState";
-const PLAYBACK_STATE_VERSION = 2;
-const PLAYBACK_STATE_SAVE_DELAY_MS = 400;
-const ACTIVE_TIMELINE_REFRESH_MS = 5000;
-const IDLE_TIMELINE_REFRESH_MS = 30000;
+// ── Constants ─────────────────────────────────────────────────────────
+const STORAGE_KEY = "sei.playback.v3";
+const STATE_VERSION = 3;
+const STATE_SAVE_DELAY_MS = 400;
 const TILE_MUTE_STORAGE_KEY = "sei.playback.tileMuted";
 
-const SHUTTLE_MAX = 16;
-const SHUTTLE_DEADZONE = 0.25;
-const SHUTTLE_REST_VALUE = 1;
-const SHUTTLE_SNAP_DURATION_MS = 260;
-const SHUTTLE_CURVE = 2;
-const SHUTTLE_SNAP_TARGETS = [1, -1];
-const SHUTTLE_SNAP_RADIUS = 0.15;
+const ZOOM_PRESETS_MS = [300_000, 3_600_000, 21_600_000, 86_400_000, 604_800_000];
+const DEFAULT_ZOOM_MS = 3_600_000;        // 1h
+const MIN_ZOOM_MS = 60_000;               // 1 min
+const MAX_ZOOM_MS = 30 * 24 * 3_600_000;  // 30d
+const SPEED_OPTIONS = [0.25, 0.5, 1, 2, 4, 8, 16];
+const MAX_SPEED = 16;
 
+const PLAYBACK_LEAD_MS = 5 * 60 * 1000;   // load 5 min ahead of cursor
+// Trail kept short so the first segment a player downloads is close to the
+// cursor — large segments (4K cameras at 2880×1620 hit ~5 MB each) make this
+// matter for click-to-first-frame latency. 10s still gives instant short
+// rewinds without forcing a playlist reload.
+const PLAYBACK_TRAIL_MS = 10 * 1000;
+const RELOAD_MARGIN_MS = 20 * 1000;       // reload when within 20s of edge
+const RELOAD_CHECK_INTERVAL_MS = 1500;
+const TIMELINE_DATA_REFRESH_LIVE_MS = 5000;
+const TIMELINE_DATA_REFRESH_IDLE_MS = 30_000;
+const FRAME_STEP_MS = 1000 / 30;          // ~1 frame at 30fps
+const LIVE_THRESHOLD_MS = 5000;
+const PAN_DRAG_THRESHOLD_PX = 6;
+const CLICK_SUPPRESSION_MS = 250;
+
+const HLS_CONFIG = {
+  enableWorker: true,
+  lowLatencyMode: false,
+  // No `startPosition` override: the server emits EXT-X-START with the
+  // cursor's offset, so hls.js fetches the right segment first.
+  startFragPrefetch: true,
+  maxBufferLength: 30,
+  maxMaxBufferLength: 60,
+  manifestLoadingTimeOut: 10_000,
+  manifestLoadingMaxRetry: 2,
+  levelLoadingTimeOut: 10_000,
+  fragLoadingTimeOut: 20_000,
+};
+
+// ── State ─────────────────────────────────────────────────────────────
 const state = {
   devices: [],
   activeDeviceIds: [],
-  selectedDay: "",
-  deviceTimelines: new Map(),
-  timeline: { segments: [], events: [] },
-  timelineFilters: { hiddenPresetKeys: [] },
-  transport: {
-    speed: 1,
-    direction: "forward",
-    advancingToNextClip: false,
-    forwardBoundaryTimer: 0,
-    forwardPlayback: { active: false, rafId: 0, lastTs: 0 },
-    reversePlayback: { active: false, rafId: 0, lastTs: 0 },
-  },
-  playbackCursor: { minute: null, label: "", rafId: 0 },
-  scrub: { active: false, pointerId: null, wasPlaying: false, eventId: null, pendingMinute: null, rafId: 0 },
-  timelineView: {
-    startMinute: 0,
-    endMinute: DAY_MINUTES,
-    pointerId: null,
-    dragOriginX: 0,
-    dragOriginStartMinute: 0,
-    dragOriginDuration: DAY_MINUTES,
-    isDragging: false,
-    suppressClickUntil: 0,
-  },
-  selectedEventId: null,
-  persistence: {
-    saveTimer: 0,
-    timelineRefreshTimer: 0,
-    timelineRequestId: 0,
-  },
+  cursorMs: Date.now() - 30_000,
+  zoomMs: DEFAULT_ZOOM_MS,
+  viewportStartMs: 0,
+  viewportEndMs: 0,
+  speed: 1,
+  isPlaying: false,
+  followLive: false,
+  coverage: new Map(),     // deviceId → [{startMs, endMs}]
+  thumbnails: new Map(),   // deviceId → [{startMs, endMs, url}]
+  events: [],              // bookmarks, drawn as marker overlay only
+  hiddenPresetKeys: [],
+  pageDisposed: false,
+  abortController: new AbortController(),
+  saveTimer: 0,
+  dataRefreshTimer: 0,
+  reloadCheckTimer: 0,
+  liveTickRafId: 0,
+  liveTickLastMs: 0,
+  scrub: { active: false, pointerId: null, wasPlaying: false, pendingMs: null, rafId: 0 },
+  pan: { active: false, pointerId: null, dragOriginX: 0, dragOriginStartMs: 0, isDragging: false, suppressClickUntil: 0 },
+  dataRequestId: 0,
 };
+function recenterViewportOnCursor() {
+  const half = state.zoomMs / 2;
+  state.viewportStartMs = state.cursorMs - half;
+  state.viewportEndMs = state.cursorMs + half;
+}
+recenterViewportOnCursor();
 
-// Map<deviceId, { tile, video, hls, audioBtn, overlayEl, deviceId, loadToken, suppressErrorUntil }>
+// Map<deviceId, {tileEl, video, hls, audioBtn, overlayEl, loadToken,
+//   loadedStartMs, loadedEndMs, playlistStartMs, pendingSeekMs, lastReloadAt,
+//   suppressErrorUntil, deviceId, lastUrl}>
 const tiles = new Map();
 
-let _shuttleDragging = false;
-let _shuttleAnimRafId = 0;
-let playbackPageDisposed = false;
-let playbackAbortController = new AbortController();
+let _initialized = false;
 
-function playbackAbortSignal() {
-  return playbackAbortController.signal;
+// ── Utilities ─────────────────────────────────────────────────────────
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
-function isAbortError(error) {
-  return error?.name === "AbortError";
-}
+function abortSignal() { return state.abortController.signal; }
+function isAbortError(err) { return err?.name === "AbortError"; }
 
 async function api(url, opts = {}) {
   const requestOpts = { ...opts };
-  if (!requestOpts.signal && !requestOpts.keepalive) requestOpts.signal = playbackAbortSignal();
+  if (!requestOpts.signal && !requestOpts.keepalive) requestOpts.signal = abortSignal();
   const res = await fetch(url, requestOpts);
   if (res.status === 401) { window.location.href = "/login"; return; }
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-  if (!res.ok) {
-    throw new Error((data && data.detail) ? data.detail : (text || res.statusText));
-  }
+  if (!res.ok) throw new Error((data && data.detail) ? data.detail : (text || res.statusText));
   return data;
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
 }
 
 function setStatus(message) {
@@ -107,18 +120,106 @@ function setStatus(message) {
   if (node) node.textContent = message || "";
 }
 
-// ── Tile mute persistence (per device) ─────────────────────────────────
+function deviceName(deviceId) {
+  return state.devices.find((d) => d.id === deviceId)?.name || deviceId || "camera";
+}
+
+function isLive(ms = state.cursorMs) {
+  return Math.abs(Date.now() - ms) <= LIVE_THRESHOLD_MS;
+}
+
+function isLiveCursor() {
+  // The user is "looking at the live edge" when the cursor is within ~30s of
+  // wall-clock now. Looser than `isLive` (which is for the LIVE button glow);
+  // used to gate live-tail refresh so we don't poll while reviewing the past.
+  return Math.abs(Date.now() - state.cursorMs) <= 30_000;
+}
+
+// ── Time formatting ──────────────────────────────────────────────────
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+function pad4(n) { return String(n).padStart(4, "0"); }
+
+function fmtClock(ms) {
+  const d = new Date(ms);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+function fmtClockMs(ms) {
+  const d = new Date(ms);
+  const tenths = Math.floor((ms % 1000) / 100);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${tenths}`;
+}
+
+function fmtDateTime(ms) {
+  const d = new Date(ms);
+  return `${pad4(d.getFullYear())}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${fmtClock(ms)}`;
+}
+
+function dayString(ms) {
+  const d = new Date(ms);
+  return `${pad4(d.getFullYear())}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function startOfLocalDay(ms) {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function parseISOms(value) {
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+// ── Persistence ──────────────────────────────────────────────────────
+
+function loadStored() {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || obj.version !== STATE_VERSION) return null;
+    return obj;
+  } catch { return null; }
+}
+
+function snapshotState() {
+  // Only persist device IDs that are still in the device list — keeps the
+  // restored state from referencing deleted cameras.
+  const knownIds = new Set(state.devices.map((d) => d.id));
+  const liveActiveIds = state.devices.length
+    ? state.activeDeviceIds.filter((id) => knownIds.has(id))
+    : [...state.activeDeviceIds];
+  return {
+    version: STATE_VERSION,
+    activeDeviceIds: liveActiveIds,
+    cursorMs: Number(state.cursorMs) || Date.now(),
+    zoomMs: state.zoomMs,
+    speed: state.speed,
+    followLive: !!state.followLive,
+    hiddenPresetKeys: [...state.hiddenPresetKeys],
+    savedAt: new Date().toISOString(),
+  };
+}
+
+function saveNow() {
+  if (state.saveTimer) { window.clearTimeout(state.saveTimer); state.saveTimer = 0; }
+  try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshotState())); } catch {}
+}
+
+function saveSoon() {
+  if (state.saveTimer) return;
+  state.saveTimer = window.setTimeout(() => { state.saveTimer = 0; saveNow(); }, STATE_SAVE_DELAY_MS);
+}
 
 function loadTileMuted(deviceId) {
   try {
     const raw = window.localStorage.getItem(TILE_MUTE_STORAGE_KEY);
     if (!raw) return true;
     const map = JSON.parse(raw);
-    if (map && typeof map === "object" && Object.prototype.hasOwnProperty.call(map, deviceId)) {
-      return !!map[deviceId];
-    }
-  } catch {}
-  return true;
+    return map && Object.prototype.hasOwnProperty.call(map, deviceId) ? !!map[deviceId] : true;
+  } catch { return true; }
 }
 
 function saveTileMuted(deviceId, muted) {
@@ -130,885 +231,102 @@ function saveTileMuted(deviceId, muted) {
   } catch {}
 }
 
-// ── Shuttle helpers ────────────────────────────────────────────────────
+// ── Event helpers ────────────────────────────────────────────────────
 
-function shuttlePosToValue(pos) {
-  const p = clamp(Number(pos) || 0, -1, 1);
-  const sign = p < 0 ? -1 : 1;
-  return sign * Math.pow(Math.abs(p), SHUTTLE_CURVE) * SHUTTLE_MAX;
-}
+function eventState(ev) { return String(ev?.state || "ready").trim().toLowerCase() || "ready"; }
+function eventIsLive(ev) { return ev?.live === true || eventState(ev) === "recording"; }
+function eventIsReady(ev) { return eventState(ev) === "ready"; }
+function eventIsPlayable(ev) { return eventIsReady(ev) || eventIsLive(ev); }
 
-function shuttleValueToPos(value) {
-  const v = clamp(Number(value) || 0, -SHUTTLE_MAX, SHUTTLE_MAX);
-  const sign = v < 0 ? -1 : 1;
-  return sign * Math.pow(Math.abs(v) / SHUTTLE_MAX, 1 / SHUTTLE_CURVE);
-}
-
-function applyShuttleSnap(value) {
-  for (const target of SHUTTLE_SNAP_TARGETS) {
-    if (Math.abs(value - target) <= SHUTTLE_SNAP_RADIUS) return target;
-  }
-  return value;
-}
-
-function cancelShuttleAnim() {
-  if (_shuttleAnimRafId) {
-    cancelAnimationFrame(_shuttleAnimRafId);
-    _shuttleAnimRafId = 0;
-  }
-}
-
-function updateShuttleFillFromPos(pos) {
-  const p = clamp(Number(pos) || 0, -1, 1);
-  const thumbPct = ((p + 1) / 2) * 100;
-  const fill = document.querySelector("[data-shuttle-fill]");
-  if (fill) {
-    if (thumbPct >= 50) {
-      fill.style.left = "50%";
-      fill.style.width = `${thumbPct - 50}%`;
-    } else {
-      fill.style.left = `${thumbPct}%`;
-      fill.style.width = `${50 - thumbPct}%`;
-    }
-  }
-  const label = document.querySelector("[data-shuttle-value]");
-  if (label) label.style.left = `${thumbPct}%`;
-}
-
-function normalizePlaybackSpeed(value) {
-  return clamp(Number(value) || 1, 0.25, SHUTTLE_MAX);
-}
-
-function signedShuttleValue() {
-  const speed = normalizePlaybackSpeed(state.transport.speed);
-  return isReverseDirection() ? -speed : speed;
-}
-
-function formatShuttleValue(signed) {
-  const v = Number(signed) || 0;
-  if (Math.abs(v) < SHUTTLE_DEADZONE) return "0x";
-  const rounded = Math.round(v * 100) / 100;
-  const trimmed = Math.abs(rounded) === Math.round(Math.abs(rounded))
-    ? String(Math.round(rounded))
-    : rounded.toFixed(2).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
-  return `${trimmed}x`;
-}
-
-function formatPlaybackSpeed(value) {
-  return `${normalizePlaybackSpeed(value).toFixed(2).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1")}x`;
-}
-
-function normalizePlaybackDirection(value) {
-  return String(value || "forward").trim().toLowerCase() === "backward" ? "backward" : "forward";
-}
-
-function playbackDirectionLabel() {
-  return normalizePlaybackDirection(state.transport.direction);
-}
-
-function reversePlaybackState() { return state.transport.reversePlayback; }
-function forwardPlaybackState() { return state.transport.forwardPlayback; }
-
-function isReverseDirection() { return playbackDirectionLabel() === "backward"; }
-function isReversePlaybackActive() { return !!reversePlaybackState().active; }
-
-function shouldSimulateForwardPlayback(speed = state.transport.speed, direction = state.transport.direction) {
-  return normalizePlaybackDirection(direction) !== "backward" && normalizePlaybackSpeed(speed) > MAX_NATIVE_PLAYBACK_RATE;
-}
-
-function isSimulatedForwardPlaybackActive() { return !!forwardPlaybackState().active; }
-
-function playbackTransportIcon(icon) {
-  const icons = {
-    play: '<span class="playbackTransportGlyph" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M8 6.5V17.5L17 12L8 6.5Z"></path></svg></span>',
-    pause: '<span class="playbackTransportGlyph" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="6.5" y="6" width="4" height="12" rx="1"></rect><rect x="13.5" y="6" width="4" height="12" rx="1"></rect></svg></span>',
-  };
-  return icons[icon] || icons.play;
-}
-
-// ── Empty/loading state UI ─────────────────────────────────────────────
-
-function normalizePlaybackEmptyDisplayState(value) {
-  const normalized = String(value || "empty").trim().toLowerCase();
-  if (normalized === "loading" || normalized === "waiting" || normalized === "error") return normalized;
-  return "empty";
-}
-
-function playbackEmptyBadgeLabel(value) {
-  if (value === "loading") return "Loading";
-  if (value === "waiting") return "Saving";
-  if (value === "error") return "Unavailable";
-  return "Ready";
-}
-
-function showVideoEmpty(title, text, options = {}) {
-  const shell = el("playbackVideoShell");
-  const empty = el("playbackVideoEmpty");
-  const emptyBadge = el("playbackVideoEmptyBadge");
-  const emptyText = el("playbackVideoEmptyText");
-  const titleNode = empty?.querySelector(".playbackVideoEmptyTitle");
-  const emptyState = normalizePlaybackEmptyDisplayState(options.state);
-  const grid = el("playbackVideoGrid");
-  const suppressOverlay = emptyState === "loading" && !!grid?.querySelector(".tile[data-id]");
-
-  stopPlaybackCursorLoop();
-  stopSimulatedForwardPlayback();
-  stopReversePlayback();
-
-  for (const tile of tiles.values()) {
-    detachTileSource(tile);
-    setTileOverlay(tile, "");
-  }
-
-  if (empty) {
-    empty.dataset.state = emptyState;
-    empty.setAttribute("aria-busy", emptyState === "loading" && !suppressOverlay ? "true" : "false");
-  }
-  if (shell) shell.dataset.emptyState = emptyState;
-  if (emptyBadge) emptyBadge.textContent = options.badge || playbackEmptyBadgeLabel(emptyState);
-  if (titleNode) titleNode.textContent = title || "No clip selected";
-  if (emptyText) emptyText.textContent = text || "Choose a colored marker from the timeline below to load a recording.";
-  empty?.classList.toggle("hidden", suppressOverlay);
-  syncPlaybackTransport();
-}
-
-function hideVideoEmpty() {
-  const shell = el("playbackVideoShell");
-  const empty = el("playbackVideoEmpty");
-  if (shell) delete shell.dataset.emptyState;
-  if (empty) {
-    empty.classList.add("hidden");
-    empty.setAttribute("aria-busy", "false");
-  }
-}
-
-// ── Date helpers ───────────────────────────────────────────────────────
-
-function todayString() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function normalizeStoredDay(value) {
-  const raw = String(value || "").trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : todayString();
-}
-
-let _tzOffsetMs = 0;
-
-function _extractTzOffset(isoStr) {
-  const m = String(isoStr || "").match(/([+-])(\d{2}):(\d{2})$/);
-  if (m) {
-    const sign = m[1] === "+" ? 1 : -1;
-    _tzOffsetMs = sign * (Number(m[2]) * 3600000 + Number(m[3]) * 60000);
-  }
-}
-
-function _localParts(value) {
-  const s = String(value || "");
-  const m = s.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
-  if (m) {
-    _extractTzOffset(s);
-    return { h: Number(m[4]), m: Number(m[5]), s: Number(m[6]) };
-  }
-  const d = new Date(typeof value === "number" ? value + _tzOffsetMs : value);
-  return { h: d.getUTCHours(), m: d.getUTCMinutes(), s: d.getUTCSeconds() };
-}
-
-function clockLabel(value) {
-  try {
-    const p = _localParts(value);
-    return `${String(p.h).padStart(2,"0")}:${String(p.m).padStart(2,"0")}:${String(p.s).padStart(2,"0")}`;
-  } catch {
-    return String(value || "");
-  }
-}
-
-function deviceName(deviceId) {
-  return state.devices.find((item) => item.id === deviceId)?.name || deviceId || "camera";
-}
-
-// ── Persistence ────────────────────────────────────────────────────────
-
-function loadStoredPlaybackState() {
-  try {
-    const raw = window.localStorage.getItem(PLAYBACK_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    if (Number(parsed.version || 0) !== PLAYBACK_STATE_VERSION) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function snapshotPlaybackState() {
-  const event = selectedEvent();
-  const tile = primaryTile();
-  const seekSeconds = event && tile
-    ? clamp(tileElapsedSeconds(tile), 0, eventDurationSeconds(event))
-    : 0;
-
-  return {
-    version: PLAYBACK_STATE_VERSION,
-    activeDeviceIds: [...state.activeDeviceIds],
-    selectedDay: normalizeStoredDay(state.selectedDay),
-    selectedEventId: typeof state.selectedEventId === "string" && state.selectedEventId ? state.selectedEventId : null,
-    hiddenPresetKeys: [...new Set((state.timelineFilters.hiddenPresetKeys || []).map((value) => String(value || "").trim()).filter(Boolean))],
-    seekSeconds,
-    timelineView: {
-      startMinute: Number(state.timelineView.startMinute) || 0,
-      durationMinutes: currentTimelineDuration(),
-    },
-    savedAt: new Date().toISOString(),
-  };
-}
-
-function savePlaybackStateNow() {
-  if (state.persistence.saveTimer) {
-    window.clearTimeout(state.persistence.saveTimer);
-    state.persistence.saveTimer = 0;
-  }
-  try {
-    window.localStorage.setItem(PLAYBACK_STORAGE_KEY, JSON.stringify(snapshotPlaybackState()));
-  } catch {}
-}
-
-function schedulePlaybackStateSave(delay = PLAYBACK_STATE_SAVE_DELAY_MS) {
-  if (state.persistence.saveTimer) return;
-  state.persistence.saveTimer = window.setTimeout(() => {
-    state.persistence.saveTimer = 0;
-    savePlaybackStateNow();
-  }, delay);
-}
-
-// ── Event helpers ─────────────────────────────────────────────────────
-
-function eventState(event) {
-  return String(event?.state || "ready").trim().toLowerCase() || "ready";
-}
-function eventIsReady(event) { return eventState(event) === "ready"; }
-function eventIsLive(event) { return event?.live === true || eventState(event) === "recording"; }
-// "Playable" is the test we use to gate clicking-to-play: ready clips and
-// in-progress live recordings both stream over HLS. Pending = anything we
-// can't play yet (still finalizing, or whose footage is missing).
-function eventIsPlayable(event) { return eventIsReady(event) || eventIsLive(event); }
-function eventIsPending(event) { return !eventIsPlayable(event); }
-function pendingEventCount() {
-  return state.timeline.events.filter((event) => eventIsPending(event)).length;
-}
-function selectedDayIsToday() { return normalizeStoredDay(state.selectedDay) === todayString(); }
-function eventStateLabel(event) {
-  const value = eventState(event);
-  if (value === "recording") return "Recording";
-  if (value === "finalizing") return "Saving";
-  if (value === "missing") return "Unavailable";
-  return "Ready";
-}
-
-function selectedEvent() {
-  return state.timeline.events.find((item) => item.id === state.selectedEventId) || null;
-}
-
-function eventDurationSeconds(event) {
-  const startedAt = Date.parse(event?.clip_start);
-  const endedAt = Date.parse(event?.clip_end);
-  if (Number.isFinite(startedAt) && Number.isFinite(endedAt) && endedAt >= startedAt) {
-    return (endedAt - startedAt) / 1000;
-  }
-  const range = eventRange(event);
-  return Math.max(0, (range.endMinute - range.startMinute) * 60);
-}
-
-function eventRange(event) {
-  return dayRange(event?.clip_start, event?.clip_end);
-}
-
-function dayRange(startedAt, endedAt = startedAt) {
-  const safeEnd = endedAt || startedAt;
-  const startMinute = clamp(minutesIntoDay(startedAt), 0, DAY_MINUTES);
-  const endCandidate = clamp(minutesIntoDay(safeEnd), 0, DAY_MINUTES);
-  const endMinute = endCandidate < startMinute ? DAY_MINUTES : endCandidate;
-  return { startMinute, endMinute: Math.max(startMinute, endMinute) };
-}
-
-function minutesIntoDay(value) {
-  const p = _localParts(value);
-  return (p.h * 60) + p.m + (p.s / 60);
-}
-
-function minuteLabel(totalMinutes) {
-  const rounded = Math.round(totalMinutes);
-  if (rounded >= DAY_MINUTES) return "24:00";
-  const safe = clamp(rounded, 0, DAY_MINUTES - 1);
-  const hours = String(Math.floor(safe / 60)).padStart(2, "0");
-  const minutes = String(safe % 60).padStart(2, "0");
-  return `${hours}:${minutes}`;
-}
-
-function currentTimelineDuration() {
-  return state.timelineView.endMinute - state.timelineView.startMinute;
-}
-
-function upsertTimelineEvent(event) {
-  if (!event?.id) return null;
-  const index = state.timeline.events.findIndex((item) => item.id === event.id);
-  if (index === -1) {
-    state.timeline.events.push(event);
-    sortTimelineEvents();
-    return event;
-  }
-  state.timeline.events[index] = { ...state.timeline.events[index], ...event };
-  return state.timeline.events[index];
-}
-
-function sortTimelineEvents() {
-  state.timeline.events.sort((left, right) => String(left?.triggered_at || "").localeCompare(String(right?.triggered_at || "")));
-}
-
-async function refreshEventFromServer(eventId) {
-  const payload = await api(`/api/playback/events/${encodeURIComponent(eventId)}`);
-  const event = payload?.event;
-  return event ? upsertTimelineEvent(event) : null;
-}
-
-// ── Timeline filters / preset rows ────────────────────────────────────
-
-function hiddenTimelinePresetKeys() {
-  return new Set((state.timelineFilters.hiddenPresetKeys || []).map((value) => String(value || "").trim()).filter(Boolean));
-}
-
-function timelineVisibleRows() {
-  const hidden = hiddenTimelinePresetKeys();
-  return timelinePresetRows().filter((row) => !hidden.has(row.key));
-}
-
-function visibleTimelineSegments() {
-  return timelineVisibleRows().flatMap((row) => row.events || []);
-}
-
-function visibleTimelineSegmentsOrdered() {
-  return [...visibleTimelineSegments()].sort((left, right) => {
-    const leftStart = Date.parse(left?.clip_start || "");
-    const rightStart = Date.parse(right?.clip_start || "");
-    if (Number.isFinite(leftStart) && Number.isFinite(rightStart) && leftStart !== rightStart) {
-      return leftStart - rightStart;
-    }
-    return String(left?.eventId || "").localeCompare(String(right?.eventId || ""));
-  });
-}
-
-function setHiddenTimelinePresetKeys(keys, options = {}) {
-  state.timelineFilters.hiddenPresetKeys = [...new Set((Array.isArray(keys) ? keys : []).map((value) => String(value || "").trim()).filter(Boolean))];
-  renderTimelineFilters();
-  renderTimeline();
-  if (options.persist !== false) schedulePlaybackStateSave();
-}
-
-function toggleTimelinePresetKey(key) {
-  const normalized = String(key || "").trim();
-  if (!normalized) return;
-  const hidden = hiddenTimelinePresetKeys();
-  if (hidden.has(normalized)) hidden.delete(normalized);
-  else hidden.add(normalized);
-  setHiddenTimelinePresetKeys([...hidden]);
-}
-
-function normalizeEventPresetColor(value) {
+function normalizeColor(value) {
   const raw = String(value || "#c6a14b").trim().toLowerCase();
   return /^#[0-9a-f]{6}$/.test(raw) ? raw : "#c6a14b";
 }
 
-function eventPresetName(event) {
-  return String(event?.preset_name || event?.title || "Recording").trim() || "Recording";
+function eventPresetName(ev) {
+  return String(ev?.preset_name || ev?.title || "Recording").trim() || "Recording";
 }
 
-function eventPresetKey(event) {
-  const explicit = String(event?.preset_key || "").trim();
+function eventPresetKey(ev) {
+  const explicit = String(ev?.preset_key || "").trim();
   if (explicit) return explicit;
-  return eventPresetName(event).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "recording";
+  return eventPresetName(ev).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "recording";
 }
 
-function eventTagSegments(event) {
-  const raw = Array.isArray(event?.tag_segments) ? event.tag_segments : [];
-  const live = eventIsLive(event);
-  const normalized = raw.map((segment) => {
-    const clipStart = segment?.clip_start || event?.clip_start || null;
-    const clipEnd = segment?.clip_end || event?.clip_end || null;
-    if (!clipStart || !clipEnd) return null;
+function eventTagSegments(ev) {
+  const raw = Array.isArray(ev?.tag_segments) ? ev.tag_segments : [];
+  const live = eventIsLive(ev);
+  const fromList = raw.map((seg) => {
+    const cs = seg?.clip_start || ev?.clip_start;
+    const ce = seg?.clip_end || ev?.clip_end;
+    const csMs = parseISOms(cs);
+    const ceMs = parseISOms(ce);
+    if (csMs == null || ceMs == null) return null;
     return {
-      eventId: String(event?.id || "").trim(),
-      deviceId: String(event?.device_id || "").trim(),
-      title: String(segment?.title || event?.title || eventPresetName(event)).trim() || eventPresetName(event),
-      color: normalizeEventPresetColor(segment?.color || event?.color),
-      presetName: String(segment?.preset_name || eventPresetName(event)).trim() || eventPresetName(event),
-      presetKey: String(segment?.preset_key || eventPresetKey(event)).trim() || eventPresetKey(event),
-      triggeredAt: segment?.triggered_at || event?.triggered_at || clipStart,
-      clip_start: clipStart,
-      clip_end: clipEnd,
-      state: eventState(event),
-      ready: eventIsReady(event),
+      eventId: String(ev?.id || "").trim(),
+      deviceId: String(ev?.device_id || "").trim(),
+      title: String(seg?.title || ev?.title || eventPresetName(ev)).trim() || eventPresetName(ev),
+      color: normalizeColor(seg?.color || ev?.color),
+      presetName: String(seg?.preset_name || eventPresetName(ev)).trim() || eventPresetName(ev),
+      presetKey: String(seg?.preset_key || eventPresetKey(ev)).trim() || eventPresetKey(ev),
+      startMs: csMs,
+      endMs: Math.max(ceMs, csMs + 250),
+      state: eventState(ev),
+      ready: eventIsReady(ev),
       live,
-      playable: eventIsPlayable(event),
+      playable: eventIsPlayable(ev),
     };
   }).filter(Boolean);
-
-  if (normalized.length) return normalized;
-  if (!event?.clip_start || !event?.clip_end) return [];
-
+  if (fromList.length) return fromList;
+  const csMs = parseISOms(ev?.clip_start);
+  const ceMs = parseISOms(ev?.clip_end);
+  if (csMs == null || ceMs == null) return [];
   return [{
-    eventId: String(event?.id || "").trim(),
-    deviceId: String(event?.device_id || "").trim(),
-    title: String(event?.title || eventPresetName(event)).trim() || eventPresetName(event),
-    color: normalizeEventPresetColor(event?.color),
-    presetName: eventPresetName(event),
-    presetKey: eventPresetKey(event),
-    triggeredAt: event?.triggered_at || event?.clip_start,
-    clip_start: event.clip_start,
-    clip_end: event.clip_end,
-    state: eventState(event),
-    ready: eventIsReady(event),
+    eventId: String(ev?.id || "").trim(),
+    deviceId: String(ev?.device_id || "").trim(),
+    title: String(ev?.title || eventPresetName(ev)).trim() || eventPresetName(ev),
+    color: normalizeColor(ev?.color),
+    presetName: eventPresetName(ev),
+    presetKey: eventPresetKey(ev),
+    startMs: csMs,
+    endMs: Math.max(ceMs, csMs + 250),
+    state: eventState(ev),
+    ready: eventIsReady(ev),
     live,
-    playable: eventIsPlayable(event),
+    playable: eventIsPlayable(ev),
   }];
 }
 
 function timelinePresetRows() {
   const rows = new Map();
-  for (const event of (state.timeline?.events || [])) {
-    for (const segment of eventTagSegments(event)) {
-      const key = segment.presetKey;
-      if (!rows.has(key)) {
-        rows.set(key, { key, name: segment.presetName, color: segment.color, events: [] });
+  for (const ev of state.events) {
+    for (const seg of eventTagSegments(ev)) {
+      if (!rows.has(seg.presetKey)) {
+        rows.set(seg.presetKey, { key: seg.presetKey, name: seg.presetName, color: seg.color, segments: [] });
       }
-      rows.get(key).events.push(segment);
+      rows.get(seg.presetKey).segments.push(seg);
     }
   }
-  return [...rows.values()].sort((left, right) => {
-    const leftName = String(left.name || "").toLowerCase();
-    const rightName = String(right.name || "").toLowerCase();
-    if (leftName !== rightName) return leftName.localeCompare(rightName);
-    return String(left.key || "").localeCompare(String(right.key || ""));
-  });
+  return [...rows.values()].sort((a, b) =>
+    a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.key.localeCompare(b.key));
 }
 
-function renderTimelineFilters() {
-  const host = el("playbackTimelineFilters");
-  if (!host) return;
-  const rows = timelinePresetRows();
-  const hidden = hiddenTimelinePresetKeys();
-  if (!rows.length) {
-    host.innerHTML = "";
-    host.classList.add("hidden");
-    return;
-  }
-  host.classList.remove("hidden");
-  host.innerHTML = `
-    <div class="playbackTimelineFilterBar">
-      <div class="playbackTimelineFilterLabel">Tags</div>
-      <div class="playbackTimelineFilterChips">
-        ${rows.map((row) => {
-          const selected = !hidden.has(row.key);
-          return `<button class="playbackTimelineFilterChip ${selected ? "is-selected" : ""}" type="button" data-preset-key="${escapeHtml(row.key)}" aria-pressed="${selected ? "true" : "false"}"><span class="playbackTimelineFilterSwatch" style="background:${escapeHtml(row.color)};"></span><span>${escapeHtml(row.name)}</span></button>`;
-        }).join("")}
-      </div>
-    </div>
-  `;
+function visibleEventSegments() {
+  const hidden = new Set(state.hiddenPresetKeys);
+  return timelinePresetRows()
+    .filter((row) => !hidden.has(row.key))
+    .flatMap((row) => row.segments);
 }
 
-// ── Timeline navigation helpers ───────────────────────────────────────
-
-function timelineMinuteFromClientX(clientX, rect) {
-  const width = rect?.width || 0;
-  if (!width) return state.timelineView.startMinute;
-  const ratio = clamp((clientX - rect.left) / width, 0, 1);
-  return state.timelineView.startMinute + (ratio * currentTimelineDuration());
-}
-
-function eventAtTimelineMinute(minute) {
-  const selected = selectedEvent();
-  if (selected && eventIsPlayable(selected)) {
-    const visibleSelectedSegment = visibleTimelineSegments().find((segment) => segment.eventId === selected.id);
-    if (visibleSelectedSegment) {
-      const range = dayRange(visibleSelectedSegment.clip_start, visibleSelectedSegment.clip_end);
-      if (minute >= range.startMinute && minute <= range.endMinute) return selected;
-    }
-  }
-  const matchingSegment = visibleTimelineSegmentsOrdered().find((segment) => {
-    if (!(segment.playable ?? segment.ready)) return false;
-    const range = dayRange(segment.clip_start, segment.clip_end);
-    return minute >= range.startMinute && minute <= range.endMinute;
-  }) || null;
-  if (!matchingSegment) return null;
-  return state.timeline.events.find((event) => event.id === matchingSegment.eventId) || null;
-}
-
-function nextEventAtTimelineMinute(minute) {
-  const nextSegment = visibleTimelineSegmentsOrdered().find((segment) => (segment.playable ?? segment.ready) && dayRange(segment.clip_start, segment.clip_end).startMinute >= minute) || null;
-  if (!nextSegment) return null;
-  return state.timeline.events.find((event) => event.id === nextSegment.eventId) || null;
-}
-
-function timelineBaseSelection(minute) {
-  const exactEvent = eventAtTimelineMinute(minute);
-  if (exactEvent) return { event: exactEvent, seekSeconds: eventSeekSecondsForMinute(exactEvent, minute) };
-  const nextEvent = nextEventAtTimelineMinute(minute);
-  if (nextEvent) return { event: nextEvent, seekSeconds: 0 };
-  return null;
-}
-
-function nextTimelineEvent(currentEventId) {
-  const currentIndex = state.timeline.events.findIndex((event) => event.id === currentEventId);
-  if (currentIndex < 0) return null;
-  return state.timeline.events.slice(currentIndex + 1).find((event) => eventIsPlayable(event)) || null;
-}
-
-function previousTimelineEvent(currentEventId) {
-  const currentIndex = state.timeline.events.findIndex((event) => event.id === currentEventId);
-  if (currentIndex <= 0) return null;
-  return [...state.timeline.events.slice(0, currentIndex)].reverse().find((event) => eventIsPlayable(event)) || null;
-}
-
-function eventSeekSecondsForMinute(event, minute) {
-  const range = eventRange(event);
-  const durationSeconds = eventDurationSeconds(event);
-  if (durationSeconds <= 0) return 0;
-  return clamp((minute - range.startMinute) * 60, 0, durationSeconds);
-}
-
-// ── Timeline auto-refresh ─────────────────────────────────────────────
-
-function clearTimelineAutoRefresh() {
-  if (state.persistence.timelineRefreshTimer) {
-    window.clearTimeout(state.persistence.timelineRefreshTimer);
-    state.persistence.timelineRefreshTimer = 0;
-  }
-}
-
-function nextTimelineAutoRefreshDelay() {
-  if (pendingEventCount()) return ACTIVE_TIMELINE_REFRESH_MS;
-  return selectedDayIsToday() ? ACTIVE_TIMELINE_REFRESH_MS : IDLE_TIMELINE_REFRESH_MS;
-}
-
-function scheduleTimelineAutoRefresh() {
-  clearTimelineAutoRefresh();
-  if (playbackPageDisposed) return;
-  if (!state.activeDeviceIds.length) return;
-  const delay = document.visibilityState === "visible"
-    ? nextTimelineAutoRefreshDelay()
-    : Math.max(IDLE_TIMELINE_REFRESH_MS, nextTimelineAutoRefreshDelay());
-  state.persistence.timelineRefreshTimer = window.setTimeout(() => {
-    state.persistence.timelineRefreshTimer = 0;
-    loadTimeline({ background: true, preservePlayback: true, autoSelectLatest: false }).catch((error) => {
-      if (isAbortError(error) || playbackPageDisposed) return;
-      setStatus(error.message || String(error));
-      scheduleTimelineAutoRefresh();
-    });
-  }, delay);
-}
-
-// ── Tile management ───────────────────────────────────────────────────
+// ── Tiles ────────────────────────────────────────────────────────────
 
 function videoGridEl() { return el("playbackVideoGrid"); }
 
-function primaryTile() {
-  for (const id of state.activeDeviceIds) {
-    const t = tiles.get(id);
-    if (t) return t;
-  }
-  return null;
-}
-
-function primaryVideoEl() {
-  return primaryTile()?.video || null;
-}
-
-function eachTileVideo(cb) {
-  for (const tile of tiles.values()) cb(tile.video, tile);
-}
-
-function setTileOverlay(tile, text, visible, options = {}) {
-  if (!tile?.overlayEl) return;
-  const overlay = tile.overlayEl;
-  const textEl = overlay.querySelector(".tileOverlayText");
-  if (textEl) textEl.textContent = text || "";
-  else overlay.textContent = text || "";
-  const show = visible ?? !!(text || options.state === "loading");
-  overlay.dataset.state = options.state || "";
-  overlay.style.display = show ? "flex" : "none";
-}
-
-function suppressTileError(tile, ms) {
-  const until = Date.now() + Math.max(0, ms | 0);
-  if (until > tile.suppressErrorUntil) tile.suppressErrorUntil = until;
-}
-
-function isIgnorableTileError(tile) {
-  if (Date.now() < tile.suppressErrorUntil) return true;
-  const video = tile.video;
-  if (!video || !video.currentSrc) return true;
-  const err = video.error;
-  if (!err) return true;
-  return err.code === 1; // MEDIA_ERR_ABORTED
-}
-
-function detachTileSource(tile, options = {}) {
-  if (!tile) return;
-  const destroy = options.destroy === true;
-  tile.loadToken += 1;
-  suppressTileError(tile, 1500);
-  if (tile.hls) {
-    if (destroy) {
-      try { tile.hls.destroy(); } catch {}
-      tile.hls = null;
-    } else {
-      try { tile.hls.stopLoad(); } catch {}
-    }
-  }
-  if (tile.video) {
-    try { tile.video.pause(); } catch {}
-    if (destroy) {
-      try { tile.video.removeAttribute("src"); } catch {}
-      try { tile.video.load(); } catch {}
-    }
-  }
-  if (destroy) {
-    tile.currentEvent = null;
-    tile.startOffsetSeconds = null;
-    tile.pendingSeekElapsed = null;
-  }
-}
-
-// Map between video.currentTime (offset from first segment's start) and
-// elapsed-in-event seconds (offset from event.clip_start). The two diverge
-// because the HLS playlist returns whole segments overlapping the requested
-// window, so segment 1 may begin before clip_start.
-function tileElapsedSeconds(tile) {
-  if (!tile?.video) return 0;
-  const offset = tile.startOffsetSeconds || 0;
-  return Math.max(0, (Number(tile.video.currentTime) || 0) - offset);
-}
-
-function setTileElapsed(tile, elapsedSeconds) {
-  if (!tile?.video) return;
-  const elapsed = Math.max(0, Number(elapsedSeconds) || 0);
-  if (tile.startOffsetSeconds == null) {
-    tile.pendingSeekElapsed = elapsed;
-    return;
-  }
-  tile.video.currentTime = Math.max(0, tile.startOffsetSeconds + elapsed);
-}
-
-async function setAllTilesElapsed(elapsedSeconds) {
-  await Promise.all([...tiles.values()].map(async (tile) => {
-    if (tile.video.readyState < 1 || tile.startOffsetSeconds == null) {
-      tile.pendingSeekElapsed = elapsedSeconds;
-      await new Promise((resolve) => {
-        const apply = () => {
-          // Even if hls.js hasn't reported the segment offset yet, seek with
-          // an offset of 0 — for live events that start at clip_start the
-          // offset is 0 anyway, and being a few seconds off is far better
-          // than letting hls.js leave currentTime parked at the live edge.
-          const offset = tile.startOffsetSeconds || 0;
-          tile.video.currentTime = Math.max(0, offset + elapsedSeconds);
-          tile.pendingSeekElapsed = null;
-          resolve();
-        };
-        tile.video.addEventListener("loadedmetadata", apply, { once: true });
-      });
-    } else {
-      tile.video.currentTime = Math.max(0, tile.startOffsetSeconds + elapsedSeconds);
-    }
-  }));
-}
-
-function applyTileOffsetFromProgramDateTime(tile, segStartMs) {
-  const event = tile.currentEvent;
-  if (!event) return;
-  const eventStartMs = Date.parse(event.clip_start);
-  if (Number.isFinite(segStartMs) && Number.isFinite(eventStartMs)) {
-    tile.startOffsetSeconds = (eventStartMs - segStartMs) / 1000;
-  } else {
-    tile.startOffsetSeconds = 0;
-  }
-  if (tile.pendingSeekElapsed != null) {
-    setTileElapsed(tile, tile.pendingSeekElapsed);
-    tile.pendingSeekElapsed = null;
-  }
-}
-
-const HLS_VOD_CONFIG = {
-  enableWorker: true,
-  lowLatencyMode: false,
-  // Force playback to start at the head of the playlist instead of hls.js's
-  // default of "live edge" for EVENT-type (live) playlists. Without this, an
-  // open recording loads with currentTime at the end and play()+seek-back-to-0
-  // races, leaving the video paused on the first frame.
-  startPosition: 0,
-  // VOD start-latency tuning: prefetch fragment metadata, keep buffers tight
-  // so the first fragment is fetched + decoded fast.
-  startFragPrefetch: true,
-  maxBufferLength: 10,
-  maxMaxBufferLength: 30,
-  // Network resilience for slow Pi → camera fetches.
-  manifestLoadingTimeOut: 10000,
-  manifestLoadingMaxRetry: 2,
-  levelLoadingTimeOut: 10000,
-  fragLoadingTimeOut: 20000,
-};
-
-function hlsPlaylistUrlForRange(deviceId, fromIso, toIso) {
-  if (!deviceId || !fromIso || !toIso) return null;
-  const params = new URLSearchParams({ from: fromIso, to: toIso, ts: String(Date.now()) });
-  return `/api/playback/hls/${encodeURIComponent(deviceId)}/index.m3u8?${params.toString()}`;
-}
-
-function hlsPlaylistUrlForEvent(deviceId, eventId) {
-  if (!deviceId || !eventId) return null;
-  const params = new URLSearchParams({ event_id: eventId, ts: String(Date.now()) });
-  return `/api/playback/hls/${encodeURIComponent(deviceId)}/index.m3u8?${params.toString()}`;
-}
-
-function deviceHasEventInRange(deviceId, fromIso, toIso) {
-  const fromMs = Date.parse(fromIso);
-  const toMs = Date.parse(toIso);
-  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return false;
-  return state.timeline.events.some((ev) => {
-    if (String(ev?.device_id || "").trim() !== deviceId) return false;
-    const evFromMs = Date.parse(ev?.clip_start);
-    const evToMs = Date.parse(ev?.clip_end);
-    if (!Number.isFinite(evFromMs) || !Number.isFinite(evToMs)) return false;
-    return evFromMs < toMs && evToMs > fromMs;
-  });
-}
-
-function attachTileSource(tile, event) {
-  if (!tile || !event) return;
-
-  const live = eventIsLive(event);
-  // Live events use the by-event URL so the server returns an EVENT-type
-  // playlist tied to this event id (and caches finalized closed clips).
-  const url = live
-    ? hlsPlaylistUrlForEvent(tile.deviceId, event.id)
-    : hlsPlaylistUrlForRange(tile.deviceId, event.clip_start, event.clip_end);
-  if (!url) {
-    setTileOverlay(tile, "No source", true, { state: "error" });
-    tile.readyPromise = Promise.resolve(false);
-    return;
-  }
-
-  // Only play if this camera has its own event covering the master window —
-  // even if untagged footage is still on disk inside the pruner grace window,
-  // we don't want it visible. (Live events match by id, not by range.)
-  if (!live && !deviceHasEventInRange(tile.deviceId, event.clip_start, event.clip_end)) {
-    detachTileSource(tile, { destroy: true });
-    setTileOverlay(tile, "No event in this range", true, { state: "error" });
-    tile.readyPromise = Promise.resolve(false);
-    return;
-  }
-
-  const video = tile.video;
-
-  // Always destroy the previous Hls instance — reusing it across event
-  // switches was leaking MediaSource buffer state (black-screen + stalled
-  // playback after a switch). The destroy/attach round-trip costs a few
-  // hundred ms but eliminates the bug class entirely.
-  detachTileSource(tile, { destroy: true });
-  tile.loadToken += 1;
-  const myToken = tile.loadToken;
-
-  setTileOverlay(tile, "", true, { state: "loading" });
-
-  const hideOverlay = () => setTileOverlay(tile, "", false);
-  const showError = (msg) => setTileOverlay(tile, msg, true, { state: "error" });
-
-  tile.currentEvent = event;
-  tile.startOffsetSeconds = null;
-  tile.pendingSeekElapsed = null;
-
-  if (window.Hls && window.Hls.isSupported && window.Hls.isSupported()) {
-    const hls = new window.Hls(HLS_VOD_CONFIG);
-    tile.hls = hls;
-    hls.on(window.Hls.Events.ERROR, (_evt, data) => {
-      if (data?.fatal) showError("No recording in this range");
-    });
-    hls.on(window.Hls.Events.LEVEL_LOADED, (_evt, data) => {
-      const firstFrag = data?.details?.fragments?.[0];
-      const segStartMs = firstFrag?.programDateTime;
-      if (Number.isFinite(segStartMs)) applyTileOffsetFromProgramDateTime(tile, segStartMs);
-    });
-    video.addEventListener("playing", hideOverlay, { once: true });
-    video.addEventListener("loadeddata", hideOverlay, { once: true });
-
-    // Resolves when the first fragment has actually been buffered into the
-    // MediaSource — that's when canplay fires reliably. Used by selectEvent
-    // to gate seek + play(), so we never seek into an empty buffer.
-    tile.readyPromise = new Promise((resolve) => {
-      let done = false;
-      const finish = (ok) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        hls.off(window.Hls.Events.FRAG_BUFFERED, onFragBuffered);
-        video.removeEventListener("canplay", onCanplay);
-        resolve(ok && tile.loadToken === myToken);
-      };
-      const onFragBuffered = () => finish(true);
-      const onCanplay = () => finish(true);
-      const timer = setTimeout(() => finish(false), 6000);
-      hls.on(window.Hls.Events.FRAG_BUFFERED, onFragBuffered);
-      video.addEventListener("canplay", onCanplay, { once: true });
-    });
-
-    hls.attachMedia(video);
-    hls.loadSource(url);
-    try { hls.startLoad(); } catch {}
-  } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-    video.src = url;
-    const onMetadata = () => {
-      try {
-        const startDate = video.getStartDate?.();
-        const segStartMs = startDate?.getTime?.();
-        if (Number.isFinite(segStartMs)) applyTileOffsetFromProgramDateTime(tile, segStartMs);
-        else applyTileOffsetFromProgramDateTime(tile, Date.parse(event.clip_start));
-      } catch {
-        applyTileOffsetFromProgramDateTime(tile, Date.parse(event.clip_start));
-      }
-    };
-    video.addEventListener("loadedmetadata", onMetadata, { once: true });
-    video.addEventListener("loadeddata", hideOverlay, { once: true });
-    video.addEventListener("error", () => {
-      if (!isIgnorableTileError(tile)) showError("No recording in this range");
-    });
-    tile.readyPromise = new Promise((resolve) => {
-      let done = false;
-      const finish = (ok) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        video.removeEventListener("canplay", onCanplay);
-        resolve(ok && tile.loadToken === myToken);
-      };
-      const onCanplay = () => finish(true);
-      const timer = setTimeout(() => finish(false), 6000);
-      video.addEventListener("canplay", onCanplay, { once: true });
-    });
-    try { video.load(); } catch {}
-  } else {
-    showError("HLS not supported in this browser");
-    tile.readyPromise = Promise.resolve(false);
-  }
-}
-
 function makeTileElement(device) {
-  const tileEl = document.createElement("div");
-  tileEl.className = "tile";
-  tileEl.setAttribute("data-id", device.id);
-  tileEl.innerHTML = `
+  const node = document.createElement("div");
+  node.className = "tile";
+  node.setAttribute("data-id", device.id);
+  node.innerHTML = `
     <div class="tilePlayer">
       <video playsinline preload="metadata" muted></video>
       <button class="tileCloseBtn" type="button" aria-label="Close tile" title="Close tile">×</button>
@@ -1030,9 +348,18 @@ function makeTileElement(device) {
         <span class="tileOverlaySpinner" aria-hidden="true"></span>
         <span class="tileOverlayText"></span>
       </div>
-    </div>
-  `;
-  return tileEl;
+    </div>`;
+  return node;
+}
+
+function setTileOverlay(tile, text, visible, options = {}) {
+  if (!tile?.overlayEl) return;
+  const overlay = tile.overlayEl;
+  const textEl = overlay.querySelector(".tileOverlayText");
+  if (textEl) textEl.textContent = text || "";
+  const show = visible ?? !!(text || options.state === "loading");
+  overlay.dataset.state = options.state || "";
+  overlay.style.display = show ? "flex" : "none";
 }
 
 function syncTileAspectFromVideo(tileEl, videoEl) {
@@ -1040,52 +367,48 @@ function syncTileAspectFromVideo(tileEl, videoEl) {
   const w = videoEl.videoWidth || 0;
   const h = videoEl.videoHeight || 0;
   if (!w || !h) return;
-  const ar = `${w} / ${h}`;
-  tileEl.style.setProperty("--tile-ar", ar);
+  tileEl.style.setProperty("--tile-ar", `${w} / ${h}`);
 }
 
 function chunkTilesEvenly(tileEls, rows) {
-  const out = [];
-  let index = 0;
-  for (let r = 0; r < rows; r += 1) {
-    const remaining = tileEls.length - index;
+  const out = []; let i = 0;
+  for (let r = 0; r < rows; r++) {
+    const remaining = tileEls.length - i;
     const remainingRows = rows - r;
     const count = Math.ceil(remaining / remainingRows);
-    out.push(tileEls.slice(index, index + count));
-    index += count;
+    out.push(tileEls.slice(i, i + count));
+    i += count;
   }
   return out;
 }
 
 function getTileAspectRatio(tileEl) {
   const raw = tileEl.style.getPropertyValue("--tile-ar") || "16 / 9";
-  const [num, den] = raw.split("/").map((s) => Number(String(s).trim()));
-  if (!num || !den) return 16 / 9;
-  return num / den;
+  const [num, den] = raw.split("/").map((s) => Number(s.trim()));
+  return (num && den) ? num / den : 16 / 9;
 }
 
-function getOptimalRowCount(tileEls, containerWidth, containerHeight, gap) {
+function getOptimalRowCount(tileEls, w, h, gap) {
   const n = tileEls.length;
   if (n <= 1) return 1;
-  let bestRows = 1;
-  let bestArea = 0;
-  for (let rowCount = 1; rowCount <= n; rowCount += 1) {
-    const rows = chunkTilesEvenly(tileEls, rowCount);
-    const totalGapH = (rowCount - 1) * gap;
-    const rowHeight = Math.max(40, (containerHeight - totalGapH) / rowCount);
-    let totalArea = 0;
+  let best = 1, bestArea = 0;
+  for (let r = 1; r <= n; r++) {
+    const rows = chunkTilesEvenly(tileEls, r);
+    const totalGapH = (r - 1) * gap;
+    const rowHeight = Math.max(40, (h - totalGapH) / r);
+    let area = 0;
     for (const row of rows) {
       const ars = row.map(getTileAspectRatio);
       const totalGapW = (row.length - 1) * gap;
       const sumAr = ars.reduce((a, b) => a + b, 0);
       const tentativeWidth = sumAr * rowHeight;
-      const widthLimit = containerWidth - totalGapW;
+      const widthLimit = w - totalGapW;
       const usedHeight = tentativeWidth > widthLimit ? widthLimit / sumAr : rowHeight;
-      totalArea += usedHeight * (sumAr * usedHeight + totalGapW);
+      area += usedHeight * (sumAr * usedHeight + totalGapW);
     }
-    if (totalArea > bestArea) { bestArea = totalArea; bestRows = rowCount; }
+    if (area > bestArea) { bestArea = area; best = r; }
   }
-  return bestRows;
+  return best;
 }
 
 function recomputeGrid() {
@@ -1095,13 +418,12 @@ function recomputeGrid() {
   if (!tileEls.length) return;
   const styles = getComputedStyle(grid);
   const gap = Number.parseFloat(styles.rowGap || styles.gap || "0") || 0;
-  const containerWidth = grid.clientWidth;
-  const containerHeight = grid.clientHeight;
-  if (containerWidth < 50 || containerHeight < 50) return;
-  const rowCount = getOptimalRowCount(tileEls, containerWidth, containerHeight, gap);
+  const cw = grid.clientWidth, ch = grid.clientHeight;
+  if (cw < 50 || ch < 50) return;
+  const rowCount = getOptimalRowCount(tileEls, cw, ch, gap);
   const rows = chunkTilesEvenly(tileEls, rowCount);
   const totalGapH = (rowCount - 1) * gap;
-  const rowHeight = Math.max(60, (containerHeight - totalGapH) / rowCount);
+  const rowHeight = Math.max(60, (ch - totalGapH) / rowCount);
   const frag = document.createDocumentFragment();
   rows.forEach((row) => {
     const rowEl = document.createElement("div");
@@ -1110,7 +432,7 @@ function recomputeGrid() {
     const sumAr = ars.reduce((a, b) => a + b, 0);
     const totalGapW = (row.length - 1) * gap;
     const tentativeWidth = sumAr * rowHeight;
-    const widthLimit = containerWidth - totalGapW;
+    const widthLimit = cw - totalGapW;
     const usedHeight = tentativeWidth > widthLimit ? widthLimit / sumAr : rowHeight;
     row.forEach((tileEl, i) => {
       const width = ars[i] * usedHeight;
@@ -1122,6 +444,39 @@ function recomputeGrid() {
     frag.appendChild(rowEl);
   });
   grid.replaceChildren(frag);
+}
+
+function suppressTileError(tile, ms) {
+  const until = Date.now() + Math.max(0, ms | 0);
+  if (until > tile.suppressErrorUntil) tile.suppressErrorUntil = until;
+}
+
+function isIgnorableTileError(tile) {
+  if (Date.now() < tile.suppressErrorUntil) return true;
+  const v = tile.video;
+  if (!v || !v.currentSrc) return true;
+  const e = v.error;
+  return !e || e.code === 1; // MEDIA_ERR_ABORTED
+}
+
+function destroyTilePlaylist(tile) {
+  if (!tile) return;
+  tile.loadToken += 1;
+  suppressTileError(tile, 1500);
+  if (tile.hls) {
+    try { tile.hls.destroy(); } catch {}
+    tile.hls = null;
+  }
+  if (tile.video) {
+    try { tile.video.pause(); } catch {}
+    try { tile.video.removeAttribute("src"); } catch {}
+    try { tile.video.load(); } catch {}
+  }
+  tile.loadedStartMs = null;
+  tile.loadedEndMs = null;
+  tile.playlistStartMs = null;
+  tile.pendingSeekMs = null;
+  tile.lastUrl = null;
 }
 
 function getOrCreateTile(deviceId) {
@@ -1141,99 +496,49 @@ function getOrCreateTile(deviceId) {
   });
 
   const tile = {
-    tile: tileEl,
-    video,
-    hls: null,
-    audioBtn,
-    overlayEl,
-    deviceId,
-    loadToken: 0,
-    suppressErrorUntil: 0,
-    // Wall-clock alignment: video.currentTime is offset from the first
-    // segment's start, NOT from event.clip_start. We compute the delta from
-    // EXT-X-PROGRAM-DATE-TIME (hls.js) or HTMLMediaElement.getStartDate()
-    // (Safari) and translate via tileElapsedSeconds / setTileElapsed.
-    currentEvent: null,
-    readyPromise: Promise.resolve(true),  // resolves once first fragment buffered
-    startOffsetSeconds: null,  // (eventStart - firstSegmentStart) in seconds
-    pendingSeekElapsed: null,  // seek requested before manifest parsed
+    tileEl, video, hls: null, audioBtn, overlayEl, deviceId,
+    loadToken: 0, loadedStartMs: null, loadedEndMs: null,
+    playlistStartMs: null, pendingSeekMs: null,
+    lastReloadAt: 0, lastErrorAt: 0,
+    suppressErrorUntil: 0, lastUrl: null, disposed: false,
   };
   tiles.set(deviceId, tile);
 
   let muted = loadTileMuted(deviceId);
-  function applyTileMuted() {
+  function applyMuted() {
     video.muted = muted;
     audioBtn.setAttribute("data-muted", muted ? "1" : "0");
     audioBtn.setAttribute("aria-label", muted ? "Unmute" : "Mute");
     audioBtn.setAttribute("title", muted ? "Unmute" : "Mute");
   }
-  applyTileMuted();
+  applyMuted();
   audioBtn.addEventListener("click", (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    muted = !muted;
-    applyTileMuted();
-    saveTileMuted(deviceId, muted);
+    ev.preventDefault(); ev.stopPropagation();
+    muted = !muted; applyMuted(); saveTileMuted(deviceId, muted);
   });
 
   video.addEventListener("loadedmetadata", () => {
+    if (tile.disposed) return;
     syncTileAspectFromVideo(tileEl, video);
-    if (tile === primaryTile()) {
-      syncPlaybackTransport();
-      updatePlaybackCursorFromVideo();
-      schedulePlaybackStateSave();
-    }
     requestAnimationFrame(recomputeGrid);
-  });
-  video.addEventListener("loadeddata", () => syncTileAspectFromVideo(tileEl, video));
-  video.addEventListener("playing", () => syncTileAspectFromVideo(tileEl, video));
-  video.addEventListener("play", () => {
-    if (tile !== primaryTile()) return;
-    if (isReverseDirection()) { video.pause(); return; }
-    startPlaybackCursorLoop();
-    syncPlaybackTransport();
-  });
-  video.addEventListener("pause", () => {
-    if (tile !== primaryTile()) return;
-    stopPlaybackCursorLoop();
-    if (!isReversePlaybackActive()) {
-      updatePlaybackCursorFromVideo();
-      queueForwardPlaybackBoundaryCheck();
+    if (tile.pendingSeekMs != null) {
+      const target = tile.pendingSeekMs;
+      tile.pendingSeekMs = null;
+      seekTileToCursor(tile, target);
     }
-    syncPlaybackTransport();
-    schedulePlaybackStateSave();
   });
-  video.addEventListener("timeupdate", () => {
-    if (tile !== primaryTile()) return;
-    updatePlaybackCursorFromVideo();
-    queueForwardPlaybackBoundaryCheck();
-    schedulePlaybackStateSave();
+  video.addEventListener("loadeddata", () => {
+    if (tile.disposed) return;
+    syncTileAspectFromVideo(tileEl, video);
   });
-  video.addEventListener("seeked", () => {
-    if (tile !== primaryTile()) return;
-    updatePlaybackCursorFromVideo();
-    queueForwardPlaybackBoundaryCheck();
-    schedulePlaybackStateSave();
-  });
-  video.addEventListener("ended", async () => {
-    if (tile !== primaryTile()) return;
-    updatePlaybackCursorFromVideo();
-    const currentEvent = selectedEvent();
-    if (!currentEvent) {
-      stopPlaybackCursorLoop();
-      stopReversePlayback();
-      stopSimulatedForwardPlayback();
-      syncPlaybackTransport();
-      setStatus("Playback ended.");
-      schedulePlaybackStateSave();
-      return;
-    }
-    await handleForwardPlaybackBoundary(currentEvent);
-    schedulePlaybackStateSave();
+  video.addEventListener("playing", () => {
+    if (tile.disposed) return;
+    syncTileAspectFromVideo(tileEl, video);
   });
   video.addEventListener("error", () => {
+    if (tile.disposed) return;
     if (isIgnorableTileError(tile)) return;
-    setTileOverlay(tile, "No recording in this range", true);
+    setTileOverlay(tile, "Stream error", true, { state: "error" });
   });
 
   return tile;
@@ -1242,8 +547,9 @@ function getOrCreateTile(deviceId) {
 function destroyTile(deviceId) {
   const tile = tiles.get(deviceId);
   if (!tile) return;
-  detachTileSource(tile, { destroy: true });
-  if (tile.tile?.parentElement) tile.tile.parentElement.removeChild(tile.tile);
+  tile.disposed = true;
+  destroyTilePlaylist(tile);
+  if (tile.tileEl?.parentElement) tile.tileEl.parentElement.removeChild(tile.tileEl);
   tiles.delete(deviceId);
 }
 
@@ -1259,86 +565,964 @@ function syncTilesToActive() {
   if (!grid) return;
   for (const id of state.activeDeviceIds) {
     const tile = getOrCreateTile(id);
-    if (tile && tile.tile.parentElement !== grid && tile.tile.parentElement?.parentElement !== grid) {
-      grid.appendChild(tile.tile);
+    if (tile && tile.tileEl.parentElement !== grid && tile.tileEl.parentElement?.parentElement !== grid) {
+      grid.appendChild(tile.tileEl);
     }
   }
-  // Order tiles to match the sidebar order so the layout stays 1:1 with what
-  // the user sees on the left (live owns the sidebar render, including any DnD).
-  const sidebarList = document.getElementById("viewsCameraList");
-  const sidebarOrder = sidebarList
-    ? Array.from(sidebarList.querySelectorAll(".liveSidebarRow[data-id]")).map((r) => r.getAttribute("data-id"))
+  // Mirror the sidebar order so playback's tile order matches the camera list.
+  const sidebar = el("viewsCameraList");
+  const order = sidebar
+    ? Array.from(sidebar.querySelectorAll(".liveSidebarRow[data-id]")).map((r) => r.getAttribute("data-id"))
     : [];
-  const seen = new Set();
-  const orderedIds = [];
-  for (const id of sidebarOrder) {
-    if (tiles.has(id) && !seen.has(id)) { seen.add(id); orderedIds.push(id); }
-  }
-  // Append any tiles not yet in the sidebar (defensive — keeps them visible).
-  for (const id of state.activeDeviceIds) {
-    if (tiles.has(id) && !seen.has(id)) { seen.add(id); orderedIds.push(id); }
-  }
-  const ordered = orderedIds.map((id) => tiles.get(id).tile);
-  if (ordered.length) grid.replaceChildren(...ordered);
-
-  if (!state.activeDeviceIds.length) {
-    showVideoEmpty(
-      "Select a camera",
-      "Choose one or more cameras from the sidebar to load recorded clips.",
-      { state: "empty", badge: "Camera" },
-    );
-  } else if (!selectedEvent()) {
-    const empty = timelineEmptyState();
-    showVideoEmpty(empty.title, empty.text, { state: empty.state });
-  } else {
-    hideVideoEmpty();
-  }
+  const seen = new Set(); const ordered = [];
+  for (const id of order) if (tiles.has(id) && !seen.has(id)) { seen.add(id); ordered.push(id); }
+  for (const id of state.activeDeviceIds) if (tiles.has(id) && !seen.has(id)) { seen.add(id); ordered.push(id); }
+  if (ordered.length) grid.replaceChildren(...ordered.map((id) => tiles.get(id).tileEl));
+  refreshEmptyState();
   requestAnimationFrame(recomputeGrid);
 }
 
-// ── Sidebar ───────────────────────────────────────────────────────────
-
-function getDeviceOnlineStatus(deviceId) {
-  if (!window.eventNotify) return "unknown";
-  const cached = window.eventNotify.getDeviceStatusCache?.();
-  return cached?.[deviceId] || "unknown";
+function refreshEmptyState() {
+  const empty = el("playbackVideoEmpty");
+  const shell = el("playbackVideoShell");
+  const badge = el("playbackVideoEmptyBadge");
+  const titleNode = empty?.querySelector(".playbackVideoEmptyTitle");
+  const textNode = el("playbackVideoEmptyText");
+  if (!empty || !shell) return;
+  if (state.activeDeviceIds.length) {
+    // Cameras selected — clear the empty-state attributes so the grid isn't
+    // hidden by the `[data-empty-state="empty"] .playbackVideoGrid` CSS rule.
+    delete shell.dataset.emptyState;
+    delete empty.dataset.state;
+    empty.classList.add("hidden");
+    empty.setAttribute("aria-busy", "false");
+    return;
+  }
+  shell.dataset.emptyState = "empty";
+  empty.dataset.state = "empty";
+  empty.classList.remove("hidden");
+  empty.setAttribute("aria-busy", "false");
+  if (badge) badge.textContent = "Camera";
+  if (titleNode) titleNode.textContent = "Select a camera";
+  if (textNode) textNode.textContent = "Choose one or more cameras from the sidebar to start reviewing recordings.";
 }
 
-// The shared sidebar is rendered by views-live.js; playback only decorates
-// the rows to mark its current selection. Internal callers that used to
-// trigger a sidebar repaint now route through window.viewsPlayback.afterSidebarRender.
-function renderSidebar() {
-  if (typeof window.viewsPlayback?.afterSidebarRender === "function") {
-    window.viewsPlayback.afterSidebarRender();
+// ── Playlist windows (per tile) ──────────────────────────────────────
+
+function tileWindowAroundCursor(cursorMs) {
+  return {
+    startMs: cursorMs - PLAYBACK_TRAIL_MS,
+    endMs: cursorMs + PLAYBACK_LEAD_MS,
+  };
+}
+
+function urlForWindow(deviceId, startMs, endMs, seekMs) {
+  const params = new URLSearchParams({
+    from: new Date(startMs).toISOString(),
+    to: new Date(endMs).toISOString(),
+    ts: String(Date.now()),
+  });
+  // Tell the server where the cursor is so it can emit EXT-X-START. Without
+  // this, hls.js fetches segment 0 first then has to seek + re-fetch the
+  // segment containing the cursor, doubling the time-to-first-frame.
+  if (Number.isFinite(seekMs)) {
+    params.set("seek_at", new Date(seekMs).toISOString());
+  }
+  return `/api/playback/hls/${encodeURIComponent(deviceId)}/index.m3u8?${params.toString()}`;
+}
+
+function tileNeedsReload(tile, cursorMs) {
+  if (!tile.loadedStartMs || !tile.loadedEndMs) return true;
+  // Cursor jumped before the window's start — full reload required to fetch
+  // earlier segments. No margin here: the trail buffer is intentionally short
+  // (PLAYBACK_TRAIL_MS), so a margin would force a reload immediately after
+  // every load, which is the bug class that produced the play/black-screen
+  // loop.
+  if (cursorMs < tile.loadedStartMs) return true;
+  // Cursor advancing into the lead margin — reload to extend the window.
+  // Margin gives us headroom so the reload completes before the player
+  // actually runs out of buffered media.
+  if (cursorMs > tile.loadedEndMs - RELOAD_MARGIN_MS) return true;
+  return false;
+}
+
+function tileHasCoverageAtCursor(tile, cursorMs = state.cursorMs) {
+  // Per-camera coverage check. Coverage runs come from /api/playback/window;
+  // each entry is a continuous span where this device has recorded video.
+  // Used to decide whether a tile should display video (in-coverage) or a
+  // "No recording" overlay (in a recording gap for this camera) — letting
+  // each camera's tile go black independently while the master cursor
+  // advances at wall-clock real time.
+  const runs = state.coverage.get(tile.deviceId);
+  if (!runs || !runs.length) return false;
+  for (const r of runs) {
+    if (cursorMs >= r.startMs && cursorMs <= r.endMs) return true;
+  }
+  return false;
+}
+
+// Per-tile sync: brings a single tile in line with the master cursor —
+// overlay if no coverage, reload if playlist doesn't cover the cursor,
+// seek + play otherwise. The single source of truth for "what should this
+// tile be doing right now."
+function syncOneTileToCursor(tile, cursorMs, opts = {}) {
+  if (!tile?.video || tile.disposed) return;
+  const inCoverage = tileHasCoverageAtCursor(tile, cursorMs);
+  if (!inCoverage) {
+    if (!tile.video.paused) {
+      try { tile.video.pause(); } catch {}
+    }
+    setTileOverlay(tile, "No recording at this time", true, { state: "nodata" });
+    return;
+  }
+  // In coverage. Hide the overlay (loading state will re-set it if a reload
+  // is pending).
+  setTileOverlay(tile, "", false);
+  // Need a playlist that actually covers the cursor?
+  if (opts.allowReload !== false && tileNeedsReload(tile, cursorMs)) {
+    const sinceError = tile.lastErrorAt ? Date.now() - tile.lastErrorAt : Infinity;
+    if (sinceError >= 4000) loadTilePlaylist(tile);
+    return;  // FRAG_BUFFERED handler will seek + play once buffered
+  }
+  seekTileToCursor(tile, cursorMs);
+  if (state.isPlaying && tile.video.paused) {
+    tile.video.playbackRate = state.speed;
+    Promise.resolve(tile.video.play()).catch(() => {});
   }
 }
 
-async function setActiveDeviceIds(ids, options = {}) {
-  const seen = new Set();
-  const next = [];
+function syncAllTilesToCursor(cursorMs = state.cursorMs, opts = {}) {
+  for (const tile of tiles.values()) syncOneTileToCursor(tile, cursorMs, opts);
+}
+
+function loadTilePlaylist(tile, opts = {}) {
+  if (!tile) return;
+  const cursor = state.cursorMs;
+  const win = tileWindowAroundCursor(cursor);
+  const url = urlForWindow(tile.deviceId, win.startMs, win.endMs, cursor);
+
+  destroyTilePlaylist(tile);
+  tile.loadToken += 1;
+  const myToken = tile.loadToken;
+  tile.loadedStartMs = win.startMs;
+  tile.loadedEndMs = win.endMs;
+  tile.playlistStartMs = null;
+  tile.lastReloadAt = Date.now();
+  tile.lastErrorAt = 0;
+  tile.lastUrl = url;
+  tile.pendingSeekMs = opts.seekMs != null ? opts.seekMs : cursor;
+
+  setTileOverlay(tile, "", true, { state: "loading" });
+
+  const video = tile.video;
+
+  const finishOverlay = () => setTileOverlay(tile, "", false);
+
+  if (window.Hls && window.Hls.isSupported && window.Hls.isSupported()) {
+    const hls = new window.Hls(HLS_CONFIG);
+    tile.hls = hls;
+    // playlistStartMs is the wall-clock anchor for video.currentTime=0 in
+    // this MediaSource. We set it from the FIRST playlist's first fragment
+    // and never touch it again for the lifetime of the hls instance —
+    // subsequent loadSource() calls (live-tail refresh) just shift the
+    // window forward and may drop earlier fragments, but the buffered
+    // media stays where it is so the anchor must too.
+    hls.on(window.Hls.Events.LEVEL_LOADED, (_e, data) => {
+      if (tile.loadToken !== myToken) return;
+      const fragments = data?.details?.fragments || [];
+      // Empty playlist (no segments in this window) is a normal "no recording"
+      // condition, not an error per se — but the player would silently sit on
+      // a black frame, so flag it with an overlay so the user knows there's
+      // simply nothing to play here.
+      if (!fragments.length) {
+        setTileOverlay(tile, "No recording in this range", true, { state: "error" });
+        return;
+      }
+      const segStartMs = fragments[0]?.programDateTime;
+      if (Number.isFinite(segStartMs) && tile.playlistStartMs == null) {
+        tile.playlistStartMs = segStartMs;
+      }
+      if (tile.pendingSeekMs != null && video.readyState >= 1 && tile.playlistStartMs != null) {
+        const target = tile.pendingSeekMs;
+        tile.pendingSeekMs = null;
+        seekTileToCursor(tile, target);
+      }
+    });
+    hls.on(window.Hls.Events.FRAG_BUFFERED, () => {
+      if (tile.loadToken !== myToken) return;
+      finishOverlay();
+      // If the user started playback before the manifest loaded, the initial
+      // video.play() rejected (no source). Pick up where they left off here.
+      if (state.isPlaying && video.paused) {
+        video.playbackRate = state.speed;
+        Promise.resolve(video.play()).catch(() => {});
+      }
+    });
+    hls.on(window.Hls.Events.ERROR, (_e, data) => {
+      if (!data?.fatal) return;
+      if (tile.disposed || tile.loadToken !== myToken) return;
+      const errDetails = String(data?.details || "");
+      const playlistEmpty = errDetails === "manifestParsingError"
+        || errDetails === "levelEmptyError"
+        || errDetails === "manifestLoadError";
+      if (playlistEmpty) {
+        setTileOverlay(tile, "No recording in this range", true, { state: "error" });
+      } else {
+        setTileOverlay(tile, "Reconnecting…", true, { state: "loading" });
+      }
+      // Force a fresh reload on the next reload-check tick. The throttle on
+      // `tile.lastErrorAt` prevents a tight loop if the problem persists.
+      // Tear down the broken hls instance so the retry starts clean.
+      try { hls.destroy(); } catch {}
+      if (tile.hls === hls) tile.hls = null;
+      tile.loadedStartMs = null;
+      tile.loadedEndMs = null;
+      tile.playlistStartMs = null;
+      tile.lastErrorAt = Date.now();
+    });
+    video.addEventListener("playing", finishOverlay, { once: true });
+    video.addEventListener("loadeddata", finishOverlay, { once: true });
+    hls.attachMedia(video);
+    hls.loadSource(url);
+    try { hls.startLoad(); } catch {}
+  } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    video.src = url;
+    video.addEventListener("loadedmetadata", () => {
+      const startDate = video.getStartDate?.();
+      const segStartMs = startDate?.getTime?.();
+      if (Number.isFinite(segStartMs) && tile.loadToken === myToken) {
+        tile.playlistStartMs = segStartMs;
+        if (tile.pendingSeekMs != null) {
+          const target = tile.pendingSeekMs;
+          tile.pendingSeekMs = null;
+          seekTileToCursor(tile, target);
+        }
+      }
+    }, { once: true });
+    video.addEventListener("loadeddata", finishOverlay, { once: true });
+    try { video.load(); } catch {}
+  } else {
+    setTileOverlay(tile, "HLS not supported in this browser", true, { state: "error" });
+  }
+}
+
+function seekTileToCursor(tile, cursorMs = state.cursorMs) {
+  if (!tile?.video) return;
+  if (tile.playlistStartMs == null) {
+    tile.pendingSeekMs = cursorMs;
+    return;
+  }
+  const offsetSec = (cursorMs - tile.playlistStartMs) / 1000;
+  if (!Number.isFinite(offsetSec) || offsetSec < 0) {
+    try { tile.video.currentTime = 0; } catch {}
+    return;
+  }
+  const dur = Number(tile.video.duration);
+  const safe = Number.isFinite(dur) && dur > 0 ? Math.min(offsetSec, Math.max(0, dur - 0.05)) : offsetSec;
+  try { tile.video.currentTime = Math.max(0, safe); } catch {}
+}
+
+function ensureTilePlaylistsForCursor() {
+  for (const tile of tiles.values()) {
+    if (tileNeedsReload(tile, state.cursorMs)) {
+      loadTilePlaylist(tile);
+    } else {
+      seekTileToCursor(tile);
+    }
+  }
+}
+
+function reloadAllTilesForCursor() {
+  for (const tile of tiles.values()) loadTilePlaylist(tile);
+}
+
+// Hot-swap the tile's playlist URL in-place, without destroying the hls.js
+// instance or the MediaSource buffer. Used for live-tail refresh: keeps
+// playback going while the new playlist (with newly-finalized segments)
+// is parsed and appended.
+function refreshTilePlaylist(tile) {
+  if (!tile?.hls) {
+    loadTilePlaylist(tile);
+    return;
+  }
+  const cursor = state.cursorMs;
+  const win = tileWindowAroundCursor(cursor);
+  const url = urlForWindow(tile.deviceId, win.startMs, win.endMs, cursor);
+  tile.loadedStartMs = win.startMs;
+  tile.loadedEndMs = win.endMs;
+  tile.lastReloadAt = Date.now();
+  tile.lastUrl = url;
+  // Don't touch playlistStartMs — it's the anchor for the existing buffer.
+  // Don't touch pendingSeekMs — we're not seeking, just refreshing.
+  try {
+    tile.hls.loadSource(url);
+  } catch {
+    loadTilePlaylist(tile);
+  }
+}
+
+function startReloadCheck() {
+  stopReloadCheck();
+  state.reloadCheckTimer = window.setInterval(() => {
+    if (state.pageDisposed) return;
+    let needCoverageRefresh = false;
+    for (const tile of tiles.values()) {
+      // Skip tiles whose camera has no recording at the current cursor — no
+      // amount of reloading will produce video where there is none, and the
+      // overlay-on-no-coverage UX doesn't need a playlist anyway.
+      if (!tileHasCoverageAtCursor(tile, state.cursorMs)) continue;
+
+      // Hard reload: cursor moved outside (or near edge of) the loaded window.
+      // Throttled by lastErrorAt so a permanently-broken stream doesn't
+      // reload-loop every 1.5s.
+      if (tileNeedsReload(tile, state.cursorMs)) {
+        const sinceError = tile.lastErrorAt ? Date.now() - tile.lastErrorAt : Infinity;
+        if (sinceError < 4000) continue;
+        loadTilePlaylist(tile);
+        continue;
+      }
+      // Live tail: hot-swap the playlist (in-place, no MediaSource teardown)
+      // only when the buffer is genuinely about to run dry, and only when the
+      // cursor is actually near now() — past playback doesn't need polling
+      // because finalized segments don't change.
+      if (state.isPlaying && isLiveCursor() && tile.video && tile.hls) {
+        const buf = tile.video.buffered;
+        const playheadAhead = buf.length
+          ? buf.end(buf.length - 1) - tile.video.currentTime
+          : 0;
+        const sinceLastReload = Date.now() - tile.lastReloadAt;
+        if (playheadAhead < 4 && sinceLastReload > 6000) {
+          refreshTilePlaylist(tile);
+          needCoverageRefresh = true;
+        }
+      }
+    }
+    if (needCoverageRefresh) loadDataForViewportSoon();
+  }, RELOAD_CHECK_INTERVAL_MS);
+}
+
+function stopReloadCheck() {
+  if (state.reloadCheckTimer) {
+    window.clearInterval(state.reloadCheckTimer);
+    state.reloadCheckTimer = 0;
+  }
+}
+
+// ── Cursor / wall-clock loop ─────────────────────────────────────────
+
+function setCursor(ms, opts = {}) {
+  const next = Math.max(0, Math.round(ms));
+  if (next === state.cursorMs && !opts.force) {
+    syncCursorUI(); return;
+  }
+  state.cursorMs = next;
+  // If user moved cursor away from "now", drop live-follow.
+  if (opts.userInitiated) {
+    state.followLive = isLive(next);
+  }
+  syncCursorUI();
+  syncTransport();
+  saveSoon();
+  // Per-tile sync — each camera independently decides whether to show video
+  // (in coverage) or a "No recording" overlay (in a gap). The cursor itself
+  // advances continuously regardless.
+  syncAllTilesToCursor(next, { allowReload: opts.reloadIfNeeded !== false });
+}
+
+function syncCursorUI() {
+  const display = el("playbackTimeDisplay");
+  if (display) display.textContent = fmtDateTime(state.cursorMs);
+  const cursorEl = el("playbackTimelineCursor");
+  if (cursorEl) {
+    if (state.cursorMs < state.viewportStartMs || state.cursorMs > state.viewportEndMs) {
+      cursorEl.classList.add("hidden");
+    } else {
+      cursorEl.classList.remove("hidden");
+      cursorEl.style.left = `${pctOfMs(state.cursorMs)}%`;
+      const labelEl = cursorEl.querySelector("[data-playback-cursor-label]");
+      if (labelEl) labelEl.textContent = fmtClock(state.cursorMs);
+    }
+  }
+}
+
+function startLiveTick() {
+  // The cursor is the master clock: it advances at real-time × speed
+  // independently of any specific tile's currentTime. Each tile then syncs
+  // to the cursor — playing the segment covering that wall-clock instant if
+  // it has one, or showing a "No recording" overlay if it doesn't. This is
+  // the only model that survives heterogeneous coverage (camera A recorded,
+  // camera B didn't, at the same wall-clock time) without desyncing.
+  stopLiveTick();
+  state.liveTickLastMs = performance.now();
+  const tick = (ts) => {
+    if (state.pageDisposed) return;
+    if (!state.isPlaying) { state.liveTickRafId = 0; return; }
+    const dt = ts - state.liveTickLastMs;
+    state.liveTickLastMs = ts;
+    // Cap dt so a long backgrounded tab doesn't make the cursor jump
+    // hours forward in a single frame when it returns.
+    const safeDt = Math.min(dt, 1000);
+    setCursor(state.cursorMs + safeDt * state.speed, { reloadIfNeeded: false });
+    state.liveTickRafId = requestAnimationFrame(tick);
+  };
+  state.liveTickRafId = requestAnimationFrame(tick);
+}
+
+function stopLiveTick() {
+  if (state.liveTickRafId) {
+    cancelAnimationFrame(state.liveTickRafId);
+    state.liveTickRafId = 0;
+  }
+}
+
+
+// ── Transport ────────────────────────────────────────────────────────
+
+function syncTransport() {
+  const playBtn = el("playbackPlayPauseBtn");
+  const liveBtn = el("playbackLiveBtn");
+  const speedSelect = el("playbackSpeedSelect");
+  const hasTiles = state.activeDeviceIds.length > 0;
+  if (playBtn) {
+    playBtn.disabled = !hasTiles;
+    const playing = state.isPlaying;
+    playBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
+    playBtn.title = playing ? "Pause" : "Play";
+    playBtn.innerHTML = playing
+      ? '<span class="playbackTransportGlyph" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="6.5" y="6" width="4" height="12" rx="1"></rect><rect x="13.5" y="6" width="4" height="12" rx="1"></rect></svg></span>'
+      : '<span class="playbackTransportGlyph" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M8 6.5V17.5L17 12L8 6.5Z"></path></svg></span>';
+  }
+  if (liveBtn) {
+    liveBtn.classList.toggle("is-live", state.followLive && isLive());
+    liveBtn.disabled = !hasTiles;
+  }
+  if (speedSelect && Number(speedSelect.value) !== state.speed) {
+    speedSelect.value = String(state.speed);
+  }
+  for (const tile of tiles.values()) {
+    if (tile.video) {
+      tile.video.playbackRate = state.speed;
+      tile.video.defaultPlaybackRate = state.speed;
+    }
+  }
+}
+
+async function play() {
+  if (!state.activeDeviceIds.length) return;
+  // Set flag BEFORE we kick off async work so the FRAG_BUFFERED handler can
+  // see "should be playing" and resume tiles whose initial play() rejected
+  // (no source attached yet). Without this, freshly-loaded tiles stay paused.
+  state.isPlaying = true;
+  syncTransport();
+  startLiveTick();
+
+  // Ensure each tile is muted (autoplay policy) before the sync function
+  // fires play() on them.
+  for (const tile of tiles.values()) {
+    if (tile.video && !tile.video.muted) tile.video.muted = true;
+  }
+  // Sync drives playlist load + play() for in-coverage tiles, and pause +
+  // overlay for out-of-coverage tiles.
+  syncAllTilesToCursor(state.cursorMs, { allowReload: true });
+}
+
+function pause() {
+  for (const tile of tiles.values()) {
+    if (tile.video && !tile.video.paused) {
+      try { tile.video.pause(); } catch {}
+    }
+  }
+  state.isPlaying = false;
+  syncTransport();
+  stopLiveTick();
+}
+
+function togglePlay() {
+  if (state.isPlaying) pause();
+  else play();
+}
+
+function setSpeed(value) {
+  const num = Number(value);
+  state.speed = SPEED_OPTIONS.includes(num) ? num : 1;
+  for (const tile of tiles.values()) {
+    if (tile.video) {
+      tile.video.playbackRate = state.speed;
+      tile.video.defaultPlaybackRate = state.speed;
+    }
+  }
+  syncTransport();
+  saveSoon();
+}
+
+function jumpRelative(deltaMs, opts = {}) {
+  setCursor(state.cursorMs + deltaMs, { userInitiated: true, ...opts });
+}
+
+function frameStep(forward) {
+  pause();
+  jumpRelative(forward ? FRAME_STEP_MS : -FRAME_STEP_MS);
+}
+
+function jumpToLive() {
+  state.followLive = true;
+  setCursor(Date.now() - 1500, { userInitiated: false });
+  // Center the viewport on now if cursor would be off-screen.
+  if (Date.now() < state.viewportStartMs || Date.now() > state.viewportEndMs) {
+    centerViewportOnCursor();
+    renderTimeline();
+  }
+  if (!state.isPlaying) play();
+}
+
+// ── Viewport / zoom ──────────────────────────────────────────────────
+
+function setZoomMs(zoomMs, opts = {}) {
+  const next = clamp(zoomMs, MIN_ZOOM_MS, MAX_ZOOM_MS);
+  state.zoomMs = next;
+  if (opts.center !== false) centerViewportOnCursor();
+  syncZoomPresets();
+  renderTimeline();
+  loadDataForViewport().catch(() => {});
+  saveSoon();
+}
+
+function centerViewportOnCursor() {
+  const half = state.zoomMs / 2;
+  state.viewportStartMs = state.cursorMs - half;
+  state.viewportEndMs = state.cursorMs + half;
+}
+
+function setViewport(startMs, durationMs, opts = {}) {
+  const dur = clamp(durationMs, MIN_ZOOM_MS, MAX_ZOOM_MS);
+  const nextStart = Math.round(startMs);
+  const nextEnd = Math.round(startMs + dur);
+  if (nextStart === state.viewportStartMs && nextEnd === state.viewportEndMs) {
+    return;
+  }
+  state.viewportStartMs = nextStart;
+  state.viewportEndMs = nextEnd;
+  state.zoomMs = dur;
+  if (opts.render !== false) scheduleRenderTimeline();
+  if (opts.persist !== false) saveSoon();
+}
+
+let _renderTimelineRafId = 0;
+function scheduleRenderTimeline() {
+  if (_renderTimelineRafId) return;
+  _renderTimelineRafId = requestAnimationFrame(() => {
+    _renderTimelineRafId = 0;
+    renderTimeline();
+  });
+}
+
+function pctOfMs(ms) {
+  const dur = state.viewportEndMs - state.viewportStartMs || 1;
+  return clamp(((ms - state.viewportStartMs) / dur) * 100, 0, 100);
+}
+
+function widthPct(startMs, endMs) {
+  return Math.max(0, pctOfMs(endMs) - pctOfMs(startMs));
+}
+
+function syncZoomPresets() {
+  const host = el("playbackZoomPresets");
+  if (!host) return;
+  for (const btn of host.querySelectorAll("[data-zoom-ms]")) {
+    btn.classList.toggle("is-active", Number(btn.dataset.zoomMs) === state.zoomMs);
+  }
+}
+
+// ── Timeline rendering ───────────────────────────────────────────────
+
+function chooseTickStepMs(durationMs) {
+  // Aim for 6–10 ticks across the viewport.
+  const target = durationMs / 8;
+  const candidates = [
+    1000, 5000, 10_000, 30_000,
+    60_000, 5 * 60_000, 10 * 60_000, 15 * 60_000, 30 * 60_000,
+    3_600_000, 2 * 3_600_000, 6 * 3_600_000, 12 * 3_600_000,
+    24 * 3_600_000, 2 * 24 * 3_600_000, 7 * 24 * 3_600_000, 14 * 24 * 3_600_000,
+  ];
+  for (const c of candidates) if (target <= c) return c;
+  return candidates[candidates.length - 1];
+}
+
+function tickLabel(ms, stepMs) {
+  if (stepMs >= 24 * 3_600_000) return dayString(ms);
+  if (stepMs >= 3_600_000) return `${pad2(new Date(ms).getHours())}:00`;
+  return fmtClock(ms);
+}
+
+function tickStartMs(stepMs) {
+  // Snap first tick to the step boundary in local time
+  const start = state.viewportStartMs;
+  if (stepMs >= 24 * 3_600_000) {
+    return startOfLocalDay(start) + (start > startOfLocalDay(start) ? 24 * 3_600_000 : 0);
+  }
+  const offset = stepMs >= 3_600_000 ? new Date(start).getTimezoneOffset() * 60_000 : 0;
+  const adjusted = start - offset;
+  const remainder = adjusted % stepMs;
+  const next = adjusted - remainder + (remainder === 0 ? 0 : stepMs);
+  return next + offset;
+}
+
+function renderTimelineScale() {
+  const scale = el("playbackTimelineScale");
+  if (!scale) return;
+  const dur = state.viewportEndMs - state.viewportStartMs;
+  const stepMs = chooseTickStepMs(dur);
+  const labels = [];
+  let t = tickStartMs(stepMs);
+  while (t <= state.viewportEndMs) {
+    labels.push(`<span class="playbackTimelineTick" style="left:${pctOfMs(t)}%;">${escapeHtml(tickLabel(t, stepMs))}</span>`);
+    t += stepMs;
+  }
+  // Edge labels (start + end)
+  labels.unshift(`<span class="playbackTimelineTick is-edge" style="left:0%;">${escapeHtml(fmtClock(state.viewportStartMs))}</span>`);
+  labels.push(`<span class="playbackTimelineTick is-edge is-end" style="left:100%;">${escapeHtml(fmtClock(state.viewportEndMs))}</span>`);
+  scale.innerHTML = labels.join("");
+}
+
+function renderCoverageLane(deviceId) {
+  const runs = state.coverage.get(deviceId) || [];
+  const visible = runs.filter((r) => r.endMs >= state.viewportStartMs && r.startMs <= state.viewportEndMs);
+  const visStart = state.viewportStartMs, visEnd = state.viewportEndMs;
+  // Build gap stripes by inverting coverage within viewport.
+  const cursorMs = visStart;
+  let walker = visStart;
+  const gaps = [];
+  for (const run of visible) {
+    if (run.startMs > walker + 250) gaps.push({ startMs: walker, endMs: run.startMs });
+    walker = Math.max(walker, run.endMs);
+  }
+  if (walker < visEnd - 250) gaps.push({ startMs: walker, endMs: visEnd });
+
+  const gapHtml = gaps.map((g) => {
+    const left = pctOfMs(g.startMs);
+    const width = widthPct(g.startMs, g.endMs);
+    return `<span class="playbackTimelineGapStripe" style="left:${left}%; width:${width}%;"></span>`;
+  }).join("");
+
+  const coverageHtml = visible.map((r) => {
+    const left = pctOfMs(Math.max(r.startMs, visStart));
+    const width = widthPct(Math.max(r.startMs, visStart), Math.min(r.endMs, visEnd));
+    return `<span class="playbackTimelineCoverage" style="left:${left}%; width:${width}%;"></span>`;
+  }).join("");
+
+  return `${gapHtml}${coverageHtml}<span class="playbackTimelineLaneLabel">${escapeHtml(deviceName(deviceId))}</span>`;
+}
+
+function renderEventLane(row) {
+  const visStart = state.viewportStartMs, visEnd = state.viewportEndMs;
+  const segs = row.segments.filter((s) => s.endMs >= visStart && s.startMs <= visEnd);
+  const html = segs.map((seg) => {
+    const left = pctOfMs(Math.max(seg.startMs, visStart));
+    const width = Math.max(0.2, widthPct(Math.max(seg.startMs, visStart), Math.min(seg.endMs, visEnd)));
+    const playable = seg.playable ? "" : "is-pending";
+    const camLabel = seg.deviceId ? ` · ${deviceName(seg.deviceId)}` : "";
+    const tooltip = `${seg.presetName}${camLabel} · ${fmtClock(seg.startMs)}`;
+    return `<button class="playbackMarker ${playable}" type="button"
+      data-event-id="${escapeHtml(seg.eventId)}"
+      data-start-ms="${seg.startMs}"
+      style="left:${left}%; width:${width}%; background:${escapeHtml(seg.color)};"
+      title="${escapeHtml(tooltip)}"></button>`;
+  }).join("");
+  return `${html}<span class="playbackTimelineLaneLabel">${escapeHtml(row.name)}</span>`;
+}
+
+function renderTimeline() {
+  const track = el("playbackTimelineTrack");
+  if (!track) return;
+  renderTimelineScale();
+  renderTimelineFilters();
+  syncZoomPresets();
+
+  const stepMs = chooseTickStepMs(state.viewportEndMs - state.viewportStartMs);
+  const tickHtml = [];
+  let t = tickStartMs(stepMs);
+  while (t <= state.viewportEndMs) {
+    tickHtml.push(`<span class="playbackTimelineGuide" style="left:${pctOfMs(t)}%;" aria-hidden="true"></span>`);
+    t += stepMs;
+  }
+
+  // Coverage lanes — one per active camera.
+  const coverageLanes = state.activeDeviceIds.map((id) => `
+    <div class="playbackTimelineLane" data-coverage-device="${escapeHtml(id)}">
+      ${renderCoverageLane(id)}
+    </div>`).join("");
+
+  // Event lanes — one per visible preset.
+  const hidden = new Set(state.hiddenPresetKeys);
+  const eventRows = timelinePresetRows().filter((row) => !hidden.has(row.key));
+  const eventLanes = eventRows.map((row) => `
+    <div class="playbackTimelineLane" data-preset-key="${escapeHtml(row.key)}">
+      ${renderEventLane(row)}
+    </div>`).join("");
+
+  let body = "";
+  if (state.activeDeviceIds.length) {
+    body = `<div class="playbackTimelineRows">${coverageLanes}${eventLanes}</div>`;
+  } else {
+    body = `<div class="playbackTimelineEmpty">Select a camera to see recording coverage.</div>`;
+  }
+
+  // Preserve the thumb preview node — it's the only piece that survives across renders.
+  const preview = el("playbackThumbPreview");
+  const previewHtml = preview ? preview.outerHTML : '<div class="playbackThumbPreview hidden" id="playbackThumbPreview" aria-hidden="true"><img id="playbackThumbPreviewImg" alt=""/><div class="playbackThumbPreviewLabel" id="playbackThumbPreviewLabel"></div></div>';
+
+  track.innerHTML = `${tickHtml.join("")}${body}
+    <div class="playbackTimelineCursor hidden" id="playbackTimelineCursor">
+      <span class="playbackTimelineCursorLabel" data-playback-cursor-label></span>
+    </div>
+    ${previewHtml}`;
+
+  syncCursorUI();
+}
+
+// ── Filters (preset chips) ───────────────────────────────────────────
+
+function renderTimelineFilters() {
+  const host = el("playbackTimelineFilters");
+  if (!host) return;
+  const rows = timelinePresetRows();
+  if (!rows.length) { host.innerHTML = ""; host.classList.add("hidden"); return; }
+  host.classList.remove("hidden");
+  const hidden = new Set(state.hiddenPresetKeys);
+  host.innerHTML = `
+    <div class="playbackTimelineFilterBar">
+      <div class="playbackTimelineFilterLabel">Tags</div>
+      <div class="playbackTimelineFilterChips">
+        ${rows.map((row) => {
+          const sel = !hidden.has(row.key);
+          return `<button class="playbackTimelineFilterChip ${sel ? "is-selected" : ""}"
+            type="button" data-preset-key="${escapeHtml(row.key)}"
+            aria-pressed="${sel ? "true" : "false"}"
+            ><span class="playbackTimelineFilterSwatch" style="background:${escapeHtml(row.color)};"></span><span>${escapeHtml(row.name)}</span></button>`;
+        }).join("")}
+      </div>
+    </div>`;
+}
+
+function togglePresetKey(key) {
+  const k = String(key || "").trim();
+  if (!k) return;
+  const hidden = new Set(state.hiddenPresetKeys);
+  if (hidden.has(k)) hidden.delete(k); else hidden.add(k);
+  state.hiddenPresetKeys = [...hidden];
+  renderTimeline();
+  saveSoon();
+}
+
+// ── Data loading ─────────────────────────────────────────────────────
+
+function setProgressActive(active) {
+  const node = el("playbackTimelineProgress");
+  if (!node) return;
+  node.dataset.active = active ? "true" : "false";
+  node.setAttribute("aria-hidden", active ? "false" : "true");
+}
+
+async function loadDevices() {
+  if (state.pageDisposed) return;
+  const out = await api("/api/devices");
+  state.devices = Array.isArray(out?.devices) ? out.devices : [];
+  state.activeDeviceIds = state.activeDeviceIds.filter((id) =>
+    state.devices.some((d) => d.id === id && d.profile_token));
+}
+
+async function fetchWindow(deviceId) {
+  const params = new URLSearchParams({
+    from: new Date(state.viewportStartMs).toISOString(),
+    to: new Date(state.viewportEndMs).toISOString(),
+    ts: String(Date.now()),
+  });
+  return api(`/api/playback/window?device_id=${encodeURIComponent(deviceId)}&${params.toString()}`,
+    { cache: "no-store" });
+}
+
+async function fetchTimelineDay(deviceId, day) {
+  const params = new URLSearchParams({ device_id: deviceId, day, ts: String(Date.now()) });
+  return api(`/api/playback/timeline?${params.toString()}`, { cache: "no-store" });
+}
+
+// Snapshot of which day-buckets we last fetched events for, keyed by device.
+// Used so a wheel-zoom that doesn't cross a day boundary doesn't re-fetch the
+// (potentially large) per-day event lists.
+const _eventDaysFetched = new Map(); // deviceId → Set<dayString>
+
+function viewportDaySet() {
+  const days = new Set();
+  const dayMs = 24 * 3_600_000;
+  for (let t = startOfLocalDay(state.viewportStartMs); t <= state.viewportEndMs + dayMs; t += dayMs) {
+    days.add(dayString(t));
+  }
+  return days;
+}
+
+function setsEqual(a, b) {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
+async function loadDataForViewport(opts = {}) {
+  if (state.pageDisposed || !state.activeDeviceIds.length) {
+    state.coverage = new Map();
+    state.thumbnails = new Map();
+    state.events = [];
+    _eventDaysFetched.clear();
+    if (!opts.background) renderTimeline();
+    return;
+  }
+  if (!opts.background) setProgressActive(true);
+  const reqId = ++state.dataRequestId;
+
+  // Coverage + thumbnails: cheap, always refetched for the precise window.
+  // Events: heavier (per-day buckets), only refetched when day-set changes
+  // for any active device, or when caller explicitly forces it.
+  const days = viewportDaySet();
+  const force = opts.forceEventRefresh === true;
+
+  try {
+    const windowResults = await Promise.all(
+      state.activeDeviceIds.map((id) => fetchWindow(id).catch(() => null)),
+    );
+    if (reqId !== state.dataRequestId) return;
+
+    const dayFetchPlan = state.activeDeviceIds.flatMap((id) => {
+      const prev = _eventDaysFetched.get(id);
+      if (!force && prev && setsEqual(prev, days)) return [];
+      return [...days].map((d) => ({ id, day: d }));
+    });
+    const dayResults = dayFetchPlan.length
+      ? await Promise.all(dayFetchPlan.map(({ id, day }) => fetchTimelineDay(id, day).catch(() => null)))
+      : [];
+    if (reqId !== state.dataRequestId) return;
+    if (dayFetchPlan.length) {
+      // Update the cache so we don't re-fetch the same day-set on every wheel tick.
+      for (const id of state.activeDeviceIds) _eventDaysFetched.set(id, new Set(days));
+    }
+
+    // Coverage + thumbnails per device
+    const coverage = new Map();
+    const thumbs = new Map();
+    state.activeDeviceIds.forEach((id, i) => {
+      const w = windowResults[i];
+      if (!w) return;
+      const runs = (w.coverage || []).map((r) => ({
+        startMs: parseISOms(r.start), endMs: parseISOms(r.end),
+      })).filter((r) => r.startMs != null && r.endMs != null);
+      coverage.set(id, runs);
+      const thumbList = (w.thumbnails || []).map((t) => ({
+        startMs: parseISOms(t.start),
+        endMs: parseISOms(t.end),
+        url: t.url,
+        filename: t.filename,
+      })).filter((t) => t.startMs != null && t.endMs != null);
+      thumbs.set(id, thumbList);
+    });
+    state.coverage = coverage;
+    state.thumbnails = thumbs;
+
+    // Events — only refresh the list if we actually fetched any days. Otherwise
+    // the cached state.events is still correct for the visible viewport.
+    if (dayFetchPlan.length) {
+      const seen = new Set();
+      const events = [];
+      for (const result of dayResults) {
+        if (!result?.events) continue;
+        for (const ev of result.events) {
+          const id = String(ev?.id || "").trim();
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          events.push(ev);
+        }
+      }
+      state.events = events.sort((a, b) =>
+        String(a?.triggered_at || "").localeCompare(String(b?.triggered_at || "")));
+    }
+
+    renderTimeline();
+    // Coverage just changed — re-evaluate each tile's visibility. A tile that
+    // was showing "No recording" because its old coverage didn't include the
+    // cursor may now be in coverage (or vice versa).
+    syncAllTilesToCursor(state.cursorMs, { allowReload: true });
+  } finally {
+    if (!opts.background) setProgressActive(false);
+  }
+}
+
+// Debounced background reload, used by wheel/pan handlers that can fire many
+// times per second. Drops everything but the trailing edge.
+let _loadDataDebounceTimer = 0;
+function loadDataForViewportSoon(opts = {}) {
+  if (_loadDataDebounceTimer) window.clearTimeout(_loadDataDebounceTimer);
+  _loadDataDebounceTimer = window.setTimeout(() => {
+    _loadDataDebounceTimer = 0;
+    loadDataForViewport({ background: true, ...opts }).catch(() => {});
+  }, 200);
+}
+
+function startDataRefresh() {
+  stopDataRefresh();
+  // Live edge moves with wall-clock; viewing the past is static. Poll fast
+  // when following live, slow otherwise.
+  const tick = () => {
+    if (state.pageDisposed) return;
+    if (document.visibilityState === "visible") {
+      loadDataForViewport({ background: true }).catch(() => {});
+    }
+    const interval = (state.followLive || isLive())
+      ? TIMELINE_DATA_REFRESH_LIVE_MS
+      : TIMELINE_DATA_REFRESH_IDLE_MS;
+    state.dataRefreshTimer = window.setTimeout(tick, interval);
+  };
+  state.dataRefreshTimer = window.setTimeout(tick, TIMELINE_DATA_REFRESH_LIVE_MS);
+}
+
+function stopDataRefresh() {
+  if (state.dataRefreshTimer) {
+    window.clearTimeout(state.dataRefreshTimer);
+    state.dataRefreshTimer = 0;
+  }
+}
+
+// ── Active device set ────────────────────────────────────────────────
+
+async function setActiveDeviceIds(ids, opts = {}) {
+  const seen = new Set(); const next = [];
   for (const id of ids) {
-    const trimmed = String(id || "").trim();
-    if (!trimmed || seen.has(trimmed)) continue;
-    if (!state.devices.find((d) => d.id === trimmed && d.profile_token)) continue;
-    seen.add(trimmed);
-    next.push(trimmed);
+    const t = String(id || "").trim();
+    if (!t || seen.has(t)) continue;
+    if (!state.devices.find((d) => d.id === t && d.profile_token)) continue;
+    seen.add(t); next.push(t);
+  }
+  // Drop the day-cache only for devices the user removed — keeps existing
+  // devices' caches warm so adding/removing a single camera doesn't trigger
+  // a full event refetch across the whole active set.
+  const nextSet = new Set(next);
+  for (const id of [..._eventDaysFetched.keys()]) {
+    if (!nextSet.has(id)) _eventDaysFetched.delete(id);
   }
   state.activeDeviceIds = next;
-  // Mirror to the shared engagement set so live mode picks up the same selection.
   if (window.views?.selectedDevices) {
     window.views.selectedDevices.clear();
     for (const id of next) window.views.selectedDevices.add(id);
   }
-  renderSidebar();
-  syncTilesToActive();
-  schedulePlaybackStateSave();
-
-  if (options.reloadTimeline !== false) {
-    await loadTimeline({ background: false, preservePlayback: true, autoSelectLatest: false });
+  if (typeof window.viewsPlayback?.afterSidebarRender === "function") {
+    window.viewsPlayback.afterSidebarRender();
   }
+  syncTilesToActive();
+  saveSoon();
 
-  const event = selectedEvent();
-  if (event) reloadAllTileSourcesForEvent(event);
+  if (opts.reloadData !== false) await loadDataForViewport().catch(() => {});
+
+  // Bring up playlists for newly added tiles.
+  for (const tile of tiles.values()) {
+    if (!tile.lastUrl) loadTilePlaylist(tile);
+  }
+  if (state.isPlaying) play();
 }
 
 async function toggleActiveDevice(deviceId) {
@@ -1349,986 +1533,248 @@ async function toggleActiveDevice(deviceId) {
   await setActiveDeviceIds(next);
 }
 
-// ── Master event source loading across tiles ──────────────────────────
+// ── Thumbnail preview ────────────────────────────────────────────────
 
-function reloadAllTileSourcesForEvent(event) {
-  if (!event) return;
-  for (const tile of tiles.values()) attachTileSource(tile, event);
-}
-
-// ── Transport (across all tiles) ──────────────────────────────────────
-
-// Seek every tile to the given elapsed-in-event seconds (NOT raw video.currentTime).
-async function seekAllTilesToSeconds(elapsedSeconds) {
-  await setAllTilesElapsed(elapsedSeconds);
-}
-
-async function startVideoPlayback(video) {
-  if (!video) return false;
-  // Browsers only allow autoplay on muted video unless the user has
-  // recently interacted. Click-to-play counts as interaction, but enforcing
-  // muted is the most reliable way to make autoplay actually start.
-  if (!video.muted) video.muted = true;
-  // Wait for the player to actually have data ready, otherwise play()
-  // resolves while the video sits paused on the first decoded frame —
-  // visible especially on live (EVENT-type) HLS playlists where the
-  // manifest + first fragment haven't landed yet.
-  if (video.readyState < 3) {
-    await new Promise((resolve) => {
-      let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
-        video.removeEventListener("canplay", finish);
-        clearTimeout(timer);
-        resolve();
-      };
-      const timer = setTimeout(finish, 4000);
-      video.addEventListener("canplay", finish, { once: true });
-    });
+function findThumbnailForMs(ms) {
+  // Only consider active devices to avoid scanning thumbnails from cameras
+  // the user removed but whose data still lingers in state.thumbnails.
+  for (const id of state.activeDeviceIds) {
+    const list = state.thumbnails.get(id);
+    if (!list) continue;
+    const hit = list.find((t) => ms >= t.startMs && ms < t.endMs);
+    if (hit) return hit;
   }
-  try {
-    const r = video.play();
-    if (r && typeof r.then === "function") await r;
-  } catch (err) {
-    console.warn("[playback] play() rejected:", err?.name, err?.message);
-  }
-  return !video.paused;
-}
-
-async function startAllTilesPlayback() {
-  const results = await Promise.all([...tiles.values()].map((tile) => startVideoPlayback(tile.video)));
-  return results.some(Boolean);
-}
-
-function pauseAllTiles() {
-  for (const tile of tiles.values()) {
-    try { if (!tile.video.paused) tile.video.pause(); } catch {}
-  }
-}
-
-function setAllTilesPlaybackRate(rate) {
-  for (const tile of tiles.values()) {
-    tile.video.playbackRate = rate;
-    tile.video.defaultPlaybackRate = rate;
-  }
-}
-
-function playbackDurationSeconds(_video, event = selectedEvent()) {
-  // Use the event's bounds, NOT video.duration — the loaded HLS playlist
-  // contains whole segments overlapping the event window, so video.duration
-  // can exceed the event by up to two segment lengths.
-  return eventDurationSeconds(event);
-}
-
-function playbackResetSeconds(video, event = selectedEvent()) {
-  return isReverseDirection() ? playbackDurationSeconds(video, event) : 0;
-}
-
-function isPlaybackRunning(video = primaryVideoEl()) {
-  if (!selectedEvent()) return false;
-  if (isReverseDirection()) return isReversePlaybackActive();
-  if (isSimulatedForwardPlaybackActive()) return true;
-  return !!(video && video.currentSrc && !video.paused && !video.ended);
-}
-
-function syncPlaybackTransport() {
-  const video = primaryVideoEl();
-  const playPauseBtn = el("playbackPlayPauseBtn");
-  const stopBtn = el("playbackStopBtn");
-  const shuttleInput = el("playbackShuttleInput");
-  const shuttleValue = el("playbackShuttleValue");
-  const hasEvent = !!selectedEvent();
-  const hasTiles = state.activeDeviceIds.length > 0;
-  const running = isPlaybackRunning(video);
-
-  if (playPauseBtn) {
-    playPauseBtn.innerHTML = playbackTransportIcon(running ? "pause" : "play");
-    playPauseBtn.setAttribute("aria-label", running ? "Pause" : "Play");
-    playPauseBtn.title = running ? "Pause" : "Play";
-    playPauseBtn.disabled = !hasEvent || !hasTiles;
-  }
-  if (stopBtn) {
-    stopBtn.setAttribute("aria-label", "Stop");
-    stopBtn.title = "Stop";
-    stopBtn.disabled = !hasEvent || !hasTiles;
-  }
-
-  const effectiveSigned = running ? signedShuttleValue() : 0;
-  if (shuttleInput) {
-    if (!_shuttleDragging && !_shuttleAnimRafId) {
-      shuttleInput.value = String(shuttleValueToPos(effectiveSigned));
-    }
-    shuttleInput.disabled = !hasEvent || !hasTiles;
-  }
-  const displayPos = shuttleInput ? Number(shuttleInput.value) : shuttleValueToPos(effectiveSigned);
-  const displayValue = shuttlePosToValue(displayPos);
-  updateShuttleFillFromPos(displayPos);
-  if (shuttleValue) {
-    const label = formatShuttleValue(displayValue);
-    shuttleValue.value = label;
-    shuttleValue.textContent = label;
-  }
-
-  const speed = normalizePlaybackSpeed(state.transport.speed);
-  const nativeSpeed = shouldSimulateForwardPlayback(speed, state.transport.direction)
-    ? MAX_NATIVE_PLAYBACK_RATE
-    : speed;
-  setAllTilesPlaybackRate(nativeSpeed);
-}
-
-function stopSimulatedForwardPlayback() {
-  const f = forwardPlaybackState();
-  f.active = false;
-  f.lastTs = 0;
-  if (f.rafId) { cancelAnimationFrame(f.rafId); f.rafId = 0; }
-}
-
-function stopReversePlayback() {
-  const r = reversePlaybackState();
-  r.active = false;
-  r.lastTs = 0;
-  if (r.rafId) { cancelAnimationFrame(r.rafId); r.rafId = 0; }
-}
-
-function pauseCurrentPlayback() {
-  clearForwardPlaybackBoundarySchedule();
-  stopSimulatedForwardPlayback();
-  stopReversePlayback();
-  stopPlaybackCursorLoop();
-  state.transport.advancingToNextClip = false;
-  pauseAllTiles();
-  updatePlaybackCursorFromVideo();
-  syncPlaybackTransport();
-}
-
-async function handleReversePlaybackBoundary(event) {
-  if (!event) { syncPlaybackTransport(); return; }
-  const previousEvent = previousTimelineEvent(event.id);
-  if (!previousEvent) {
-    await seekAllTilesToSeconds(0);
-    updatePlaybackCursorFromVideo();
-    syncPlaybackTransport();
-    setStatus(`Reached beginning of ${event.title}.`);
-    return;
-  }
-  setStatus(`Reached start of ${event.title}. Loading ${previousEvent.title}…`);
-  await selectEvent(previousEvent.id, {
-    seekSeconds: eventDurationSeconds(previousEvent),
-    autoplay: true,
-  });
-}
-
-function clearForwardPlaybackBoundarySchedule() {
-  if (state.transport.forwardBoundaryTimer) {
-    window.clearTimeout(state.transport.forwardBoundaryTimer);
-    state.transport.forwardBoundaryTimer = 0;
-  }
-}
-
-async function handleForwardPlaybackBoundary(event) {
-  clearForwardPlaybackBoundarySchedule();
-  if (!event || state.selectedEventId !== event.id || state.transport.advancingToNextClip) {
-    syncPlaybackTransport();
-    return;
-  }
-  state.transport.advancingToNextClip = true;
-  try {
-    stopPlaybackCursorLoop();
-    stopSimulatedForwardPlayback();
-    stopReversePlayback();
-    pauseAllTiles();
-    syncPlaybackTransport();
-    const nextEvent = nextTimelineEvent(event.id);
-    if (!nextEvent) {
-      setStatus(`Finished ${event.title}.`);
-      return;
-    }
-    setStatus(`Finished ${event.title}. Loading ${nextEvent.title}…`);
-    await selectEvent(nextEvent.id, { autoplay: true });
-  } finally {
-    state.transport.advancingToNextClip = false;
-  }
-}
-
-function playbackReachedEnd(_video, event) {
-  if (!event || isReverseDirection() || state.transport.advancingToNextClip) return false;
-  const duration = eventDurationSeconds(event);
-  if (!(Number.isFinite(duration) && duration > 0)) return false;
-  const tile = primaryTile();
-  if (!tile) return false;
-  return tileElapsedSeconds(tile) >= Math.max(0, duration - 0.05);
-}
-
-function queueForwardPlaybackBoundaryCheck(event = selectedEvent()) {
-  const video = primaryVideoEl();
-  if (!playbackReachedEnd(video, event)) return;
-  if (state.transport.forwardBoundaryTimer) return;
-  state.transport.forwardBoundaryTimer = window.setTimeout(() => {
-    state.transport.forwardBoundaryTimer = 0;
-    handleForwardPlaybackBoundary(event).catch((error) => setStatus(error.message || String(error)));
-  }, 0);
-}
-
-async function startReversePlayback(event) {
-  const primary = primaryTile();
-  if (!primary || !event) return false;
-  stopPlaybackCursorLoop();
-  stopSimulatedForwardPlayback();
-  stopReversePlayback();
-  pauseAllTiles();
-
-  if (tileElapsedSeconds(primary) <= 0.05) {
-    await seekAllTilesToSeconds(eventDurationSeconds(event));
-  }
-
-  const reverse = reversePlaybackState();
-  reverse.active = true;
-  reverse.lastTs = 0;
-  syncPlaybackTransport();
-
-  const tick = (timestamp) => {
-    if (!reverse.active) { reverse.rafId = 0; return; }
-    if (!reverse.lastTs) reverse.lastTs = timestamp;
-    const dtSeconds = clamp((timestamp - reverse.lastTs) / 1000, 0, 0.25);
-    reverse.lastTs = timestamp;
-    const cur = primaryTile();
-    if (!cur) { stopReversePlayback(); return; }
-    const nextElapsed = Math.max(0, tileElapsedSeconds(cur) - (dtSeconds * normalizePlaybackSpeed(state.transport.speed)));
-    for (const tile of tiles.values()) setTileElapsed(tile, nextElapsed);
-    updatePlaybackCursorFromVideo();
-    if (nextElapsed <= 0.001) {
-      stopReversePlayback();
-      syncPlaybackTransport();
-      handleReversePlaybackBoundary(event).catch((error) => setStatus(error.message || String(error)));
-      return;
-    }
-    reverse.rafId = requestAnimationFrame(tick);
-  };
-  reverse.rafId = requestAnimationFrame(tick);
-  return true;
-}
-
-async function startSimulatedForwardPlayback(event) {
-  const primary = primaryTile();
-  if (!primary || !event) return false;
-  clearForwardPlaybackBoundarySchedule();
-  stopPlaybackCursorLoop();
-  stopSimulatedForwardPlayback();
-  stopReversePlayback();
-  pauseAllTiles();
-
-  const forward = forwardPlaybackState();
-  forward.active = true;
-  forward.lastTs = 0;
-  syncPlaybackTransport();
-
-  const tick = (timestamp) => {
-    if (!forward.active || state.selectedEventId !== event.id) { forward.rafId = 0; return; }
-    if (!forward.lastTs) forward.lastTs = timestamp;
-    const duration = eventDurationSeconds(event);
-    if (!(Number.isFinite(duration) && duration > 0)) {
-      stopSimulatedForwardPlayback();
-      syncPlaybackTransport();
-      return;
-    }
-    const dtSeconds = clamp((timestamp - forward.lastTs) / 1000, 0, 0.25);
-    forward.lastTs = timestamp;
-    const cur = primaryTile();
-    if (!cur) { stopSimulatedForwardPlayback(); return; }
-    const nextElapsed = Math.min(duration, tileElapsedSeconds(cur) + (dtSeconds * normalizePlaybackSpeed(state.transport.speed)));
-    for (const tile of tiles.values()) setTileElapsed(tile, nextElapsed);
-    updatePlaybackCursorFromVideo();
-    if (nextElapsed >= Math.max(0, duration - 0.001)) {
-      stopSimulatedForwardPlayback();
-      syncPlaybackTransport();
-      queueForwardPlaybackBoundaryCheck(event);
-      return;
-    }
-    forward.rafId = requestAnimationFrame(tick);
-  };
-  forward.rafId = requestAnimationFrame(tick);
-  return true;
-}
-
-async function startConfiguredPlayback(event) {
-  if (!event) return false;
-  if (isReverseDirection()) return await startReversePlayback(event);
-  if (shouldSimulateForwardPlayback()) {
-    const started = await startSimulatedForwardPlayback(event);
-    syncPlaybackTransport();
-    return started;
-  }
-  stopSimulatedForwardPlayback();
-  stopReversePlayback();
-  const speed = normalizePlaybackSpeed(state.transport.speed);
-  setAllTilesPlaybackRate(speed);
-  const started = await startAllTilesPlayback();
-  syncPlaybackTransport();
-  return started;
-}
-
-function playbackStatusText(event, started) {
-  if (!event) return started ? "Playing." : "Loaded.";
-  if (!started) return `Loaded ${event.title}.`;
-  return `Playing ${event.title} ${playbackDirectionLabel()} at ${formatPlaybackSpeed(state.transport.speed)}.`;
-}
-
-function setPlaybackSpeed(value) {
-  const event = selectedEvent();
-  const previousSpeed = state.transport.speed;
-  const wasRunning = isPlaybackRunning();
-  state.transport.speed = normalizePlaybackSpeed(value);
-  syncPlaybackTransport();
-  const crossedNativeLimit = !isReverseDirection()
-    && shouldSimulateForwardPlayback(previousSpeed) !== shouldSimulateForwardPlayback(state.transport.speed);
-  if (event && wasRunning && crossedNativeLimit) {
-    startConfiguredPlayback(event)
-      .then((started) => setStatus(playbackStatusText(event, started)))
-      .catch((error) => setStatus(error.message || String(error)));
-    return;
-  }
-  if (event && wasRunning) {
-    setStatus(`Playing ${event.title} ${playbackDirectionLabel()} at ${formatPlaybackSpeed(state.transport.speed)}.`);
-  }
-}
-
-async function setShuttle(signedValue) {
-  const value = clamp(Number(signedValue) || 0, -SHUTTLE_MAX, SHUTTLE_MAX);
-  const event = selectedEvent();
-  if (Math.abs(value) < SHUTTLE_DEADZONE) {
-    pauseCurrentPlayback();
-    syncPlaybackTransport();
-    return;
-  }
-  const nextDirection = value < 0 ? "backward" : "forward";
-  const nextSpeed = Math.min(SHUTTLE_MAX, Math.abs(value));
-  if (nextDirection !== playbackDirectionLabel()) await setPlaybackDirection(nextDirection);
-  setPlaybackSpeed(nextSpeed);
-  if (event && !isPlaybackRunning()) startConfiguredPlayback(event).catch(() => {});
-}
-
-function _easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
-
-function animateShuttleTo(targetValue, durationMs = SHUTTLE_SNAP_DURATION_MS) {
-  cancelShuttleAnim();
-  const input = el("playbackShuttleInput");
-  if (!input) { setShuttle(targetValue); return; }
-  const startPos = clamp(Number(input.value) || 0, -1, 1);
-  const endPos = shuttleValueToPos(targetValue);
-  if (Math.abs(endPos - startPos) < 0.002) {
-    input.value = String(endPos);
-    setShuttle(shuttlePosToValue(endPos));
-    return;
-  }
-  const t0 = performance.now();
-  const step = (now) => {
-    const t = Math.min(1, (now - t0) / durationMs);
-    const p = startPos + (endPos - startPos) * _easeOutCubic(t);
-    input.value = String(p);
-    updateShuttleFillFromPos(p);
-    setShuttle(shuttlePosToValue(p));
-    if (t < 1) {
-      _shuttleAnimRafId = requestAnimationFrame(step);
-    } else {
-      _shuttleAnimRafId = 0;
-      input.value = String(endPos);
-      updateShuttleFillFromPos(endPos);
-      setShuttle(shuttlePosToValue(endPos));
-    }
-  };
-  _shuttleAnimRafId = requestAnimationFrame(step);
-}
-
-function resetShuttleToRest() { animateShuttleTo(SHUTTLE_REST_VALUE); }
-
-async function setPlaybackDirection(direction) {
-  const nextDirection = normalizePlaybackDirection(direction);
-  const currentDirection = playbackDirectionLabel();
-  const event = selectedEvent();
-  const wasRunning = isPlaybackRunning();
-  if (nextDirection === currentDirection) { syncPlaybackTransport(); return; }
-  state.transport.direction = nextDirection;
-  syncPlaybackTransport();
-  const primary = primaryTile();
-  if (primary && event && nextDirection === "backward" && primary.video.currentSrc && tileElapsedSeconds(primary) <= 0.05) {
-    await seekAllTilesToSeconds(eventDurationSeconds(event));
-  }
-  if (wasRunning && event) {
-    const started = await startConfiguredPlayback(event);
-    setStatus(playbackStatusText(event, started));
-    return;
-  }
-  if (event) {
-    updatePlaybackCursorFromVideo();
-    setStatus(`Playback direction set to ${nextDirection}.`);
-  }
-}
-
-async function togglePlayback() {
-  const event = selectedEvent();
-  if (!event) return;
-  if (isPlaybackRunning()) {
-    pauseCurrentPlayback();
-    setStatus(`Paused ${event.title}.`);
-    return;
-  }
-  const video = primaryVideoEl();
-  if (!video || !video.currentSrc) {
-    await selectEvent(event.id, { seekSeconds: playbackResetSeconds(video, event), autoplay: true });
-    return;
-  }
-  const started = await startConfiguredPlayback(event);
-  setStatus(playbackStatusText(event, started));
-}
-
-async function stopPlayback() {
-  const event = selectedEvent();
-  if (!event) return;
-  const video = primaryVideoEl();
-  if (!video || !video.currentSrc) {
-    await selectEvent(event.id, { seekSeconds: playbackResetSeconds(video, event), autoplay: false });
-    return;
-  }
-  pauseCurrentPlayback();
-  await seekAllTilesToSeconds(playbackResetSeconds(video, event));
-  updatePlaybackCursorFromVideo();
-  syncPlaybackTransport();
-  setStatus(`Stopped ${event.title}.`);
-}
-
-// ── Timeline rendering ────────────────────────────────────────────────
-
-function visibleTimelinePercent(minute) {
-  const duration = currentTimelineDuration() || DAY_MINUTES;
-  return clamp(((minute - state.timelineView.startMinute) / duration) * 100, 0, 100);
-}
-
-function visibleTimelineWidth(startMinute, endMinute) {
-  return Math.max(0, visibleTimelinePercent(endMinute) - visibleTimelinePercent(startMinute));
-}
-
-function isVisibleRange(startMinute, endMinute) {
-  return endMinute >= state.timelineView.startMinute && startMinute <= state.timelineView.endMinute;
-}
-
-function chooseTimelineStep(duration) {
-  const steps = [5, 10, 15, 30, 60, 120, 180, 240, 360, 720];
-  return steps.find((step) => duration / step <= 8) || DAY_MINUTES;
-}
-
-function timelineTickLayout() {
-  const step = chooseTimelineStep(currentTimelineDuration());
-  const firstTick = Math.ceil(state.timelineView.startMinute / step) * step;
-  const tickMinutes = [];
-  for (let minute = firstTick; minute <= state.timelineView.endMinute; minute += step) {
-    tickMinutes.push(minute);
-  }
-  return { tickMinutes };
-}
-
-function setTimelineViewport(startMinute, durationMinutes, options = {}) {
-  const duration = clamp(durationMinutes, MIN_VISIBLE_MINUTES, DAY_MINUTES);
-  const start = clamp(startMinute, 0, DAY_MINUTES - duration);
-  const changed = Math.abs(state.timelineView.startMinute - start) > 0.01 || Math.abs(currentTimelineDuration() - duration) > 0.01;
-  state.timelineView.startMinute = start;
-  state.timelineView.endMinute = start + duration;
-  if (changed && options.render !== false) renderTimeline();
-  if (changed && options.persist !== false) schedulePlaybackStateSave();
-}
-
-function ensureTimelineRangeVisible(startMinute, endMinute) {
-  const duration = currentTimelineDuration();
-  const padding = Math.max(duration * 0.12, 2);
-  const inView = startMinute >= (state.timelineView.startMinute + padding)
-    && endMinute <= (state.timelineView.endMinute - padding);
-  if (inView) return;
-  const targetDuration = clamp(Math.max(duration, endMinute - startMinute + (padding * 2)), MIN_VISIBLE_MINUTES, DAY_MINUTES);
-  const midpoint = (startMinute + endMinute) / 2;
-  setTimelineViewport(midpoint - (targetDuration / 2), targetDuration);
-}
-
-function shouldSuppressTimelineClick() {
-  return Date.now() < state.timelineView.suppressClickUntil;
-}
-
-function syncPlaybackCursor() {
-  const track = el("playbackTimelineTrack");
-  const cursor = track?.querySelector("[data-playback-cursor]");
-  const label = track?.querySelector("[data-playback-cursor-label]");
-  if (!track || !cursor || !label) return;
-  if (!Number.isFinite(state.playbackCursor.minute) || !isVisibleRange(state.playbackCursor.minute, state.playbackCursor.minute)) {
-    cursor.classList.add("hidden");
-    label.textContent = "";
-    return;
-  }
-  cursor.classList.remove("hidden");
-  cursor.style.left = `${visibleTimelinePercent(state.playbackCursor.minute)}%`;
-  label.textContent = state.playbackCursor.label || minuteLabel(state.playbackCursor.minute);
-}
-
-function setPlaybackCursor(position = null) {
-  state.playbackCursor.minute = Number.isFinite(position?.minute) ? clamp(position.minute, 0, DAY_MINUTES) : null;
-  state.playbackCursor.label = position?.label || "";
-  syncPlaybackCursor();
-}
-
-function stopPlaybackCursorLoop() {
-  if (state.playbackCursor.rafId) {
-    cancelAnimationFrame(state.playbackCursor.rafId);
-    state.playbackCursor.rafId = 0;
-  }
-}
-
-function playbackCursorPosition() {
-  const event = selectedEvent();
-  if (!event) return null;
-  const tile = primaryTile();
-  const elapsedSeconds = tile ? tileElapsedSeconds(tile) : 0;
-  const range = dayRange(event.clip_start, event.clip_end);
-  const minute = clamp(range.startMinute + (elapsedSeconds / 60), range.startMinute, range.endMinute);
-  const startMs = Date.parse(event.clip_start);
-  return {
-    minute,
-    label: Number.isFinite(startMs) ? clockLabel(startMs + (elapsedSeconds * 1000)) : minuteLabel(minute),
-  };
-}
-
-function updatePlaybackCursorFromVideo() {
-  setPlaybackCursor(playbackCursorPosition());
-}
-
-function startPlaybackCursorLoop() {
-  stopPlaybackCursorLoop();
-  const tick = () => {
-    updatePlaybackCursorFromVideo();
-    queueForwardPlaybackBoundaryCheck();
-    const video = primaryVideoEl();
-    if (video && !video.paused && !video.ended) {
-      state.playbackCursor.rafId = requestAnimationFrame(tick);
-      return;
-    }
-    state.playbackCursor.rafId = 0;
-  };
-  tick();
-}
-
-function renderTimelineScale() {
-  const scale = el("playbackTimelineScale");
-  if (!scale) return;
-  const { tickMinutes } = timelineTickLayout();
-  const labels = [];
-  if (!tickMinutes.length || Math.abs(tickMinutes[0] - state.timelineView.startMinute) > 0.5) {
-    labels.push(`<span class="playbackTimelineTick is-edge" style="left:0%;">${minuteLabel(state.timelineView.startMinute)}</span>`);
-  }
-  tickMinutes.forEach((minute) => {
-    labels.push(`<span class="playbackTimelineTick" style="left:${visibleTimelinePercent(minute)}%;">${minuteLabel(minute)}</span>`);
-  });
-  const lastTick = tickMinutes.at(-1);
-  if (lastTick == null || Math.abs(lastTick - state.timelineView.endMinute) > 0.5) {
-    labels.push(`<span class="playbackTimelineTick is-edge is-end" style="left:100%;">${minuteLabel(state.timelineView.endMinute)}</span>`);
-  }
-  scale.innerHTML = labels.join("");
-}
-
-function renderTimeline() {
-  const track = el("playbackTimelineTrack");
-  if (!track) return;
-  renderTimelineFilters();
-  renderTimelineScale();
-  const { tickMinutes } = timelineTickLayout();
-  const rows = timelineVisibleRows();
-  track.innerHTML = `
-    ${tickMinutes.map((minute) => `<span class="playbackTimelineGuide" style="left:${visibleTimelinePercent(minute)}%;" aria-hidden="true"></span>`).join("")}
-    <div class="playbackTimelineRows">
-      ${rows.length ? rows.map((row) => `
-        <div class="playbackTimelineLane" data-preset-key="${escapeHtml(row.key)}">
-          <div class="playbackTimelineBase" data-playback-track-base></div>
-          ${row.events.map((segment) => {
-            const range = dayRange(segment.clip_start, segment.clip_end);
-            if (!isVisibleRange(range.startMinute, range.endMinute)) return "";
-            const clippedStart = clamp(range.startMinute, state.timelineView.startMinute, state.timelineView.endMinute);
-            const clippedEnd = clamp(range.endMinute, state.timelineView.startMinute, state.timelineView.endMinute);
-            const left = visibleTimelinePercent(clippedStart);
-            const width = visibleTimelineWidth(clippedStart, clippedEnd);
-            const active = segment.eventId === state.selectedEventId ? "is-active" : "";
-            const playable = segment.playable ?? segment.ready;
-            const pendingCls = (!playable) ? `is-pending is-${escapeHtml(segment.state)}` : "";
-            const readiness = !segment.ready ? ` · ${eventStateLabel(segment)}` : "";
-            const camLabel = segment.deviceId ? ` · ${deviceName(segment.deviceId)}` : "";
-            return `<button class="playbackMarker ${active} ${pendingCls}" type="button" data-event-id="${escapeHtml(segment.eventId)}" aria-disabled="${playable ? "false" : "true"}" style="left:${left}%; width:${width}%; background:${escapeHtml(segment.color)};" title="${escapeHtml(`${segment.presetName}${camLabel} · ${clockLabel(segment.triggeredAt)}${readiness}`)}"></button>`;
-          }).join("")}
-        </div>
-      `).join("") : `<div class="playbackTimelineEmpty">${
-        isTimelineLoading() ? "Loading recordings…"
-          : timelinePresetRows().length ? "No tags selected."
-          : "No recordings in this range."
-      }</div>`}
-    </div>
-    <div class="playbackTimelineCursor hidden" data-playback-cursor>
-      <span class="playbackTimelineCursorLabel" data-playback-cursor-label></span>
-    </div>
-  `;
-  syncPlaybackCursor();
-}
-
-function updatePlaybackHeader(event = null) {
-  const sub = el("playbackHeaderSub");
-  if (!sub) return;
-  if (!event) {
-    sub.textContent = state.activeDeviceIds.length
-      ? "Pick a marker on the timeline to load recorded clips across all selected cameras."
-      : "Pick cameras from the sidebar and a marker on the timeline to load recorded clips.";
-    return;
-  }
-  sub.textContent = `${event.title} · ${clockLabel(event.triggered_at)} · ${deviceName(event.device_id)}`;
-}
-
-// ── Loading: devices + per-device timelines (merged) ──────────────────
-
-async function loadDevices() {
-  if (playbackPageDisposed) return;
-  const out = await api("/api/devices");
-  state.devices = Array.isArray(out?.devices) ? out.devices : [];
-  state.activeDeviceIds = state.activeDeviceIds.filter((id) => state.devices.some((d) => d.id === id && d.profile_token));
-  renderSidebar();
-}
-
-function applyTimelineData(merged, options = {}) {
-  state.timeline = {
-    segments: Array.isArray(merged?.segments) ? merged.segments : [],
-    events: Array.isArray(merged?.events) ? merged.events : [],
-  };
-  sortTimelineEvents();
-
-  const firstSeg = state.timeline.segments[0] || state.timeline.events[0];
-  if (firstSeg) _extractTzOffset(firstSeg.started_at || firstSeg.clip_start || firstSeg.triggered_at);
-
-  const hiddenPresetKeys = Array.isArray(options.hiddenPresetKeys)
-    ? options.hiddenPresetKeys
-    : state.timelineFilters.hiddenPresetKeys;
-  const availablePresetKeys = new Set(timelinePresetRows().map((row) => row.key));
-  state.timelineFilters.hiddenPresetKeys = [...new Set((hiddenPresetKeys || [])
-    .map((value) => String(value || "").trim())
-    .filter((value) => availablePresetKeys.has(value)))];
-}
-
-let _timelineProgressInflight = 0;
-
-function isTimelineLoading() {
-  return _timelineProgressInflight > 0;
-}
-
-function setTimelineProgressActive(active) {
-  const node = el("playbackTimelineProgress");
-  if (!node) return;
-  node.dataset.active = active ? "true" : "false";
-  node.setAttribute("aria-hidden", active ? "false" : "true");
-}
-
-function beginTimelineProgress() {
-  _timelineProgressInflight += 1;
-  if (_timelineProgressInflight === 1) {
-    setTimelineProgressActive(true);
-    // Refresh the timeline strip so its empty text switches to "Loading…"
-    // instead of "No recordings in this range."
-    renderTimeline();
-  }
-}
-
-function endTimelineProgress() {
-  _timelineProgressInflight = Math.max(0, _timelineProgressInflight - 1);
-  if (_timelineProgressInflight === 0) setTimelineProgressActive(false);
-}
-
-async function fetchTimelineForDevice(deviceId, day) {
-  const query = new URLSearchParams({ device_id: deviceId, day: day || todayString() });
-  query.set("ts", String(Date.now()));
-  beginTimelineProgress();
-  try {
-    return await api(`/api/playback/timeline?${query.toString()}`, { cache: "no-store" });
-  } finally {
-    endTimelineProgress();
-  }
-}
-
-function mergeTimelines(payloads) {
-  const segments = [];
-  const events = [];
-  const seenEventIds = new Set();
-  for (const payload of payloads) {
-    if (!payload) continue;
-    if (Array.isArray(payload.segments)) segments.push(...payload.segments);
-    if (Array.isArray(payload.events)) {
-      for (const ev of payload.events) {
-        const id = String(ev?.id || "").trim();
-        if (!id || seenEventIds.has(id)) continue;
-        seenEventIds.add(id);
-        events.push(ev);
-      }
-    }
-  }
-  return { segments, events };
-}
-
-function syncTimelineSelection(options = {}) {
-  const preferredEventId = typeof options.preferredEventId === "string" ? options.preferredEventId : "";
-  const preferredEvent = state.timeline.events.find((item) => item.id === preferredEventId && eventIsPlayable(item)) || null;
-  if (preferredEvent) {
-    state.selectedEventId = preferredEvent.id;
-    return preferredEvent;
-  }
-  const currentSelected = state.timeline.events.find((item) => item.id === state.selectedEventId) || null;
-  if (currentSelected && eventIsPlayable(currentSelected)) return currentSelected;
-  if (options.autoSelectLatest) {
-    const latestPlayable = [...state.timeline.events].reverse().find((item) => eventIsPlayable(item)) || null;
-    state.selectedEventId = latestPlayable?.id || null;
-    return latestPlayable;
-  }
-  state.selectedEventId = null;
   return null;
 }
 
-function timelineEmptyState() {
-  if (isTimelineLoading()) {
-    return {
-      state: "loading",
-      title: "Loading playback...",
-      text: "Fetching recorded clips for the selected day.",
-      status: "Loading timeline…",
-    };
+function showThumbPreview(ms, clientX, trackRect) {
+  const preview = el("playbackThumbPreview");
+  if (!preview) return;
+  const thumb = findThumbnailForMs(ms);
+  if (!thumb) { preview.classList.add("hidden"); return; }
+  const img = el("playbackThumbPreviewImg");
+  const label = el("playbackThumbPreviewLabel");
+  if (img && img.src !== thumb.url && img.dataset.url !== thumb.url) {
+    img.src = thumb.url;
+    img.dataset.url = thumb.url;
   }
-  const pending = pendingEventCount();
-  if (pending) {
-    return {
-      state: "waiting",
-      title: "Recording still saving",
-      text: "Grayed markers are still being finalized and will become playable automatically once recording is safely saved.",
-      status: `Waiting for ${pending} recording${pending === 1 ? "" : "s"} to finish saving.`,
-    };
-  }
-  if (state.timeline.segments.length) {
-    return {
-      state: "empty",
-      title: "No clip selected",
-      text: "Choose a colored marker from the timeline below to load a recording.",
-      status: "No markers for this day yet, but recorded video is available.",
-    };
-  }
-  return {
-    state: "empty",
-    title: "No clip selected",
-    text: "Choose a colored marker from the timeline below to load a recording.",
-    status: "No recorded video available for this day.",
-  };
+  if (label) label.textContent = fmtClock(ms);
+  // Clamp to track rect so the preview doesn't overflow off-screen.
+  const half = 130; // approximate half-width of preview
+  const trackWidth = trackRect.width || 1;
+  const x = clamp(clientX - trackRect.left, half, trackWidth - half);
+  preview.style.left = `${x}px`;
+  preview.classList.remove("hidden");
 }
 
-function renderPlaybackEmptyState() {
-  const emptyState = timelineEmptyState();
-  stopPlaybackCursorLoop();
-  stopReversePlayback();
-  stopSimulatedForwardPlayback();
-  setPlaybackCursor(null);
-  updatePlaybackHeader(null);
-  showVideoEmpty(emptyState.title, emptyState.text, { state: emptyState.state });
-  syncPlaybackTransport();
-  setStatus(emptyState.status);
+function hideThumbPreview() {
+  const preview = el("playbackThumbPreview");
+  if (preview) preview.classList.add("hidden");
 }
 
-async function selectEvent(eventId, options = {}) {
-  let event = state.timeline.events.find((item) => item.id === eventId);
-  if (!event) return;
+// ── Timeline interactions ────────────────────────────────────────────
 
-  try {
-    const refreshed = await refreshEventFromServer(eventId);
-    if (refreshed) event = refreshed;
-  } catch {}
-
-  if (!eventIsPlayable(event) && options.allowPending !== true) {
-    renderTimeline();
-    renderPlaybackEmptyState();
-    scheduleTimelineAutoRefresh();
-    return;
-  }
-
-  clearForwardPlaybackBoundarySchedule();
-  const range = dayRange(event.clip_start, event.clip_end);
-  if (options.ensureVisible !== false) ensureTimelineRangeVisible(range.startMinute, range.endMinute);
-
-  const seekSeconds = clamp(Number(options.seekSeconds) || 0, 0, eventDurationSeconds(event));
-  const shouldAutoplay = options.autoplay !== false;
-
-  if (event.device_id && !state.activeDeviceIds.includes(event.device_id)) {
-    await setActiveDeviceIds([...state.activeDeviceIds, event.device_id], { reloadTimeline: false });
-  }
-
-  const wasSameEvent = state.selectedEventId === eventId;
-  state.selectedEventId = eventId;
-  renderTimeline();
-  updatePlaybackHeader(event);
-  syncPlaybackTransport();
-  stopPlaybackCursorLoop();
-  stopReversePlayback();
-  stopSimulatedForwardPlayback();
-  setPlaybackCursor({
-    minute: range.startMinute + (seekSeconds / 60),
-    label: clockLabel(Date.parse(event.clip_start) + (seekSeconds * 1000)),
-  });
-  schedulePlaybackStateSave();
-
-  hideVideoEmpty();
-
-  if (!wasSameEvent || ![...tiles.values()].some((t) => t.video.currentSrc)) {
-    setStatus(`Loading ${event.title}…`);
-    reloadAllTileSourcesForEvent(event);
-  }
-
-  // Wait for each tile's first fragment to actually be buffered before
-  // seeking + playing. Otherwise we seek into an empty MediaSource and the
-  // video either shows a black screen or never starts.
-  await Promise.all([...tiles.values()].map((t) => t.readyPromise || Promise.resolve(true)));
-
-  await seekAllTilesToSeconds(seekSeconds);
-
-  if (!shouldAutoplay) {
-    pauseCurrentPlayback();
-    setStatus(`Loaded ${event.title}.`);
-    return;
-  }
-
-  const started = await startConfiguredPlayback(event);
-  setStatus(started ? playbackStatusText(event, true) : `Loaded ${event.title}. Click play if playback does not start automatically.`);
+function timelineMsFromClientX(clientX, rect) {
+  const w = rect.width || 1;
+  const ratio = clamp((clientX - rect.left) / w, 0, 1);
+  return state.viewportStartMs + ratio * (state.viewportEndMs - state.viewportStartMs);
 }
 
-async function loadTimeline(options = {}) {
-  if (playbackPageDisposed) return;
-  const background = options.background === true;
-  const preservePlayback = options.preservePlayback === true;
-  const autoSelectLatest = options.autoSelectLatest !== false;
+function bindTimelineInteractions() {
+  const track = el("playbackTimelineTrack");
+  if (!track) return;
 
-  clearForwardPlaybackBoundarySchedule();
-  clearTimelineAutoRefresh();
-
-  if (!state.activeDeviceIds.length) {
-    state.timeline = { segments: [], events: [] };
-    state.selectedEventId = null;
-    stopPlaybackCursorLoop();
-    stopReversePlayback();
-    stopSimulatedForwardPlayback();
-    setPlaybackCursor(null);
-    updatePlaybackHeader(null);
-    showVideoEmpty(
-      "Select a camera",
-      "Choose one or more cameras from the sidebar to load recorded clips.",
-      { state: "empty", badge: "Camera" },
-    );
-    renderTimeline();
-    syncPlaybackTransport();
-    setStatus("Select cameras to see recordings.");
-    savePlaybackStateNow();
-    return;
-  }
-
-  const currentSelectedEventId = state.selectedEventId;
-  const preserveCurrentPlayback = background && preservePlayback && !!currentSelectedEventId;
-
-  if (!background) {
-    setPlaybackCursor(null);
-    updatePlaybackHeader(null);
-    showVideoEmpty("Loading playback...", "Fetching recorded clips for the selected cameras and day.", { state: "loading" });
-    setStatus("Loading timeline…");
-  }
-
-  const requestId = ++state.persistence.timelineRequestId;
-  const day = state.selectedDay || todayString();
-  const payloads = await Promise.all(state.activeDeviceIds.map((id) =>
-    fetchTimelineForDevice(id, day).catch(() => null),
-  ));
-  if (requestId !== state.persistence.timelineRequestId) return;
-
-  const restore = background ? null : loadStoredPlaybackState();
-  applyTimelineData(mergeTimelines(payloads), {
-    hiddenPresetKeys: Array.isArray(restore?.hiddenPresetKeys) ? restore.hiddenPresetKeys : state.timelineFilters.hiddenPresetKeys,
-  });
-
-  if (!background) {
-    const restoreStartMinute = Number(restore?.timelineView?.startMinute);
-    const restoreDurationMinutes = Number(restore?.timelineView?.durationMinutes);
-    if (Number.isFinite(restoreStartMinute) && Number.isFinite(restoreDurationMinutes)) {
-      setTimelineViewport(restoreStartMinute, restoreDurationMinutes, { render: false, persist: false });
+  // Wheel: zoom centered on the cursor's pointer position; horizontal delta = pan
+  track.addEventListener("wheel", (event) => {
+    const rect = track.getBoundingClientRect();
+    if (!rect.width) return;
+    event.preventDefault();
+    const dur = state.viewportEndMs - state.viewportStartMs;
+    if (Math.abs(event.deltaX) > Math.abs(event.deltaY) * 1.2) {
+      const deltaMs = (event.deltaX / rect.width) * dur;
+      setViewport(state.viewportStartMs + deltaMs, dur);
+      return;
     }
-  }
+    const pointerRatio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const focusMs = state.viewportStartMs + pointerRatio * dur;
+    const nextDur = clamp(dur * Math.exp(event.deltaY * 0.0025), MIN_ZOOM_MS, MAX_ZOOM_MS);
+    const nextStart = focusMs - pointerRatio * nextDur;
+    setViewport(nextStart, nextDur);
+    syncZoomPresets();
+    loadDataForViewportSoon();
+  }, { passive: false });
 
-  const restoreEventId = !background && typeof restore?.selectedEventId === "string" && restore.selectedEventId
-    ? restore.selectedEventId
-    : null;
-  const restoreSeekSeconds = !background ? Number(restore?.seekSeconds) : Number.NaN;
-  const nextSelectedEvent = syncTimelineSelection({
-    preferredEventId: restoreEventId || currentSelectedEventId,
-    autoSelectLatest,
+  track.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    const target = event.target instanceof Element ? event.target : null;
+    // Cursor grab — start scrub
+    if (target?.closest("#playbackTimelineCursor")) {
+      event.preventDefault(); event.stopPropagation();
+      state.scrub.active = true;
+      state.scrub.pointerId = event.pointerId;
+      state.scrub.wasPlaying = state.isPlaying;
+      state.scrub.pendingMs = null;
+      pause();
+      track.setPointerCapture(event.pointerId);
+      target.closest("#playbackTimelineCursor")?.classList.add("is-scrubbing");
+      return;
+    }
+    // Marker click is handled by click handler — don't start a pan
+    if (target?.closest(".playbackMarker")) return;
+
+    state.pan.pointerId = event.pointerId;
+    state.pan.dragOriginX = event.clientX;
+    state.pan.dragOriginStartMs = state.viewportStartMs;
+    state.pan.dragOriginDuration = state.viewportEndMs - state.viewportStartMs;
+    state.pan.isDragging = false;
+    track.setPointerCapture(event.pointerId);
   });
 
+  track.addEventListener("pointermove", (event) => {
+    const rect = track.getBoundingClientRect();
+    const ms = timelineMsFromClientX(event.clientX, rect);
+    showThumbPreview(ms, event.clientX, rect);
+
+    if (state.scrub.active && event.pointerId === state.scrub.pointerId) {
+      state.scrub.pendingMs = ms;
+      if (!state.scrub.rafId) {
+        state.scrub.rafId = requestAnimationFrame(() => {
+          state.scrub.rafId = 0;
+          if (!state.scrub.active || state.scrub.pendingMs == null) return;
+          const target = state.scrub.pendingMs;
+          state.scrub.pendingMs = null;
+          // During the drag we just move the cursor + seek tiles whose
+          // playlists already cover the new position. We do NOT trigger a
+          // reload per scrub tick — at 60fps that would be 60 playlist fetches
+          // per second across every camera. The single reload happens on
+          // pointer release (finishScrub) via play() / setCursor().
+          setCursor(target, { userInitiated: true, reloadIfNeeded: false });
+        });
+      }
+      return;
+    }
+    if (event.pointerId !== state.pan.pointerId) return;
+    const dx = event.clientX - state.pan.dragOriginX;
+    if (!state.pan.isDragging && Math.abs(dx) < PAN_DRAG_THRESHOLD_PX) return;
+    state.pan.isDragging = true;
+    track.classList.add("is-dragging");
+    if (!rect.width) return;
+    const dur = state.pan.dragOriginDuration;
+    const deltaMs = (dx / rect.width) * dur;
+    setViewport(state.pan.dragOriginStartMs - deltaMs, dur);
+  });
+
+  const finishScrub = (event) => {
+    if (!state.scrub.active || event.pointerId !== state.scrub.pointerId) return false;
+    if (state.scrub.rafId) {
+      cancelAnimationFrame(state.scrub.rafId);
+      state.scrub.rafId = 0;
+    }
+    document.querySelector("#playbackTimelineCursor")?.classList.remove("is-scrubbing");
+    if (track.hasPointerCapture(event.pointerId)) track.releasePointerCapture(event.pointerId);
+    const wasPlaying = state.scrub.wasPlaying;
+    const finalMs = state.cursorMs;
+    state.scrub.active = false; state.scrub.pointerId = null;
+    state.scrub.wasPlaying = false; state.scrub.pendingMs = null;
+    // Force a final reload-aware setCursor — scrub-RAF was using
+    // reloadIfNeeded:false, so any tile whose loaded window doesn't cover
+    // the drop point hasn't loaded yet. This fixes that.
+    setCursor(finalMs, { userInitiated: true, reloadIfNeeded: true, force: true });
+    if (wasPlaying) play();
+    return true;
+  };
+
+  const finishPan = (event) => {
+    if (finishScrub(event)) return;
+    if (event.pointerId !== state.pan.pointerId) return;
+    if (state.pan.isDragging) {
+      state.pan.suppressClickUntil = Date.now() + CLICK_SUPPRESSION_MS;
+      loadDataForViewportSoon();
+    }
+    state.pan.pointerId = null;
+    state.pan.isDragging = false;
+    track.classList.remove("is-dragging");
+    if (track.hasPointerCapture(event.pointerId)) track.releasePointerCapture(event.pointerId);
+  };
+
+  track.addEventListener("pointerup", finishPan);
+  track.addEventListener("pointercancel", finishPan);
+  track.addEventListener("pointerleave", () => hideThumbPreview());
+  track.addEventListener("mouseleave", () => hideThumbPreview());
+
+  track.addEventListener("click", (event) => {
+    if (Date.now() < state.pan.suppressClickUntil) return;
+    // Always seek to the wall-clock position under the pointer, regardless of
+    // whether the click landed on an event marker, the coverage bar, or the
+    // empty lane. Markers are visual bookmarks, not jump-to-start triggers.
+    const rect = track.getBoundingClientRect();
+    const ms = timelineMsFromClientX(event.clientX, rect);
+    setCursor(ms, { userInitiated: true });
+    if (!state.isPlaying) play();
+  });
+}
+
+// ── UI bindings ──────────────────────────────────────────────────────
+
+function applyDayInputFromViewport() {
+  const day = el("playbackDayInput");
+  if (day) day.value = dayString(state.cursorMs);
+}
+
+function jumpToDay(dayStr) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dayStr)) return;
+  const [y, m, d] = dayStr.split("-").map(Number);
+  const startOfDay = new Date(y, m - 1, d, 0, 0, 0, 0).getTime();
+  // Place cursor at noon of that day (or now() if today)
+  const target = dayString(Date.now()) === dayStr
+    ? Date.now() - 1500
+    : startOfDay + 12 * 3_600_000;
+  state.followLive = isLive(target);
+  state.cursorMs = target;
+  centerViewportOnCursor();
+  applyDayInputFromViewport();
+  syncCursorUI();
+  syncTransport();
   renderTimeline();
-
-  if (preserveCurrentPlayback && nextSelectedEvent && nextSelectedEvent.id === currentSelectedEventId) {
-    updatePlaybackHeader(nextSelectedEvent);
-    syncPlaybackTransport();
-    updatePlaybackCursorFromVideo();
-  } else if (nextSelectedEvent) {
-    const shouldRestoreSeek = restoreEventId === nextSelectedEvent.id && Number.isFinite(restoreSeekSeconds) && restoreSeekSeconds >= 0;
-    await selectEvent(
-      nextSelectedEvent.id,
-      shouldRestoreSeek
-        ? { seekSeconds: restoreSeekSeconds, autoplay: false, ensureVisible: false }
-        : undefined,
-    );
-  } else {
-    renderPlaybackEmptyState();
-  }
-
-  schedulePlaybackStateSave();
-  scheduleTimelineAutoRefresh();
+  saveSoon();
+  loadDataForViewport().catch(() => {});
+  reloadAllTilesForCursor();
 }
-
-async function refreshAll() {
-  try {
-    await loadDevices();
-    syncTilesToActive();
-    await loadTimeline();
-  } catch (error) {
-    if (isAbortError(error) || playbackPageDisposed) return;
-    showVideoEmpty("Playback unavailable", "Playback data could not be loaded right now. Try again in a moment.", { state: "error" });
-    setStatus(error.message || String(error));
-  }
-}
-
-// ── UI bindings ───────────────────────────────────────────────────────
 
 function bindUi() {
-  const saved = loadStoredPlaybackState();
+  const stored = loadStored();
+  if (stored) {
+    // Clamp restored cursor to a sane window — guards against corrupted
+    // localStorage (e.g., year 2099 timestamp) that would put the cursor
+    // outside any possible recording.
+    const rawCursor = Number(stored.cursorMs);
+    const minCursor = Date.now() - 365 * 24 * 3_600_000;       // 1 year ago
+    const maxCursor = Date.now() + 24 * 3_600_000;             // 24h ahead
+    state.cursorMs = Number.isFinite(rawCursor)
+      ? clamp(rawCursor, minCursor, maxCursor)
+      : (Date.now() - 30_000);
 
-  const savedActive = Array.isArray(saved?.activeDeviceIds)
-    ? saved.activeDeviceIds.map((v) => String(v || "").trim()).filter(Boolean)
-    : [];
-  state.activeDeviceIds = savedActive;
-  state.selectedDay = normalizeStoredDay(saved?.selectedDay);
-  state.selectedEventId = typeof saved?.selectedEventId === "string" && saved.selectedEventId ? saved.selectedEventId : null;
-  state.timelineFilters.hiddenPresetKeys = Array.isArray(saved?.hiddenPresetKeys)
-    ? saved.hiddenPresetKeys.map((value) => String(value || "").trim()).filter(Boolean)
-    : [];
+    const rawZoom = Number(stored.zoomMs);
+    state.zoomMs = Number.isFinite(rawZoom)
+      ? clamp(rawZoom, MIN_ZOOM_MS, MAX_ZOOM_MS)
+      : DEFAULT_ZOOM_MS;
 
-  const dayInput = el("playbackDayInput");
-  if (dayInput) dayInput.value = state.selectedDay;
-
-  const savedStartMinute = Number(saved?.timelineView?.startMinute);
-  const savedDurationMinutes = Number(saved?.timelineView?.durationMinutes);
-  if (Number.isFinite(savedStartMinute) && Number.isFinite(savedDurationMinutes)) {
-    setTimelineViewport(savedStartMinute, savedDurationMinutes, { render: false, persist: false });
+    state.speed = SPEED_OPTIONS.includes(Number(stored.speed)) ? Number(stored.speed) : 1;
+    state.followLive = !!stored.followLive;
+    state.activeDeviceIds = Array.isArray(stored.activeDeviceIds)
+      ? stored.activeDeviceIds.filter((id) => typeof id === "string" && id)
+      : [];
+    state.hiddenPresetKeys = Array.isArray(stored.hiddenPresetKeys)
+      ? stored.hiddenPresetKeys.filter((k) => typeof k === "string" && k)
+      : [];
+    centerViewportOnCursor();
   }
 
+  applyDayInputFromViewport();
   bindTimelineInteractions();
   renderTimeline();
 
+  // Sidebar (shared with views-live.js)
   el("viewsCameraList")?.addEventListener("click", async (event) => {
     if (window.views?.mode !== "playback") return;
     const row = event.target instanceof Element ? event.target.closest(".liveSidebarRow[data-id]") : null;
@@ -2348,324 +1794,168 @@ function bindUi() {
     await setActiveDeviceIds([]);
   });
 
-  el("playbackDayInput")?.addEventListener("change", async (event) => {
-    state.selectedDay = event.target.value || todayString();
-    state.selectedEventId = null;
-    savePlaybackStateNow();
-    await loadTimeline();
+  el("playbackDayInput")?.addEventListener("change", (event) => {
+    jumpToDay(event.target.value || dayString(Date.now()));
   });
 
-  el("playbackPlayPauseBtn")?.addEventListener("click", async () => { await togglePlayback(); });
-  el("playbackStopBtn")?.addEventListener("click", async () => { await stopPlayback(); });
+  el("playbackPrevDayBtn")?.addEventListener("click", () => {
+    const target = state.cursorMs - 24 * 3_600_000;
+    state.cursorMs = target;
+    state.followLive = false;
+    centerViewportOnCursor();
+    applyDayInputFromViewport();
+    syncCursorUI(); syncTransport(); renderTimeline(); saveSoon();
+    loadDataForViewport().catch(() => {});
+    reloadAllTilesForCursor();
+  });
 
-  el("playbackShuttleInput")?.addEventListener("pointerdown", () => {
-    cancelShuttleAnim();
-    _shuttleDragging = true;
+  el("playbackNextDayBtn")?.addEventListener("click", () => {
+    const target = Math.min(Date.now(), state.cursorMs + 24 * 3_600_000);
+    state.cursorMs = target;
+    state.followLive = isLive(target);
+    centerViewportOnCursor();
+    applyDayInputFromViewport();
+    syncCursorUI(); syncTransport(); renderTimeline(); saveSoon();
+    loadDataForViewport().catch(() => {});
+    reloadAllTilesForCursor();
   });
-  el("playbackShuttleInput")?.addEventListener("input", (event) => {
-    const input = event.target;
-    const rawPos = Number(input.value) || 0;
-    const rawValue = shuttlePosToValue(rawPos);
-    const snappedValue = applyShuttleSnap(rawValue);
-    const effectivePos = shuttleValueToPos(snappedValue);
-    input.value = String(effectivePos);
-    updateShuttleFillFromPos(effectivePos);
-    setShuttle(snappedValue);
-  });
-  const _shuttleRelease = () => {
-    _shuttleDragging = false;
-    resetShuttleToRest();
-  };
-  el("playbackShuttleInput")?.addEventListener("pointerup", _shuttleRelease);
-  el("playbackShuttleInput")?.addEventListener("pointercancel", _shuttleRelease);
-  el("playbackShuttleInput")?.addEventListener("blur", _shuttleRelease);
-  el("playbackShuttleInput")?.addEventListener("keyup", (event) => {
-    if (event.key === "Enter" || event.key === "Escape") _shuttleRelease();
-  });
+
+  el("playbackTodayBtn")?.addEventListener("click", () => jumpToLive());
+
+  el("playbackPlayPauseBtn")?.addEventListener("click", () => togglePlay());
+
+  el("playbackReplay30Btn")?.addEventListener("click", () => jumpRelative(-30_000));
+  el("playbackReplay5Btn")?.addEventListener("click", () => jumpRelative(-5_000));
+  el("playbackFwd5Btn")?.addEventListener("click", () => jumpRelative(5_000));
+  el("playbackFwd30Btn")?.addEventListener("click", () => jumpRelative(30_000));
+  el("playbackFrameBackBtn")?.addEventListener("click", () => frameStep(false));
+  el("playbackFrameFwdBtn")?.addEventListener("click", () => frameStep(true));
+  el("playbackLiveBtn")?.addEventListener("click", () => jumpToLive());
+
+  el("playbackSpeedSelect")?.addEventListener("change", (event) => setSpeed(event.target.value));
 
   el("playbackTimelineFilters")?.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target.closest("[data-preset-key]") : null;
-    if (!target) return;
-    const key = target.getAttribute("data-preset-key");
-    if (key) toggleTimelinePresetKey(key);
+    if (target) togglePresetKey(target.getAttribute("data-preset-key"));
   });
 
-  window.addEventListener("pagehide", () => {
-    disposePlaybackPage();
+  el("playbackZoomPresets")?.addEventListener("click", (event) => {
+    const btn = event.target instanceof Element ? event.target.closest("[data-zoom-ms]") : null;
+    if (!btn) return;
+    setZoomMs(Number(btn.dataset.zoomMs));
   });
 
+  // Keyboard shortcuts
+  document.addEventListener("keydown", (event) => {
+    if (window.views?.mode !== "playback") return;
+    if (event.target instanceof HTMLElement) {
+      const tag = event.target.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+    }
+    switch (event.key) {
+      case " ": event.preventDefault(); togglePlay(); break;
+      case "ArrowLeft": event.preventDefault(); jumpRelative(event.shiftKey ? -30_000 : -5_000); break;
+      case "ArrowRight": event.preventDefault(); jumpRelative(event.shiftKey ? 30_000 : 5_000); break;
+      case ",": event.preventDefault(); frameStep(false); break;
+      case ".": event.preventDefault(); frameStep(true); break;
+      case "l": case "L": event.preventDefault(); jumpToLive(); break;
+    }
+  });
+
+  window.addEventListener("pagehide", () => disposePlaybackPage());
   window.addEventListener("pageshow", (event) => {
-    if (event.persisted && playbackPageDisposed) window.location.reload();
+    if (event.persisted && state.pageDisposed) window.location.reload();
   });
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
-      loadTimeline({ background: true, preservePlayback: true, autoSelectLatest: false }).catch((error) => {
-        if (isAbortError(error) || playbackPageDisposed) return;
-        setStatus(error.message || String(error));
-      });
-      return;
+      // Tab returned. Two things may have drifted while it was hidden:
+      // (1) coverage data is stale, and (2) if the user was following live,
+      // the cursor froze (RAF was throttled) so we should jump back to "now".
+      if (state.followLive && state.isPlaying) {
+        setCursor(Date.now() - 1500, { userInitiated: false });
+      }
+      loadDataForViewport({ background: true }).catch(() => {});
     }
-    scheduleTimelineAutoRefresh();
   });
 
-  window.addEventListener("resize", () => requestAnimationFrame(recomputeGrid));
+  window.addEventListener("resize", () => {
+    requestAnimationFrame(recomputeGrid);
+    renderTimeline();
+  });
 
-  syncPlaybackTransport();
+  syncTransport();
+  syncCursorUI();
 }
 
-function bindTimelineInteractions() {
-  const track = el("playbackTimelineTrack");
-  if (!track) return;
+// ── Mount/unmount ────────────────────────────────────────────────────
 
-  track.addEventListener("wheel", (event) => {
-    const rect = track.getBoundingClientRect();
-    if (!rect.width) return;
-    event.preventDefault();
-    const duration = currentTimelineDuration();
-    if (Math.abs(event.deltaX) > Math.abs(event.deltaY) * 1.2) {
-      const deltaMinutes = (event.deltaX / rect.width) * duration;
-      setTimelineViewport(state.timelineView.startMinute + deltaMinutes, duration);
-      return;
+async function refreshAll() {
+  try {
+    await loadDevices();
+    syncTilesToActive();
+    // Mirror our selection onto the shared sidebar (rendered by views-live.js).
+    // Sidebar render happens before our state.activeDeviceIds is finalized, so
+    // we re-decorate after we know which cameras are active.
+    if (typeof window.viewsPlayback?.afterSidebarRender === "function") {
+      window.viewsPlayback.afterSidebarRender();
     }
-    const pointerRatio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
-    const focusMinute = state.timelineView.startMinute + (pointerRatio * duration);
-    const nextDuration = clamp(duration * Math.exp(event.deltaY * 0.0025), MIN_VISIBLE_MINUTES, DAY_MINUTES);
-    const nextStart = focusMinute - (pointerRatio * nextDuration);
-    setTimelineViewport(nextStart, nextDuration);
-  }, { passive: false });
-
-  track.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    const target = event.target instanceof Element ? event.target : null;
-    // Cursor grab — start scrubbing instead of pan/click.
-    if (target?.closest("[data-playback-cursor]")) {
-      const ev = selectedEvent();
-      if (!ev) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const video = primaryVideoEl();
-      state.scrub.active = true;
-      state.scrub.pointerId = event.pointerId;
-      state.scrub.wasPlaying = !!(video && !video.paused && !video.ended);
-      state.scrub.eventId = ev.id;
-      state.scrub.pendingMinute = null;
-      pauseAllTiles();
-      stopPlaybackCursorLoop();
-      stopReversePlayback();
-      stopSimulatedForwardPlayback();
-      const cursorEl = target.closest("[data-playback-cursor]");
-      cursorEl?.classList.add("is-scrubbing");
-      track.setPointerCapture(event.pointerId);
-      return;
+    await loadDataForViewport();
+    reloadAllTilesForCursor();
+    if (state.followLive) {
+      jumpToLive();
     }
-    if (target?.closest("[data-event-id]") || target?.closest("[data-playback-track-base]")) return;
-    state.timelineView.pointerId = event.pointerId;
-    state.timelineView.dragOriginX = event.clientX;
-    state.timelineView.dragOriginStartMinute = state.timelineView.startMinute;
-    state.timelineView.dragOriginDuration = currentTimelineDuration();
-    state.timelineView.isDragging = false;
-    track.setPointerCapture(event.pointerId);
-  });
-
-  track.addEventListener("pointermove", (event) => {
-    if (state.scrub.active && event.pointerId === state.scrub.pointerId) {
-      const rect = track.getBoundingClientRect();
-      if (!rect.width) return;
-      // Free-drag across the whole day window; we no longer clamp to the
-      // currently-selected event so the cursor can move into empty space
-      // (or over another clip). Date label always reflects the cursor's
-      // wall-clock position via minuteLabel.
-      const minute = clamp(timelineMinuteFromClientX(event.clientX, rect), 0, DAY_MINUTES);
-      setPlaybackCursor({ minute, label: minuteLabel(minute) });
-      // Only seek the underlying video while the cursor is INSIDE the
-      // selected event's range — outside it there's nothing to play, so we
-      // just let the cursor float visually. On release we may switch to the
-      // event under the drop point.
-      const ev = state.timeline.events.find((item) => item.id === state.scrub.eventId);
-      if (!ev) return;
-      const range = dayRange(ev.clip_start, ev.clip_end);
-      if (minute < range.startMinute || minute > range.endMinute) return;
-      state.scrub.pendingMinute = minute;
-      if (!state.scrub.rafId) {
-        state.scrub.rafId = requestAnimationFrame(() => {
-          state.scrub.rafId = 0;
-          if (!state.scrub.active || state.scrub.pendingMinute == null) return;
-          const m = state.scrub.pendingMinute;
-          state.scrub.pendingMinute = null;
-          const elapsed = clamp((m - range.startMinute) * 60, 0, eventDurationSeconds(ev));
-          for (const tile of tiles.values()) setTileElapsed(tile, elapsed);
-        });
-      }
-      return;
-    }
-    if (event.pointerId !== state.timelineView.pointerId) return;
-    const rect = track.getBoundingClientRect();
-    if (!rect.width) return;
-    const deltaX = event.clientX - state.timelineView.dragOriginX;
-    if (!state.timelineView.isDragging && Math.abs(deltaX) < PAN_DRAG_THRESHOLD_PX) return;
-    state.timelineView.isDragging = true;
-    track.classList.add("is-dragging");
-    const deltaMinutes = (deltaX / rect.width) * state.timelineView.dragOriginDuration;
-    setTimelineViewport(state.timelineView.dragOriginStartMinute - deltaMinutes, state.timelineView.dragOriginDuration);
-  });
-
-  const finishScrub = (event) => {
-    if (!state.scrub.active || event.pointerId !== state.scrub.pointerId) return false;
-    if (state.scrub.rafId) {
-      cancelAnimationFrame(state.scrub.rafId);
-      state.scrub.rafId = 0;
-    }
-    const cursorEl = el("playbackTimelineTrack")?.querySelector("[data-playback-cursor]");
-    cursorEl?.classList.remove("is-scrubbing");
-    if (track.hasPointerCapture(event.pointerId)) track.releasePointerCapture(event.pointerId);
-    const wasPlaying = state.scrub.wasPlaying;
-    const dropMinute = Number.isFinite(state.playbackCursor.minute) ? state.playbackCursor.minute : null;
-    const sourceEv = state.timeline.events.find((item) => item.id === state.scrub.eventId);
-    state.scrub.active = false;
-    state.scrub.pointerId = null;
-    state.scrub.wasPlaying = false;
-    state.scrub.eventId = null;
-    state.scrub.pendingMinute = null;
-
-    if (dropMinute == null) return true;
-
-    // Did we land inside the same event we started in?
-    if (sourceEv) {
-      const range = dayRange(sourceEv.clip_start, sourceEv.clip_end);
-      if (dropMinute >= range.startMinute && dropMinute <= range.endMinute) {
-        const elapsed = clamp((dropMinute - range.startMinute) * 60, 0, eventDurationSeconds(sourceEv));
-        for (const tile of tiles.values()) setTileElapsed(tile, elapsed);
-        if (wasPlaying) startConfiguredPlayback(sourceEv).catch(() => {});
-        return true;
-      }
-    }
-
-    // Land on a different playable event under the drop point — switch to it.
-    const dropEv = eventAtTimelineMinute(dropMinute);
-    if (dropEv) {
-      const seekSeconds = eventSeekSecondsForMinute(dropEv, dropMinute);
-      selectEvent(dropEv.id, { seekSeconds, autoplay: wasPlaying }).catch(() => {});
-      return true;
-    }
-
-    // Empty space — pause and leave the cursor parked there.
-    pauseAllTiles();
-    setStatus("No recording at this point — release on a clip to play.");
-    return true;
-  };
-
-  const finishDrag = (event) => {
-    if (finishScrub(event)) return;
-    if (event.pointerId !== state.timelineView.pointerId) return;
-    if (state.timelineView.isDragging) {
-      state.timelineView.suppressClickUntil = Date.now() + CLICK_SUPPRESSION_MS;
-    }
-    state.timelineView.pointerId = null;
-    state.timelineView.isDragging = false;
-    track.classList.remove("is-dragging");
-    if (track.hasPointerCapture(event.pointerId)) track.releasePointerCapture(event.pointerId);
-  };
-
-  track.addEventListener("pointerup", finishDrag);
-  track.addEventListener("pointercancel", finishDrag);
-
-  track.addEventListener("click", async (event) => {
-    if (!shouldSuppressTimelineClick()) {
-      const trackRect = track.getBoundingClientRect();
-      const minute = timelineMinuteFromClientX(event.clientX, trackRect);
-      const target = event.target instanceof Element ? event.target.closest("[data-event-id]") : null;
-      const base = event.target instanceof Element ? event.target.closest("[data-playback-track-base]") : null;
-
-      if (target) {
-        const targetEvent = state.timeline.events.find((item) => item.id === target.dataset.eventId) || null;
-        if (!targetEvent) return;
-        if (!eventIsPlayable(targetEvent)) {
-          setStatus(
-            eventState(targetEvent) === "missing"
-              ? `${targetEvent.title} is unavailable because recorded video does not cover that time range.`
-              : `${targetEvent.title} is still being finalized.`
-          );
-          return;
-        }
-        const seekSeconds = eventSeekSecondsForMinute(targetEvent, minute);
-        await selectEvent(targetEvent.id, { seekSeconds, autoplay: true });
-        return;
-      }
-
-      if (!base) return;
-
-      const selection = timelineBaseSelection(minute);
-      if (!selection?.event) {
-        setStatus("No recording starts at or after this point.");
-        return;
-      }
-      await selectEvent(selection.event.id, { seekSeconds: selection.seekSeconds, autoplay: true });
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-  }, true);
+  } catch (error) {
+    if (isAbortError(error) || state.pageDisposed) return;
+    setStatus(error.message || String(error));
+  }
 }
-
-// ── Mount/unmount on mode switch ──────────────────────────────────────
-
-let _playbackInitialized = false;
 
 async function enterPlaybackMode() {
   const sharedIds = Array.from(window.views?.selectedDevices ?? []);
-
-  if (!_playbackInitialized) {
-    _playbackInitialized = true;
-    // First-time bootstrap. If the shared set already has cameras (e.g. user
-    // had streams running in live before opening playback), prefer those over
-    // playback's last-saved selection.
+  if (!_initialized) {
+    _initialized = true;
     if (sharedIds.length) state.activeDeviceIds = sharedIds;
     await refreshAll();
-    // Seed the shared set from playback if live hadn't populated it yet.
     if (!sharedIds.length && window.views?.selectedDevices) {
       for (const id of state.activeDeviceIds) window.views.selectedDevices.add(id);
     }
   } else {
-    // Re-entry: reconcile to the shared set and refresh device list / timeline.
     try {
       await loadDevices();
-      await setActiveDeviceIds(sharedIds, { reloadTimeline: false });
-      await loadTimeline({ background: true, preservePlayback: true, autoSelectLatest: false });
+      await setActiveDeviceIds(sharedIds, { reloadData: false });
+      await loadDataForViewport({ background: true });
     } catch (error) {
       setStatus(error.message || String(error));
     }
   }
-  scheduleTimelineAutoRefresh();
+  startDataRefresh();
+  startReloadCheck();
 }
 
 function pauseAllTileVideos() {
-  tiles.forEach((entry) => {
-    if (entry?.video && !entry.video.paused) {
-      try { entry.video.pause(); } catch (_) {}
+  for (const tile of tiles.values()) {
+    if (tile.video && !tile.video.paused) {
+      try { tile.video.pause(); } catch {}
     }
-  });
+  }
 }
 
 function disposePlaybackPage() {
-  if (playbackPageDisposed) return;
-  playbackPageDisposed = true;
-  playbackAbortController.abort();
-  clearTimelineAutoRefresh();
-  clearForwardPlaybackBoundarySchedule();
-  cancelShuttleAnim();
-  stopPlaybackCursorLoop();
-  stopReversePlayback();
-  stopSimulatedForwardPlayback();
+  if (state.pageDisposed) return;
+  state.pageDisposed = true;
+  state.abortController.abort();
+  stopDataRefresh();
+  stopReloadCheck();
+  stopLiveTick();
   pauseAllTileVideos();
   destroyAllTiles();
-  savePlaybackStateNow();
+  saveNow();
 }
 
+// ── External integration points (views-live.js) ─────────────────────
+
 window.viewsPlayback = {
-  // Called by views-live.js after it rebuilds the shared sidebar.
-  // We decorate the rows to reflect playback's selection (state.activeDeviceIds)
-  // and strip live-only state classes.
   afterSidebarRender() {
     if (window.views?.mode !== "playback") return;
     const list = el("viewsCameraList");
@@ -2678,10 +1968,6 @@ window.viewsPlayback = {
       row.classList.remove("is-starting", "is-error");
     });
   },
-  // Called by views-live.js when the user drag-reorders the shared sidebar.
-  // Always update playback state so the order is correct on next entry; only
-  // touch the playback DOM when playback is the visible mode (otherwise the
-  // hidden-grid replaceChildren on every dragover frame can disrupt the drag).
   onSidebarReorder(orderedIds) {
     if (!Array.isArray(orderedIds) || !orderedIds.length) return;
     const byId = new Map(state.devices.map((d) => [d.id, d]));
@@ -2690,19 +1976,12 @@ window.viewsPlayback = {
       const d = byId.get(id);
       if (d) { reordered.push(d); byId.delete(id); }
     }
-    for (const d of state.devices) {
-      if (byId.has(d.id)) { reordered.push(d); byId.delete(d.id); }
-    }
+    for (const d of state.devices) if (byId.has(d.id)) { reordered.push(d); byId.delete(d.id); }
     state.devices = reordered;
     const activeSet = new Set(state.activeDeviceIds);
-    const orderedActive = [];
-    const seen = new Set();
-    for (const id of orderedIds) {
-      if (activeSet.has(id) && !seen.has(id)) { orderedActive.push(id); seen.add(id); }
-    }
-    for (const id of state.activeDeviceIds) {
-      if (!seen.has(id)) { orderedActive.push(id); seen.add(id); }
-    }
+    const orderedActive = []; const seen = new Set();
+    for (const id of orderedIds) if (activeSet.has(id) && !seen.has(id)) { orderedActive.push(id); seen.add(id); }
+    for (const id of state.activeDeviceIds) if (!seen.has(id)) { orderedActive.push(id); seen.add(id); }
     state.activeDeviceIds = orderedActive;
     if (window.views?.mode === "playback") syncTilesToActive();
   },
@@ -2711,13 +1990,15 @@ window.viewsPlayback = {
       await enterPlaybackMode();
       this.afterSidebarRender();
     } else if (prev === "playback") {
-      clearTimelineAutoRefresh();
+      stopDataRefresh();
+      stopReloadCheck();
+      stopLiveTick();
       pauseAllTileVideos();
     }
   },
 };
 
-// Always wire UI handlers so they're ready when the user enters playback mode.
+// Wire UI handlers (must be ready when user enters playback mode).
 bindUi();
 
 // Auto-init only if we're starting in playback mode.
