@@ -973,7 +973,7 @@ function renderCameraList(cameras) {
     const badge = ready ? "READY" : "SETUP";
     const sub = [d.ip, d.profile_label || d.profile_token || "no profile"].filter(Boolean).join(" · ");
     return `
-      <div class="settingsListRow" style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--clr-border, #333);">
+      <div class="settingsListRow" data-camera-id="${escapeH(d.id)}" style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--clr-border, #333);">
         <div style="min-width:0;">
           <strong>${escapeH(d.name || d.ip || d.id)}</strong>
           <span class="muted" style="margin-left:8px;font-size:11px;">${escapeH(badge)}</span>
@@ -998,6 +998,11 @@ async function loadCameras() {
   }
 }
 
+function _resetCameraFormPosition() {
+  if (!cameraFormEl || !cameraListEl) return;
+  cameraListEl.parentNode.insertBefore(cameraFormEl, cameraListEl.nextSibling);
+}
+
 function showCameraForm(camera) {
   _editingCameraId = camera ? camera.id : null;
   _lastCameraProfiles = [];
@@ -1008,14 +1013,28 @@ function showCameraForm(camera) {
   if (cameraPasswordEl)    cameraPasswordEl.value    = "";
   _setProfileSelect(cameraProfileSel);
   _setProfileSelect(cameraRecordingProfileSel);
-  if (cameraFormEl) cameraFormEl.style.display = "";
+  if (cameraFormEl) {
+    if (camera && cameraListEl) {
+      const row = Array.from(cameraListEl.querySelectorAll("[data-camera-id]"))
+        .find((r) => r.dataset.cameraId === camera.id);
+      if (row) row.insertAdjacentElement("afterend", cameraFormEl);
+      else _resetCameraFormPosition();
+    } else {
+      _resetCameraFormPosition();
+    }
+    cameraFormEl.style.display = "";
+    cameraFormEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
   setCameraStatus(camera ? "Editing camera. Re-enter password and re-fetch profiles to change them." : "Fill details, then Fetch profiles before saving.");
 }
 
 function hideCameraForm() {
   _editingCameraId = null;
   _lastCameraProfiles = [];
-  if (cameraFormEl) cameraFormEl.style.display = "none";
+  if (cameraFormEl) {
+    cameraFormEl.style.display = "none";
+    _resetCameraFormPosition();
+  }
   setCameraStatus("");
 }
 
@@ -1239,7 +1258,7 @@ function renderSpeakerList(speakers) {
     return;
   }
   speakerListEl.innerHTML = speakers.map(s => `
-    <div class="settingsListRow" style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--clr-border, #333);">
+    <div class="settingsListRow" data-speaker-id="${escapeH(s.id)}" style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--clr-border, #333);">
       <div>
         <strong>${escapeH(s.name)}</strong>
         <span class="muted" style="margin-left:8px;">${escapeH(s.ip)}</span>
@@ -1268,18 +1287,37 @@ async function loadSpeakers() {
   }
 }
 
+function _resetSpeakerFormPosition() {
+  if (!speakerFormEl || !speakerListEl) return;
+  speakerListEl.parentNode.insertBefore(speakerFormEl, speakerListEl.nextSibling);
+}
+
 function showSpeakerForm(speaker) {
   _editingSpeakerId = speaker ? speaker.id : null;
   if (speakerNameEl)     speakerNameEl.value     = speaker?.name     || "";
   if (speakerIpEl)       speakerIpEl.value       = speaker?.ip       || "";
   if (speakerUsernameEl) speakerUsernameEl.value = speaker?.username || "";
   if (speakerPasswordEl) speakerPasswordEl.value = speaker?.password || "";
-  if (speakerFormEl) speakerFormEl.style.display = "";
+  if (speakerFormEl) {
+    if (speaker && speakerListEl) {
+      const row = Array.from(speakerListEl.querySelectorAll("[data-speaker-id]"))
+        .find((r) => r.dataset.speakerId === speaker.id);
+      if (row) row.insertAdjacentElement("afterend", speakerFormEl);
+      else _resetSpeakerFormPosition();
+    } else {
+      _resetSpeakerFormPosition();
+    }
+    speakerFormEl.style.display = "";
+    speakerFormEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 }
 
 function hideSpeakerForm() {
   _editingSpeakerId = null;
-  if (speakerFormEl) speakerFormEl.style.display = "none";
+  if (speakerFormEl) {
+    speakerFormEl.style.display = "none";
+    _resetSpeakerFormPosition();
+  }
 }
 
 addSpeakerBtn?.addEventListener("click", () => showSpeakerForm(null));
