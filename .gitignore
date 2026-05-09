@@ -59,3 +59,8 @@ docker-compose.override.yml
 # OS files
 # -------------------------
 Thumbs.db
+
+# -------------------------
+# Claude Code (local state, worktrees, etc.)
+# -------------------------
+.claude/
