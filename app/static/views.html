@@ -94,34 +94,52 @@
 
             <div class="playbackControlsSection">
               <div class="playbackTransport" id="playbackTransport">
+                <div class="playbackTransportTimeDisplay" id="playbackTimeDisplay" aria-live="polite">--:--:--</div>
+
                 <div class="playbackTransportButtons">
-                  <button class="btn btn-primary btn-compact playbackTransportButton" id="playbackPlayPauseBtn" type="button" aria-label="Play" title="Play">
+                  <button class="btn btn-compact playbackTransportButton" id="playbackReplay30Btn" type="button" aria-label="Back 30 seconds" title="Back 30s">
+                    <span class="playbackTransportGlyph" aria-hidden="true">«30</span>
+                  </button>
+                  <button class="btn btn-compact playbackTransportButton" id="playbackReplay5Btn" type="button" aria-label="Back 5 seconds" title="Back 5s">
+                    <span class="playbackTransportGlyph" aria-hidden="true">«5</span>
+                  </button>
+                  <button class="btn btn-compact playbackTransportButton" id="playbackFrameBackBtn" type="button" aria-label="Previous frame" title="Previous frame">
                     <span class="playbackTransportGlyph" aria-hidden="true">
-                      <svg viewBox="0 0 24 24" focusable="false">
-                        <path d="M8 6.5V17.5L17 12L8 6.5Z"></path>
-                      </svg>
+                      <svg viewBox="0 0 24 24" focusable="false"><path d="M16 6 L8 12 L16 18 Z"></path><rect x="6" y="6" width="2" height="12" rx="0.5"></rect></svg>
                     </span>
                   </button>
-                  <button class="btn btn-compact playbackTransportButton" id="playbackStopBtn" type="button" aria-label="Stop" title="Stop">
+                  <button class="btn btn-primary btn-compact playbackTransportButton" id="playbackPlayPauseBtn" type="button" aria-label="Play" title="Play">
                     <span class="playbackTransportGlyph" aria-hidden="true">
-                      <svg viewBox="0 0 24 24" focusable="false">
-                        <rect x="7" y="7" width="10" height="10" rx="1.5"></rect>
-                      </svg>
+                      <svg viewBox="0 0 24 24" focusable="false"><path d="M8 6.5V17.5L17 12L8 6.5Z"></path></svg>
                     </span>
+                  </button>
+                  <button class="btn btn-compact playbackTransportButton" id="playbackFrameFwdBtn" type="button" aria-label="Next frame" title="Next frame">
+                    <span class="playbackTransportGlyph" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" focusable="false"><path d="M8 6 L16 12 L8 18 Z"></path><rect x="16" y="6" width="2" height="12" rx="0.5"></rect></svg>
+                    </span>
+                  </button>
+                  <button class="btn btn-compact playbackTransportButton" id="playbackFwd5Btn" type="button" aria-label="Forward 5 seconds" title="Forward 5s">
+                    <span class="playbackTransportGlyph" aria-hidden="true">5»</span>
+                  </button>
+                  <button class="btn btn-compact playbackTransportButton" id="playbackFwd30Btn" type="button" aria-label="Forward 30 seconds" title="Forward 30s">
+                    <span class="playbackTransportGlyph" aria-hidden="true">30»</span>
+                  </button>
+                  <button class="btn btn-compact playbackTransportButton playbackLiveBtn" id="playbackLiveBtn" type="button" aria-label="Jump to live" title="Jump to live">
+                    <span class="playbackLiveDot" aria-hidden="true"></span>LIVE
                   </button>
                 </div>
 
-                <div class="playbackSpeedControl playbackShuttleControl">
-                  <div class="playbackShuttleBar">
-                    <div class="playbackShuttleTrackBg" aria-hidden="true">
-                      <span class="playbackShuttleTrackFill" data-shuttle-fill></span>
-                      <span class="playbackShuttleDetent" data-pos="neg-one"></span>
-                      <span class="playbackShuttleDetent" data-pos="center"></span>
-                      <span class="playbackShuttleDetent" data-pos="rest"></span>
-                      <output id="playbackShuttleValue" class="playbackShuttleValue" for="playbackShuttleInput" data-shuttle-value>1x</output>
-                    </div>
-                    <input id="playbackShuttleInput" type="range" min="-1" max="1" step="0.002" value="0.25" />
-                  </div>
+                <div class="playbackSpeedControl">
+                  <label for="playbackSpeedSelect">Speed</label>
+                  <select id="playbackSpeedSelect" aria-label="Playback speed">
+                    <option value="0.25">0.25x</option>
+                    <option value="0.5">0.5x</option>
+                    <option value="1" selected>1x</option>
+                    <option value="2">2x</option>
+                    <option value="4">4x</option>
+                    <option value="8">8x</option>
+                    <option value="16">16x</option>
+                  </select>
                 </div>
               </div>
             </div>
@@ -137,14 +155,28 @@
           <div class="playbackTimelineToolbar">
             <div class="playbackTimelineFilters" id="playbackTimelineFilters"></div>
             <div class="playbackTimelineSelectors">
-              <div class="playbackTimelineSelector">
-                <label for="playbackDayInput">Day</label>
+              <div class="playbackTimelineDateNav">
+                <button class="btn btn-compact playbackTimelineNavBtn" id="playbackPrevDayBtn" type="button" title="Previous day" aria-label="Previous day">‹</button>
                 <input id="playbackDayInput" type="date" />
+                <button class="btn btn-compact playbackTimelineNavBtn" id="playbackNextDayBtn" type="button" title="Next day" aria-label="Next day">›</button>
+                <button class="btn btn-compact playbackTimelineTodayBtn" id="playbackTodayBtn" type="button" title="Jump to now">Today</button>
+              </div>
+              <div class="playbackTimelineZoomPresets" id="playbackZoomPresets" role="tablist" aria-label="Timeline zoom">
+                <button class="playbackZoomBtn" type="button" data-zoom-ms="300000">5m</button>
+                <button class="playbackZoomBtn is-active" type="button" data-zoom-ms="3600000">1h</button>
+                <button class="playbackZoomBtn" type="button" data-zoom-ms="21600000">6h</button>
+                <button class="playbackZoomBtn" type="button" data-zoom-ms="86400000">24h</button>
+                <button class="playbackZoomBtn" type="button" data-zoom-ms="604800000">7d</button>
               </div>
             </div>
           </div>
           <div class="playbackTimelineScale" id="playbackTimelineScale"></div>
-          <div class="playbackTimelineTrack" id="playbackTimelineTrack"></div>
+          <div class="playbackTimelineTrack" id="playbackTimelineTrack">
+            <div class="playbackThumbPreview hidden" id="playbackThumbPreview" aria-hidden="true">
+              <img id="playbackThumbPreviewImg" alt="" />
+              <div class="playbackThumbPreviewLabel" id="playbackThumbPreviewLabel"></div>
+            </div>
+          </div>
         </div>
       </section>
     </div>

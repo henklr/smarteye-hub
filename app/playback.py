@@ -147,6 +147,7 @@ def _base_dir() -> Path:
     (base / "recordings").mkdir(parents=True, exist_ok=True)
     (base / "index").mkdir(parents=True, exist_ok=True)
     (base / "clips").mkdir(parents=True, exist_ok=True)
+    (base / "thumbs").mkdir(parents=True, exist_ok=True)
     return base
 
 
@@ -160,6 +161,139 @@ def _index_root() -> Path:
 
 def _clips_root() -> Path:
     return _base_dir() / "clips"
+
+
+def _thumbs_root() -> Path:
+    return _base_dir() / "thumbs"
+
+
+def _device_thumbs_dir(device_id: str) -> Path:
+    device_id = _validate_id(device_id, "device_id")
+    p = _thumbs_root() / device_id
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _segment_thumbnail_path(device_id: str, filename: str) -> Path:
+    if not _SEGMENT_NAME_RE.match(filename):
+        raise HTTPException(status_code=400, detail="Invalid segment name")
+    return _device_thumbs_dir(device_id) / f"{filename[:-3]}.jpg"
+
+
+# Thumbnail tuning. Width is small (timeline preview only) so the JPEG is
+# tiny — under 10 KB per finalized segment in practice.
+THUMBNAIL_WIDTH = max(80, int(os.getenv("PLAYBACK_THUMBNAIL_WIDTH", "240") or "240"))
+THUMBNAIL_QUALITY = max(2, min(31, int(os.getenv("PLAYBACK_THUMBNAIL_QUALITY", "6") or "6")))
+
+
+def _generate_segment_thumbnail(device_id: str, segment: "Segment") -> bool:
+    """Create a small JPEG preview for a finalized segment (one keyframe at the
+    start). Returns True if a thumbnail now exists on disk."""
+    if not segment.finalized:
+        return False
+    out = _segment_thumbnail_path(device_id, segment.filename)
+    if out.is_file() and out.stat().st_size > 256:
+        return True
+    src = segment.path
+    if not src.is_file():
+        return False
+    tmp = out.with_suffix(f".{uuid.uuid4().hex}.tmp.jpg")
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-ss", "0",
+                "-i", str(src),
+                "-frames:v", "1",
+                "-vf", f"scale={THUMBNAIL_WIDTH}:-2",
+                "-qscale:v", str(THUMBNAIL_QUALITY),
+                str(tmp),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=15,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False
+    try:
+        tmp.replace(out)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False
+    return True
+
+
+def _generate_thumbnails_for_device(device_id: str, max_per_cycle: int = 32) -> int:
+    """Generate thumbnails for finalized segments that don't have one yet.
+
+    Bounded two ways:
+      * Only the most recent N segments are considered per cycle (N = 4×
+        `max_per_cycle`), so a device with thousands of historical segments
+        doesn't get O(history) stat() calls every indexer tick.
+      * At most `max_per_cycle` thumbs are generated per cycle so we never
+        block the indexer for a long time.
+
+    Older segments without thumbs are an edge case (e.g., manual recovery,
+    storage move). We accept that they may not get thumbs immediately —
+    they'll be picked up over time as the recent-window walks back, or via
+    a manual /api/playback/reindex.
+    """
+    scan_limit = max(max_per_cycle * 4, 64)
+    made = 0
+    try:
+        with _index_connect(device_id) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM segments WHERE finalized = 1 "
+                "ORDER BY started_at_us DESC LIMIT ?",
+                (scan_limit,),
+            ).fetchall()
+    except Exception:
+        return 0
+    for row in rows:
+        if made >= max_per_cycle:
+            break
+        seg = _row_to_segment(device_id, row)
+        thumb_path = _device_thumbs_dir(device_id) / f"{seg.filename[:-3]}.jpg"
+        if thumb_path.is_file() and thumb_path.stat().st_size > 256:
+            continue
+        if _generate_segment_thumbnail(device_id, seg):
+            made += 1
+    return made
+
+
+def _prune_orphaned_thumbnails(device_id: str) -> int:
+    """Drop thumbnails whose source segment no longer exists in the index."""
+    try:
+        with _index_connect(device_id) as conn:
+            conn.row_factory = sqlite3.Row
+            keep = {row["filename"][:-3] for row in conn.execute(
+                "SELECT filename FROM segments"
+            ).fetchall()}
+    except Exception:
+        return 0
+    thumbs_dir = _thumbs_root() / device_id
+    if not thumbs_dir.is_dir():
+        return 0
+    removed = 0
+    for f in thumbs_dir.iterdir():
+        if not f.is_file() or not f.name.endswith(".jpg"):
+            continue
+        if f.name[:-4] in keep:
+            continue
+        try:
+            f.unlink(missing_ok=True)
+            removed += 1
+        except Exception:
+            pass
+    return removed
 
 
 def _lock_path() -> Path:
@@ -847,21 +981,48 @@ def _trim_event_to_coverage(event: Dict[str, Any]) -> Tuple[Dict[str, Any], bool
         return dict(event), False
     cov_start, cov_end = coverage
     tolerance = timedelta(seconds=READINESS_GAP_TOLERANCE_SECONDS)
-    if cov_start <= started_at + tolerance and cov_end >= ended_at - tolerance:
+
+    # The SQLite segment index lags ffmpeg: a segment is finalized only after
+    # the next one starts (8s segment), gets a finalize grace (5s), then waits
+    # for the indexer to ffprobe it (3s poll). Worst case ~16-20s. If the
+    # indexer simply hasn't caught up, the trimmed `cov_end` will be a few
+    # seconds shy of `ended_at` even though the segments DO exist on disk.
+    # Trimming on that basis chews real recording out of fresh markers (the
+    # symptom: `clip_end < triggered_at`, `after_seconds=0`).
+    #
+    # Use a generous threshold (60s) before trusting the index enough to trim
+    # the trailing edge. Pre-roll (start side) is always already-finalized
+    # data, so we keep the small tolerance there.
+    indexer_lag_grace = timedelta(seconds=60)
+    start_needs_trim = cov_start > started_at + tolerance
+    end_needs_trim = cov_end < ended_at - indexer_lag_grace
+    if not start_needs_trim and not end_needs_trim:
+        return dict(event), False
+
+    new_start = cov_start if start_needs_trim else started_at
+    new_end = cov_end if end_needs_trim else ended_at
+
+    # Never trim the trailing edge below the trigger — a marker that ends
+    # before the motion that created it is nonsense, and historically came
+    # from the indexer-lag bug above.
+    trigger_at = _event_trigger_at(event, new_start)
+    if new_end < trigger_at:
+        new_end = ended_at
+
+    if new_start == started_at and new_end == ended_at:
         return dict(event), False
 
     updated = dict(event)
-    updated["clip_start"] = cov_start.isoformat()
-    updated["clip_end"] = cov_end.isoformat()
-    trigger_at = _event_trigger_at(event, cov_start)
-    updated["before_seconds"] = max(0.0, (trigger_at - cov_start).total_seconds())
-    updated["after_seconds"] = max(0.0, (cov_end - trigger_at).total_seconds())
+    updated["clip_start"] = new_start.isoformat()
+    updated["clip_end"] = new_end.isoformat()
+    updated["before_seconds"] = max(0.0, (trigger_at - new_start).total_seconds())
+    updated["after_seconds"] = max(0.0, (new_end - trigger_at).total_seconds())
     trimmed_segments: List[Dict[str, Any]] = []
     for seg in _event_tag_segments(event):
         ss = _parse_iso(seg["clip_start"])
         se = _parse_iso(seg["clip_end"])
-        ts = max(ss, cov_start)
-        te = min(se, cov_end)
+        ts = max(ss, new_start)
+        te = min(se, new_end)
         if te > ts:
             s = dict(seg)
             s["clip_start"] = ts.isoformat()
@@ -1723,6 +1884,16 @@ def _indexer_loop() -> None:
                     reconcile_device_index(device_id)
                 except Exception as exc:
                     _log_index.warning("Reconcile failed for %s: %s", device_id, exc)
+                try:
+                    made = _generate_thumbnails_for_device(device_id)
+                    if made:
+                        _log_index.info("Generated %d thumbnail(s) for %s", made, device_id)
+                except Exception as exc:
+                    _log_index.warning("Thumbnail generation failed for %s: %s", device_id, exc)
+                try:
+                    _prune_orphaned_thumbnails(device_id)
+                except Exception:
+                    pass
         except Exception as exc:
             _log_index.warning("Indexer cycle failed: %s", exc)
 
@@ -2151,7 +2322,8 @@ def clear_all_recordings() -> Dict[str, int]:
 
 
 def _format_hls_playlist(
-    segments: List["Segment"], *, playlist_type: str, ended: bool
+    segments: List["Segment"], *, playlist_type: str, ended: bool,
+    seek_at: Optional[datetime] = None,
 ) -> str:
     max_dur = max((s.duration_seconds for s in segments), default=float(HLS_TARGET_DURATION))
     target = max(1, int(round(max_dur + 0.5)))
@@ -2164,6 +2336,19 @@ def _format_hls_playlist(
         "#EXT-X-MEDIA-SEQUENCE:0",
         "#EXT-X-INDEPENDENT-SEGMENTS",
     ]
+
+    # If the caller (the playback UI) tells us where the playhead is, emit
+    # EXT-X-START so the player fetches the segment containing that instant
+    # first instead of starting at the head of the playlist and seeking. With
+    # 4-8 MB segments on a Pi, that saves ~1 segment of unnecessary download.
+    # Only emit when the seek point is actually inside the playlist's range —
+    # otherwise we'd be telling the player to seek out of bounds.
+    if seek_at is not None and segments:
+        playlist_start = segments[0].started_at
+        playlist_end = segments[-1].ended_at
+        if playlist_start <= seek_at <= playlist_end:
+            offset = max(0.0, (seek_at - playlist_start).total_seconds())
+            lines.append(f"#EXT-X-START:TIME-OFFSET={offset:.3f},PRECISE=YES")
 
     prev_end: Optional[datetime] = None
     for seg in segments:
@@ -2182,8 +2367,13 @@ def _format_hls_playlist(
     return "\n".join(lines) + "\n"
 
 
-def _build_hls_playlist(device_id: str, started_at: datetime, ended_at: datetime) -> str:
-    """Return an HLS VOD-style media playlist covering [started_at, ended_at]."""
+def _build_hls_playlist(
+    device_id: str, started_at: datetime, ended_at: datetime,
+    seek_at: Optional[datetime] = None,
+) -> str:
+    """Return an HLS VOD-style media playlist covering [started_at, ended_at].
+    `seek_at` (when provided) is the wall-clock playhead — included as an
+    EXT-X-START hint so the player fetches the right segment first."""
     if (ended_at - started_at).total_seconds() > HLS_MAX_WINDOW_SECONDS:
         raise HTTPException(status_code=400, detail="HLS window too large")
 
@@ -2191,7 +2381,7 @@ def _build_hls_playlist(device_id: str, started_at: datetime, ended_at: datetime
     # Drop anything not ready for playback (very small or zero-duration).
     segments = [s for s in segments if s.duration_seconds > 0.0 and s.size_bytes >= MIN_SEGMENT_BYTES]
     segments.sort(key=lambda s: s.started_at)
-    return _format_hls_playlist(segments, playlist_type="VOD", ended=True)
+    return _format_hls_playlist(segments, playlist_type="VOD", ended=True, seek_at=seek_at)
 
 
 def _build_live_hls_playlist(device_id: str, started_at: datetime) -> str:
@@ -2412,6 +2602,68 @@ def playback_redirect() -> RedirectResponse:
     return RedirectResponse(url="/views?mode=playback", status_code=307)
 
 
+def _coverage_runs_for_device(
+    device_id: str, started_at: datetime, ended_at: datetime
+) -> List[Dict[str, str]]:
+    """Return continuous-recording runs (gap-merged) for [started_at, ended_at).
+    Each run is `{ "start": iso_local, "end": iso_local }`. Used by the timeline
+    UI to draw coverage bars + gap hatching."""
+    segs = _index_query_range(device_id, started_at, ended_at)
+    segs = [s for s in segs if s.duration_seconds > 0.0 and s.size_bytes >= MIN_SEGMENT_BYTES]
+    segs.sort(key=lambda s: s.started_at)
+    if not segs:
+        return []
+    runs: List[Tuple[datetime, datetime]] = []
+    cur_start = segs[0].started_at
+    cur_end = segs[0].ended_at
+    for seg in segs[1:]:
+        gap = (seg.started_at - cur_end).total_seconds()
+        if gap > READINESS_GAP_TOLERANCE_SECONDS:
+            runs.append((cur_start, cur_end))
+            cur_start = seg.started_at
+        cur_end = max(cur_end, seg.ended_at)
+    runs.append((cur_start, cur_end))
+    # Clamp to requested window so a run starting just before midnight gets
+    # rendered correctly within today's viewport.
+    out: List[Dict[str, str]] = []
+    for start, end in runs:
+        clamped_start = max(start, started_at)
+        clamped_end = min(end, ended_at)
+        if clamped_end <= clamped_start:
+            continue
+        out.append({
+            "start": _to_local(clamped_start),
+            "end": _to_local(clamped_end),
+        })
+    return out
+
+
+def _segment_thumbnails_for_device(
+    device_id: str, started_at: datetime, ended_at: datetime
+) -> List[Dict[str, Any]]:
+    """Return one entry per finalized segment whose thumbnail exists. The
+    client uses these for hover-scrub previews on the timeline."""
+    segs = _index_query_range(device_id, started_at, ended_at, finalized_only=True)
+    segs = [s for s in segs if s.duration_seconds > 0.0 and s.size_bytes >= MIN_SEGMENT_BYTES]
+    segs.sort(key=lambda s: s.started_at)
+    thumbs_dir = _thumbs_root() / device_id
+    out: List[Dict[str, Any]] = []
+    if not thumbs_dir.is_dir():
+        return out
+    for seg in segs:
+        thumb_name = f"{seg.filename[:-3]}.jpg"
+        thumb_path = thumbs_dir / thumb_name
+        if not thumb_path.is_file():
+            continue
+        out.append({
+            "filename": seg.filename,
+            "start": _to_local(seg.started_at),
+            "end": _to_local(seg.ended_at),
+            "url": f"/api/playback/thumb/{device_id}/{seg.filename}",
+        })
+    return out
+
+
 @router.get("/api/playback/timeline")
 def playback_timeline(
     device_id: str = Query(..., min_length=1),
@@ -2478,12 +2730,65 @@ def playback_timeline(
         events_out.append(serialized)
     events_out.sort(key=lambda e: str(e.get("triggered_at") or ""))
 
+    coverage = _coverage_runs_for_device(device_id, started_at, ended_at)
+    thumbs = _segment_thumbnails_for_device(device_id, started_at, ended_at)
+
     return {
         "device_id": device_id,
         "day": selected_day.isoformat(),
+        "from": _to_local(started_at),
+        "to": _to_local(ended_at),
         "segments": [],
+        "coverage": coverage,
+        "thumbnails": thumbs,
         "events": events_out,
     }
+
+
+@router.get("/api/playback/window")
+def playback_window(
+    device_id: str = Query(..., min_length=1),
+    from_: str = Query(..., alias="from"),
+    to: str = Query(...),
+) -> Dict[str, Any]:
+    """Coverage + thumbnails for an arbitrary [from, to] wall-clock window.
+
+    Used by the playback UI when the user zooms out past a single day or pans
+    across a multi-day range — the day-bounded /timeline endpoint can't answer
+    those questions on its own.
+    """
+    device_id = _validate_id(device_id, "device_id")
+    try:
+        started_at = _parse_iso(from_)
+        ended_at = _parse_iso(to)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid from/to")
+    if ended_at <= started_at:
+        raise HTTPException(status_code=400, detail="to must be after from")
+    if (ended_at - started_at).total_seconds() > 31 * 24 * 3600:
+        raise HTTPException(status_code=400, detail="Window too large")
+    return {
+        "device_id": device_id,
+        "from": _to_local(started_at),
+        "to": _to_local(ended_at),
+        "coverage": _coverage_runs_for_device(device_id, started_at, ended_at),
+        "thumbnails": _segment_thumbnails_for_device(device_id, started_at, ended_at),
+    }
+
+
+@router.get("/api/playback/thumb/{device_id}/{filename}")
+def playback_thumbnail(device_id: str, filename: str):
+    device_id = _validate_id(device_id, "device_id")
+    if not _SEGMENT_NAME_RE.match(filename):
+        raise HTTPException(status_code=400, detail="Invalid segment name")
+    path = _thumbs_root() / device_id / f"{filename[:-3]}.jpg"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Thumbnail not found")
+    return FileResponse(
+        path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
 
 
 @router.get("/api/playback/events/{event_id}")
@@ -2517,6 +2822,7 @@ def playback_hls_playlist(
     from_: Optional[str] = Query(None, alias="from"),
     to: Optional[str] = None,
     event_id: Optional[str] = None,
+    seek_at: Optional[str] = None,
 ) -> PlainTextResponse:
     device_id = _validate_id(device_id, "device_id")
     if event_id:
@@ -2546,7 +2852,14 @@ def playback_hls_playlist(
     if ended_at <= started_at:
         raise HTTPException(status_code=400, detail="to must be after from")
 
-    playlist = _build_hls_playlist(device_id, started_at, ended_at)
+    seek_at_dt: Optional[datetime] = None
+    if seek_at:
+        try:
+            seek_at_dt = _parse_iso(seek_at)
+        except Exception:
+            seek_at_dt = None
+
+    playlist = _build_hls_playlist(device_id, started_at, ended_at, seek_at=seek_at_dt)
     return PlainTextResponse(
         playlist,
         media_type="application/vnd.apple.mpegurl",
