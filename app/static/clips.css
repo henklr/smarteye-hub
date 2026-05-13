@@ -4,19 +4,19 @@
    chrome: video grid layout overrides, the timeline card, lanes, cursor,
    transport, and Live/Playback mode toggle treatment. */
 
-body.pbPage { overflow: hidden; }
+body.playbackPage { overflow: hidden; }
 
 /* ── Layout ─────────────────────────────────────────────────────────── */
 
-.pbPage .viewsShell { grid-template-rows: 1fr; }      /* override viewsShell's auto row */
-.pbPage .pbMain {
+.playbackPage .viewsShell { grid-template-rows: 1fr; }      /* override viewsShell's auto row */
+.playbackPage .pbMain {
   display: flex;
   flex-direction: column;
   min-height: 0;
   background: var(--bg);
 }
 
-.pbPage .pbGridStage {
+.playbackPage .pbGridStage {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
@@ -27,23 +27,35 @@ body.pbPage { overflow: hidden; }
   overflow: hidden;
 }
 
-/* The Live page's #videoGrid is `display: flex; flex-direction: column`
-   with `.videoRow` children built by the justified-layout JS — we use the
-   same chrome here. Don't override the grid container itself; just the
-   placeholder-empty pseudo (which displays a "No active streams" message
-   we don't want) and the in-stage padding. */
-.pbPage .pbVideoGrid:empty::before { content: none; }
-.pbPage .pbVideoGrid { padding: 0; gap: 8px; }
+/* The Live page's grid base styles in styles.css are scoped to #videoGrid,
+   so the playback grid (#pbVideoGrid) needs the same flex layout repeated
+   here. Keeps the justified-layout JS from clips.js working — it requires
+   the grid to be flex column with width 100% / flex:1 so clientWidth and
+   clientHeight measure correctly. */
+.playbackPage .pbVideoGrid {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
+  padding: 0;
+  gap: 8px;
+}
+.playbackPage .pbVideoGrid:empty::before { content: none; }
 
 /* Live's .tile is `width: 320px; height: 180px` — the justified layout
    overrides those inline on each tile to match the row height. We don't
    need any extra base size; only minor playback-specific tweaks. */
-.pbPage .pbVideoGrid .tile { min-width: 0; min-height: 0; }
-.pbPage .pbVideoGrid .tile.is-current {
+.playbackPage .pbVideoGrid .tile { min-width: 0; min-height: 0; }
+.playbackPage .pbVideoGrid .tile.is-current {
   border-color: rgba(212, 170, 79, 0.45);
   box-shadow: 0 0 0 1px rgba(212, 170, 79, 0.25), 0 0 28px rgba(212, 170, 79, 0.10);
 }
-.pbPage .pbVideoGrid .tileNo {
+.playbackPage .pbVideoGrid .tileNo {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -58,7 +70,7 @@ body.pbPage { overflow: hidden; }
   font-weight: 800;
   letter-spacing: 0.04em;
 }
-.pbPage .pbVideoGrid .tileMeta {
+.playbackPage .pbVideoGrid .tileMeta {
   display: inline-flex !important;          /* override styles.css { display:none } */
   align-items: center;
   gap: 6px;
@@ -75,7 +87,7 @@ body.pbPage { overflow: hidden; }
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.pbPage .pbVideoGrid .tileMetaSwatch {
+.playbackPage .pbVideoGrid .tileMetaSwatch {
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -83,7 +95,7 @@ body.pbPage { overflow: hidden; }
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3);
   flex-shrink: 0;
 }
-.pbPage .pbVideoGrid .tileOverlay[data-state="nodata"] {
+.playbackPage .pbVideoGrid .tileOverlay[data-state="nodata"] {
   display: flex;
   color: var(--muted);
   font-weight: 700;
@@ -93,7 +105,7 @@ body.pbPage { overflow: hidden; }
 }
 
 /* Empty grid placeholder. */
-.pbPage .pbGridEmpty {
+.playbackPage .pbGridEmpty {
   position: absolute;
   inset: 12px;
   display: flex;
@@ -102,8 +114,8 @@ body.pbPage { overflow: hidden; }
   pointer-events: none;
   color: var(--muted);
 }
-.pbPage .pbGridEmpty[hidden] { display: none; }
-.pbPage .pbGridEmptyPanel {
+.playbackPage .pbGridEmpty[hidden] { display: none; }
+.playbackPage .pbGridEmptyPanel {
   display: flex; flex-direction: column; align-items: center; gap: 6px;
   padding: 20px 28px;
   border: 1px solid var(--stroke);
@@ -114,34 +126,34 @@ body.pbPage { overflow: hidden; }
   text-align: center;
   max-width: 380px;
 }
-.pbPage .pbGridEmptyBadge {
+.playbackPage .pbGridEmptyBadge {
   font-size: 10px; font-weight: 800; letter-spacing: 0.16em;
   text-transform: uppercase; color: var(--accent-strong);
 }
-.pbPage .pbGridEmptyText { color: var(--muted); font-size: 12px; }
+.playbackPage .pbGridEmptyText { color: var(--muted); font-size: 12px; }
 
 /* ── Live/Playback toggle (uses .viewsModeBtn under .viewsPage) ─────── */
 /* Keep the live-page link looking like a button. */
-.pbPage .viewsModeBtn { text-align: center; text-decoration: none; }
-.pbPage .viewsModeBtn:hover { text-decoration: none; }
+.playbackPage .viewsModeBtn { text-align: center; text-decoration: none; }
+.playbackPage .viewsModeBtn:hover { text-decoration: none; }
 
 /* ── Sidebar additions ──────────────────────────────────────────────── */
-.pbPage .liveSidebarRow {
+.playbackPage .liveSidebarRow {
   cursor: pointer;
   user-select: none;
 }
-.pbPage .liveSidebarRow .liveSidebarDragHandle { visibility: hidden; }  /* no reorder in playback yet */
-.pbPage .liveSidebarRow.has-clips .statusDot {
+.playbackPage .liveSidebarRow .liveSidebarDragHandle { visibility: hidden; }  /* no reorder in playback yet */
+.playbackPage .liveSidebarRow.has-clips .statusDot {
   background: #22c55e;
   box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.18);
 }
-.pbPage .liveSidebarRow:not(.has-clips) .statusDot {
+.playbackPage .liveSidebarRow:not(.has-clips) .statusDot {
   background: rgba(255, 255, 255, 0.15);
 }
 
 /* ── Timeline card ──────────────────────────────────────────────────── */
 
-.pbPage .pbTimelineCard {
+.playbackPage .pbTimelineCard {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -153,7 +165,7 @@ body.pbPage { overflow: hidden; }
   -webkit-backdrop-filter: var(--glass-blur);
 }
 
-.pbPage .pbTimelineToolbar {
+.playbackPage .pbTimelineToolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -161,8 +173,8 @@ body.pbPage { overflow: hidden; }
   flex-wrap: wrap;
 }
 
-.pbPage .pbDateNav { display: inline-flex; align-items: center; gap: 4px; }
-.pbPage .pbDateInput {
+.playbackPage .pbDateNav { display: inline-flex; align-items: center; gap: 4px; }
+.playbackPage .pbDateInput {
   height: 26px;
   padding: 0 8px;
   border: 1px solid var(--stroke);
@@ -175,9 +187,9 @@ body.pbPage { overflow: hidden; }
   color-scheme: dark;
   transition: border-color 0.15s ease;
 }
-.pbPage .pbDateInput:hover { border-color: var(--stroke-strong); }
-.pbPage .pbDateInput:focus { outline: none; border-color: var(--accent); }
-.pbPage .pbCompactBtn {
+.playbackPage .pbDateInput:hover { border-color: var(--stroke-strong); }
+.playbackPage .pbDateInput:focus { outline: none; border-color: var(--accent); }
+.playbackPage .pbCompactBtn {
   padding: 0;
   width: 26px;
   min-width: 26px;
@@ -186,14 +198,14 @@ body.pbPage { overflow: hidden; }
   align-items: center;
   justify-content: center;
 }
-.pbPage .pbTodayBtn {
+.playbackPage .pbTodayBtn {
   margin-left: 6px;
   padding: 0 10px;
   width: auto;
   font-weight: 700;
 }
 
-.pbPage .pbZoom {
+.playbackPage .pbZoom {
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -202,7 +214,7 @@ body.pbPage { overflow: hidden; }
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.03);
 }
-.pbPage .pbZoomBtn {
+.playbackPage .pbZoomBtn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -220,15 +232,15 @@ body.pbPage { overflow: hidden; }
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 }
-.pbPage .pbZoomBtn:hover { background: rgba(255, 255, 255, 0.06); color: var(--text); }
-.pbPage .pbZoomBtn.is-active {
+.playbackPage .pbZoomBtn:hover { background: rgba(255, 255, 255, 0.06); color: var(--text); }
+.playbackPage .pbZoomBtn.is-active {
   background: var(--accent-3);
   color: var(--accent-strong);
 }
 
 /* ── Time-scale ruler ───────────────────────────────────────────────── */
 
-.pbPage .pbTimelineScale {
+.playbackPage .pbTimelineScale {
   position: relative;
   height: 20px;
   color: var(--muted);
@@ -238,14 +250,14 @@ body.pbPage { overflow: hidden; }
   user-select: none;
   overflow: hidden;
 }
-.pbPage .pbScaleTick {
+.playbackPage .pbScaleTick {
   position: absolute;
   top: 0;
   transform: translateX(-50%);
   white-space: nowrap;
   pointer-events: none;
 }
-.pbPage .pbScaleTick::before {
+.playbackPage .pbScaleTick::before {
   content: "";
   position: absolute;
   left: 50%;
@@ -257,7 +269,7 @@ body.pbPage { overflow: hidden; }
 
 /* ── Track + lanes (one row per selected camera) ────────────────────── */
 
-.pbPage .pbTimelineTrack {
+.playbackPage .pbTimelineTrack {
   position: relative;
   padding: 6px;
   border: 1px solid var(--stroke);
@@ -270,24 +282,24 @@ body.pbPage { overflow: hidden; }
   touch-action: none;
   user-select: none;
 }
-.pbPage .pbTimelineTrack.is-panning { cursor: grabbing; }
-.pbPage .pbTimelineTrack.is-scrubbing { cursor: ew-resize; }
+.playbackPage .pbTimelineTrack.is-panning { cursor: grabbing; }
+.playbackPage .pbTimelineTrack.is-scrubbing { cursor: ew-resize; }
 
-.pbPage .pbTimelineLanes {
+.playbackPage .pbTimelineLanes {
   position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.pbPage .pbLane {
+.playbackPage .pbLane {
   position: relative;
   height: 18px;
   border-radius: 5px;
   background: rgba(255, 255, 255, 0.03);
 }
 
-.pbPage .pbLaneLabel {
+.playbackPage .pbLaneLabel {
   position: absolute;
   left: 6px;
   top: 50%;
@@ -310,7 +322,7 @@ body.pbPage { overflow: hidden; }
   text-overflow: ellipsis;
 }
 
-.pbPage .pbCoverageBar {
+.playbackPage .pbCoverageBar {
   position: absolute;
   top: 3px;
   bottom: 3px;
@@ -324,19 +336,19 @@ body.pbPage { overflow: hidden; }
   cursor: pointer;
   transition: filter 0.12s ease, transform 0.12s ease;
 }
-.pbPage .pbCoverageBar:hover { filter: brightness(1.18); }
-.pbPage .pbCoverageBar.is-current { box-shadow: inset 0 0 0 1px var(--accent-strong); }
-.pbPage .pbCoverageBar.is-continuous { background: rgba(160, 160, 170, 0.22); }
-[data-theme="light"] .pbPage .pbCoverageBar {
+.playbackPage .pbCoverageBar:hover { filter: brightness(1.18); }
+.playbackPage .pbCoverageBar.is-current { box-shadow: inset 0 0 0 1px var(--accent-strong); }
+.playbackPage .pbCoverageBar.is-continuous { background: rgba(160, 160, 170, 0.22); }
+[data-theme="light"] .playbackPage .pbCoverageBar {
   background: var(--coverage-color, rgba(48, 110, 175, 0.30));
 }
-[data-theme="light"] .pbPage .pbCoverageBar.is-continuous {
+[data-theme="light"] .playbackPage .pbCoverageBar.is-continuous {
   background: rgba(120, 120, 130, 0.22);
 }
 
 /* ── Cursor + now line ──────────────────────────────────────────────── */
 
-.pbPage .pbCursor {
+.playbackPage .pbCursor {
   position: absolute;
   top: 0;
   bottom: 0;
@@ -347,7 +359,7 @@ body.pbPage { overflow: hidden; }
   cursor: ew-resize;
   touch-action: none;
 }
-.pbPage .pbCursor::before {
+.playbackPage .pbCursor::before {
   content: "";
   position: absolute;
   left: 50%;
@@ -359,12 +371,12 @@ body.pbPage { overflow: hidden; }
   background: rgba(255, 255, 255, 0.92);
   box-shadow: 0 0 0 1px rgba(13, 13, 13, 0.55), 0 0 16px rgba(212, 170, 79, 0.22);
 }
-.pbPage .pbCursor.is-scrubbing { cursor: grabbing; }
+.playbackPage .pbCursor.is-scrubbing { cursor: grabbing; }
 
 /* Inside the track, anchored to the top so it never gets clipped by the
    track's overflow:hidden. We push it left or right with JS when the cursor
    is too close to the timeline edges. */
-.pbPage .pbCursorLabel {
+.playbackPage .pbCursorLabel {
   position: absolute;
   left: 50%;
   top: 2px;
@@ -383,10 +395,10 @@ body.pbPage { overflow: hidden; }
   pointer-events: none;
   z-index: 6;
 }
-.pbPage .pbCursorLabel.is-flipLeft  { left: auto; right: 2px; transform: none; }
-.pbPage .pbCursorLabel.is-flipRight { left: 2px;  right: auto; transform: none; }
+.playbackPage .pbCursorLabel.is-flipLeft  { left: auto; right: 2px; transform: none; }
+.playbackPage .pbCursorLabel.is-flipRight { left: 2px;  right: auto; transform: none; }
 
-.pbPage .pbNowLine {
+.playbackPage .pbNowLine {
   position: absolute;
   top: 0;
   bottom: 0;
@@ -399,7 +411,7 @@ body.pbPage { overflow: hidden; }
   pointer-events: none;
   z-index: 4;
 }
-.pbPage .pbNowLineLabel {
+.playbackPage .pbNowLineLabel {
   position: absolute;
   left: 5px;
   bottom: 1px;
@@ -412,13 +424,13 @@ body.pbPage { overflow: hidden; }
 
 /* ── Transport ──────────────────────────────────────────────────────── */
 
-.pbPage .pbTransport {
+.playbackPage .pbTransport {
   display: flex;
   align-items: center;
   gap: 12px;
   padding-top: 4px;
 }
-.pbPage .pbTransportButtons {
+.playbackPage .pbTransportButtons {
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -427,7 +439,7 @@ body.pbPage { overflow: hidden; }
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.03);
 }
-.pbPage .pbTransportBtn {
+.playbackPage .pbTransportBtn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -441,35 +453,35 @@ body.pbPage { overflow: hidden; }
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
 }
-.pbPage .pbTransportBtn:hover { background: rgba(255, 255, 255, 0.06); color: var(--text); }
-.pbPage .pbTransportBtn svg { width: 12px; height: 12px; }
-.pbPage .pbTransportBtn.pbPlayBtn {
+.playbackPage .pbTransportBtn:hover { background: rgba(255, 255, 255, 0.06); color: var(--text); }
+.playbackPage .pbTransportBtn svg { width: 12px; height: 12px; }
+.playbackPage .pbTransportBtn.pbPlayBtn {
   width: 38px;
   height: 26px;
   background: var(--accent-3);
   color: var(--accent-strong);
 }
-.pbPage .pbTransportBtn.pbPlayBtn:hover { background: rgba(212, 170, 79, 0.26); }
-.pbPage .pbTransportBtn.pbPlayBtn svg { width: 14px; height: 14px; }
+.playbackPage .pbTransportBtn.pbPlayBtn:hover { background: rgba(212, 170, 79, 0.26); }
+.playbackPage .pbTransportBtn.pbPlayBtn svg { width: 14px; height: 14px; }
 
-.pbPage .pbTransportTime {
+.playbackPage .pbTransportTime {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 12px;
   color: var(--text);
   letter-spacing: 0.02em;
   min-width: 220px;
 }
-.pbPage .pbTransportRight { margin-left: auto; }
+.playbackPage .pbTransportRight { margin-left: auto; }
 
-.pbPage .pbSpeedLabel { display: inline-flex; align-items: center; gap: 6px; }
-.pbPage .pbSpeedHdr {
+.playbackPage .pbSpeedLabel { display: inline-flex; align-items: center; gap: 6px; }
+.playbackPage .pbSpeedHdr {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
 }
-.pbPage .pbSpeedSelect {
+.playbackPage .pbSpeedSelect {
   height: 26px;
   padding: 0 26px 0 8px;
   border: 1px solid var(--stroke);
@@ -486,64 +498,64 @@ body.pbPage { overflow: hidden; }
   cursor: pointer;
   min-width: 72px;
 }
-.pbPage .pbSpeedSelect:hover { border-color: var(--stroke-strong); }
-.pbPage .pbSpeedSelect:focus { outline: none; border-color: var(--accent); }
+.playbackPage .pbSpeedSelect:hover { border-color: var(--stroke-strong); }
+.playbackPage .pbSpeedSelect:focus { outline: none; border-color: var(--accent); }
 
 /* ── Light theme overrides ──────────────────────────────────────────── */
 /* Anywhere a hardcoded rgba was used for "dark surface" / "light text",
    we need an explicit light-mode pair. var(--…) tokens flip on their own. */
 
-[data-theme="light"] .pbPage .pbTimelineTrack {
+[data-theme="light"] .playbackPage .pbTimelineTrack {
   background: rgba(0, 0, 0, 0.04);
 }
-[data-theme="light"] .pbPage .pbTimelineBase {
+[data-theme="light"] .playbackPage .pbTimelineBase {
   background: rgba(0, 0, 0, 0.05);
 }
-[data-theme="light"] .pbPage .pbLane {
+[data-theme="light"] .playbackPage .pbLane {
   background: rgba(0, 0, 0, 0.03);
 }
-[data-theme="light"] .pbPage .pbLaneLabel {
+[data-theme="light"] .playbackPage .pbLaneLabel {
   background: rgba(255, 255, 255, 0.75);
   color: var(--muted);
 }
-[data-theme="light"] .pbPage .pbScaleTick::before {
+[data-theme="light"] .playbackPage .pbScaleTick::before {
   background: rgba(0, 0, 0, 0.18);
 }
 
 /* Zoom + transport pill backgrounds and hover lifts. */
-[data-theme="light"] .pbPage .pbZoom,
-[data-theme="light"] .pbPage .pbTransportButtons {
+[data-theme="light"] .playbackPage .pbZoom,
+[data-theme="light"] .playbackPage .pbTransportButtons {
   background: rgba(0, 0, 0, 0.04);
 }
-[data-theme="light"] .pbPage .pbZoomBtn:hover,
-[data-theme="light"] .pbPage .pbTransportBtn:hover,
-[data-theme="light"] .pbPage .pbBtn:hover:not(:disabled) {
+[data-theme="light"] .playbackPage .pbZoomBtn:hover,
+[data-theme="light"] .playbackPage .pbTransportBtn:hover,
+[data-theme="light"] .playbackPage .pbBtn:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.05);
 }
 
 /* Cursor line: dark on light bg, with a subtle gold halo. */
-[data-theme="light"] .pbPage .pbCursor::before {
+[data-theme="light"] .playbackPage .pbCursor::before {
   background: rgba(28, 31, 36, 0.92);
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6), 0 0 16px rgba(212, 170, 79, 0.18);
 }
-[data-theme="light"] .pbPage .pbCursorLabel {
+[data-theme="light"] .playbackPage .pbCursorLabel {
   background: rgba(255, 255, 255, 0.95);
   color: var(--text);
 }
 
 /* Clip badge + tile HUD overlays — light versions of the dark glass. */
-[data-theme="light"] .pbPage .pbClipBadge,
-[data-theme="light"] .pbPage .pbVideoGrid .tileNo,
-[data-theme="light"] .pbPage .pbVideoGrid .tileMeta {
+[data-theme="light"] .playbackPage .pbClipBadge,
+[data-theme="light"] .playbackPage .pbVideoGrid .tileNo,
+[data-theme="light"] .playbackPage .pbVideoGrid .tileMeta {
   background: rgba(255, 255, 255, 0.78);
   color: var(--text);
 }
-[data-theme="light"] .pbPage .pbVideoGrid .tileMeta {
+[data-theme="light"] .playbackPage .pbVideoGrid .tileMeta {
   color: var(--text);
 }
 
 /* Now line: green gradient stays usable in light mode, but tighten the label. */
-[data-theme="light"] .pbPage .pbNowLine {
+[data-theme="light"] .playbackPage .pbNowLine {
   background: linear-gradient(to bottom,
     rgba(22, 163, 74, 0) 0%,
     rgba(22, 163, 74, 0.55) 25%,
@@ -553,16 +565,16 @@ body.pbPage { overflow: hidden; }
 
 /* Sidebar dot for "has clips" stays green in both modes; the no-clip
    dim variant looks too washed-out in light mode without an override. */
-[data-theme="light"] .pbPage .liveSidebarRow:not(.has-clips) .statusDot {
+[data-theme="light"] .playbackPage .liveSidebarRow:not(.has-clips) .statusDot {
   background: rgba(0, 0, 0, 0.18);
 }
 
 /* ── Responsive ─────────────────────────────────────────────────────── */
 
 @media (max-width: 820px) {
-  .pbPage .pbTimelineCard { padding: 10px 12px 12px; }
-  .pbPage .pbZoomBtn { min-width: 30px; padding: 0 8px; }
-  .pbPage .pbTransportTime { min-width: auto; font-size: 11px; }
-  .pbPage .pbTransport { flex-wrap: wrap; row-gap: 8px; }
-  .pbPage .pbTransportRight { margin-left: 0; }
+  .playbackPage .pbTimelineCard { padding: 10px 12px 12px; }
+  .playbackPage .pbZoomBtn { min-width: 30px; padding: 0 8px; }
+  .playbackPage .pbTransportTime { min-width: auto; font-size: 11px; }
+  .playbackPage .pbTransport { flex-wrap: wrap; row-gap: 8px; }
+  .playbackPage .pbTransportRight { margin-left: 0; }
 }

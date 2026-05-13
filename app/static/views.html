@@ -12,8 +12,8 @@
   <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png" />
   <link rel="manifest" href="/static/site.webmanifest" />
   <link rel="stylesheet" href="/static/styles.css" />
-  <link rel="stylesheet" href="/static/playback.css" />
   <link rel="stylesheet" href="/static/views.css" />
+  <link rel="stylesheet" href="/static/clips.css" />
 </head>
 
 <body class="viewsPage livePage" data-views-mode="live">
@@ -42,11 +42,14 @@
         <aside class="liveSidebar viewsSidebar" id="viewsSidebar">
           <div class="viewsModeSwitch" role="tablist" aria-label="View mode">
             <button class="viewsModeBtn is-active" type="button" data-views-mode-btn="live" role="tab" aria-selected="true">Live</button>
-            <a class="viewsModeBtn" href="/playback" role="tab">Playback</a>
+            <button class="viewsModeBtn" type="button" data-views-mode-btn="playback" role="tab" aria-selected="false">Playback</button>
           </div>
 
           <div class="liveSidebarHdr">Cameras</div>
-          <div class="liveSidebarList" id="viewsCameraList">
+          <div class="liveSidebarList" id="viewsCameraList" data-views-mode-only="live">
+            <div class="liveSidebarEmpty">Loading…</div>
+          </div>
+          <div class="liveSidebarList" id="pbCameraList" data-views-mode-only="playback">
             <div class="liveSidebarEmpty">Loading…</div>
           </div>
 
@@ -59,8 +62,8 @@
 
           <div class="liveSidebarFooter" data-views-mode-only="playback">
             <div class="liveSidebarActions">
-              <button class="btn liveSidebarActionBtn" id="playbackSidebarSelectAll" type="button">Select All</button>
-              <button class="btn liveSidebarActionBtn" id="playbackSidebarClearAll" type="button">Clear All</button>
+              <button class="btn liveSidebarActionBtn" id="pbSelectAllBtn" type="button">Select All</button>
+              <button class="btn liveSidebarActionBtn" id="pbClearAllBtn" type="button">Clear All</button>
             </div>
           </div>
 
@@ -77,120 +80,97 @@
             <div class="videoGrid" id="videoGrid"></div>
           </div>
 
-          <div class="playbackMain viewsModePane" data-views-mode-only="playback">
-            <section class="playbackViewerCard">
-              <div class="playbackVideoShell" id="playbackVideoShell">
-                <div class="videoGrid playbackVideoGrid" id="playbackVideoGrid"></div>
-                <div class="playbackVideoEmpty" id="playbackVideoEmpty" data-state="loading" aria-live="polite" aria-busy="true">
-                  <div class="playbackVideoEmptyPanel">
-                    <div class="playbackVideoEmptyBadge" id="playbackVideoEmptyBadge">Loading</div>
-                    <div class="playbackVideoEmptySpinner" aria-hidden="true"></div>
-                    <div class="playbackVideoEmptyTitle">Loading playback...</div>
-                    <div class="playbackVideoEmptyText" id="playbackVideoEmptyText">Fetching cameras and timeline markers for the selected day.</div>
-                  </div>
+          <div class="pbMain viewsModePane" data-views-mode-only="playback">
+            <div class="pbGridStage">
+              <div class="videoGrid pbVideoGrid" id="pbVideoGrid"></div>
+              <div class="pbGridEmpty" id="pbGridEmpty" hidden>
+                <div class="pbGridEmptyPanel">
+                  <div class="pbGridEmptyBadge">No cameras selected</div>
+                  <div class="pbGridEmptyText">Pick cameras from the sidebar to scrub through their recordings.</div>
+                </div>
+              </div>
+            </div>
+
+            <section class="pbTimelineCard">
+              <div class="pbTimelineToolbar">
+                <div class="pbDateNav">
+                  <button class="btn btn-compact pbCompactBtn" id="pbPrevDayBtn" type="button" title="Previous day" aria-label="Previous day">‹</button>
+                  <input class="pbDateInput" id="pbDayInput" type="date" />
+                  <button class="btn btn-compact pbCompactBtn" id="pbNextDayBtn" type="button" title="Next day" aria-label="Next day">›</button>
+                  <button class="btn btn-compact pbTodayBtn" id="pbTodayBtn" type="button" title="Jump to now">Today</button>
+                </div>
+                <div class="pbZoom" role="tablist" aria-label="Timeline zoom">
+                  <button class="pbZoomBtn" type="button" data-zoom-ms="300000">5m</button>
+                  <button class="pbZoomBtn is-active" type="button" data-zoom-ms="3600000">1h</button>
+                  <button class="pbZoomBtn" type="button" data-zoom-ms="21600000">6h</button>
+                  <button class="pbZoomBtn" type="button" data-zoom-ms="86400000">24h</button>
+                  <button class="pbZoomBtn" type="button" data-zoom-ms="604800000">7d</button>
+                </div>
+              </div>
+
+              <div class="pbTimelineScale" id="pbTimelineScale"></div>
+              <div class="pbTimelineTrack" id="pbTimelineTrack">
+                <div class="pbTimelineLanes" id="pbTimelineLanes"></div>
+                <div class="pbNowLine" id="pbNowLine" hidden>
+                  <span class="pbNowLineLabel">now</span>
+                </div>
+                <div class="pbCursor" id="pbCursor">
+                  <span class="pbCursorLabel" id="pbCursorLabel">—</span>
+                </div>
+              </div>
+
+              <div class="pbTransport">
+                <div class="pbTransportButtons">
+                  <button class="btn btn-compact pbTransportBtn" id="pbStepBackBtn" type="button" title="Previous clip" aria-label="Previous clip">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3h2v10H4zm3 5l5-5v10z" fill="currentColor"/></svg>
+                  </button>
+                  <button class="btn btn-compact pbTransportBtn" id="pbRewindBtn" type="button" title="Back 10 s" aria-label="Back 10 seconds">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7.5 3.5L3 8l4.5 4.5V9H13V7H7.5z" fill="currentColor"/></svg>
+                  </button>
+                  <button class="btn btn-compact pbTransportBtn pbPlayBtn" id="pbPlayPauseBtn" type="button" title="Play / Pause" aria-label="Play or pause">
+                    <svg id="pbPlayGlyph" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3l9 5-9 5z" fill="currentColor"/></svg>
+                    <svg id="pbPauseGlyph" viewBox="0 0 16 16" aria-hidden="true" hidden><path d="M4 3h3v10H4zm5 0h3v10H9z" fill="currentColor"/></svg>
+                  </button>
+                  <button class="btn btn-compact pbTransportBtn" id="pbForwardBtn" type="button" title="Forward 10 s" aria-label="Forward 10 seconds">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8.5 3.5L13 8l-4.5 4.5V9H3V7h5.5z" fill="currentColor"/></svg>
+                  </button>
+                  <button class="btn btn-compact pbTransportBtn" id="pbStepFwdBtn" type="button" title="Next clip" aria-label="Next clip">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3h2v10h-2zM4 3v10l5-5z" fill="currentColor"/></svg>
+                  </button>
+                </div>
+                <div class="pbTransportTime" id="pbTransportTime">—</div>
+                <div class="pbTransportRight">
+                  <label class="pbSpeedLabel">
+                    <span class="pbSpeedHdr">Speed</span>
+                    <select id="pbSpeedSelect" class="pbSpeedSelect">
+                      <option value="0.25">0.25×</option>
+                      <option value="0.5">0.5×</option>
+                      <option value="1" selected>1×</option>
+                      <option value="2">2×</option>
+                      <option value="4">4×</option>
+                      <option value="8">8×</option>
+                      <option value="16">16×</option>
+                    </select>
+                  </label>
                 </div>
               </div>
             </section>
-
-            <div class="playbackControlsSection">
-              <div class="playbackTransport" id="playbackTransport">
-                <div class="playbackTransportTimeDisplay" id="playbackTimeDisplay" aria-live="polite">--:--:--</div>
-
-                <div class="playbackTransportButtons">
-                  <button class="btn btn-compact playbackTransportButton" id="playbackReplay30Btn" type="button" aria-label="Back 30 seconds" title="Back 30s">
-                    <span class="playbackTransportGlyph" aria-hidden="true">«30</span>
-                  </button>
-                  <button class="btn btn-compact playbackTransportButton" id="playbackReplay5Btn" type="button" aria-label="Back 5 seconds" title="Back 5s">
-                    <span class="playbackTransportGlyph" aria-hidden="true">«5</span>
-                  </button>
-                  <button class="btn btn-compact playbackTransportButton" id="playbackFrameBackBtn" type="button" aria-label="Previous frame" title="Previous frame">
-                    <span class="playbackTransportGlyph" aria-hidden="true">
-                      <svg viewBox="0 0 24 24" focusable="false"><path d="M16 6 L8 12 L16 18 Z"></path><rect x="6" y="6" width="2" height="12" rx="0.5"></rect></svg>
-                    </span>
-                  </button>
-                  <button class="btn btn-primary btn-compact playbackTransportButton" id="playbackPlayPauseBtn" type="button" aria-label="Play" title="Play">
-                    <span class="playbackTransportGlyph" aria-hidden="true">
-                      <svg viewBox="0 0 24 24" focusable="false"><path d="M8 6.5V17.5L17 12L8 6.5Z"></path></svg>
-                    </span>
-                  </button>
-                  <button class="btn btn-compact playbackTransportButton" id="playbackFrameFwdBtn" type="button" aria-label="Next frame" title="Next frame">
-                    <span class="playbackTransportGlyph" aria-hidden="true">
-                      <svg viewBox="0 0 24 24" focusable="false"><path d="M8 6 L16 12 L8 18 Z"></path><rect x="16" y="6" width="2" height="12" rx="0.5"></rect></svg>
-                    </span>
-                  </button>
-                  <button class="btn btn-compact playbackTransportButton" id="playbackFwd5Btn" type="button" aria-label="Forward 5 seconds" title="Forward 5s">
-                    <span class="playbackTransportGlyph" aria-hidden="true">5»</span>
-                  </button>
-                  <button class="btn btn-compact playbackTransportButton" id="playbackFwd30Btn" type="button" aria-label="Forward 30 seconds" title="Forward 30s">
-                    <span class="playbackTransportGlyph" aria-hidden="true">30»</span>
-                  </button>
-                  <button class="btn btn-compact playbackTransportButton playbackLiveBtn" id="playbackLiveBtn" type="button" aria-label="Jump to live" title="Jump to live">
-                    <span class="playbackLiveDot" aria-hidden="true"></span>LIVE
-                  </button>
-                </div>
-
-                <div class="playbackSpeedControl">
-                  <label for="playbackSpeedSelect">Speed</label>
-                  <select id="playbackSpeedSelect" aria-label="Playback speed">
-                    <option value="0.25">0.25x</option>
-                    <option value="0.5">0.5x</option>
-                    <option value="1" selected>1x</option>
-                    <option value="2">2x</option>
-                    <option value="4">4x</option>
-                    <option value="8">8x</option>
-                    <option value="16">16x</option>
-                  </select>
-                </div>
-              </div>
-            </div>
           </div>
         </main>
       </div>
-
-      <section class="playbackTimelineCard" data-views-mode-only="playback">
-        <div class="playbackTimelineProgress" id="playbackTimelineProgress" data-active="false" aria-hidden="true">
-          <div class="playbackTimelineProgressBar"></div>
-        </div>
-        <div class="playbackTimelineWrap">
-          <div class="playbackTimelineToolbar">
-            <div class="playbackTimelineFilters" id="playbackTimelineFilters"></div>
-            <div class="playbackTimelineSelectors">
-              <div class="playbackTimelineDateNav">
-                <button class="btn btn-compact playbackTimelineNavBtn" id="playbackPrevDayBtn" type="button" title="Previous day" aria-label="Previous day">‹</button>
-                <input id="playbackDayInput" type="date" />
-                <button class="btn btn-compact playbackTimelineNavBtn" id="playbackNextDayBtn" type="button" title="Next day" aria-label="Next day">›</button>
-                <button class="btn btn-compact playbackTimelineTodayBtn" id="playbackTodayBtn" type="button" title="Jump to now">Today</button>
-              </div>
-              <div class="playbackTimelineZoomPresets" id="playbackZoomPresets" role="tablist" aria-label="Timeline zoom">
-                <button class="playbackZoomBtn" type="button" data-zoom-ms="300000">5m</button>
-                <button class="playbackZoomBtn is-active" type="button" data-zoom-ms="3600000">1h</button>
-                <button class="playbackZoomBtn" type="button" data-zoom-ms="21600000">6h</button>
-                <button class="playbackZoomBtn" type="button" data-zoom-ms="86400000">24h</button>
-                <button class="playbackZoomBtn" type="button" data-zoom-ms="604800000">7d</button>
-              </div>
-            </div>
-          </div>
-          <div class="playbackTimelineScale" id="playbackTimelineScale"></div>
-          <div class="playbackTimelineTrack" id="playbackTimelineTrack">
-            <div class="playbackThumbPreview hidden" id="playbackThumbPreview" aria-hidden="true">
-              <img id="playbackThumbPreviewImg" alt="" />
-              <div class="playbackThumbPreviewLabel" id="playbackThumbPreviewLabel"></div>
-            </div>
-          </div>
-        </div>
-      </section>
     </div>
   </div>
 
   <script>
     document.getElementById("logoutBtn")?.addEventListener("click", async () => {
-      await fetch("/api/auth/logout", { method: "POST" });
+      try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); } catch (_) {}
       window.location.href = "/login";
     });
   </script>
   <script src="/static/event-notify.js"></script>
   <script src="/static/views.js"></script>
   <script src="/static/views-live.js"></script>
+  <script src="/static/clips.js"></script>
 </body>
 
 </html>

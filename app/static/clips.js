@@ -57,33 +57,35 @@
   // ── DOM ────────────────────────────────────────────────────────────
 
   const $ = (id) => document.getElementById(id);
-  const els = {
-    cameraList: $("cameraList"),
-    selectAllBtn: $("selectAllBtn"),
-    clearAllBtn: $("clearAllBtn"),
-    videoGrid: $("videoGrid"),
-    gridEmpty: $("gridEmpty"),
-    prevDayBtn: $("prevDayBtn"),
-    nextDayBtn: $("nextDayBtn"),
-    dayInput: $("dayInput"),
-    todayBtn: $("todayBtn"),
-    zoomBtns: Array.from(document.querySelectorAll(".pbZoomBtn")),
-    scale: $("timelineScale"),
-    track: $("timelineTrack"),
-    lanes: $("timelineLanes"),
-    nowLine: $("nowLine"),
-    cursor: $("cursor"),
-    cursorLabel: $("cursorLabel"),
-    stepBackBtn: $("stepBackBtn"),
-    rewindBtn: $("rewindBtn"),
-    playPauseBtn: $("playPauseBtn"),
-    playGlyph: $("playGlyph"),
-    pauseGlyph: $("pauseGlyph"),
-    forwardBtn: $("forwardBtn"),
-    stepFwdBtn: $("stepFwdBtn"),
-    transportTime: $("transportTime"),
-    speedSelect: $("speedSelect"),
-  };
+  const els = {};
+  function resolveEls() {
+    els.cameraList = $("pbCameraList");
+    els.selectAllBtn = $("pbSelectAllBtn");
+    els.clearAllBtn = $("pbClearAllBtn");
+    els.videoGrid = $("pbVideoGrid");
+    els.gridEmpty = $("pbGridEmpty");
+    els.prevDayBtn = $("pbPrevDayBtn");
+    els.nextDayBtn = $("pbNextDayBtn");
+    els.dayInput = $("pbDayInput");
+    els.todayBtn = $("pbTodayBtn");
+    els.zoomBtns = Array.from(document.querySelectorAll(".pbZoomBtn"));
+    els.scale = $("pbTimelineScale");
+    els.track = $("pbTimelineTrack");
+    els.lanes = $("pbTimelineLanes");
+    els.nowLine = $("pbNowLine");
+    els.cursor = $("pbCursor");
+    els.cursorLabel = $("pbCursorLabel");
+    els.stepBackBtn = $("pbStepBackBtn");
+    els.rewindBtn = $("pbRewindBtn");
+    els.playPauseBtn = $("pbPlayPauseBtn");
+    els.playGlyph = $("pbPlayGlyph");
+    els.pauseGlyph = $("pbPauseGlyph");
+    els.forwardBtn = $("pbForwardBtn");
+    els.stepFwdBtn = $("pbStepFwdBtn");
+    els.transportTime = $("pbTransportTime");
+    els.speedSelect = $("pbSpeedSelect");
+    return !!els.track;
+  }
 
   // ── Helpers ────────────────────────────────────────────────────────
 
@@ -1052,22 +1054,15 @@
   function onTrackWheel(e) {
     e.preventDefault();
     cancelInertia();
-    const anchorMs = msAtClientX(e.clientX);
-    if (e.ctrlKey || e.metaKey || e.shiftKey) {
-      const factor = Math.exp((e.deltaY || 0) * 0.0025);
-      setZoom(state.zoomMs * factor, anchorMs);
-      return;
-    }
-    const isTrackpadGesture = e.deltaMode === 0 && (Math.abs(e.deltaX) > 0 || Math.abs(e.deltaY) < 50);
-    if (isTrackpadGesture) {
-      const axisDelta = Math.abs(e.deltaX) >= Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
       const w = els.track.clientWidth || 1;
       const innerWidth = w - 12;
-      panBy((axisDelta / innerWidth) * state.zoomMs);
-    } else {
-      const factor = Math.exp((e.deltaY || 0) * 0.0015);
-      setZoom(state.zoomMs * factor, anchorMs);
+      panBy((e.deltaX / innerWidth) * state.zoomMs);
+      return;
     }
+    const anchorMs = msAtClientX(e.clientX);
+    const factor = Math.exp((e.deltaY || 0) * 0.0025);
+    setZoom(state.zoomMs * factor, anchorMs);
   }
 
   // ── Wiring ─────────────────────────────────────────────────────────
@@ -1201,7 +1196,12 @@
 
   // ── Init ───────────────────────────────────────────────────────────
 
-  (async () => {
+  let mounted = false;
+  async function mount() {
+    if (mounted) return;
+    if (!resolveEls()) return;
+    mounted = true;
+
     loadState();
     bind();
     activateZoomButton(state.zoomMs);
@@ -1257,5 +1257,18 @@
         if (c) { setCursor(c.started_at * 1000, { recomputeViewport: true }); break; }
       }
     }
-  })();
+  }
+
+  // Expose the mount hook so views.js can drive us when the user switches to
+  // playback mode. Mount on first activation only.
+  window.viewsPlayback = {
+    onModeChange(mode) {
+      if (mode === "playback") mount();
+    },
+  };
+
+  // If the page loaded directly in playback mode, mount immediately.
+  if (document.body?.dataset?.viewsMode === "playback") {
+    mount();
+  }
 })();
