@@ -660,34 +660,23 @@
 
           <div class="grid overlayFormGrid" style="margin-top:14px;">
             <div data-full>
-              <label for="recordingPathSelect">Recording storage</label>
-              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <select id="recordingPathSelect" style="flex:1;min-width:200px;max-width:360px;">
-                  <option value="">None (recordings disabled)</option>
-                </select>
-                <button class="btn" id="recordingPathSaveBtn" type="button">Save</button>
+              <label>Recording engine</label>
+              <div class="listSub" style="margin-top:4px;">
+                Storage path and segment size are configured via <code>NVME_BASE</code> and
+                <code>RECORDING_*</code> environment variables in <code>docker-compose.yml</code>.
+                See the README for the full list. Continuous-recording retention is set with
+                <code>RECORDING_CONTINUOUS_RETENTION_DAYS</code> (default 7).
               </div>
-              <div id="recordingPathWarning" class="listSub" style="margin-top:4px;color:var(--clr-danger, #e74c3c);display:none;">⚠ No storage path set — recordings are disabled.</div>
-              <div class="listSub" style="margin-top:4px;"><span id="recordingPathStatus" class="muted"></span></div>
+              <div class="listSub" style="margin-top:6px;"><span id="recordingEngineStatus" class="muted"></span></div>
             </div>
 
             <div data-full>
-              <label for="retentionDaysInput">Recording retention (days)</label>
+              <label>Delete all clips</label>
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <input id="retentionDaysInput" type="number" min="0" max="365" step="1" placeholder="0" style="width:80px;" />
-                <button class="btn" id="retentionSaveBtn" type="button">Save</button>
-                <span id="retentionStatus" class="muted" style="font-size:0.85em;"></span>
-              </div>
-              <div class="listSub" style="margin-top:4px;">Set to 0 to disable automatic deletion.</div>
-            </div>
-
-            <div data-full>
-              <label>Delete all recordings</label>
-              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <button class="btn btn-danger" id="clearRecordingsBtn" type="button">Delete all recordings</button>
+                <button class="btn btn-danger" id="clearRecordingsBtn" type="button">Delete all clips</button>
                 <span id="clearRecordingsStatus" class="muted" style="font-size:0.85em;"></span>
               </div>
-              <div class="listSub" style="margin-top:4px;">Permanently removes every recorded segment, clip, and timeline marker. Recording resumes automatically.</div>
+              <div class="listSub" style="margin-top:4px;">Permanently removes every clip from the database and disk. Live recording continues; new clips will appear as flow triggers fire.</div>
             </div>
           </div>
 

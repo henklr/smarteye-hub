@@ -1,0 +1,568 @@
+/* Playback page — multi-camera timeline. Reuses the global .liveSidebar,
+   .liveSidebarRow, .statusDot, .tile, .videoGrid, .viewsModeBtn classes for
+   visual parity with the Live page. This file only adds the playback-only
+   chrome: video grid layout overrides, the timeline card, lanes, cursor,
+   transport, and Live/Playback mode toggle treatment. */
+
+body.pbPage { overflow: hidden; }
+
+/* ── Layout ─────────────────────────────────────────────────────────── */
+
+.pbPage .viewsShell { grid-template-rows: 1fr; }      /* override viewsShell's auto row */
+.pbPage .pbMain {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.pbPage .pbGridStage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 12px;
+  overflow: hidden;
+}
+
+/* The Live page's #videoGrid is `display: flex; flex-direction: column`
+   with `.videoRow` children built by the justified-layout JS — we use the
+   same chrome here. Don't override the grid container itself; just the
+   placeholder-empty pseudo (which displays a "No active streams" message
+   we don't want) and the in-stage padding. */
+.pbPage .pbVideoGrid:empty::before { content: none; }
+.pbPage .pbVideoGrid { padding: 0; gap: 8px; }
+
+/* Live's .tile is `width: 320px; height: 180px` — the justified layout
+   overrides those inline on each tile to match the row height. We don't
+   need any extra base size; only minor playback-specific tweaks. */
+.pbPage .pbVideoGrid .tile { min-width: 0; min-height: 0; }
+.pbPage .pbVideoGrid .tile.is-current {
+  border-color: rgba(212, 170, 79, 0.45);
+  box-shadow: 0 0 0 1px rgba(212, 170, 79, 0.25), 0 0 28px rgba(212, 170, 79, 0.10);
+}
+.pbPage .pbVideoGrid .tileNo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  margin-right: 8px;
+  border-radius: 6px;
+  background: rgba(13, 13, 13, 0.7);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+.pbPage .pbVideoGrid .tileMeta {
+  display: inline-flex !important;          /* override styles.css { display:none } */
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  margin-left: 10px;
+  border-radius: 999px;
+  background: rgba(13, 13, 13, 0.6);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  max-width: 60%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.pbPage .pbVideoGrid .tileMetaSwatch {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3);
+  flex-shrink: 0;
+}
+.pbPage .pbVideoGrid .tileOverlay[data-state="nodata"] {
+  display: flex;
+  color: var(--muted);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+/* Empty grid placeholder. */
+.pbPage .pbGridEmpty {
+  position: absolute;
+  inset: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: var(--muted);
+}
+.pbPage .pbGridEmpty[hidden] { display: none; }
+.pbPage .pbGridEmptyPanel {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 20px 28px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-md);
+  background: var(--glass-strong);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  text-align: center;
+  max-width: 380px;
+}
+.pbPage .pbGridEmptyBadge {
+  font-size: 10px; font-weight: 800; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--accent-strong);
+}
+.pbPage .pbGridEmptyText { color: var(--muted); font-size: 12px; }
+
+/* ── Live/Playback toggle (uses .viewsModeBtn under .viewsPage) ─────── */
+/* Keep the live-page link looking like a button. */
+.pbPage .viewsModeBtn { text-align: center; text-decoration: none; }
+.pbPage .viewsModeBtn:hover { text-decoration: none; }
+
+/* ── Sidebar additions ──────────────────────────────────────────────── */
+.pbPage .liveSidebarRow {
+  cursor: pointer;
+  user-select: none;
+}
+.pbPage .liveSidebarRow .liveSidebarDragHandle { visibility: hidden; }  /* no reorder in playback yet */
+.pbPage .liveSidebarRow.has-clips .statusDot {
+  background: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.18);
+}
+.pbPage .liveSidebarRow:not(.has-clips) .statusDot {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* ── Timeline card ──────────────────────────────────────────────────── */
+
+.pbPage .pbTimelineCard {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 18px 14px;
+  border-top: 1px solid var(--stroke);
+  background: var(--glass);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+}
+
+.pbPage .pbTimelineToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.pbPage .pbDateNav { display: inline-flex; align-items: center; gap: 4px; }
+.pbPage .pbDateInput {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: text;
+  color-scheme: dark;
+  transition: border-color 0.15s ease;
+}
+.pbPage .pbDateInput:hover { border-color: var(--stroke-strong); }
+.pbPage .pbDateInput:focus { outline: none; border-color: var(--accent); }
+.pbPage .pbCompactBtn {
+  padding: 0;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.pbPage .pbTodayBtn {
+  margin-left: 6px;
+  padding: 0 10px;
+  width: auto;
+  font-weight: 700;
+}
+
+.pbPage .pbZoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.pbPage .pbZoomBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 22px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.pbPage .pbZoomBtn:hover { background: rgba(255, 255, 255, 0.06); color: var(--text); }
+.pbPage .pbZoomBtn.is-active {
+  background: var(--accent-3);
+  color: var(--accent-strong);
+}
+
+/* ── Time-scale ruler ───────────────────────────────────────────────── */
+
+.pbPage .pbTimelineScale {
+  position: relative;
+  height: 20px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  user-select: none;
+  overflow: hidden;
+}
+.pbPage .pbScaleTick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.pbPage .pbScaleTick::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 4px);
+  width: 1px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* ── Track + lanes (one row per selected camera) ────────────────────── */
+
+.pbPage .pbTimelineTrack {
+  position: relative;
+  padding: 6px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-md);
+  background: rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.pbPage .pbTimelineTrack.is-panning { cursor: grabbing; }
+.pbPage .pbTimelineTrack.is-scrubbing { cursor: ew-resize; }
+
+.pbPage .pbTimelineLanes {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pbPage .pbLane {
+  position: relative;
+  height: 18px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.pbPage .pbLaneLabel {
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 4;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(13, 13, 13, 0.6);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: 30%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pbPage .pbCoverageBar {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  min-width: 2px;
+  background: var(--coverage-color, rgba(120, 175, 230, 0.32));
+  border-radius: 3px;
+  /* Subtle 1px dark edge on the left of every (merged) coverage span.
+     Just a soft visual frame — bar-merging in JS handles the "this region
+     has many small clips → one continuous span" case. */
+  border-left: 1px solid rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  transition: filter 0.12s ease, transform 0.12s ease;
+}
+.pbPage .pbCoverageBar:hover { filter: brightness(1.18); }
+.pbPage .pbCoverageBar.is-current { box-shadow: inset 0 0 0 1px var(--accent-strong); }
+.pbPage .pbCoverageBar.is-continuous { background: rgba(160, 160, 170, 0.22); }
+[data-theme="light"] .pbPage .pbCoverageBar {
+  background: var(--coverage-color, rgba(48, 110, 175, 0.30));
+}
+[data-theme="light"] .pbPage .pbCoverageBar.is-continuous {
+  background: rgba(120, 120, 130, 0.22);
+}
+
+/* ── Cursor + now line ──────────────────────────────────────────────── */
+
+.pbPage .pbCursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 18px;
+  margin-left: -9px;
+  z-index: 5;
+  pointer-events: auto;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.pbPage .pbCursor::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0 0 1px rgba(13, 13, 13, 0.55), 0 0 16px rgba(212, 170, 79, 0.22);
+}
+.pbPage .pbCursor.is-scrubbing { cursor: grabbing; }
+
+/* Inside the track, anchored to the top so it never gets clipped by the
+   track's overflow:hidden. We push it left or right with JS when the cursor
+   is too close to the timeline edges. */
+.pbPage .pbCursorLabel {
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  transform: translateX(-50%);
+  padding: 2px 7px;
+  border: 1px solid var(--stroke);
+  border-radius: 5px;
+  background: rgba(22, 22, 22, 0.92);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 6;
+}
+.pbPage .pbCursorLabel.is-flipLeft  { left: auto; right: 2px; transform: none; }
+.pbPage .pbCursorLabel.is-flipRight { left: 2px;  right: auto; transform: none; }
+
+.pbPage .pbNowLine {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(to bottom,
+    rgba(34, 197, 94, 0) 0%,
+    rgba(34, 197, 94, 0.55) 25%,
+    rgba(34, 197, 94, 0.55) 75%,
+    rgba(34, 197, 94, 0) 100%);
+  pointer-events: none;
+  z-index: 4;
+}
+.pbPage .pbNowLineLabel {
+  position: absolute;
+  left: 5px;
+  bottom: 1px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ok);
+}
+
+/* ── Transport ──────────────────────────────────────────────────────── */
+
+.pbPage .pbTransport {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 4px;
+}
+.pbPage .pbTransportButtons {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.pbPage .pbTransportBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.pbPage .pbTransportBtn:hover { background: rgba(255, 255, 255, 0.06); color: var(--text); }
+.pbPage .pbTransportBtn svg { width: 12px; height: 12px; }
+.pbPage .pbTransportBtn.pbPlayBtn {
+  width: 38px;
+  height: 26px;
+  background: var(--accent-3);
+  color: var(--accent-strong);
+}
+.pbPage .pbTransportBtn.pbPlayBtn:hover { background: rgba(212, 170, 79, 0.26); }
+.pbPage .pbTransportBtn.pbPlayBtn svg { width: 14px; height: 14px; }
+
+.pbPage .pbTransportTime {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  color: var(--text);
+  letter-spacing: 0.02em;
+  min-width: 220px;
+}
+.pbPage .pbTransportRight { margin-left: auto; }
+
+.pbPage .pbSpeedLabel { display: inline-flex; align-items: center; gap: 6px; }
+.pbPage .pbSpeedHdr {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pbPage .pbSpeedSelect {
+  height: 26px;
+  padding: 0 26px 0 8px;
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%237a7a7a' stroke-width='1.4' fill='none' stroke-linecap='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  cursor: pointer;
+  min-width: 72px;
+}
+.pbPage .pbSpeedSelect:hover { border-color: var(--stroke-strong); }
+.pbPage .pbSpeedSelect:focus { outline: none; border-color: var(--accent); }
+
+/* ── Light theme overrides ──────────────────────────────────────────── */
+/* Anywhere a hardcoded rgba was used for "dark surface" / "light text",
+   we need an explicit light-mode pair. var(--…) tokens flip on their own. */
+
+[data-theme="light"] .pbPage .pbTimelineTrack {
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .pbPage .pbTimelineBase {
+  background: rgba(0, 0, 0, 0.05);
+}
+[data-theme="light"] .pbPage .pbLane {
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme="light"] .pbPage .pbLaneLabel {
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--muted);
+}
+[data-theme="light"] .pbPage .pbScaleTick::before {
+  background: rgba(0, 0, 0, 0.18);
+}
+
+/* Zoom + transport pill backgrounds and hover lifts. */
+[data-theme="light"] .pbPage .pbZoom,
+[data-theme="light"] .pbPage .pbTransportButtons {
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .pbPage .pbZoomBtn:hover,
+[data-theme="light"] .pbPage .pbTransportBtn:hover,
+[data-theme="light"] .pbPage .pbBtn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+/* Cursor line: dark on light bg, with a subtle gold halo. */
+[data-theme="light"] .pbPage .pbCursor::before {
+  background: rgba(28, 31, 36, 0.92);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6), 0 0 16px rgba(212, 170, 79, 0.18);
+}
+[data-theme="light"] .pbPage .pbCursorLabel {
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--text);
+}
+
+/* Clip badge + tile HUD overlays — light versions of the dark glass. */
+[data-theme="light"] .pbPage .pbClipBadge,
+[data-theme="light"] .pbPage .pbVideoGrid .tileNo,
+[data-theme="light"] .pbPage .pbVideoGrid .tileMeta {
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text);
+}
+[data-theme="light"] .pbPage .pbVideoGrid .tileMeta {
+  color: var(--text);
+}
+
+/* Now line: green gradient stays usable in light mode, but tighten the label. */
+[data-theme="light"] .pbPage .pbNowLine {
+  background: linear-gradient(to bottom,
+    rgba(22, 163, 74, 0) 0%,
+    rgba(22, 163, 74, 0.55) 25%,
+    rgba(22, 163, 74, 0.55) 75%,
+    rgba(22, 163, 74, 0) 100%);
+}
+
+/* Sidebar dot for "has clips" stays green in both modes; the no-clip
+   dim variant looks too washed-out in light mode without an override. */
+[data-theme="light"] .pbPage .liveSidebarRow:not(.has-clips) .statusDot {
+  background: rgba(0, 0, 0, 0.18);
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────── */
+
+@media (max-width: 820px) {
+  .pbPage .pbTimelineCard { padding: 10px 12px 12px; }
+  .pbPage .pbZoomBtn { min-width: 30px; padding: 0 8px; }
+  .pbPage .pbTransportTime { min-width: auto; font-size: 11px; }
+  .pbPage .pbTransport { flex-wrap: wrap; row-gap: 8px; }
+  .pbPage .pbTransportRight { margin-left: 0; }
+}

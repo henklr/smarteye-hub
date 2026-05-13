@@ -42,7 +42,7 @@
         <aside class="liveSidebar viewsSidebar" id="viewsSidebar">
           <div class="viewsModeSwitch" role="tablist" aria-label="View mode">
             <button class="viewsModeBtn is-active" type="button" data-views-mode-btn="live" role="tab" aria-selected="true">Live</button>
-            <button class="viewsModeBtn" type="button" data-views-mode-btn="playback" role="tab" aria-selected="false">Playback</button>
+            <a class="viewsModeBtn" href="/playback" role="tab">Playback</a>
           </div>
 
           <div class="liveSidebarHdr">Cameras</div>
@@ -189,10 +189,8 @@
     });
   </script>
   <script src="/static/event-notify.js"></script>
-  <script src="/static/vendor/hls.min.js"></script>
   <script src="/static/views.js"></script>
   <script src="/static/views-live.js"></script>
-  <script src="/static/views-playback.js"></script>
 </body>
 
 </html>

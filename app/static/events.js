@@ -110,8 +110,13 @@
     if (event.recording_refs && event.recording_refs.length) {
       const links = event.recording_refs.map((ref) => {
         const label = ref.device_name || ref.device_id || "Camera";
-        const ts = ref.timestamp ? `&t=${encodeURIComponent(ref.timestamp)}` : "";
-        return `<a class="eventRecordingLink" href="/views?mode=playback&device=${encodeURIComponent(ref.device_id)}${ts}" title="View recording for ${escapeHtml(label)}">&#9654; ${escapeHtml(label)}</a>`;
+        // recording_id is the event_id stored by the recording engine, which
+        // is also the clip id. When present, deep-link straight to that clip
+        // via the new /playback page; otherwise filter by camera.
+        const recId = ref.recording_id || ref.event_id || ref.id || "";
+        const cameraParam = ref.device_id ? `?camera=cam-${encodeURIComponent(ref.device_id)}` : "";
+        const hash = recId ? `#${encodeURIComponent(recId)}` : "";
+        return `<a class="eventRecordingLink" href="/playback${cameraParam}${hash}" title="View recording for ${escapeHtml(label)}">&#9654; ${escapeHtml(label)}</a>`;
       }).join("");
       recordingsHtml = `<div class="eventRecordings">${links}</div>`;
     }

@@ -368,124 +368,28 @@ loadDatetime();
 
 const systemStatusEl = document.getElementById("systemStatus");
 const rebootBtn = document.getElementById("rebootBtn");
-const retentionDaysInput = document.getElementById("retentionDaysInput");
-const retentionSaveBtn = document.getElementById("retentionSaveBtn");
-const retentionStatusEl = document.getElementById("retentionStatus");
 
 function setSystemStatus(text) {
   if (systemStatusEl) systemStatusEl.textContent = text;
 }
 
-function setRetentionStatus(text) {
-  if (retentionStatusEl) retentionStatusEl.textContent = text;
-}
-
-const recordingPathSelect = document.getElementById("recordingPathSelect");
-const recordingPathSaveBtn = document.getElementById("recordingPathSaveBtn");
-const recordingPathWarning = document.getElementById("recordingPathWarning");
-const recordingPathStatusEl = document.getElementById("recordingPathStatus");
-
-const _RECORDING_SUBDIR = "/recordings";
-
-function setRecordingPathStatus(text, isError) {
-  if (!recordingPathStatusEl) return;
-  recordingPathStatusEl.textContent = text;
-  recordingPathStatusEl.style.color = isError ? "var(--clr-danger, #e74c3c)" : "";
-}
-
-function _updateRecordingPathWarning(path) {
-  if (recordingPathWarning) {
-    recordingPathWarning.style.display = path ? "none" : "block";
-  }
-}
-
-async function _populateDriveDropdown(currentPath) {
-  if (!recordingPathSelect) return;
-  // Keep the "None" option, clear the rest
-  recordingPathSelect.innerHTML = '<option value="">None (recordings disabled)</option>';
+// Recording engine status (read-only) — replaces the old retention + recording-path
+// settings which were tied to playback.py's recorder. The new engine reads its
+// configuration from environment variables and writes to $NVME_BASE directly.
+const recordingEngineStatus = document.getElementById("recordingEngineStatus");
+async function loadRecordingEngineStatus() {
+  if (!recordingEngineStatus) return;
   try {
-    const data = await api("/api/storage/devices");
-    for (const dev of data.devices || []) {
-      const model = dev.model || dev.name;
-      for (const p of dev.partitions) {
-        if (!p.mountpoint) continue;
-        const recPath = p.mountpoint + _RECORDING_SUBDIR;
-        const size = _formatSize(p.size);
-        const opt = document.createElement("option");
-        opt.value = recPath;
-        opt.textContent = `${model} — ${p.mountpoint} (${size})`;
-        if (recPath === currentPath) opt.selected = true;
-        recordingPathSelect.appendChild(opt);
-      }
-    }
-  } catch {}
-  // If current path isn't "" and wasn't matched, add it as a custom entry
-  if (currentPath && !recordingPathSelect.value) {
-    const opt = document.createElement("option");
-    opt.value = currentPath;
-    opt.textContent = currentPath;
-    opt.selected = true;
-    recordingPathSelect.appendChild(opt);
-  }
-  _updateRecordingPathWarning(recordingPathSelect.value);
-}
-
-async function loadRetention() {
-  try {
-    const data = await api("/api/settings/retention");
-    if (retentionDaysInput) retentionDaysInput.value = data.retention_days || 0;
-    await _populateDriveDropdown(data.recording_path || "");
+    const data = await api("/api/system/load");
+    const running = data?.running ? "Running" : "Not running";
+    const leader = data?.is_leader ? " · leader" : "";
+    const cams = Array.isArray(data?.cameras) ? data.cameras.length : 0;
+    recordingEngineStatus.textContent = `${running}${leader} · ${cams} segmenter${cams === 1 ? "" : "s"} active`;
   } catch (e) {
-    setRetentionStatus(`Error: ${e.message || e}`);
+    recordingEngineStatus.textContent = `Status unavailable (${String(e.message || e)})`;
   }
 }
-
-recordingPathSaveBtn?.addEventListener("click", async () => {
-  const path = recordingPathSelect?.value || "";
-  recordingPathSaveBtn.disabled = true;
-  setRecordingPathStatus("Saving…", false);
-  try {
-    await api("/api/settings/recording-path", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ recording_path: path }),
-    });
-    _updateRecordingPathWarning(path);
-    setRecordingPathStatus(path ? `Recordings will be stored on ${path}` : "Storage cleared — recordings disabled.", !path);
-  } catch (e) {
-    setRecordingPathStatus(`Error: ${e.message || e}`, true);
-  } finally {
-    recordingPathSaveBtn.disabled = false;
-  }
-});
-
-recordingPathSelect?.addEventListener("change", () => {
-  _updateRecordingPathWarning(recordingPathSelect.value);
-});
-
-retentionSaveBtn?.addEventListener("click", async () => {
-  const days = parseInt(retentionDaysInput?.value || "0", 10);
-  if (isNaN(days) || days < 0) {
-    setRetentionStatus("Enter a valid number (0 = disabled).");
-    return;
-  }
-  retentionSaveBtn.disabled = true;
-  setRetentionStatus("Saving…");
-  try {
-    await api("/api/settings/retention", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ retention_days: days }),
-    });
-    setRetentionStatus(days > 0 ? `Saved. Recordings older than ${days} day${days === 1 ? "" : "s"} will be deleted.` : "Saved. Auto-deletion disabled.");
-  } catch (e) {
-    setRetentionStatus(`Error: ${e.message || e}`);
-  } finally {
-    retentionSaveBtn.disabled = false;
-  }
-});
-
-loadRetention();
+loadRecordingEngineStatus();
 
 const clearRecordingsBtn = document.getElementById("clearRecordingsBtn");
 const clearRecordingsStatus = document.getElementById("clearRecordingsStatus");
@@ -493,13 +397,13 @@ function setClearRecordingsStatus(msg) {
   if (clearRecordingsStatus) clearRecordingsStatus.textContent = msg || "";
 }
 clearRecordingsBtn?.addEventListener("click", async () => {
-  if (!window.confirm("Delete ALL recordings, clips, and timeline markers? This cannot be undone.")) return;
+  if (!window.confirm("Delete ALL clips? Files and database rows are removed. Live recording continues.")) return;
   clearRecordingsBtn.disabled = true;
   setClearRecordingsStatus("Deleting…");
   try {
-    const result = await api("/api/playback/recordings", { method: "DELETE" });
-    const count = result?.cleared_events ?? 0;
-    setClearRecordingsStatus(`Deleted. ${count} marker${count === 1 ? "" : "s"} cleared. Recording resumed.`);
+    const result = await api("/api/clips", { method: "DELETE" });
+    const count = result?.deleted ?? 0;
+    setClearRecordingsStatus(`Deleted ${count} clip${count === 1 ? "" : "s"}.`);
   } catch (e) {
     setClearRecordingsStatus(`Error: ${String(e.message || e)}`);
   } finally {
