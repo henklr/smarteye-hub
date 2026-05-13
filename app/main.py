@@ -441,7 +441,7 @@ def views_page():
     # whenever the files are edited, so the browser refetches them — without
     # this the no-cache header gets ignored by some browsers across reloads
     # of the same tab.
-    for name in ("playback.css", "views.css", "styles.css", "views.js", "views-live.js", "event-notify.js"):
+    for name in ("clips.css", "views.css", "styles.css", "views.js", "views-live.js", "clips.js", "event-notify.js"):
         try:
             v = int((STATIC_DIR / name).stat().st_mtime)
         except OSError:
@@ -451,17 +451,9 @@ def views_page():
     return html
 
 
-@app.get("/playback", response_class=HTMLResponse)
-def playback_page():
-    html = (STATIC_DIR / "playback.html").read_text(encoding="utf-8")
-    for name in ("clips.css", "clips.js", "styles.css", "views.css"):
-        try:
-            v = int((STATIC_DIR / name).stat().st_mtime)
-        except OSError:
-            continue
-        html = html.replace(f'href="/static/{name}"', f'href="/static/{name}?v={v}"')
-        html = html.replace(f'src="/static/{name}"', f'src="/static/{name}?v={v}"')
-    return html
+@app.get("/playback")
+def playback_redirect():
+    return RedirectResponse(url="/views?mode=playback", status_code=307)
 
 
 @app.get("/devices", response_class=HTMLResponse)
