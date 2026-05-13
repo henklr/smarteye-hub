@@ -47,12 +47,11 @@ from flows import (
     start_schedule_monitor,
     stop_schedule_monitor,
 )
-from playback import (
-    router as playback_router,
+from recording import (
+    router as recording_router,
     request_recorders_refresh,
-    set_recording_path_refresher,
-    start_recording_service,
-    stop_recording_service,
+    start_recording_engine,
+    stop_recording_engine,
     system_load_snapshot,
 )
 from physical_io import start_physical_io_monitor, stop_physical_io_monitor
@@ -86,10 +85,21 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 class NoCacheStaticMiddleware(BaseHTTPMiddleware):
+    """No-cache for /static/ assets AND for dynamic HTML page responses.
+
+    Without this, browsers happily serve the old page HTML out of cache and
+    never see the cache-busted `?v=<mtime>` URLs we rewrite into the HTML —
+    which defeats the whole point of the rewriter for the user.
+    """
+
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        if request.url.path.startswith("/static/"):
+        path = request.url.path
+        ctype = response.headers.get("content-type", "")
+        if path.startswith("/static/") or ctype.startswith("text/html"):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
         return response
 
 # Middleware is applied in reverse order (last added = first executed)
@@ -101,7 +111,7 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(flows_router)
-app.include_router(playback_router)
+app.include_router(recording_router)
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -431,7 +441,20 @@ def views_page():
     # whenever the files are edited, so the browser refetches them — without
     # this the no-cache header gets ignored by some browsers across reloads
     # of the same tab.
-    for name in ("playback.css", "views.css", "styles.css", "views.js", "views-live.js", "views-playback.js", "event-notify.js"):
+    for name in ("playback.css", "views.css", "styles.css", "views.js", "views-live.js", "event-notify.js"):
+        try:
+            v = int((STATIC_DIR / name).stat().st_mtime)
+        except OSError:
+            continue
+        html = html.replace(f'href="/static/{name}"', f'href="/static/{name}?v={v}"')
+        html = html.replace(f'src="/static/{name}"', f'src="/static/{name}?v={v}"')
+    return html
+
+
+@app.get("/playback", response_class=HTMLResponse)
+def playback_page():
+    html = (STATIC_DIR / "playback.html").read_text(encoding="utf-8")
+    for name in ("clips.css", "clips.js", "styles.css", "views.css"):
         try:
             v = int((STATIC_DIR / name).stat().st_mtime)
         except OSError:
@@ -448,7 +471,15 @@ def devices_page():
 
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page():
-    return (STATIC_DIR / "settings.html").read_text(encoding="utf-8")
+    html = (STATIC_DIR / "settings.html").read_text(encoding="utf-8")
+    for name in ("settings.css", "settings.js", "styles.css"):
+        try:
+            v = int((STATIC_DIR / name).stat().st_mtime)
+        except OSError:
+            continue
+        html = html.replace(f'href="/static/{name}"', f'href="/static/{name}?v={v}"')
+        html = html.replace(f'src="/static/{name}"', f'src="/static/{name}?v={v}"')
+    return html
 
 
 @app.get("/events", response_class=HTMLResponse)
@@ -957,11 +988,9 @@ def storage_format(request: Request, body: dict = None):
 
     # Stop any app-side writers that might be touching the mount.
     try:
-        from playback import stop_recording_service, start_recording_service
-        stop_recording_service()
+        stop_recording_engine()
     except Exception as exc:
-        _log_system.warning("Could not stop recording service before format: %s", exc)
-        start_recording_service = None
+        _log_system.warning("Could not stop recording engine before format: %s", exc)
 
     def _path_is_mounted(path: str) -> bool:
         proc = _host_cmd(["findmnt", "-n", path])
@@ -1048,12 +1077,11 @@ def storage_format(request: Request, body: dict = None):
         fstab_line = f"\n{part_path}  {mount_path}  ext4  defaults,nofail  0  2\n"
         _host_cmd(["sh", "-c", f"echo '{fstab_line}' >> /etc/fstab"])
 
-    # Restart the recording service so it picks up the fresh mount.
-    if start_recording_service is not None:
-        try:
-            start_recording_service()
-        except Exception as exc:
-            _log_system.warning("Could not restart recording service after format: %s", exc)
+    # Restart the recording engine so it picks up the fresh mount.
+    try:
+        start_recording_engine()
+    except Exception as exc:
+        _log_system.warning("Could not restart recording engine after format: %s", exc)
 
     _log_system.info("NVMe %s formatted and mounted at %s", device, mount_path)
     return {"ok": True, "device": device, "partition": f"{device}p1", "mount_path": mount_path}
@@ -2564,11 +2592,13 @@ def _mediamtx_api_request(method: str, path: str, body: Optional[dict] = None) -
 def _ensure_mediamtx_path(device_id: str, source_rtsp: str, preload: bool = False) -> dict:
     name = _path_for(device_id)
 
+    # sourceOnDemand is forced off for every cam-* path: the new recording
+    # engine pulls 24/7 from MediaMTX, so the source must stay alive even
+    # when no live viewer is attached. The `preload` arg is retained for
+    # callsite compatibility but no longer affects this decision.
     payload = {
         "source": source_rtsp,
-        "sourceOnDemand": not preload,
-        "sourceOnDemandStartTimeout": "10s",
-        "sourceOnDemandCloseAfter": "10s",
+        "sourceOnDemand": False,
     }
 
     snapshot = _mediamtx_paths_snapshot()
@@ -2578,9 +2608,8 @@ def _ensure_mediamtx_path(device_id: str, source_rtsp: str, preload: bool = Fals
     if existing:
         current_source = existing.get("source")
         current_on_demand = existing.get("sourceOnDemand")
-        desired_on_demand = not preload
 
-        if current_source == source_rtsp and current_on_demand == desired_on_demand:
+        if current_source == source_rtsp and current_on_demand is False:
             return {"ok": True, "exists": True, "name": name}
 
         try:
@@ -4918,11 +4947,10 @@ def _on_startup():
     _log_system.info("Loaded %d device(s)", len(devs))
 
     try:
-        set_recording_path_refresher(_refresh_device_stream)
-        start_recording_service()
-        _log_system.info("Recording service started")
+        start_recording_engine()
+        _log_system.info("Recording engine started")
     except Exception as e:
-        _log_system.error("Failed to start recording service: %s", e)
+        _log_system.error("Failed to start recording engine: %s", e)
 
     try:
         global _flow_monitor_thread
@@ -4997,7 +5025,10 @@ def _on_shutdown():
     _flow_monitor_stop.set()
     stop_schedule_monitor()
     stop_physical_io_monitor()
-    stop_recording_service()
+    try:
+        stop_recording_engine()
+    except Exception:
+        _log_system.exception("Failed to stop recording engine")
     try:
         nox_connector.stop_nox_connector()
     except Exception:

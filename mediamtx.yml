@@ -30,9 +30,10 @@ authInternalUsers:
       - action: read
         path: ~^cam-.*$
 
+# sourceOnDemand: no — paths stay active 24/7 so the recording segmenter
+# always has continuous input. Pre-buffer requires a permanent subscriber;
+# on-demand mode would tear the source down 10s after the last live viewer.
 pathDefaults:
-  sourceOnDemand: yes
-  sourceOnDemandStartTimeout: 10s
-  sourceOnDemandCloseAfter: 10s
+  sourceOnDemand: no
 
 paths: {}

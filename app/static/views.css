@@ -67,6 +67,11 @@
 .viewsPage .viewsModeBtn {
   flex: 1;
   appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  text-decoration: none;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: transparent;
   color: inherit;
@@ -79,6 +84,7 @@
   cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
+.viewsPage .viewsModeBtn:hover { text-decoration: none; }
 
 [data-theme="light"] .viewsPage .viewsModeBtn {
   border-color: rgba(0, 0, 0, 0.1);

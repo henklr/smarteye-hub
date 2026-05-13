@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<script>(function(){var d=document.documentElement,m=matchMedia('(prefers-color-scheme:light)');function a(){var t=localStorage.getItem('theme')||'dark';d.setAttribute('data-theme',t==='system'?(m.matches?'light':'dark'):t)}a();m.addEventListener('change',a)})()</script>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Playback</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png" />
+  <link rel="manifest" href="/static/site.webmanifest" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/views.css" />
+  <link rel="stylesheet" href="/static/clips.css" />
+</head>
+
+<body class="viewsPage playbackPage pbPage">
+  <div class="wrap full">
+    <div class="topbar">
+      <div class="topbarLeft">
+        <img src="/static/smarteye-light.png" alt="SmartEye" class="topbarLogo">
+        <img src="/static/smarteye-dark.png" alt="SmartEye" class="topbarLogoDark">
+      </div>
+      <div class="topbarCenter">
+        <div class="tabs">
+          <a class="tab active" href="/views"><span class="tabDot"></span>Views</a>
+          <a class="tab" href="/events"><span class="tabDot"></span>Events</a>
+          <a class="tab" href="/control"><span class="tabDot"></span>Control</a>
+          <a class="tab" href="/flows"><span class="tabDot"></span>Flows</a>
+          <a class="tab" href="/settings"><span class="tabDot"></span>System</a>
+        </div>
+      </div>
+      <div class="topbarActions">
+        <button class="btn logoutBtn" id="logoutBtn" type="button" title="Sign out">Logout</button>
+      </div>
+    </div>
+
+    <div class="viewsShell">
+      <div class="viewsLayout">
+        <aside class="liveSidebar viewsSidebar">
+          <div class="viewsModeSwitch" role="tablist" aria-label="View mode">
+            <a class="viewsModeBtn" href="/views" role="tab">Live</a>
+            <button class="viewsModeBtn is-active" type="button" role="tab" aria-selected="true">Playback</button>
+          </div>
+
+          <div class="liveSidebarHdr">Cameras</div>
+          <div class="liveSidebarList" id="cameraList">
+            <div class="liveSidebarEmpty">Loading…</div>
+          </div>
+
+          <div class="liveSidebarFooter">
+            <div class="liveSidebarActions">
+              <button class="btn liveSidebarActionBtn" id="selectAllBtn" type="button">Select All</button>
+              <button class="btn liveSidebarActionBtn" id="clearAllBtn" type="button">Clear All</button>
+            </div>
+          </div>
+        </aside>
+
+        <main class="viewsMain pbMain">
+          <div class="pbGridStage">
+            <div class="videoGrid pbVideoGrid" id="videoGrid"></div>
+            <div class="pbGridEmpty" id="gridEmpty" hidden>
+              <div class="pbGridEmptyPanel">
+                <div class="pbGridEmptyBadge">No cameras selected</div>
+                <div class="pbGridEmptyText">Pick cameras from the sidebar to scrub through their recordings.</div>
+              </div>
+            </div>
+          </div>
+
+          <section class="pbTimelineCard">
+            <div class="pbTimelineToolbar">
+              <div class="pbDateNav">
+                <button class="btn btn-compact pbCompactBtn" id="prevDayBtn" type="button" title="Previous day" aria-label="Previous day">‹</button>
+                <input class="pbDateInput" id="dayInput" type="date" />
+                <button class="btn btn-compact pbCompactBtn" id="nextDayBtn" type="button" title="Next day" aria-label="Next day">›</button>
+                <button class="btn btn-compact pbTodayBtn" id="todayBtn" type="button" title="Jump to now">Today</button>
+              </div>
+              <div class="pbZoom" role="tablist" aria-label="Timeline zoom">
+                <button class="pbZoomBtn" type="button" data-zoom-ms="300000">5m</button>
+                <button class="pbZoomBtn is-active" type="button" data-zoom-ms="3600000">1h</button>
+                <button class="pbZoomBtn" type="button" data-zoom-ms="21600000">6h</button>
+                <button class="pbZoomBtn" type="button" data-zoom-ms="86400000">24h</button>
+                <button class="pbZoomBtn" type="button" data-zoom-ms="604800000">7d</button>
+              </div>
+            </div>
+
+            <div class="pbTimelineScale" id="timelineScale"></div>
+            <div class="pbTimelineTrack" id="timelineTrack">
+              <div class="pbTimelineLanes" id="timelineLanes"></div>
+              <div class="pbNowLine" id="nowLine" hidden>
+                <span class="pbNowLineLabel">now</span>
+              </div>
+              <div class="pbCursor" id="cursor">
+                <span class="pbCursorLabel" id="cursorLabel">—</span>
+              </div>
+            </div>
+
+            <div class="pbTransport">
+              <div class="pbTransportButtons">
+                <button class="btn btn-compact pbTransportBtn" id="stepBackBtn" type="button" title="Previous clip" aria-label="Previous clip">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3h2v10H4zm3 5l5-5v10z" fill="currentColor"/></svg>
+                </button>
+                <button class="btn btn-compact pbTransportBtn" id="rewindBtn" type="button" title="Back 10 s" aria-label="Back 10 seconds">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7.5 3.5L3 8l4.5 4.5V9H13V7H7.5z" fill="currentColor"/></svg>
+                </button>
+                <button class="btn btn-compact pbTransportBtn pbPlayBtn" id="playPauseBtn" type="button" title="Play / Pause" aria-label="Play or pause">
+                  <svg id="playGlyph" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3l9 5-9 5z" fill="currentColor"/></svg>
+                  <svg id="pauseGlyph" viewBox="0 0 16 16" aria-hidden="true" hidden><path d="M4 3h3v10H4zm5 0h3v10H9z" fill="currentColor"/></svg>
+                </button>
+                <button class="btn btn-compact pbTransportBtn" id="forwardBtn" type="button" title="Forward 10 s" aria-label="Forward 10 seconds">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8.5 3.5L13 8l-4.5 4.5V9H3V7h5.5z" fill="currentColor"/></svg>
+                </button>
+                <button class="btn btn-compact pbTransportBtn" id="stepFwdBtn" type="button" title="Next clip" aria-label="Next clip">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3h2v10h-2zM4 3v10l5-5z" fill="currentColor"/></svg>
+                </button>
+              </div>
+              <div class="pbTransportTime" id="transportTime">—</div>
+              <div class="pbTransportRight">
+                <label class="pbSpeedLabel">
+                  <span class="pbSpeedHdr">Speed</span>
+                  <select id="speedSelect" class="pbSpeedSelect">
+                    <option value="0.25">0.25×</option>
+                    <option value="0.5">0.5×</option>
+                    <option value="1" selected>1×</option>
+                    <option value="2">2×</option>
+                    <option value="4">4×</option>
+                    <option value="8">8×</option>
+                    <option value="16">16×</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById("logoutBtn")?.addEventListener("click", async () => {
+      try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); } catch (_) {}
+      window.location.href = "/login";
+    });
+  </script>
+  <script src="/static/clips.js"></script>
+</body>
+</html>

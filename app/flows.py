@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from playback import create_recording_marker, stop_recording_marker
+from recording import create_recording_marker, stop_recording_marker
 
 from physical_io import (
     activate_physical_output,
