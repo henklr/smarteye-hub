@@ -740,14 +740,21 @@
       tile.video.src = `/api/clips/${encodeURIComponent(clip.id)}/video`;
       const onLoaded = () => {
         tile.video.removeEventListener("loadedmetadata", onLoaded);
-        tile.video.defaultPlaybackRate = state.speed;
-        tile.video.playbackRate = state.speed;
         const offset = state.cursorMs / 1000 - clip.started_at;
         const dur = tile.video.duration;
         tile.video.currentTime = Number.isFinite(dur) && dur > 0
           ? clamp(offset, 0, Math.max(0, dur - 0.01))
           : Math.max(0, offset);
-        if (state.isPlaying) tile.video.play().catch(() => {});
+        if (state.isPlaying) {
+          safePlay(tile.video, state.speed);
+        } else {
+          // Not currently playing — just store the requested rate so a later
+          // play() picks it up.
+          try {
+            tile.video.defaultPlaybackRate = state.speed;
+            tile.video.playbackRate = state.speed;
+          } catch (_) {}
+        }
       };
       tile.video.addEventListener("loadedmetadata", onLoaded);
     } else {
@@ -760,6 +767,29 @@
 
   function syncAllTiles() {
     for (const cam of state.selectedCameras) syncTile(cam);
+  }
+
+  // Browsers (Chrome notably) reject `play()` when playbackRate is set
+  // above ~16 BEFORE the video is playing — the call resolves with no error
+  // logged but the video never starts. Setting the rate AFTER play() resolves
+  // works fine. So always start playback at a safe rate, then ramp to the
+  // requested rate once the video is actually playing.
+  const BROWSER_INITIAL_RATE_CAP = 16;
+  function safePlay(videoEl, targetRate) {
+    if (!videoEl) return Promise.resolve();
+    const safeRate = Math.min(Math.max(targetRate || 1, 0.0625), BROWSER_INITIAL_RATE_CAP);
+    try {
+      videoEl.defaultPlaybackRate = safeRate;
+      videoEl.playbackRate = safeRate;
+    } catch (_) {}
+    return videoEl.play().then(() => {
+      if (videoEl.playbackRate !== targetRate) {
+        try {
+          videoEl.defaultPlaybackRate = targetRate;
+          videoEl.playbackRate = targetRate;
+        } catch (_) {}
+      }
+    }).catch(() => {});
   }
 
   function applySpeedToAllTiles() {
@@ -1160,11 +1190,13 @@
     state.isPlaying = true;
     els.playGlyph.hidden = true;
     els.pauseGlyph.hidden = false;
-    applySpeedToAllTiles();
-    // Resume each tile's video where it is.
+    // Each tile gets its own safePlay so an above-16x target rate doesn't
+    // make the initial play() promise reject silently in Chrome. The helper
+    // starts the video at a clamped safe rate, then bumps to state.speed
+    // once playback is actually rolling.
     for (const cam of state.selectedCameras) {
       const t = state.tiles[cam];
-      if (t && t.currentClipId) t.video.play().catch(() => {});
+      if (t && t.currentClipId) safePlay(t.video, state.speed);
     }
     startPlayLoop();
   }
