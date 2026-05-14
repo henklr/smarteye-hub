@@ -54,6 +54,7 @@ from recording import (
     stop_recording_engine,
     system_load_snapshot,
 )
+from recording.config import STORAGE_MOUNT, is_storage_mounted
 from physical_io import start_physical_io_monitor, stop_physical_io_monitor
 import dashboard_connector
 import nox_connector
@@ -241,6 +242,12 @@ _ptz_command_locks_lock = threading.RLock()
 
 _flow_monitor_stop = threading.Event()
 _flow_monitor_thread: Optional[threading.Thread] = None
+
+# Recording engine auto-recovery: poll storage mount; start the engine when a
+# drive becomes available out-of-band (e.g., the user mounted it manually).
+_storage_recovery_stop = threading.Event()
+_storage_recovery_thread: Optional[threading.Thread] = None
+_STORAGE_RECOVERY_POLL_SECONDS = 30
 
 _path_monitor_lock = threading.RLock()
 _path_monitor_state: Dict[str, Dict[str, Any]] = {}
@@ -850,6 +857,45 @@ def get_ntp_settings():
     return {"ntp_server": settings.get("ntp_server") or "pool.ntp.org"}
 
 
+_RETENTION_DAYS_MAX = 3650  # ~10y; anything past this is almost certainly a typo
+
+
+@app.get("/api/system/retention")
+def get_retention():
+    """Return the current clip retention policy in days (0 = disabled)."""
+    settings = _load_settings_json()
+    try:
+        days = max(0, int(settings.get("retention_days") or 0))
+    except (TypeError, ValueError):
+        days = 0
+    return {"retention_days": days}
+
+
+@app.put("/api/system/retention")
+def set_retention(body: Dict[str, Any]):
+    """Set the clip retention policy. 0 = disabled, fall back to disk-full pruning."""
+    if body is None or "retention_days" not in body:
+        raise HTTPException(status_code=400, detail="retention_days is required")
+    raw = body.get("retention_days")
+    try:
+        days = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="retention_days must be an integer")
+    if days < 0 or days > _RETENTION_DAYS_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"retention_days must be between 0 and {_RETENTION_DAYS_MAX}",
+        )
+    settings = _load_settings_json()
+    settings["retention_days"] = days
+    _save_settings_json(settings)
+    _log_system.info(
+        "Retention policy updated: %s",
+        f"{days} day(s)" if days > 0 else "disabled (delete oldest when full)",
+    )
+    return {"ok": True, "retention_days": days}
+
+
 @app.get("/api/system/logs")
 def get_system_logs(limit: int = 500, level: str = "", cat: str = ""):
     """Return the most recent system log entries from the ring buffer."""
@@ -945,10 +991,36 @@ def _find_nvme_devices() -> list[dict]:
     return nvme
 
 
+def _storage_recovery_loop() -> None:
+    """Auto-start the recording engine when storage mount appears out-of-band.
+
+    `start_recording_engine()` refuses to run without a real mount, so a drive
+    mounted manually (outside the Format & mount flow) would otherwise leave
+    recording off until the next container restart. This loop polls and lets
+    the engine come back without operator action. `start_recording_engine()`
+    is idempotent — it returns immediately if the supervisor already exists.
+    """
+    while not _storage_recovery_stop.wait(_STORAGE_RECOVERY_POLL_SECONDS):
+        try:
+            if is_storage_mounted():
+                start_recording_engine()
+        except Exception:
+            _log_system.exception("storage recovery: start_recording_engine failed")
+
+
 @app.get("/api/storage/devices")
 def storage_devices():
-    """List NVMe storage devices and their partitions."""
-    return {"devices": _find_nvme_devices()}
+    """List NVMe storage devices and their partitions.
+
+    Also reports the recording target path and whether it's currently mounted.
+    The UI uses this to show a warning when nothing is mounted there, since
+    the recording engine refuses to write without a real storage mount.
+    """
+    return {
+        "devices": _find_nvme_devices(),
+        "recording_target": str(STORAGE_MOUNT),
+        "recording_target_mounted": is_storage_mounted(),
+    }
 
 
 @app.post("/api/storage/format")
@@ -1003,6 +1075,12 @@ def storage_format(request: Request, body: dict = None):
             return True, ""
         return False, f"{err1}; lazy: {proc.stderr.strip()}"
 
+    # Strip any stale fstab entry for this device's partitions up front. A
+    # leftover entry from a previous format can let systemd auto-mount the new
+    # partition the moment udev sees it, blocking mkfs with EBUSY. We re-add
+    # the entry after the format succeeds.
+    _host_cmd(["sed", "-i", f"\\#^/dev/{device}p#d", "/etc/fstab"], timeout=10)
+
     # Unmount by mountpoint and by device path for any existing partition.
     devs = _find_nvme_devices()
     for d in devs:
@@ -1020,7 +1098,7 @@ def storage_format(request: Request, body: dict = None):
         if not ok:
             raise HTTPException(
                 status_code=409,
-                detail=f"{mount_path} is mounted by something else and cannot be unmounted: {err}",
+                detail=f"[umount] {mount_path} is mounted by something else and cannot be unmounted: {err}",
             )
 
     # Wipe existing signatures — avoids blkid/udev reporting "in use" after fdisk.
@@ -1031,7 +1109,7 @@ def storage_format(request: Request, body: dict = None):
     proc = _host_cmd(["fdisk", dev_path], input_data=fdisk_input, timeout=30)
     if proc.returncode not in (0, 1):
         _log_system.error("fdisk failed: %s", proc.stderr)
-        raise HTTPException(status_code=500, detail=f"Partitioning failed: {proc.stderr.strip()}")
+        raise HTTPException(status_code=500, detail=f"[fdisk] Partitioning failed: {proc.stderr.strip()}")
 
     # Let udev resettle after partition table rewrite.
     _host_cmd(["partprobe", dev_path], timeout=10)
@@ -1039,35 +1117,117 @@ def storage_format(request: Request, body: dict = None):
 
     part_path = f"{dev_path}p1"
 
-    # Wait for the partition node to appear and be free of any lingering mount.
-    deadline = _time.monotonic() + 10
+    # Wait for the partition node to appear, then actively unmount it if
+    # something (systemd, udisks, ...) auto-mounted it after partprobe. The
+    # previous version of this loop only observed and timed out silently.
+    deadline = _time.monotonic() + 15
     while _time.monotonic() < deadline:
         check = _host_cmd(["test", "-b", part_path])
-        if check.returncode == 0 and not _device_is_mounted(part_path):
-            break
-        _time.sleep(0.5)
+        if check.returncode != 0:
+            _time.sleep(0.5)
+            continue
+        if _device_is_mounted(part_path):
+            _unmount(part_path)
+            _time.sleep(0.5)
+            continue
+        break
 
     # Wipe the new partition's signature slate before mkfs.
     _host_cmd(["wipefs", "-a", part_path], timeout=15)
 
-    # mkfs.ext4 with double-force: survives lingering "in use" detection from
-    # udev/blkid probing immediately after partprobe.
-    proc = _host_cmd(["mkfs.ext4", "-F", "-F", part_path], timeout=180)
-    if proc.returncode != 0:
-        _log_system.error("mkfs.ext4 failed: %s", proc.stderr)
-        raise HTTPException(status_code=500, detail=f"Formatting failed: {proc.stderr.strip()}")
+    # Flush kernel block buffers so mkfs sees a clean device.
+    _host_cmd(["sync"], timeout=10)
+    _host_cmd(["blockdev", "--flushbufs", part_path], timeout=10)
+
+    # NOTE: do NOT umount mount_path inside the container's namespace. The
+    # compose bind is `rslave`, so the host umount already propagated. An
+    # in-container umount destroys the slave bind entry permanently, which
+    # means the host's later re-mount won't propagate back into the container
+    # and ffmpeg ends up writing into the container's empty rootfs directory.
+
+    def _diag_holders(label: str) -> str:
+        """Capture /sys/class/block/.../holders, fuser, and lsof output."""
+        parts: list[str] = []
+        leaf = part_path.rsplit("/", 1)[-1]
+        holders = _host_cmd(
+            ["sh", "-c", f"ls /sys/class/block/{leaf}/holders/ 2>/dev/null"],
+            timeout=5,
+        )
+        if (holders.stdout or "").strip():
+            parts.append(f"holders={holders.stdout.strip()}")
+        fu = _host_cmd(
+            ["sh", "-c", f"fuser -mv {part_path} 2>&1 || true"], timeout=10
+        )
+        if (fu.stdout or "").strip():
+            parts.append(f"fuser={fu.stdout.strip()}")
+        ls = _host_cmd(
+            ["sh", "-c", f"lsof {part_path} 2>/dev/null || true"], timeout=10
+        )
+        if (ls.stdout or "").strip():
+            parts.append(f"lsof={ls.stdout.strip()[:500]}")
+        mn = _host_cmd(["findmnt", "-S", part_path], timeout=5)
+        if (mn.stdout or "").strip():
+            parts.append(f"mount={mn.stdout.strip()}")
+        _log_system.warning("storage format diag (%s): %s", label, " | ".join(parts) or "no holders detected")
+        return " | ".join(parts)
+
+    def _kill_recording_holders() -> None:
+        """SIGTERM then SIGKILL ffmpeg segmenters that hold /mnt/nvme open.
+
+        Two uvicorn processes (HTTP :80 + HTTPS :443) each run a recording
+        engine; only this process's engine was stopped by `stop_recording_engine()`
+        above. The other process is the segmenter-leader on roughly half of
+        restarts and keeps ffmpeg children writing to the mount. We kill the
+        ffmpegs directly — the other supervisor will retry after the backoff,
+        by which point format + mount is done.
+        """
+        _host_cmd(["pkill", "-TERM", "-f", "ffmpeg.* -f segment"], timeout=5)
+        _time.sleep(0.5)
+        _host_cmd(["pkill", "-KILL", "-f", "ffmpeg.* -f segment"], timeout=5)
+        _host_cmd(["sync"], timeout=10)
+
+    # mkfs.ext4 with double-force survives the "apparently in use" warning, but
+    # not an actual kernel-level holder (mount or open O_EXCL). udev's blkid
+    # probe + the sibling uvicorn's ffmpeg children can both hold the device,
+    # so we kill ffmpeg holders and retry with a fresh settle/unmount cycle.
+    _kill_recording_holders()
+
+    mkfs_ok = False
+    mkfs_err = ""
+    last_diag = ""
+    for attempt in range(4):
+        if attempt > 0:
+            _kill_recording_holders()
+            _host_cmd(["udevadm", "settle", "--timeout=5"], timeout=10)
+            if _device_is_mounted(part_path):
+                _unmount(part_path)
+            _host_cmd(["sync"], timeout=10)
+            _host_cmd(["blockdev", "--flushbufs", part_path], timeout=10)
+            _time.sleep(1.5)
+        proc = _host_cmd(["mkfs.ext4", "-F", "-F", part_path], timeout=180)
+        if proc.returncode == 0:
+            mkfs_ok = True
+            break
+        mkfs_err = proc.stderr.strip()
+        _log_system.warning("mkfs.ext4 attempt %d failed: %s", attempt + 1, mkfs_err)
+        last_diag = _diag_holders(f"mkfs attempt {attempt + 1} failed")
+
+    if not mkfs_ok:
+        _log_system.error("mkfs.ext4 failed after retries: %s; holders: %s", mkfs_err, last_diag)
+        detail = f"[mkfs] Formatting failed: {mkfs_err}"
+        if last_diag:
+            detail += f" | holders: {last_diag}"
+        raise HTTPException(status_code=500, detail=detail)
 
     # Create mount point and mount.
     _host_cmd(["mkdir", "-p", mount_path])
     proc = _host_cmd(["mount", part_path, mount_path])
     if proc.returncode != 0:
-        raise HTTPException(status_code=500, detail=f"Mount failed: {proc.stderr.strip()}")
+        raise HTTPException(status_code=500, detail=f"[mount] Mount failed: {proc.stderr.strip()}")
 
-    # Add to fstab if not already present.
-    fstab_check = _host_cmd(["grep", "-q", part_path, "/etc/fstab"])
-    if fstab_check.returncode != 0:
-        fstab_line = f"\n{part_path}  {mount_path}  ext4  defaults,nofail  0  2\n"
-        _host_cmd(["sh", "-c", f"echo '{fstab_line}' >> /etc/fstab"])
+    # Re-add the fstab entry (we stripped any stale one upfront).
+    fstab_line = f"{part_path}  {mount_path}  ext4  defaults,nofail  0  2"
+    _host_cmd(["sh", "-c", f"echo '{fstab_line}' >> /etc/fstab"])
 
     # Restart the recording engine so it picks up the fresh mount.
     try:
@@ -4958,6 +5118,19 @@ def _on_startup():
         _log_system.error("Failed to start flow monitor: %s", e)
 
     try:
+        global _storage_recovery_thread
+        _storage_recovery_stop.clear()
+        _storage_recovery_thread = threading.Thread(
+            target=_storage_recovery_loop,
+            daemon=True,
+            name="storage-recovery",
+        )
+        _storage_recovery_thread.start()
+        _log_system.info("Storage recovery thread started")
+    except Exception as e:
+        _log_system.error("Failed to start storage recovery: %s", e)
+
+    try:
         start_schedule_monitor()
         _log_system.info("Schedule monitor started")
     except Exception as e:
@@ -5015,6 +5188,7 @@ def _on_shutdown():
             pass
 
     _flow_monitor_stop.set()
+    _storage_recovery_stop.set()
     stop_schedule_monitor()
     stop_physical_io_monitor()
     try:

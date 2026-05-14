@@ -23,7 +23,9 @@ from .config import (
     MEDIAMTX_API_PASS,
     MEDIAMTX_API_URL,
     MEDIAMTX_API_USER,
+    STORAGE_MOUNT,
     SUPERVISOR_POLL_SECONDS,
+    is_storage_mounted,
 )
 from .flow_config import cameras_in_flows
 from .janitor import Janitor
@@ -108,8 +110,20 @@ class Supervisor:
     async def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                desired = await asyncio.to_thread(self._discover_cameras)
-                await self._reconcile(desired)
+                if not is_storage_mounted():
+                    # Storage disappeared mid-run (manual umount, drive failure, ...).
+                    # Drop every segmenter so we don't write into the container's
+                    # overlay fs. The format/mount endpoint restarts the engine
+                    # when the disk comes back.
+                    if self._segmenters:
+                        log.warning(
+                            "supervisor: %s no longer mounted; stopping all segmenters",
+                            STORAGE_MOUNT,
+                        )
+                        await self._reconcile(set())
+                else:
+                    desired = await asyncio.to_thread(self._discover_cameras)
+                    await self._reconcile(desired)
             except Exception:
                 log.exception("supervisor: reconcile error")
             try:

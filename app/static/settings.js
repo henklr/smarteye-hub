@@ -391,6 +391,57 @@ async function loadRecordingEngineStatus() {
 }
 loadRecordingEngineStatus();
 
+const retentionDaysInput = document.getElementById("retentionDaysInput");
+const retentionDaysSaveBtn = document.getElementById("retentionDaysSaveBtn");
+const retentionDaysStatus = document.getElementById("retentionDaysStatus");
+
+function setRetentionStatus(msg, isError) {
+  if (!retentionDaysStatus) return;
+  retentionDaysStatus.textContent = msg || "";
+  retentionDaysStatus.style.color = isError ? "var(--clr-danger, #e74c3c)" : "";
+}
+
+async function loadRetentionDays() {
+  if (!retentionDaysInput) return;
+  try {
+    const data = await api("/api/system/retention");
+    retentionDaysInput.value = Number(data?.retention_days ?? 0);
+    setRetentionStatus("");
+  } catch (e) {
+    setRetentionStatus(`Could not load: ${String(e.message || e)}`, true);
+  }
+}
+loadRetentionDays();
+
+retentionDaysSaveBtn?.addEventListener("click", async () => {
+  const raw = retentionDaysInput?.value ?? "0";
+  const days = Math.max(0, Math.floor(Number(raw)));
+  if (!Number.isFinite(days)) {
+    setRetentionStatus("Enter a non-negative integer", true);
+    return;
+  }
+  retentionDaysSaveBtn.disabled = true;
+  setRetentionStatus("Saving…");
+  try {
+    const result = await api("/api/system/retention", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ retention_days: days }),
+    });
+    const saved = Number(result?.retention_days ?? days);
+    retentionDaysInput.value = saved;
+    setRetentionStatus(
+      saved > 0
+        ? `Saved: clips older than ${saved} day${saved === 1 ? "" : "s"} will be deleted.`
+        : "Saved: retention disabled (oldest clips deleted only when the drive is nearly full).",
+    );
+  } catch (e) {
+    setRetentionStatus(`Error: ${String(e.message || e)}`, true);
+  } finally {
+    retentionDaysSaveBtn.disabled = false;
+  }
+});
+
 const clearRecordingsBtn = document.getElementById("clearRecordingsBtn");
 const clearRecordingsStatus = document.getElementById("clearRecordingsStatus");
 function setClearRecordingsStatus(msg) {
@@ -691,14 +742,24 @@ function _formatSize(bytes) {
   return size.toFixed(i > 0 ? 1 : 0) + " " + units[i];
 }
 
-function _renderStorageDevices(devices) {
+function _renderStorageDevices(devices, recordingTarget, recordingTargetMounted) {
   if (!storageContent) return;
+
+  let html = "";
+  if (!recordingTargetMounted) {
+    const target = recordingTarget || "/mnt/nvme";
+    html += `<div style="border:1px solid var(--clr-danger, #e74c3c);background:rgba(231,76,60,0.08);border-radius:8px;padding:12px 14px;margin-bottom:12px;">`;
+    html += `<strong style="color:var(--clr-danger, #e74c3c);">Recordings are NOT being saved.</strong>`;
+    html += ` <span class="muted">No drive is mounted at <code>${target}</code>. Format &amp; mount one of the drives below to start recording.</span>`;
+    html += `</div>`;
+  }
+
   if (!devices.length) {
-    storageContent.innerHTML = '<span class="muted">No NVMe drives detected.</span>';
+    html += '<span class="muted">No NVMe drives detected.</span>';
+    storageContent.innerHTML = html;
     return;
   }
 
-  let html = "";
   for (const dev of devices) {
     const model = dev.model || dev.name;
     const size = _formatSize(dev.size);
@@ -762,7 +823,11 @@ async function loadStorageDevices() {
   setStorageStatus("", false);
   try {
     const data = await api("/api/storage/devices");
-    _renderStorageDevices(data.devices || []);
+    _renderStorageDevices(
+      data.devices || [],
+      data.recording_target,
+      data.recording_target_mounted,
+    );
   } catch (e) {
     if (storageContent) storageContent.innerHTML = '<span class="muted">Error loading storage info.</span>';
     setStorageStatus(`Error: ${e.message || e}`, true);
@@ -774,17 +839,24 @@ window._storageFormat = async function(device) {
   const mountPath = (mountInput?.value || "/mnt/nvme").trim();
   if (!confirm(`Format /dev/${device}? This will ERASE ALL DATA on the drive and create a single ext4 partition mounted at ${mountPath}.`)) return;
   setStorageStatus("Formatting… this may take a moment", false, true);
+  let resultMessage = null;
+  let resultIsError = false;
   try {
     await api("/api/storage/format", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ device, mount_path: mountPath }),
     });
-    setStorageStatus("Drive formatted and mounted successfully.", false);
-    await loadStorageDevices();
+    resultMessage = "Drive formatted and mounted successfully.";
   } catch (e) {
-    setStorageStatus(`Error: ${e.message || e}`, true);
+    resultMessage = `Error: ${e.message || e}`;
+    resultIsError = true;
   }
+  // Refresh device list (even on error — the partition table may have changed).
+  // loadStorageDevices() clears the status bar at the top, so restore our
+  // success/error message afterwards.
+  try { await loadStorageDevices(); } catch (_) {}
+  if (resultMessage) setStorageStatus(resultMessage, resultIsError);
 };
 
 window._storageMount = async function(partition) {

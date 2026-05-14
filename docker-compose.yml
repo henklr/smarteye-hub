@@ -19,7 +19,6 @@ services:
       - RECORDING_TRIGGER_MAX_DURATION_SECONDS=60
       - RECORDING_CONTINUOUS_CAMERAS=
       - RECORDING_CONTINUOUS_CHUNK_SECONDS=3600
-      - RECORDING_CONTINUOUS_RETENTION_DAYS=7
       - NVME_BASE=/mnt/nvme/smarteye
     ports:
       - "${PORT:-80}:80"
@@ -27,11 +26,14 @@ services:
     volumes:
       - ./data:/app/data
       - ./secrets:/app/secrets
-      # rslave: host mount changes under /mnt/nvme propagate into the container,
-      # so `mkfs.ext4 + mount` from the API is visible here immediately.
+      # Bind the parent /mnt (not /mnt/nvme directly): the parent mount stays
+      # alive across a host umount/remount of /mnt/nvme, so the child mount
+      # propagates in and out via rslave. Binding /mnt/nvme directly meant the
+      # slave entry was destroyed on host umount and never came back, leaving
+      # the container with an empty in-rootfs /mnt/nvme directory.
       - type: bind
-        source: /mnt/nvme
-        target: /mnt/nvme
+        source: /mnt
+        target: /mnt
         bind:
           propagation: rslave
           create_host_path: true

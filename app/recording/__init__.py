@@ -16,7 +16,7 @@ from typing import Optional
 from typing import Any, Dict
 
 from .api import router
-from .config import BUFFER_DIR, CLIPS_DIR, NVME_BASE
+from .config import BUFFER_DIR, CLIPS_DIR, NVME_BASE, STORAGE_MOUNT, is_storage_mounted
 from .db import init_db
 from .supervisor import Supervisor
 from .triggers import (
@@ -34,10 +34,23 @@ _supervisor: Optional[Supervisor] = None
 
 
 def start_recording_engine() -> None:
-    """Start the recording engine. Safe to call once; idempotent after start."""
+    """Start the recording engine. Safe to call once; idempotent after start.
+
+    Refuses to start if STORAGE_MOUNT is not a real mount point: without it
+    we'd write recordings to the container's overlay fs (the SD card), which
+    fills up quickly and is wiped on container recreation.
+    """
     global _loop, _thread, _supervisor
 
     if _supervisor is not None:
+        return
+
+    if not is_storage_mounted():
+        log.warning(
+            "recording engine: %s is not a mount point; engine NOT started "
+            "(recordings would otherwise spill onto the SD card)",
+            STORAGE_MOUNT,
+        )
         return
 
     for d in (NVME_BASE, BUFFER_DIR, CLIPS_DIR):
@@ -111,10 +124,12 @@ def stop_recording_engine() -> None:
 
 
 def engine_status() -> dict:
+    mounted = is_storage_mounted()
     if _supervisor is None:
-        return {"running": False}
+        return {"running": False, "storage_mounted": mounted}
     s = _supervisor.status()
     s["running"] = True
+    s["storage_mounted"] = mounted
     return s
 
 

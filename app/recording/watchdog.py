@@ -3,21 +3,34 @@
 Also drives the continuous-recording loop: for each cam in CONTINUOUS_CAMERAS
 without an open active recording, start a new chunk; when chunks hit
 CONTINUOUS_CHUNK_SECONDS, the watchdog auto-stops them (which produces a
-clip, then a fresh chunk is started on the next tick). A separate sweep
-deletes continuous clips older than the retention window.
+clip, then a fresh chunk is started on the next tick).
+
+A retention sweep runs periodically. Two modes, switched by the
+`retention_days` setting (read each tick from settings.json):
+
+- `retention_days > 0`: delete clips whose `ended_at` is older than the
+  cutoff. Applies to every clip kind.
+- `retention_days == 0` (default): disk-fullness sweep. When free space
+  drops below DISK_FULL_TRIGGER_FREE_PCT, delete the oldest clips until
+  we're back above DISK_FULL_TARGET_FREE_PCT.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import shutil
 import time
 from typing import Optional
 
 from .config import (
     CONTINUOUS_CAMERAS,
     CONTINUOUS_CHUNK_SECONDS,
-    CONTINUOUS_RETENTION_DAYS,
+    DISK_FULL_TARGET_FREE_PCT,
+    DISK_FULL_TRIGGER_FREE_PCT,
+    STORAGE_MOUNT,
+    is_storage_mounted,
+    retention_days_setting,
 )
 from .db import db_connect
 from .triggers import start_recording, stop_recording
@@ -26,6 +39,7 @@ log = logging.getLogger("recording.watchdog")
 
 WATCHDOG_INTERVAL_SECONDS = 5
 CONTINUOUS_KIND = "continuous"
+RETENTION_SWEEP_INTERVAL_SECONDS = 60
 
 
 class Watchdog:
@@ -51,8 +65,8 @@ class Watchdog:
 
     async def _run(self) -> None:
         log.info(
-            "watchdog: starting (continuous_cameras=%s chunk=%ds retention=%dd)",
-            CONTINUOUS_CAMERAS, CONTINUOUS_CHUNK_SECONDS, CONTINUOUS_RETENTION_DAYS,
+            "watchdog: starting (continuous_cameras=%s chunk=%ds retention=%dd, 0=disk-full)",
+            CONTINUOUS_CAMERAS, CONTINUOUS_CHUNK_SECONDS, retention_days_setting(),
         )
         while not self._stop.is_set():
             try:
@@ -68,9 +82,12 @@ class Watchdog:
         now = int(time.time())
         self._stop_expired(now)
         self._ensure_continuous(now)
-        if now - self._last_retention_sweep > 300:
+        if now - self._last_retention_sweep >= RETENTION_SWEEP_INTERVAL_SECONDS:
             self._last_retention_sweep = float(now)
-            self._sweep_continuous_retention(now)
+            try:
+                self._sweep_retention(now)
+            except Exception:
+                log.exception("watchdog: retention sweep failed")
 
     def _stop_expired(self, now: int) -> None:
         with db_connect() as conn:
@@ -114,26 +131,74 @@ class Watchdog:
             except Exception:
                 log.exception("watchdog: failed to start continuous chunk for %s", cam)
 
-    def _sweep_continuous_retention(self, now: int) -> None:
-        if CONTINUOUS_RETENTION_DAYS <= 0:
+    def _sweep_retention(self, now: int) -> None:
+        """Either time-based or disk-fullness-based clip pruning."""
+        if not is_storage_mounted():
+            # Nothing to prune if the disk vanished; supervisor handles that path.
             return
-        cutoff = now - (CONTINUOUS_RETENTION_DAYS * 86400)
+        days = retention_days_setting()
+        if days > 0:
+            self._prune_time_based(now, days)
+        else:
+            self._prune_disk_full()
+
+    def _prune_time_based(self, now: int, days: int) -> None:
+        cutoff = now - (days * 86400)
         with db_connect() as conn:
             rows = conn.execute(
-                "SELECT id, file_path, thumbnail_path FROM clips "
-                "WHERE kind = ? AND ended_at < ?",
-                (CONTINUOUS_KIND, cutoff),
+                "SELECT id, file_path, thumbnail_path FROM clips WHERE ended_at < ?",
+                (cutoff,),
             ).fetchall()
             for r in rows:
-                for p in (r["file_path"], r["thumbnail_path"]):
-                    if p:
-                        try:
-                            os.unlink(p)
-                        except FileNotFoundError:
-                            pass
-                        except OSError as e:
-                            log.warning("retention: unlink %s failed: %s", p, e)
+                _unlink_clip_files(r["file_path"], r["thumbnail_path"])
                 conn.execute("DELETE FROM clips WHERE id = ?", (r["id"],))
         if rows:
-            log.info("retention: pruned %d continuous clips older than %dd",
-                     len(rows), CONTINUOUS_RETENTION_DAYS)
+            log.info("retention: pruned %d clips older than %dd", len(rows), days)
+
+    def _prune_disk_full(self) -> None:
+        try:
+            usage = shutil.disk_usage(str(STORAGE_MOUNT))
+        except OSError as e:
+            log.warning("retention: disk_usage(%s) failed: %s", STORAGE_MOUNT, e)
+            return
+        total = max(usage.total, 1)
+        free_pct = usage.free / total
+        if free_pct >= DISK_FULL_TRIGGER_FREE_PCT:
+            return
+        log.warning(
+            "retention: free space %.1f%% below trigger %.0f%%; pruning oldest clips",
+            free_pct * 100, DISK_FULL_TRIGGER_FREE_PCT * 100,
+        )
+        deleted = 0
+        # Walk oldest → newest. Re-check disk usage after every delete so we
+        # stop as soon as we're back above the target.
+        with db_connect() as conn:
+            rows = conn.execute(
+                "SELECT id, file_path, thumbnail_path FROM clips ORDER BY started_at ASC"
+            ).fetchall()
+            for r in rows:
+                try:
+                    usage = shutil.disk_usage(str(STORAGE_MOUNT))
+                except OSError:
+                    break
+                if usage.free / total >= DISK_FULL_TARGET_FREE_PCT:
+                    break
+                _unlink_clip_files(r["file_path"], r["thumbnail_path"])
+                conn.execute("DELETE FROM clips WHERE id = ?", (r["id"],))
+                deleted += 1
+        if deleted:
+            log.warning("retention: pruned %d oldest clips to free disk space", deleted)
+        else:
+            log.warning("retention: no clips left to prune but disk still under target")
+
+
+def _unlink_clip_files(file_path: Optional[str], thumbnail_path: Optional[str]) -> None:
+    for p in (file_path, thumbnail_path):
+        if not p:
+            continue
+        try:
+            os.unlink(p)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            log.warning("retention: unlink %s failed: %s", p, e)
