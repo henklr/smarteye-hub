@@ -674,6 +674,20 @@
             </div>
 
             <div data-full>
+              <label for="triggerMaxDurationInput">Max recording duration</label>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <input id="triggerMaxDurationInput" type="number" min="1" max="86400" step="1" value="1800" style="width:110px;" />
+                <span class="muted">seconds</span>
+                <button class="btn btn-mini" id="triggerMaxDurationSaveBtn" type="button">Save</button>
+                <span id="triggerMaxDurationStatus" class="muted" style="font-size:0.85em;"></span>
+              </div>
+              <div class="listSub" style="margin-top:4px;">
+                Hard ceiling on how long a single Record-node recording can run before the watchdog auto-stops it.
+                Each Record node picks its own value within this cap.
+              </div>
+            </div>
+
+            <div data-full>
               <label>Recording engine</label>
               <div class="listSub" style="margin-top:4px;">
                 Storage path and segment size are configured via <code>NVME_BASE</code> and

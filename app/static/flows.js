@@ -17,6 +17,12 @@ const state = {
     palette: { expanded: true, touched: false },
   },
   recordingPresets: [],
+  // Engine-wide caps used by Record node inspector. Refreshed by
+  // loadRecordingLimits(); falls back to safe defaults until the API responds.
+  recordingLimits: {
+    trigger_max_duration_seconds: 1800,
+    trigger_max_duration_ceiling: 86400,
+  },
   schedules: [],
   schedulesDirty: false,
   schedulesInteracting: false,
@@ -4932,6 +4938,19 @@ function renderRecordingPresetInspector(preset, index) {
   `;
 }
 
+async function refreshRecordingLimits() {
+  try {
+    const data = await api("/api/system/recording-limits");
+    state.recordingLimits = {
+      trigger_max_duration_seconds: Number(data?.trigger_max_duration_seconds || 1800),
+      trigger_max_duration_ceiling: Number(data?.trigger_max_duration_ceiling || 86400),
+    };
+  } catch (_) {
+    // Keep last-known values; UI falls back to defaults if never loaded.
+  }
+}
+refreshRecordingLimits();
+
 async function refreshRecordingPresets(silent = true) {
   try {
     const data = await api("/api/recording-presets");
@@ -6990,6 +7009,16 @@ function renderNodeInspector(node) {
               <label>Seconds before</label>
               <input id="cfg_before_seconds" type="number" min="0" step="1" value="${escapeHtml(cfg.before_seconds ?? 10)}" />
             </div>
+            <div>
+              <label>Max duration (sec)</label>
+              ${(() => {
+                const cap = Math.max(1, Number(state.recordingLimits?.trigger_max_duration_seconds || 1800));
+                const current = Number(cfg.max_duration_seconds);
+                const value = Number.isFinite(current) && current >= 1 ? Math.min(current, cap) : Math.min(60, cap);
+                return `<input id="cfg_max_duration_seconds" type="number" min="1" max="${cap}" step="1" value="${escapeHtml(value)}" />
+              <div class="inspectorHint mt-4">Auto-stops the recording after this many seconds if no Stop recording node fires. Capped at ${cap}s by the engine — change the cap in Settings → Storage.</div>`;
+              })()}
+            </div>
             <div class="full">
               <label>Tag color</label>
               <div class="recordingPresetColorRow recordingTagColorPreview is-readonly">
@@ -7632,6 +7661,7 @@ function applyNodeInspector(node) {
     case "action.record":
       set("preset_name");
       set("before_seconds");
+      set("max_duration_seconds");
       {
         const selects = document.querySelectorAll(".recordDeviceSelect");
         if (selects.length) {
@@ -7753,6 +7783,18 @@ function applyNodeInspector(node) {
 
   if (node.type === "action.record") {
     cfg.before_seconds = Math.max(0, Number(cfg.before_seconds ?? 10) || 0);
+    const cap = Math.max(1, Number(state.recordingLimits?.trigger_max_duration_seconds || 1800));
+    let maxDur = Math.floor(Number(cfg.max_duration_seconds ?? 0) || 0);
+    if (maxDur < 1) maxDur = Math.min(60, cap);
+    if (maxDur > cap) maxDur = cap;
+    cfg.max_duration_seconds = maxDur;
+    // Reflect the clamped value in the input. Skip while it's focused so the
+    // user can finish typing without the field snapping mid-keystroke; the
+    // value lands on blur via the change event.
+    const maxDurInput = document.getElementById("cfg_max_duration_seconds");
+    if (maxDurInput && document.activeElement !== maxDurInput) {
+      maxDurInput.value = String(maxDur);
+    }
     delete cfg.after_seconds;
     const color = String(cfg.color || "#c6a14b").trim().toLowerCase();
     cfg.color = /^#[0-9a-f]{6}$/.test(color) ? color : "#c6a14b";
