@@ -151,6 +151,51 @@ body.playbackPage { overflow: hidden; }
   background: rgba(255, 255, 255, 0.15);
 }
 
+/* ── Maximized tile (playback) ─────────────────────────────────────── */
+
+/* When the user double-clicks a playback tile, body picks up the
+   pbTileMaximized class (set by clips.js). The shared .tile.tileMaximized
+   rules from styles.css already do the fullscreen sizing for the video;
+   here we float a compact timeline strip over the bottom so the user can
+   scrub / play without leaving fullscreen. Everything chrome-y (date nav,
+   zoom buttons, transport label, speed dropdown, jump-clip buttons, lane
+   labels) gets hidden — only the scale, lanes, cursor, and a single
+   play/pause button remain. */
+body.pbTileMaximized .pbTimelineCard {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10000;
+  padding: 6px 14px 8px;
+  gap: 4px;
+  background: rgba(13, 13, 13, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+body.pbTileMaximized .viewsSidebar,
+body.pbTileMaximized .pbBoardHdr,
+body.pbTileMaximized .pbTimelineCard .pbTimelineToolbar,
+body.pbTileMaximized .pbTimelineCard .pbTransportTime,
+body.pbTileMaximized .pbTimelineCard .pbSpeedLabel,
+body.pbTileMaximized .pbTimelineCard #pbStepBackBtn,
+body.pbTileMaximized .pbTimelineCard #pbRewindBtn,
+body.pbTileMaximized .pbTimelineCard #pbForwardBtn,
+body.pbTileMaximized .pbTimelineCard #pbStepFwdBtn,
+body.pbTileMaximized .pbTimelineCard .pbLaneLabel {
+  display: none !important;
+}
+body.pbTileMaximized .pbTimelineCard .pbTransport {
+  padding: 0;
+  margin-top: 2px;
+  justify-content: center;
+}
+[data-theme="light"] body.pbTileMaximized .pbTimelineCard {
+  background: rgba(245, 245, 245, 0.85);
+  border-top-color: rgba(0, 0, 0, 0.08);
+}
+
 /* ── Recording-tag filter sidebar section ──────────────────────────── */
 
 .playbackPage .pbTagFilterActions {

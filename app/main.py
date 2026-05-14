@@ -1089,12 +1089,37 @@ def storage_format(request: Request, body: dict = None):
     _log_system.warning("Formatting %s and mounting to %s", dev_path, mount_path)
 
     import time as _time
+    import signal as _signal
 
-    # Stop any app-side writers that might be touching the mount.
+    # Stop any app-side writers that might be touching the mount. This
+    # process's engine first, then the sibling uvicorn (HTTP vs HTTPS)
+    # via SIGUSR1 — without that the sibling's SQLite connection + WAL
+    # files keep `/dev/nvme0n1p1` busy and mkfs fails with EBUSY.
     try:
         stop_recording_engine()
     except Exception as exc:
         _log_system.warning("Could not stop recording engine before format: %s", exc)
+    try:
+        proc = subprocess.run(
+            ["pgrep", "-f", "uvicorn main:app"],
+            capture_output=True, text=True, timeout=5,
+        )
+        my_pid = os.getpid()
+        for line in (proc.stdout or "").split():
+            try:
+                pid = int(line.strip())
+            except ValueError:
+                continue
+            if pid and pid != my_pid:
+                try:
+                    os.kill(pid, _signal.SIGUSR1)
+                    _log_system.info("Format: signalled sibling uvicorn pid=%d to stop engine", pid)
+                except (ProcessLookupError, PermissionError):
+                    pass
+    except Exception:
+        _log_system.exception("Format: failed to signal sibling uvicorn")
+    # Give the sibling a beat to close DB connections + release the lock.
+    _time.sleep(1.5)
 
     def _path_is_mounted(path: str) -> bool:
         proc = _host_cmd(["findmnt", "-n", path])
@@ -1351,7 +1376,10 @@ class DeviceIn(BaseModel):
     ip: str = Field(..., min_length=1)
     onvif_port: int = 80
     username: str = Field(..., min_length=1)
-    password: str = Field(..., min_length=1)
+    # Optional on the model so the PUT endpoint can accept "keep existing
+    # password" (empty/missing) without forcing the user to re-type it on
+    # every edit. POST validates non-empty explicitly.
+    password: Optional[str] = None
     profile_token: Optional[str] = None
     profile_label: Optional[str] = None
     profile_encoding: Optional[str] = None
@@ -1672,26 +1700,58 @@ def _update_device(device_id: str, dev_in: DeviceIn) -> Device:
     devs = _load_devices()
     for i, d in enumerate(devs):
         if d.id == device_id:
-            devs[i] = Device(id=device_id, **_dump(dev_in))
+            # Preserve the existing password if the update payload omitted
+            # one (or sent empty). The form lets the user save edits to
+            # other fields without re-entering credentials.
+            update_data = _dump(dev_in)
+            if not (update_data.get("password") or "").strip():
+                update_data["password"] = d.password
+            old = d
+            new_dev = Device(id=device_id, **update_data)
+            devs[i] = new_dev
             _save_devices(devs)
-            _log_devices.info("Device updated: %s (%s)", devs[i].name, device_id)
+            _log_devices.info("Device updated: %s (%s)", new_dev.name, device_id)
             _invalidate_ptz_cache(device_id)
-            req = EventsStartRequest(
-                device_id=device_id,
-                ip=dev_in.ip,
-                onvif_port=dev_in.onvif_port,
-                username=dev_in.username,
-                password=dev_in.password,
+            # Only restart the event worker if the camera's network identity
+            # actually changed. Otherwise the existing worker is fine and
+            # avoiding a restart keeps the save snappy.
+            creds_changed = (
+                old.ip != new_dev.ip
+                or old.onvif_port != new_dev.onvif_port
+                or old.username != new_dev.username
+                or old.password != new_dev.password
             )
-            _start_event_worker(device_id, req)
+            if creds_changed:
+                req = EventsStartRequest(
+                    device_id=device_id,
+                    ip=new_dev.ip,
+                    onvif_port=new_dev.onvif_port,
+                    username=new_dev.username,
+                    password=new_dev.password,
+                )
+                _start_event_worker(device_id, req)
 
-            if devs[i].profile_token:
+            # ONVIF GetStreamUri + MediaMTX path patch take ~1 s round-trip.
+            # Skip them when no stream-relevant field changed — toggling
+            # `continuous_recording` or editing the display name shouldn't
+            # cost a camera round-trip. But ALWAYS refresh when the device
+            # is missing its `recording_rtsp_url` — without that URL the
+            # segmenter has no source to record from and the camera silently
+            # stays off the timeline.
+            stream_changed = (
+                creds_changed
+                or old.profile_token != new_dev.profile_token
+                or old.recording_profile_token != new_dev.recording_profile_token
+                or bool(old.preload_stream) != bool(new_dev.preload_stream)
+            )
+            needs_url_backfill = not (new_dev.recording_rtsp_url or "").strip()
+            if new_dev.profile_token and (stream_changed or needs_url_backfill):
                 try:
                     _refresh_device_stream(device_id)
                 except Exception:
                     pass
 
-            return devs[i]
+            return new_dev
     raise HTTPException(status_code=404, detail="Device not found")
 
 
@@ -3099,13 +3159,18 @@ def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
 
 
 def _preload_stream_for_device(device: Device) -> None:
-    if not device.profile_token or not device.preload_stream:
+    if not device.profile_token:
         return
     req = _device_req(device)
     source_uri = _get_stream_uri(req, device.profile_token)
     source_rtsp = _rtsp_with_auth(source_uri, device.username, device.password)
-    _ensure_mediamtx_path(device.id, source_rtsp, preload=True)
-    # Resolve and persist the direct camera RTSP URL for the recorder.
+    # The MediaMTX path is only needed when the user wants the live stream
+    # warmed up for viewers; the recorder doesn't depend on it.
+    if device.preload_stream:
+        _ensure_mediamtx_path(device.id, source_rtsp, preload=True)
+    # Always resolve and persist the direct camera RTSP URL — the recording
+    # segmenter pulls from this URL (bypassing MediaMTX), so without it
+    # continuous/triggered recording can't start.
     rec_token = getattr(device, "recording_profile_token", None) or device.profile_token
     rec_rtsp: Optional[str] = source_rtsp
     if rec_token != device.profile_token:
@@ -3789,6 +3854,10 @@ def list_devices():
 
 @app.post("/api/devices")
 def create_device(dev: DeviceIn):
+    # `password` is Optional[str] on DeviceIn so PUT can accept "keep
+    # existing" — POST still requires it.
+    if not (dev.password or "").strip():
+        raise HTTPException(status_code=400, detail="Password is required")
     devs = _load_devices()
     new = Device(id=uuid.uuid4().hex[:12], **_dump(dev))
     devs.append(new)
@@ -4094,10 +4163,38 @@ async def voice_to_speaker(speaker_id: str, request: Request):
     return result
 
 
+class ProfilesRequest(BaseModel):
+    ip: str
+    onvif_port: int = 80
+    username: str
+    # Optional so the edit form can fetch profiles without forcing the user
+    # to re-type the password. When blank AND `device_id` is provided we
+    # fall back to the stored password for that device.
+    password: Optional[str] = None
+    device_id: Optional[str] = None
+
+
 @app.post("/api/profiles")
-async def profiles(req: OnvifBase):
+async def profiles(req: ProfilesRequest):
+    pwd = (req.password or "").strip()
+    if not pwd and req.device_id:
+        try:
+            stored = _get_device(req.device_id.strip())
+            pwd = stored.password
+        except HTTPException:
+            pwd = ""
+    if not pwd:
+        raise HTTPException(
+            status_code=400,
+            detail="Password is required (or supply device_id with a saved password)",
+        )
+    effective = OnvifBase(
+        ip=req.ip, onvif_port=req.onvif_port,
+        username=req.username, password=pwd,
+    )
+
     def _work():
-        cam = _cam(req)
+        cam = _cam(effective)
         media = cam.create_media_service()
         profiles = media.GetProfiles() or []
         out = [_profile_summary(p) for p in profiles]
@@ -5137,6 +5234,24 @@ def api_device_snapshot(device_id: str):
 @app.on_event("startup")
 def _on_startup():
     _log_system.info("SmartEye Hub starting up")
+    # SIGUSR1 → stop this process's recording engine. The /api/storage/format
+    # handler sends it to the *sibling* uvicorn so both workers release their
+    # SQLite handles + segmenter lock before mkfs; without that, mkfs fails
+    # with EBUSY because the sibling still has /dev/nvme0n1p1 open through
+    # the WAL files. The storage-recovery thread will restart the engine
+    # post-mount, so we don't need a matching "resume" signal.
+    import signal as _signal
+    def _on_sigusr1(_signum, _frame):
+        _log_system.info("SIGUSR1 received — stopping recording engine for storage maintenance")
+        try:
+            stop_recording_engine()
+        except Exception:
+            _log_system.exception("SIGUSR1 stop_recording_engine failed")
+    try:
+        _signal.signal(_signal.SIGUSR1, _on_sigusr1)
+    except (ValueError, OSError) as e:
+        _log_system.warning("Could not install SIGUSR1 handler: %s", e)
+
     try:
         _restore_timezone()
         _log_system.info("Restored timezone: %s", _current_timezone())

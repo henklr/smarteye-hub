@@ -92,7 +92,11 @@ def trigger_max_duration_setting() -> int:
         return TRIGGER_MAX_DURATION_SECONDS
     return min(v, TRIGGER_MAX_DURATION_HARD_CEILING)
 
-CONTINUOUS_CHUNK_SECONDS = int(os.getenv("RECORDING_CONTINUOUS_CHUNK_SECONDS", "3600"))
+# Each continuous chunk rolls over after this many seconds and becomes a
+# finalized clip. Shorter = more clips/DB rows but quicker visual feedback
+# ("yes, the camera is recording"); longer = bigger files / fewer rows but
+# you wait the full chunk length to see the first clip.
+CONTINUOUS_CHUNK_SECONDS = int(os.getenv("RECORDING_CONTINUOUS_CHUNK_SECONDS", "300"))
 
 MEDIAMTX_RTSP_HOST = os.getenv("MEDIAMTX_RTSP_HOST", "mediamtx")
 MEDIAMTX_RTSP_PORT = int(os.getenv("MEDIAMTX_RTSP_PORT", "8554"))

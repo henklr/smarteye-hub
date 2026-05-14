@@ -989,6 +989,24 @@ function _setProfileSelect(sel, msg = "Fetch profiles first…") {
   sel.innerHTML = `<option>${escapeH(msg)}</option>`;
 }
 
+// Show the saved profile pre-selected on the edit form even before the
+// user clicks "Fetch profiles" — without it the dropdown shows the
+// "Fetch profiles first…" placeholder, hiding the already-configured
+// choice. Clicking Fetch profiles still re-populates the full list and
+// preserves this selection.
+function _seedProfileSelect(sel, token, label) {
+  if (!sel) return;
+  const tok = (token || "").trim();
+  if (!tok) {
+    _setProfileSelect(sel);
+    return;
+  }
+  const display = (label || "").trim() || tok;
+  sel.innerHTML = `<option value="${escapeH(tok)}">${escapeH(display)}</option>`;
+  sel.value = tok;
+  sel.disabled = false;
+}
+
 function renderCameraList(cameras) {
   if (!cameraListEl) return;
   if (!cameras.length) {
@@ -1039,8 +1057,10 @@ function showCameraForm(camera) {
   if (cameraUsernameEl)    cameraUsernameEl.value    = camera?.username    || "";
   if (cameraPasswordEl)    cameraPasswordEl.value    = "";
   if (cameraContinuousEl)  cameraContinuousEl.checked = !!(camera?.continuous_recording);
-  _setProfileSelect(cameraProfileSel);
-  _setProfileSelect(cameraRecordingProfileSel);
+  // Pre-seed the profile selects with the already-saved tokens so the
+  // user can see what is currently set without clicking Fetch profiles.
+  _seedProfileSelect(cameraProfileSel, camera?.profile_token, camera?.profile_label);
+  _seedProfileSelect(cameraRecordingProfileSel, camera?.recording_profile_token, camera?.recording_profile_label);
   if (cameraFormEl) {
     if (camera && cameraListEl) {
       const row = Array.from(cameraListEl.querySelectorAll("[data-camera-id]"))
@@ -1053,7 +1073,7 @@ function showCameraForm(camera) {
     cameraFormEl.style.display = "";
     cameraFormEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
-  setCameraStatus(camera ? "Editing camera. Re-enter password and re-fetch profiles to change them." : "Fill details, then Fetch profiles before saving.");
+  setCameraStatus(camera ? "Editing camera. Leave password blank to keep the existing one; re-fetch profiles only if you want to change them." : "Fill details, then Fetch profiles before saving.");
 }
 
 function hideCameraForm() {
@@ -1066,14 +1086,14 @@ function hideCameraForm() {
   setCameraStatus("");
 }
 
-function _readCameraCreds() {
+function _readCameraCreds({ requirePassword = true } = {}) {
   const ip = (cameraIpEl?.value || "").trim();
   const onvif_port = parseInt((cameraOnvifPortEl?.value || "80").trim(), 10);
   const username = (cameraUsernameEl?.value || "").trim();
   const password = cameraPasswordEl?.value || "";
   if (!ip) throw new Error("IP is required.");
   if (!username) throw new Error("Username is required.");
-  if (!password) throw new Error("Password is required.");
+  if (requirePassword && !password) throw new Error("Password is required.");
   if (!Number.isFinite(onvif_port) || onvif_port <= 0) throw new Error("Invalid ONVIF port.");
   return { ip, onvif_port, username, password };
 }
@@ -1083,7 +1103,12 @@ async function fetchCameraProfiles() {
   _setProfileSelect(cameraProfileSel, "Loading…");
   _setProfileSelect(cameraRecordingProfileSel, "Loading…");
 
-  const creds = _readCameraCreds();
+  // On edit, password is optional — the server falls back to the saved
+  // password for this device when the field is blank. On add, it's still
+  // required (there's no stored credential yet).
+  const creds = _readCameraCreds({ requirePassword: !_editingCameraId });
+  if (!creds.password) delete creds.password;
+  if (_editingCameraId) creds.device_id = _editingCameraId;
   const data = await api("/api/profiles", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1142,7 +1167,11 @@ saveCameraBtn?.addEventListener("click", async () => {
   try {
     const name = (cameraNameEl?.value || "").trim();
     if (!name) throw new Error("Name is required.");
-    const creds = _readCameraCreds();
+    // On edit, the password is allowed to be blank: the backend keeps the
+    // existing credential when the payload omits it. Fetch Profiles still
+    // requires it because the camera ONVIF call needs to authenticate.
+    const creds = _readCameraCreds({ requirePassword: !_editingCameraId });
+    if (!creds.password) delete creds.password;
     const profile_token = cameraProfileSel?.disabled ? null : (cameraProfileSel?.value || null);
     if (!profile_token) throw new Error("Select a live stream profile before saving.");
     const recording_profile_token = cameraRecordingProfileSel?.disabled ? null : (cameraRecordingProfileSel?.value || null);
@@ -1163,12 +1192,15 @@ saveCameraBtn?.addEventListener("click", async () => {
 
     setCameraStatus("Saving…");
     if (_editingCameraId) {
+      // PUT already triggers _refresh_device_stream server-side when any
+      // stream-relevant field changed — calling /refresh-stream again
+      // here ran the same ONVIF round-trip twice and made every save
+      // feel ~2s.
       await api(`/api/devices/${encodeURIComponent(_editingCameraId)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      await api(`/api/devices/${encodeURIComponent(_editingCameraId)}/refresh-stream`, { method: "POST" });
       setCameraStatus("Camera updated.");
     } else {
       await api("/api/devices", {

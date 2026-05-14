@@ -44,7 +44,16 @@ def start_recording(
     eid = event_id or uuid.uuid4().hex
     trigger_start = _now()
     pre = max(0, int(pre_buffer_seconds))
-    max_dur = _clamp_max_duration(max_duration_seconds)
+    # Continuous chunks are system-managed and have their own duration knob
+    # (CONTINUOUS_CHUNK_SECONDS). They must bypass the user-facing trigger
+    # cap — otherwise a small cap silently fragments continuous coverage
+    # into many tiny chunks (chunk_seconds < cap → clamp(chunk)=chunk_seconds;
+    # chunk_seconds > cap → silently truncated to cap, which is wrong).
+    is_continuous = bool(metadata and metadata.get("_kind") == "continuous")
+    if is_continuous and max_duration_seconds and max_duration_seconds > 0:
+        max_dur = int(max_duration_seconds)
+    else:
+        max_dur = _clamp_max_duration(max_duration_seconds)
     meta_json = json.dumps(metadata) if metadata else None
     with db_connect() as conn:
         conn.execute(

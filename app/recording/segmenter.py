@@ -24,8 +24,12 @@ class Segmenter:
     to the python logger so docker logs surfaces any encoder/network issues.
     """
 
-    def __init__(self, camera: str):
+    def __init__(self, camera: str, rtsp_url: Optional[str] = None):
         self.camera = camera
+        # Per-device recording RTSP URL (with embedded creds) when the user
+        # picked a recording profile distinct from the live-stream profile.
+        # When None we fall back to MediaMTX's `cam-<id>` path.
+        self._rtsp_url_override = rtsp_url
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         self._proc: Optional[asyncio.subprocess.Process] = None
@@ -37,6 +41,25 @@ class Segmenter:
             self._task = asyncio.create_task(
                 self._run(), name=f"segmenter:{self.camera}"
             )
+
+    def update_rtsp_url(self, url: Optional[str]) -> None:
+        """Swap the recording URL the segmenter pulls from.
+
+        Called by the supervisor when devices.json changes (e.g. user
+        picked a different recording profile). If the URL actually changed
+        we kill the running ffmpeg so the supervisor's restart loop picks
+        up the new URL on the next iteration — no engine restart required.
+        """
+        if url == self._rtsp_url_override:
+            return
+        log.info("segmenter[%s]: rtsp url changed; restarting ffmpeg", self.camera)
+        self._rtsp_url_override = url
+        proc = self._proc
+        if proc and proc.returncode is None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
 
     async def stop(self) -> None:
         self._stop.set()
@@ -66,40 +89,36 @@ class Segmenter:
     async def _run(self) -> None:
         bdir = buffer_dir(self.camera)
         bdir.mkdir(parents=True, exist_ok=True)
-        rtsp_url = f"rtsp://{MEDIAMTX_RTSP_HOST}:{MEDIAMTX_RTSP_PORT}/{self.camera}"
         pattern = str(bdir / "%Y%m%d_%H%M%S_%s.mp4")
-
-        # -c copy: stream-copy, never re-encode (Pi 5 CPU budget would not survive otherwise).
-        # -f segment with -segment_format mp4: writes self-contained fragmented mp4s
-        #   sized by SEGMENT_SECONDS so clip assembly can pick exact range boundaries.
-        # frag_keyframe + empty_moov + faststart: each segment is playable as soon as
-        #   it's written, so the assembler doesn't need to wait for a finalization.
-        # -map 0:v + -an: only the H.264 video track is written. Our cameras
-        # advertise G.711 A-law audio, which the mp4 container cannot carry
-        # without transcoding, and re-encoding is banned by spec. Dropping
-        # audio is the safe default; if audio is needed later, switch the
-        # segment format to .mkv/.ts (native G.711 support) or allow AAC
-        # transcode (cheap on CPU).
-        cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel", "warning",
-            "-rtsp_transport", "tcp",
-            "-i", rtsp_url,
-            "-map", "0:v:0",
-            "-an",
-            "-c:v", "copy",
-            "-f", "segment",
-            "-segment_time", str(SEGMENT_SECONDS),
-            "-reset_timestamps", "1",
-            "-strftime", "1",
-            "-segment_format", "mp4",
-            "-movflags", "+faststart+frag_keyframe+empty_moov",
-            pattern,
-        ]
 
         while not self._stop.is_set():
             attempt = self.restarts + 1
+            # Resolve the source URL on every (re)spawn so a config-driven
+            # URL change picks up the new value as soon as ffmpeg restarts.
+            # The override is the camera's recording-profile RTSP (set by
+            # main.py from the user-picked profile); without it we fall
+            # back to the MediaMTX `cam-<id>` path which serves the live
+            # profile — same as the legacy behaviour.
+            rtsp_url = self._rtsp_url_override or (
+                f"rtsp://{MEDIAMTX_RTSP_HOST}:{MEDIAMTX_RTSP_PORT}/{self.camera}"
+            )
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel", "warning",
+                "-rtsp_transport", "tcp",
+                "-i", rtsp_url,
+                "-map", "0:v:0",
+                "-an",
+                "-c:v", "copy",
+                "-f", "segment",
+                "-segment_time", str(SEGMENT_SECONDS),
+                "-reset_timestamps", "1",
+                "-strftime", "1",
+                "-segment_format", "mp4",
+                "-movflags", "+faststart+frag_keyframe+empty_moov",
+                pattern,
+            ]
             log.info("segmenter[%s]: ffmpeg start attempt=%d", self.camera, attempt)
             try:
                 self._proc = await asyncio.create_subprocess_exec(
