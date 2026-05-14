@@ -33,6 +33,9 @@
     cameras: [],                  // [{camera, n, last_at}] from /api/clips/cameras
     selectedCameras: [],          // ordered list of camera path names
     clipsByCamera: {},            // camera → [clip…]
+    activeByCamera: {},           // camera → [active_recording…] (in-progress)
+    activeRefreshTimer: 0,
+    hiddenTags: new Set(),        // tag strings filtered out of the timeline
     tiles: {},                    // camera → { el, video, currentClipId, currentClip, overlay }
     cursorMs: Date.now(),
     zoomMs: 3_600_000,
@@ -84,6 +87,9 @@
     els.stepFwdBtn = $("pbStepFwdBtn");
     els.transportTime = $("pbTransportTime");
     els.speedSelect = $("pbSpeedSelect");
+    els.tagList = $("pbTagList");
+    els.tagShowAllBtn = $("pbTagShowAllBtn");
+    els.tagHideAllBtn = $("pbTagHideAllBtn");
     return !!els.track;
   }
 
@@ -111,10 +117,6 @@
     return dt.getTime();
   };
 
-  function clipForCameraAt(camera, ts) {
-    const list = state.clipsByCamera[camera] || [];
-    return list.find((c) => c.started_at <= ts && ts <= c.ended_at) || null;
-  }
   function clipMetaColor(clip) {
     const c = clip && clip.metadata && clip.metadata.color;
     return (typeof c === "string" && c.trim()) ? c.trim() : null;
@@ -123,10 +125,26 @@
     const m = (clip && clip.metadata) || {};
     return m.title || m.preset_name || m.flow_name || "";
   }
+  // Sidebar-filter key for a clip — matches the keys collectTagsInView()
+  // uses so state.hiddenTags lookups line up.
+  function clipFilterKey(clip) {
+    if (clip.kind === "continuous") return "__continuous__";
+    return clipMetaTag(clip) || "Untitled";
+  }
+  function isClipVisible(clip) {
+    return !state.hiddenTags.has(clipFilterKey(clip));
+  }
+
+  function clipForCameraAt(camera, ts) {
+    const list = state.clipsByCamera[camera] || [];
+    return list.find((c) =>
+      c.started_at <= ts && ts <= c.ended_at && isClipVisible(c)) || null;
+  }
   function nextClipForCameraAfter(camera, ts) {
     const list = state.clipsByCamera[camera] || [];
     let best = null;
     for (const c of list) {
+      if (!isClipVisible(c)) continue;
       if (c.started_at > ts && (!best || c.started_at < best.started_at)) best = c;
     }
     return best;
@@ -135,6 +153,7 @@
     const list = state.clipsByCamera[camera] || [];
     let best = null;
     for (const c of list) {
+      if (!isClipVisible(c)) continue;
       if (c.ended_at < ts && (!best || c.ended_at > best.ended_at)) best = c;
     }
     return best;
@@ -167,6 +186,7 @@
         zoomMs: state.zoomMs,
         cursorMs: state.cursorMs,
         speed: state.speed,
+        hiddenTags: Array.from(state.hiddenTags),
       }));
     } catch (_) {}
   }
@@ -178,6 +198,7 @@
       if (typeof s.zoomMs === "number") state.zoomMs = clamp(s.zoomMs, MIN_ZOOM_MS, MAX_ZOOM_MS);
       if (typeof s.cursorMs === "number") state.cursorMs = s.cursorMs;
       if (typeof s.speed === "number" && s.speed > 0) state.speed = s.speed;
+      if (Array.isArray(s.hiddenTags)) state.hiddenTags = new Set(s.hiddenTags);
     } catch (_) {}
   }
 
@@ -251,9 +272,45 @@
     const next = {};
     for (const [cam, list] of results) next[cam] = list;
     state.clipsByCamera = next;
+    // Active recordings are independent of clip fetching but we kick them
+    // off here so an initial render of in-progress strips happens alongside
+    // the first paint of completed clips.
+    loadActiveRecordings();
     renderLanes();
     syncAllTiles();
     refreshSidebarStatus();
+    renderTagFilter();
+  }
+
+  async function loadActiveRecordings() {
+    if (state.selectedCameras.length === 0) {
+      state.activeByCamera = {};
+      return;
+    }
+    const fetches = state.selectedCameras.map(async (cam) => {
+      const params = new URLSearchParams({ camera: cam });
+      try {
+        const d = await fetchJson("/api/record/active?" + params.toString());
+        return [cam, d.items || []];
+      } catch (e) {
+        return [cam, []];
+      }
+    });
+    const results = await Promise.all(fetches);
+    const next = {};
+    for (const [cam, list] of results) next[cam] = list;
+    state.activeByCamera = next;
+    renderLanes();
+  }
+
+  function ensureActiveRecordingsTimer() {
+    if (state.activeRefreshTimer) return;
+    // Re-poll the active set every 15s so the in-progress strip both extends
+    // to the new "now" and disappears within ~15s of the chunk closing /
+    // continuous toggle being turned off.
+    state.activeRefreshTimer = setInterval(() => {
+      loadActiveRecordings();
+    }, 15_000);
   }
 
   // If the current viewport has no clips for any selected camera, hop the
@@ -320,6 +377,100 @@
       row.classList.toggle("has-clips", hasClips);
       row.classList.toggle("active", state.selectedCameras.includes(camera));
     }
+  }
+
+  // Sentinel "tag" key for the Continuous lane so it can be filtered in
+  // the same sidebar list as user-defined triggered tags. The leading
+  // underscores avoid colliding with any real preset name.
+  const CONTINUOUS_TAG_KEY = "__continuous__";
+
+  // Build the list of distinct tag rows currently in view. Triggered clips
+  // contribute their tag (display name from metadata); continuous clips +
+  // active in-progress recordings collapse into one Continuous entry.
+  // Returns rows in display order, with the Continuous row pinned first.
+  function collectTagsInView() {
+    const map = new Map(); // key → { key, name, color, count }
+    let continuousCount = 0;
+    for (const cam of state.selectedCameras) {
+      const list = state.clipsByCamera[cam] || [];
+      for (const c of list) {
+        if (c.kind === "continuous") {
+          continuousCount++;
+          continue;
+        }
+        const tag = clipMetaTag(c) || "Untitled";
+        const cur = map.get(tag);
+        if (cur) {
+          cur.count++;
+          if (!cur.color) cur.color = clipMetaColor(c);
+        } else {
+          map.set(tag, { key: tag, name: tag, color: clipMetaColor(c), count: 1 });
+        }
+      }
+      // Active in-progress chunks count as continuous "in view" too.
+      for (const a of (state.activeByCamera[cam] || [])) {
+        if (a.kind === "continuous") continuousCount++;
+      }
+    }
+    const triggered = Array.from(map.values()).sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { numeric: true }));
+    const rows = [];
+    if (continuousCount > 0) {
+      rows.push({
+        key: CONTINUOUS_TAG_KEY,
+        name: "Continuous",
+        color: null,        // rendered with a neutral grey swatch
+        count: continuousCount,
+      });
+    }
+    rows.push(...triggered);
+    return rows;
+  }
+
+  function renderTagFilter() {
+    if (!els.tagList) return;
+    const tags = collectTagsInView();
+    if (tags.length === 0) {
+      els.tagList.innerHTML = '<div class="liveSidebarEmpty">No tags in view</div>';
+      return;
+    }
+    els.tagList.innerHTML = tags.map((t) => {
+      const hidden = state.hiddenTags.has(t.key);
+      const swatch = t.color
+        ? `<span class="pbTagSwatch" style="background:${escapeHtml(t.color)};"></span>`
+        : '<span class="pbTagSwatch pbTagSwatchEmpty"></span>';
+      return `<div class="liveSidebarRow pbTagRow${hidden ? "" : " active"}" data-tag="${escapeHtml(t.key)}" title="${t.count} clip${t.count === 1 ? "" : "s"}">
+        ${swatch}
+        <span class="liveSidebarName">${escapeHtml(t.name)}</span>
+        <span class="pbTagCount muted">${t.count}</span>
+      </div>`;
+    }).join("");
+  }
+
+  function toggleTag(key) {
+    if (state.hiddenTags.has(key)) state.hiddenTags.delete(key);
+    else state.hiddenTags.add(key);
+    saveState();
+    renderTagFilter();
+    renderLanes();
+    // The tile lookups (clipForCameraAt etc.) now skip hidden-tag clips,
+    // so a tile playing a freshly-hidden clip needs to drop it / find a
+    // visible one. Without this re-sync, video keeps playing until the
+    // hidden clip ends naturally.
+    syncAllTiles();
+  }
+
+  function setAllTagsHidden(hidden) {
+    const tags = collectTagsInView();
+    if (hidden) {
+      for (const t of tags) state.hiddenTags.add(t.key);
+    } else {
+      state.hiddenTags.clear();
+    }
+    saveState();
+    renderTagFilter();
+    renderLanes();
+    syncAllTiles();
   }
 
   function toggleCamera(camera) {
@@ -627,70 +778,203 @@
     const innerWidth = w - 12;
     const z = state.zoomMs;
     const padMs = z * 0.05;
-    const lanes = state.selectedCameras.length
-      ? state.selectedCameras
-      : [];
 
-    if (lanes.length === 0) {
-      els.lanes.innerHTML = `<div class="pbLane"><span class="pbLaneLabel">Select cameras to see clips</span></div>`;
-      // Keep a reasonable track height
+    if (state.selectedCameras.length === 0) {
+      els.lanes.innerHTML = `<div class="pbLane"><span class="pbLaneLabel">Select cameras to see recordings</span></div>`;
       els.track.style.minHeight = "56px";
       return;
     }
 
-    const showTagsAt = z <= 6 * 3_600_000;
-    const html = lanes.map((cam) => {
-      const list = state.clipsByCamera[cam] || [];
-      // Sort oldest-first so the DOM order matches paint order: each newer
-      // bar overlays the previous one, and its 1-px dark left edge remains
-      // visible at the clip-start position. The API delivers DESC by default
-      // — without this sort, older bars paint over newer ones and hide the
-      // per-clip tick, which is why dense regions looked like a single bar.
-      const sorted = list
-        .filter((c) =>
-          c.ended_at * 1000 > state.viewportStartMs - padMs &&
-          c.started_at * 1000 < state.viewportEndMs + padMs)
-        .sort((a, b) => a.started_at - b.started_at);
+    // Collect all clips in viewport across selected cameras. Each clip
+    // gets an `_camera` annotation so per-camera info survives the merge
+    // (the lane no longer identifies the camera — tag does).
+    const allClips = [];
+    for (const cam of state.selectedCameras) {
+      for (const c of (state.clipsByCamera[cam] || [])) {
+        if (c.ended_at * 1000 > state.viewportStartMs - padMs &&
+            c.started_at * 1000 < state.viewportEndMs + padMs) {
+          allClips.push(Object.assign({}, c, { _camera: cam }));
+        }
+      }
+    }
+    allClips.sort((a, b) => a.started_at - b.started_at);
 
-      // Zoom-adaptive coverage merging. When clip starts are closer than
-      // `mergeGapPx` in screen space we collapse them into one "coverage
-      // span" — this is the only way to make dense regions read the same
-      // at any zoom: zoomed-out the threshold widens (≈ a few seconds of
-      // time), and the cluster faithfully shows up as one continuous bar
-      // ("camera was recording from here to here"); zoomed-in the
-      // threshold shrinks to a fraction of a second so individual clips
-      // remain distinct. Without this, the same N clips look like discrete
-      // bars at zoom-in and a single solid block at zoom-out, because the
-      // pixel gaps between adjacent bars shrink below 1 px.
-      const mergeGapPx = 2;
-      const mergeGapSec = innerWidth > 0
-        ? (mergeGapPx / innerWidth) * (z / 1000)
-        : 0;
-      const spans = [];
-      for (const c of sorted) {
-        const last = spans[spans.length - 1];
-        if (last && c.started_at <= last.end + mergeGapSec) {
+    // In-progress continuous recordings from active_recordings (one per cam).
+    const allActive = [];
+    for (const cam of state.selectedCameras) {
+      for (const a of (state.activeByCamera[cam] || [])) {
+        if (a.kind === "continuous") {
+          allActive.push(Object.assign({}, a, { _camera: cam }));
+        }
+      }
+    }
+
+    // Group clips into lanes keyed by tag. Continuous lives in a single
+    // synthetic "__continuous__" lane regardless of which cameras
+    // contribute. Triggered clips are bucketed by their tag identity.
+    const continuousClips = [];
+    const tagToClips = new Map();
+    const continuousHidden = state.hiddenTags.has(CONTINUOUS_TAG_KEY);
+    for (const c of allClips) {
+      if (c.kind === "continuous") {
+        continuousClips.push(c);
+      } else {
+        const tag = clipMetaTag(c) || "Untitled";
+        if (state.hiddenTags.has(tag)) continue;
+        if (!tagToClips.has(tag)) tagToClips.set(tag, []);
+        tagToClips.get(tag).push(c);
+      }
+    }
+
+    // Stable lane order: continuous first (always-on coverage), then tag
+    // lanes alphabetically. The Continuous lane is omitted entirely when
+    // the user has hidden it via the tag filter.
+    const laneDefs = [];
+    if (!continuousHidden && (continuousClips.length > 0 || allActive.length > 0)) {
+      laneDefs.push({ key: CONTINUOUS_TAG_KEY, label: "Continuous", kind: "continuous" });
+    }
+    const sortedTags = Array.from(tagToClips.keys()).sort((a, b) =>
+      a.localeCompare(b, undefined, { numeric: true }));
+    for (const tag of sortedTags) {
+      laneDefs.push({ key: `tag:${tag}`, label: tag, kind: "tag" });
+    }
+
+    if (laneDefs.length === 0) {
+      els.lanes.innerHTML = `<div class="pbLane"><span class="pbLaneLabel">No recordings in view</span></div>`;
+      els.track.style.minHeight = "56px";
+      return;
+    }
+
+    const mergeGapPx = 2;
+    const mergeGapSec = innerWidth > 0
+      ? (mergeGapPx / innerWidth) * (z / 1000)
+      : 0;
+    const continuousMergeGapSec = Math.max(mergeGapSec, 15);
+    const nowMs = Date.now();
+
+    // Merge adjacent clips into coverage spans. When `respectIdentity` is
+    // on, also require matching tag+color+camera — different events
+    // from different cameras must stay as separate spans so the sub-row
+    // packer can stack them visibly within the same tag lane.
+    function mergeRuns(clips, opts) {
+      const respectIdentity = !!(opts && opts.respectIdentity);
+      const gapSec = (opts && typeof opts.gapSec === "number") ? opts.gapSec : mergeGapSec;
+      const out = [];
+      for (const c of clips) {
+        const last = out[out.length - 1];
+        const tag = clipMetaTag(c);
+        const col = clipMetaColor(c);
+        const cam = c._camera || c.camera;
+        const adjacent = last && c.started_at <= last.end + gapSec;
+        const sameIdentity = respectIdentity
+          ? (last &&
+             (last.tag || "") === (tag || "") &&
+             (last.color || "") === (col || "") &&
+             last.camera === cam)
+          : true;
+        if (adjacent && sameIdentity) {
           last.end = Math.max(last.end, c.ended_at);
           last.clipIds.push(c.id);
           last.count++;
-          const col = clipMetaColor(c);
-          const tag = clipMetaTag(c);
           if (col) last.color = col;
           if (tag) last.tag = tag;
-          if (c.kind === "continuous") last.kind = "continuous";
         } else {
-          spans.push({
+          out.push({
             start: c.started_at,
             end: c.ended_at,
             clipIds: [c.id],
             count: 1,
-            color: clipMetaColor(c),
-            tag: clipMetaTag(c),
+            color: col,
+            tag: tag,
             kind: c.kind,
+            camera: cam,
             firstClip: c,
           });
         }
       }
+      return out;
+    }
+
+    function packSubRows(spans) {
+      const rowEnds = [];
+      const subRowFor = new Map();
+      for (const s of spans) {
+        let placed = false;
+        for (let i = 0; i < rowEnds.length; i++) {
+          if (rowEnds[i] <= s.start) {
+            rowEnds[i] = s.end;
+            subRowFor.set(s, i);
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) {
+          subRowFor.set(s, rowEnds.length);
+          rowEnds.push(s.end);
+        }
+      }
+      return { subRowFor, subRowCount: Math.max(1, rowEnds.length) };
+    }
+
+    function continuousLaneHtml() {
+      // Treat all selected cameras as one. The merge ignores camera
+      // identity — we only care that *something* was recording, not
+      // which something. This keeps the lane a clean unbroken strip.
+      const spans = mergeRuns(continuousClips, { gapSec: continuousMergeGapSec });
+      const bars = spans.map((s) => {
+        const startMs = s.start * 1000;
+        const endMs = s.end * 1000;
+        const left = ((startMs - state.viewportStartMs) / z) * innerWidth;
+        const naturalWidth = ((endMs - startMs) / z) * innerWidth;
+        const widthPx = Math.max(2, naturalWidth - 1);
+        const durS = Math.max(1, Math.round(s.end - s.start));
+        const camLabel = cameraDisplayName(s.camera || "");
+        const title = `Continuous · ${camLabel} · ${fmtClock(startMs)} → ${fmtClock(endMs)} (${durS}s)`;
+        return `<div class="pbCoverageBar is-continuous" data-clip-id="${escapeHtml(s.firstClip.id)}" data-clip-count="${s.count}" style="left:${left.toFixed(1)}px;width:${widthPx.toFixed(1)}px;" title="${escapeHtml(title)}"></div>`;
+      }).join("");
+      // Render ONE in-progress bar for the whole Continuous lane regardless
+      // of how many cameras are currently recording — multiple translucent
+      // strips stacked on each other read as a darker patch and break the
+      // "uniform coverage" look. We also clip it to start no earlier than
+      // the latest finalized chunk end so it doesn't double-paint there.
+      const inProgressBars = (() => {
+        if (allActive.length === 0) return "";
+        const earliestActive = Math.min.apply(null, allActive.map((a) => a.started_at));
+        const finalizedFloor = spans.length
+          ? Math.max.apply(null, spans.map((s) => s.end))
+          : 0;
+        const startSec = Math.max(earliestActive, finalizedFloor);
+        const startMs = startSec * 1000;
+        const endMs = nowMs;
+        if (endMs <= startMs) return "";
+        if (endMs < state.viewportStartMs - padMs ||
+            startMs > state.viewportEndMs + padMs) return "";
+        const left = ((startMs - state.viewportStartMs) / z) * innerWidth;
+        const naturalWidth = ((endMs - startMs) / z) * innerWidth;
+        const widthPx = Math.max(2, naturalWidth);
+        const who = allActive.length === 1
+          ? cameraDisplayName(allActive[0]._camera || allActive[0].camera)
+          : `${allActive.length} cameras`;
+        const title = `Recording now · ${who}`;
+        return `<div class="pbCoverageBar is-continuous is-in-progress" style="left:${left.toFixed(1)}px;width:${widthPx.toFixed(1)}px;" title="${escapeHtml(title)}"></div>`;
+      })();
+      return `<div class="pbLane pbLaneContinuous" data-lane-key="__continuous__" style="height:18px;">
+        <span class="pbLaneLabel">Continuous</span>
+        ${inProgressBars}${bars}
+      </div>`;
+    }
+
+    function tagLaneHtml(tag) {
+      const clips = tagToClips.get(tag) || [];
+      // Single-row layout within a tag lane: all events sit on the same
+      // sub-row regardless of overlap. The tag lane already represents
+      // "this tag fired here"; overlapping events of the same tag still
+      // mean the same thing, so we don't split them into stacked rows.
+      const spans = mergeRuns(clips, { respectIdentity: true });
+
+      const tagH = 12;
+      const padTop = 3;
+      const laneHeight = 18;
 
       const bars = spans.map((s) => {
         const startMs = s.start * 1000;
@@ -701,45 +985,40 @@
         const styleParts = [
           `left:${left.toFixed(1)}px`,
           `width:${widthPx.toFixed(1)}px`,
+          `top:${padTop}px`,
+          `height:${tagH}px`,
+          `bottom:auto`,
         ];
         if (s.color) styleParts.push(`--coverage-color:${s.color}`);
-        const cls = ["pbCoverageBar"];
-        if (s.kind === "continuous") cls.push("is-continuous");
-        const camLabel = cameraDisplayName(cam);
+        const camLabel = cameraDisplayName(s.camera || "");
         const durS = Math.max(1, Math.round(s.end - s.start));
         const title = s.count > 1
-          ? `${s.count} clips · ${camLabel} · ${fmtClock(startMs)} → ${fmtClock(endMs)} (${durS}s coverage)`
-          : `${s.tag || s.kind} · ${camLabel} · ${fmtClock(startMs)} → ${fmtClock(endMs)} (${s.firstClip.duration_seconds}s)`;
-        // data-clip-id holds the FIRST underlying clip so clicking the bar
-        // jumps to a real, playable clip start regardless of how many were
-        // merged.
-        return `<div class="${cls.join(" ")}" data-clip-id="${escapeHtml(s.firstClip.id)}" data-clip-count="${s.count}" style="${styleParts.join(";")}" title="${escapeHtml(title)}"></div>`;
+          ? `${tag} · ${camLabel} · ${s.count} clips · ${fmtClock(startMs)} → ${fmtClock(endMs)} (${durS}s)`
+          : `${tag} · ${camLabel} · ${fmtClock(startMs)} → ${fmtClock(endMs)} (${s.firstClip.duration_seconds}s)`;
+        return `<div class="pbCoverageBar is-triggered" data-clip-id="${escapeHtml(s.firstClip.id)}" data-clip-count="${s.count}" style="${styleParts.join(";")}" title="${escapeHtml(title)}"></div>`;
       }).join("");
-      const label = escapeHtml(cameraDisplayName(cam));
-      return `<div class="pbLane" data-camera="${escapeHtml(cam)}">
-        <span class="pbLaneLabel">${label}</span>
+
+      // Lane label uses the tag's representative color as a swatch so the
+      // viewer can match label → bar at a glance.
+      const swatchColor = spans.length && spans[0].color
+        ? spans[0].color
+        : null;
+      const swatch = swatchColor
+        ? `<span class="pbLaneTagSwatch" style="background:${escapeHtml(swatchColor)};"></span>`
+        : "";
+      return `<div class="pbLane pbLaneTag" data-lane-key="tag:${escapeHtml(tag)}" style="height:${laneHeight}px;">
+        <span class="pbLaneLabel">${swatch}${escapeHtml(tag)}</span>
         ${bars}
       </div>`;
+    }
+
+    const html = laneDefs.map((lane) => {
+      if (lane.kind === "continuous") return continuousLaneHtml();
+      return tagLaneHtml(lane.label);
     }).join("");
+
     els.lanes.innerHTML = html;
     els.track.style.minHeight = "";
-    // Highlight current-clip bars
-    updateLaneCurrentMarkers();
-  }
-
-  function updateLaneCurrentMarkers() {
-    const ts = state.cursorMs / 1000;
-    for (const cam of state.selectedCameras) {
-      const lane = els.lanes.querySelector(`.pbLane[data-camera="${cssEscape(cam)}"]`);
-      if (!lane) continue;
-      const cur = clipForCameraAt(cam, ts);
-      for (const bar of lane.querySelectorAll(".pbCoverageBar")) {
-        bar.classList.toggle("is-current", cur && bar.dataset.clipId === cur.id);
-      }
-    }
-  }
-  function cssEscape(s) {
-    return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
   }
 
   // ── Scale + cursor + now line ──────────────────────────────────────
@@ -847,7 +1126,6 @@
           if (tile.currentClip) anyClipUnderCursor = true;
         }
       }
-      updateLaneCurrentMarkers();
       // If no tile has a clip and there's a later one, jump to it.
       if (!anyClipUnderCursor) {
         const next = nextClipAnyAfter(state.cursorMs / 1000);
@@ -855,7 +1133,6 @@
           state.cursorMs = next.started_at * 1000;
           syncAllTiles();
           renderCursor();
-          updateLaneCurrentMarkers();
         } else {
           // Nothing more to play.
           pause();
@@ -1076,6 +1353,16 @@
     els.selectAllBtn.addEventListener("click", selectAllCameras);
     els.clearAllBtn.addEventListener("click", clearAllCameras);
 
+    if (els.tagList) {
+      els.tagList.addEventListener("click", (e) => {
+        const row = e.target.closest(".pbTagRow");
+        if (!row) return;
+        toggleTag(row.dataset.tag);
+      });
+    }
+    els.tagShowAllBtn?.addEventListener("click", () => setAllTagsHidden(false));
+    els.tagHideAllBtn?.addEventListener("click", () => setAllTagsHidden(true));
+
     els.zoomBtns.forEach((btn) => {
       btn.addEventListener("click", () => {
         const z = Number(btn.dataset.zoomMs);
@@ -1248,6 +1535,7 @@
     renderAll();
     startNowTicker();
     startAutoRefresh();
+    ensureActiveRecordingsTimer();
 
     // Deep-link: #<clip_id>.
     const hash = location.hash.replace(/^#/, "");

@@ -21,9 +21,11 @@ from typing import Dict, Optional
 from .config import (
     BUFFER_DIR,
     BUFFER_MARGIN_SECONDS,
+    CONTINUOUS_CHUNK_SECONDS,
     MAX_PREBUFFER_SECONDS,
     SEGMENT_SECONDS,
 )
+from .device_config import continuous_cameras_from_devices
 from .flow_config import cameras_in_flows
 from .paths import parse_segment_epoch
 
@@ -76,13 +78,24 @@ class Janitor:
     def _sweep(self) -> tuple[int, int, int]:
         now = int(time.time())
         flow_cams: Dict[str, int] = cameras_in_flows()
-        # Per-camera cutoff: now - (before_seconds + margin). Clamp to the
-        # global MAX_PREBUFFER_SECONDS so a misconfigured flow can't ask for
-        # a buffer larger than the engine is willing to keep.
+        continuous_cams = continuous_cameras_from_devices()
+        # Per-camera cutoff: now - (keep_seconds). Cameras in a flow get
+        # `before_seconds + margin` (clamped to MAX_PREBUFFER_SECONDS so a
+        # misconfigured flow can't ask for an unbounded buffer). Continuous
+        # cameras must additionally retain a full chunk's worth of segments
+        # so the watchdog's hourly assembly has something to stitch. We take
+        # the more permissive (longer-keep) of the two when both apply.
         cutoffs: Dict[str, int] = {}
         for cam, before in flow_cams.items():
             keep = min(MAX_PREBUFFER_SECONDS, max(0, int(before))) + BUFFER_MARGIN_SECONDS
             cutoffs[cam] = now - keep
+        continuous_keep = CONTINUOUS_CHUNK_SECONDS + BUFFER_MARGIN_SECONDS
+        for cam in continuous_cams:
+            continuous_cutoff = now - continuous_keep
+            if cam in cutoffs:
+                cutoffs[cam] = min(cutoffs[cam], continuous_cutoff)
+            else:
+                cutoffs[cam] = continuous_cutoff
 
         deleted = 0
         kept = 0

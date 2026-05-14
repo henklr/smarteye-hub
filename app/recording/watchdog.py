@@ -1,7 +1,8 @@
 """Watchdog: auto-stops any active recording past its max_duration_seconds.
 
-Also drives the continuous-recording loop: for each cam in CONTINUOUS_CAMERAS
-without an open active recording, start a new chunk; when chunks hit
+Also drives the continuous-recording loop: for each camera flagged with
+`continuous_recording=true` in devices.json that doesn't already have an
+open active recording, start a new chunk; when chunks hit
 CONTINUOUS_CHUNK_SECONDS, the watchdog auto-stops them (which produces a
 clip, then a fresh chunk is started on the next tick).
 
@@ -24,7 +25,6 @@ import time
 from typing import Optional
 
 from .config import (
-    CONTINUOUS_CAMERAS,
     CONTINUOUS_CHUNK_SECONDS,
     DISK_FULL_TARGET_FREE_PCT,
     DISK_FULL_TRIGGER_FREE_PCT,
@@ -33,6 +33,7 @@ from .config import (
     retention_days_setting,
 )
 from .db import db_connect
+from .device_config import continuous_cameras_from_devices
 from .triggers import start_recording, stop_recording
 
 log = logging.getLogger("recording.watchdog")
@@ -65,8 +66,9 @@ class Watchdog:
 
     async def _run(self) -> None:
         log.info(
-            "watchdog: starting (continuous_cameras=%s chunk=%ds retention=%dd, 0=disk-full)",
-            CONTINUOUS_CAMERAS, CONTINUOUS_CHUNK_SECONDS, retention_days_setting(),
+            "watchdog: starting (chunk=%ds retention=%dd, 0=disk-full; "
+            "continuous cameras read live from devices.json)",
+            CONTINUOUS_CHUNK_SECONDS, retention_days_setting(),
         )
         while not self._stop.is_set():
             try:
@@ -108,16 +110,17 @@ class Watchdog:
                     log.exception("watchdog: auto-stop failed for %s", r["event_id"])
 
     def _ensure_continuous(self, now: int) -> None:
-        if not CONTINUOUS_CAMERAS:
+        cams = sorted(continuous_cameras_from_devices())
+        if not cams:
             return
         with db_connect() as conn:
             rows = conn.execute(
                 "SELECT DISTINCT camera FROM active_recordings WHERE camera IN ("
-                + ",".join("?" * len(CONTINUOUS_CAMERAS)) + ")",
-                CONTINUOUS_CAMERAS,
+                + ",".join("?" * len(cams)) + ")",
+                cams,
             ).fetchall()
         running = {r["camera"] for r in rows}
-        for cam in CONTINUOUS_CAMERAS:
+        for cam in cams:
             if cam in running:
                 continue
             log.info("watchdog: starting continuous chunk for %s", cam)

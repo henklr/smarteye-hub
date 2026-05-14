@@ -27,6 +27,7 @@ from .config import (
     SUPERVISOR_POLL_SECONDS,
     is_storage_mounted,
 )
+from .device_config import continuous_cameras_from_devices
 from .flow_config import cameras_in_flows
 from .janitor import Janitor
 from .segmenter import Segmenter
@@ -148,10 +149,13 @@ class Supervisor:
             await asyncio.gather(*stops, return_exceptions=True)
 
     def _discover_cameras(self) -> Set[str]:
-        # Re-read flow configuration each poll so the segmenter set follows
-        # the user's flow edits live (no engine restart needed).
+        # Re-read flow + device config each poll so the segmenter set follows
+        # user edits live (no engine restart needed).
         self.flow_cameras = cameras_in_flows()
         flow_cams = set(self.flow_cameras.keys())
+        # Cameras flagged for 24/7 continuous recording in device settings.
+        # These need a segmenter even when no flow records them.
+        continuous_cams = continuous_cameras_from_devices()
 
         url = f"{MEDIAMTX_API_URL}/v3/paths/list"
         auth = base64.b64encode(
@@ -169,10 +173,10 @@ class Supervisor:
             name = item.get("name") or ""
             if _CAM_RE.match(name) and item.get("ready"):
                 ready_cams.add(name)
-        # Only record cameras that are *both* ready in MediaMTX *and* used
-        # by an enabled flow. Everything else is intentionally skipped —
-        # no segmenter, no buffer, no clips.
-        return ready_cams & flow_cams
+        # Spawn a segmenter when MediaMTX has the path ready *and* either a
+        # flow needs it or the device is flagged continuous. Anything else
+        # is intentionally skipped — no segmenter, no buffer, no clips.
+        return ready_cams & (flow_cams | continuous_cams)
 
     def status(self) -> dict:
         return {

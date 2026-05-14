@@ -958,6 +958,7 @@ const cameraUsernameEl          = document.getElementById("cameraUsername");
 const cameraPasswordEl          = document.getElementById("cameraPassword");
 const cameraProfileSel          = document.getElementById("cameraProfile");
 const cameraRecordingProfileSel = document.getElementById("cameraRecordingProfile");
+const cameraContinuousEl        = document.getElementById("cameraContinuousRecording");
 const cameraFetchProfilesBtn    = document.getElementById("cameraFetchProfilesBtn");
 const addCameraBtn              = document.getElementById("addCameraBtn");
 const saveCameraBtn             = document.getElementById("saveCameraBtn");
@@ -1037,6 +1038,7 @@ function showCameraForm(camera) {
   if (cameraOnvifPortEl)   cameraOnvifPortEl.value   = camera?.onvif_port  || "80";
   if (cameraUsernameEl)    cameraUsernameEl.value    = camera?.username    || "";
   if (cameraPasswordEl)    cameraPasswordEl.value    = "";
+  if (cameraContinuousEl)  cameraContinuousEl.checked = !!(camera?.continuous_recording);
   _setProfileSelect(cameraProfileSel);
   _setProfileSelect(cameraRecordingProfileSel);
   if (cameraFormEl) {
@@ -1152,7 +1154,12 @@ saveCameraBtn?.addEventListener("click", async () => {
       ? (selectedRec ? _profileLabel(selectedRec) : (cameraRecordingProfileSel?.selectedOptions?.[0]?.textContent || recording_profile_token))
       : null;
 
-    const payload = { name, ...creds, profile_token, profile_label, recording_profile_token, recording_profile_label };
+    const continuous_recording = !!(cameraContinuousEl?.checked);
+    const payload = {
+      name, ...creds, profile_token, profile_label,
+      recording_profile_token, recording_profile_label,
+      continuous_recording,
+    };
 
     setCameraStatus("Saving…");
     if (_editingCameraId) {

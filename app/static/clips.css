@@ -151,6 +151,54 @@ body.playbackPage { overflow: hidden; }
   background: rgba(255, 255, 255, 0.15);
 }
 
+/* ── Recording-tag filter sidebar section ──────────────────────────── */
+
+.playbackPage .pbTagFilterActions {
+  float: right;
+  display: inline-flex;
+  gap: 6px;
+}
+.playbackPage .liveSidebarMiniBtn {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--stroke);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.playbackPage .liveSidebarMiniBtn:hover { color: var(--text); border-color: var(--text); }
+
+.playbackPage .pbTagRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* Inactive (hidden) tags fade out so it reads "this tag is off". The
+     row is still clickable to re-enable. */
+  opacity: 0.4;
+  transition: opacity 0.12s ease;
+}
+.playbackPage .pbTagRow.active { opacity: 1; }
+.playbackPage .pbTagRow:hover { opacity: 0.85; }
+.playbackPage .pbTagRow.active:hover { opacity: 1; }
+
+.playbackPage .pbTagSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: rgba(160, 160, 170, 0.45);
+  flex: 0 0 auto;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.playbackPage .pbTagSwatchEmpty { background: rgba(120, 120, 120, 0.25); }
+
+.playbackPage .pbTagCount {
+  font-size: 10px;
+  margin-left: auto;
+  padding-right: 4px;
+}
+
 /* ── Timeline card ──────────────────────────────────────────────────── */
 
 .playbackPage .pbTimelineCard {
@@ -294,6 +342,8 @@ body.playbackPage { overflow: hidden; }
 
 .playbackPage .pbLane {
   position: relative;
+  /* Default lane height; renderLanes() overrides this inline when triggered
+     tags need to stack into multiple sub-rows because of overlap. */
   height: 18px;
   border-radius: 5px;
   background: rgba(255, 255, 255, 0.03);
@@ -320,6 +370,17 @@ body.playbackPage { overflow: hidden; }
   max-width: 30%;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.playbackPage .pbLaneTagSwatch {
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  background: rgba(160, 160, 170, 0.5);
+  flex: 0 0 auto;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.4);
 }
 
 .playbackPage .pbCoverageBar {
@@ -333,17 +394,53 @@ body.playbackPage { overflow: hidden; }
      Just a soft visual frame — bar-merging in JS handles the "this region
      has many small clips → one continuous span" case. */
   border-left: 1px solid rgba(0, 0, 0, 0.35);
-  cursor: pointer;
-  transition: filter 0.12s ease, transform 0.12s ease;
+  cursor: default;
 }
-.playbackPage .pbCoverageBar:hover { filter: brightness(1.18); }
-.playbackPage .pbCoverageBar.is-current { box-shadow: inset 0 0 0 1px var(--accent-strong); }
-.playbackPage .pbCoverageBar.is-continuous { background: rgba(160, 160, 170, 0.22); }
+/* No hover brightening, no "current clip" outline: bars represent
+   continuous recording coverage, not discrete user-selectable clips.
+   Clicking the timeline still seeks; users just don't see per-bar
+   highlight feedback. */
+
+/* Continuous bars are the lane's background layer: full lane height,
+   translucent grey, and rendered behind any triggered tags painted on top.
+   No left border — consecutive chunks (or the in-progress chunk picking up
+   where a finalised one leaves off) should look like one unbroken strip,
+   not like a stack of discrete clips with visible seams. */
+.playbackPage .pbCoverageBar.is-continuous {
+  top: 0;
+  bottom: 0;
+  background: rgba(160, 160, 170, 0.22);
+  border-left: 0;
+  border-radius: 0;
+  z-index: 1;
+}
+
+/* Triggered tags: smaller height, positioned vertically per sub-row by
+   renderLanes() (top + height set inline). Solid color so they read clearly
+   over a continuous background, with a small radius to feel "pill-like". */
+.playbackPage .pbCoverageBar.is-triggered {
+  background: var(--coverage-color, rgba(120, 175, 230, 0.85));
+  border-left: 1px solid rgba(0, 0, 0, 0.45);
+  border-radius: 2px;
+  z-index: 2;
+}
+
 [data-theme="light"] .playbackPage .pbCoverageBar {
   background: var(--coverage-color, rgba(48, 110, 175, 0.30));
 }
 [data-theme="light"] .playbackPage .pbCoverageBar.is-continuous {
   background: rgba(120, 120, 130, 0.22);
+  border-left-color: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .playbackPage .pbCoverageBar.is-triggered {
+  background: var(--coverage-color, rgba(48, 110, 175, 0.85));
+}
+
+/* In-progress continuous recording: visually identical to finalised
+   continuous chunks. The "NOW" line already indicates that the strip is
+   live up to the current moment; no special highlight needed. */
+.playbackPage .pbCoverageBar.is-in-progress {
+  pointer-events: none;
 }
 
 /* ── Cursor + now line ──────────────────────────────────────────────── */

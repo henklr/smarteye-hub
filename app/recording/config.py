@@ -92,8 +92,6 @@ def trigger_max_duration_setting() -> int:
         return TRIGGER_MAX_DURATION_SECONDS
     return min(v, TRIGGER_MAX_DURATION_HARD_CEILING)
 
-_continuous_raw = os.getenv("RECORDING_CONTINUOUS_CAMERAS", "").strip()
-CONTINUOUS_CAMERAS = [c.strip() for c in _continuous_raw.split(",") if c.strip()]
 CONTINUOUS_CHUNK_SECONDS = int(os.getenv("RECORDING_CONTINUOUS_CHUNK_SECONDS", "3600"))
 
 MEDIAMTX_RTSP_HOST = os.getenv("MEDIAMTX_RTSP_HOST", "mediamtx")

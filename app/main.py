@@ -1360,6 +1360,10 @@ class DeviceIn(BaseModel):
     recording_rtsp_url: Optional[str] = None
     preload_stream: bool = True
     snapshot_uri: Optional[str] = None
+    # When true, the supervisor keeps a segmenter running 24/7 for this camera
+    # and the watchdog produces continuous hourly chunks alongside any
+    # triggered recordings. Off by default.
+    continuous_recording: bool = False
 
 
 class Device(DeviceIn):
@@ -1628,6 +1632,10 @@ def _normalize_device_dict(d: dict) -> dict:
     out = dict(d)
     if "preload_stream" not in out:
         out["preload_stream"] = True
+    if "continuous_recording" not in out:
+        out["continuous_recording"] = False
+    else:
+        out["continuous_recording"] = bool(out["continuous_recording"])
     out.pop("allow_topics", None)
     return out
 
