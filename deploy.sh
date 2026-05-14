@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PI=${SMARTEYE_PI:-smarteye@smarteye-hub.local}
+if [[ $# -lt 1 || "${1:-}" != *"@"* ]]; then
+  echo "Usage: $0 <user@host>" >&2
+  echo "Example: $0 smarteye@smarteye-hub.local" >&2
+  exit 1
+fi
+
+PI=$1
+
 REMOTE_DIR=${SMARTEYE_REMOTE_DIR:-/home/smarteye/smarteye-hub}
 KEY=${SMARTEYE_SSH_KEY:-"$HOME/.ssh/smarteye_hub_ed25519"}
 SSH_OPTS=(
