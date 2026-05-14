@@ -660,12 +660,25 @@
 
           <div class="grid overlayFormGrid" style="margin-top:14px;">
             <div data-full>
+              <label for="retentionDaysInput">Retention</label>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <input id="retentionDaysInput" type="number" min="0" max="3650" step="1" value="0" style="width:90px;" />
+                <span class="muted">day(s)</span>
+                <button class="btn btn-mini" id="retentionDaysSaveBtn" type="button">Save</button>
+                <span id="retentionDaysStatus" class="muted" style="font-size:0.85em;"></span>
+              </div>
+              <div class="listSub" style="margin-top:4px;">
+                Automatically delete clips older than this many days. <strong>0 = disabled</strong>:
+                clips are kept indefinitely and the oldest are pruned only when the drive is nearly full.
+              </div>
+            </div>
+
+            <div data-full>
               <label>Recording engine</label>
               <div class="listSub" style="margin-top:4px;">
                 Storage path and segment size are configured via <code>NVME_BASE</code> and
                 <code>RECORDING_*</code> environment variables in <code>docker-compose.yml</code>.
-                See the README for the full list. Continuous-recording retention is set with
-                <code>RECORDING_CONTINUOUS_RETENTION_DAYS</code> (default 7).
+                See the README for the full list.
               </div>
               <div class="listSub" style="margin-top:6px;"><span id="recordingEngineStatus" class="muted"></span></div>
             </div>
