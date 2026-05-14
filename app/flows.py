@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from recording import create_recording_marker, stop_recording_marker
+from recording.config import trigger_max_duration_setting
 
 from physical_io import (
     activate_physical_output,
@@ -590,6 +591,10 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
         "defaults": {
             "device_ids": [],
             "before_seconds": 10,
+            # Auto-stop after this many seconds if no Stop recording node fires.
+            # Capped server-side by the global setting (UI: Settings → Storage
+            # → Max recording duration). Sensible mid-value: 60 seconds.
+            "max_duration_seconds": 60,
             "color": "#c6a14b",
             "name": "",
         },
@@ -2118,6 +2123,21 @@ def _normalize_node_config(
             raise HTTPException(status_code=400, detail="Record seconds before must be numeric")
         if cfg["before_seconds"] < 0:
             raise HTTPException(status_code=400, detail="Record seconds before cannot be negative")
+        try:
+            raw_max = cfg.get("max_duration_seconds")
+            # Legacy data may hold 0 from before the field was required.
+            # Treat that as "unset" and upgrade to the schema default (60s),
+            # not the cap — landing on the cap would silently turn old nodes
+            # into 30-minute recordings.
+            parsed_max = int(0 if raw_max in {None, ""} else raw_max)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Record max duration must be an integer (seconds)")
+        cap = trigger_max_duration_setting()
+        if parsed_max < 1:
+            parsed_max = min(60, cap)
+        if parsed_max > cap:
+            parsed_max = cap
+        cfg["max_duration_seconds"] = parsed_max
         # `after_seconds` is no longer part of the action — recordings stay
         # open until an explicit Stop Recording (use a Delay node in front of
         # it for the "record for N seconds" pattern).
@@ -3642,6 +3662,10 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
                 device_ids.append(did)
 
         before = float(cfg.get("before_seconds") or 0)
+        try:
+            max_duration = int(cfg.get("max_duration_seconds") or 0)
+        except (TypeError, ValueError):
+            max_duration = 0
         flow_id = str((context.get("flow") or {}).get("id") or "").strip() or None
         flow_name = str((context.get("flow") or {}).get("name") or "").strip() or None
         node_id = str(node.get("id") or "").strip() or None
@@ -3653,6 +3677,7 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
                 event = create_recording_marker(
                     device_id=did,
                     before_seconds=before,
+                    max_duration_seconds=max_duration,
                     color=color,
                     title=title,
                     preset_key=preset_key,

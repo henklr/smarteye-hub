@@ -162,6 +162,7 @@ def create_recording_marker(
     *,
     device_id: str,
     before_seconds: float = 0,
+    max_duration_seconds: int = 0,
     color: str = "",
     title: str = "Recording",
     preset_key: str = "",
@@ -179,10 +180,16 @@ def create_recording_marker(
         }
     )
     camera = _camera_name(device_id)
+    # 0 / negative → fall back to the engine's safety cap; any positive value
+    # is honoured, still clamped by the cap inside start_recording.
+    try:
+        max_dur = int(max_duration_seconds)
+    except (TypeError, ValueError):
+        max_dur = 0
     started = start_recording(
         camera=camera,
         pre_buffer_seconds=int(max(0, float(before_seconds))),
-        max_duration_seconds=None,  # use env default cap
+        max_duration_seconds=max_dur if max_dur > 0 else None,
         metadata=meta,
     )
     return {

@@ -9,7 +9,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 from .assembler import assemble_clip
-from .config import TRIGGER_MAX_DURATION_SECONDS
+from .config import trigger_max_duration_setting
 from .db import db_connect
 from .paths import clip_path
 
@@ -25,8 +25,8 @@ def _now() -> int:
 
 
 def _clamp_max_duration(requested: Optional[int]) -> int:
-    """Clamp to env cap; 0/None means cap-as-max (continuous handled separately)."""
-    cap = TRIGGER_MAX_DURATION_SECONDS
+    """Clamp to the current setting cap; 0/None means cap-as-max."""
+    cap = trigger_max_duration_setting()
     if requested is None or requested <= 0:
         return cap
     return min(int(requested), cap)

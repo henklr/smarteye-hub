@@ -54,7 +54,12 @@ from recording import (
     stop_recording_engine,
     system_load_snapshot,
 )
-from recording.config import STORAGE_MOUNT, is_storage_mounted
+from recording.config import (
+    STORAGE_MOUNT,
+    TRIGGER_MAX_DURATION_HARD_CEILING,
+    is_storage_mounted,
+    trigger_max_duration_setting,
+)
 from physical_io import start_physical_io_monitor, stop_physical_io_monitor
 import dashboard_connector
 import nox_connector
@@ -869,6 +874,41 @@ def get_retention():
     except (TypeError, ValueError):
         days = 0
     return {"retention_days": days}
+
+
+@app.get("/api/system/recording-limits")
+def get_recording_limits():
+    """Return engine-wide caps used by the Record flow node."""
+    return {
+        "trigger_max_duration_seconds": trigger_max_duration_setting(),
+        "trigger_max_duration_ceiling": TRIGGER_MAX_DURATION_HARD_CEILING,
+    }
+
+
+@app.put("/api/system/recording-limits")
+def set_recording_limits(body: Dict[str, Any]):
+    """Update the global max recording duration cap."""
+    if body is None or "trigger_max_duration_seconds" not in body:
+        raise HTTPException(
+            status_code=400, detail="trigger_max_duration_seconds is required"
+        )
+    raw = body.get("trigger_max_duration_seconds")
+    try:
+        seconds = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400, detail="trigger_max_duration_seconds must be an integer"
+        )
+    if seconds < 1 or seconds > TRIGGER_MAX_DURATION_HARD_CEILING:
+        raise HTTPException(
+            status_code=400,
+            detail=f"trigger_max_duration_seconds must be between 1 and {TRIGGER_MAX_DURATION_HARD_CEILING}",
+        )
+    settings = _load_settings_json()
+    settings["trigger_max_duration_seconds"] = seconds
+    _save_settings_json(settings)
+    _log_system.info("Max recording duration cap updated to %d second(s)", seconds)
+    return {"ok": True, "trigger_max_duration_seconds": seconds}
 
 
 @app.put("/api/system/retention")

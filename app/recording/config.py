@@ -59,7 +59,38 @@ def is_storage_mounted() -> bool:
 SEGMENT_SECONDS = int(os.getenv("RECORDING_SEGMENT_SECONDS", "2"))
 MAX_PREBUFFER_SECONDS = int(os.getenv("RECORDING_MAX_PREBUFFER_SECONDS", "600"))
 BUFFER_MARGIN_SECONDS = int(os.getenv("RECORDING_BUFFER_MARGIN_SECONDS", "60"))
+# Env-var fallback for the trigger cap. The authoritative value lives in
+# settings.json (see `trigger_max_duration_setting`), so admins can tune it
+# from the UI without redeploying. This value applies only when the setting
+# is absent or invalid.
 TRIGGER_MAX_DURATION_SECONDS = int(os.getenv("RECORDING_TRIGGER_MAX_DURATION_SECONDS", "1800"))
+# Hard ceiling on the UI-configurable cap, just to keep an admin from
+# accidentally setting it to MAX_INT and disabling the safety net entirely.
+TRIGGER_MAX_DURATION_HARD_CEILING = 24 * 3600  # 24 hours
+
+
+def trigger_max_duration_setting() -> int:
+    """Effective max duration (seconds) for a single triggered recording.
+
+    UI-configurable via settings.json's `trigger_max_duration_seconds`. Falls
+    back to the env-var default if unset/invalid. Re-read on every call so
+    a UI change takes effect on the next clamp without an engine restart.
+    """
+    try:
+        raw = json.loads(SETTINGS_JSON_PATH.read_text(encoding="utf-8")).get(
+            "trigger_max_duration_seconds"
+        )
+    except Exception:
+        raw = None
+    try:
+        if raw is None or raw == "":
+            return TRIGGER_MAX_DURATION_SECONDS
+        v = int(raw)
+    except (TypeError, ValueError):
+        return TRIGGER_MAX_DURATION_SECONDS
+    if v < 1:
+        return TRIGGER_MAX_DURATION_SECONDS
+    return min(v, TRIGGER_MAX_DURATION_HARD_CEILING)
 
 _continuous_raw = os.getenv("RECORDING_CONTINUOUS_CAMERAS", "").strip()
 CONTINUOUS_CAMERAS = [c.strip() for c in _continuous_raw.split(",") if c.strip()]

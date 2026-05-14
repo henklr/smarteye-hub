@@ -413,6 +413,56 @@ async function loadRetentionDays() {
 }
 loadRetentionDays();
 
+const triggerMaxDurationInput = document.getElementById("triggerMaxDurationInput");
+const triggerMaxDurationSaveBtn = document.getElementById("triggerMaxDurationSaveBtn");
+const triggerMaxDurationStatus = document.getElementById("triggerMaxDurationStatus");
+
+function setTriggerMaxStatus(msg, isError) {
+  if (!triggerMaxDurationStatus) return;
+  triggerMaxDurationStatus.textContent = msg || "";
+  triggerMaxDurationStatus.style.color = isError ? "var(--clr-danger, #e74c3c)" : "";
+}
+
+async function loadTriggerMaxDuration() {
+  if (!triggerMaxDurationInput) return;
+  try {
+    const data = await api("/api/system/recording-limits");
+    const seconds = Number(data?.trigger_max_duration_seconds ?? 1800);
+    triggerMaxDurationInput.value = seconds;
+    const ceiling = Number(data?.trigger_max_duration_ceiling ?? 86400);
+    triggerMaxDurationInput.max = String(ceiling);
+    setTriggerMaxStatus("");
+  } catch (e) {
+    setTriggerMaxStatus(`Could not load: ${String(e.message || e)}`, true);
+  }
+}
+loadTriggerMaxDuration();
+
+triggerMaxDurationSaveBtn?.addEventListener("click", async () => {
+  const raw = triggerMaxDurationInput?.value ?? "0";
+  const seconds = Math.floor(Number(raw));
+  if (!Number.isFinite(seconds) || seconds < 1) {
+    setTriggerMaxStatus("Enter a positive integer (seconds)", true);
+    return;
+  }
+  triggerMaxDurationSaveBtn.disabled = true;
+  setTriggerMaxStatus("Saving…");
+  try {
+    const result = await api("/api/system/recording-limits", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trigger_max_duration_seconds: seconds }),
+    });
+    const saved = Number(result?.trigger_max_duration_seconds ?? seconds);
+    triggerMaxDurationInput.value = saved;
+    setTriggerMaxStatus(`Saved: recordings auto-stop at ${saved}s at most.`);
+  } catch (e) {
+    setTriggerMaxStatus(`Error: ${String(e.message || e)}`, true);
+  } finally {
+    triggerMaxDurationSaveBtn.disabled = false;
+  }
+});
+
 retentionDaysSaveBtn?.addEventListener("click", async () => {
   const raw = retentionDaysInput?.value ?? "0";
   const days = Math.max(0, Math.floor(Number(raw)));
