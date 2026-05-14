@@ -178,6 +178,16 @@
                   <option>Fetch profiles first…</option>
                 </select>
               </div>
+              <div data-full>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;">
+                  <input id="cameraContinuousRecording" type="checkbox" style="width:auto;margin:0;" />
+                  <span>Continuous recording (24/7)</span>
+                </label>
+                <div class="listSub" style="margin-top:4px;">
+                  Keeps a segmenter running 24/7 and stores hourly chunks. Trigger-based recordings still work on top.
+                  <strong>Heads up:</strong> a typical IP-camera stream is ~40&nbsp;GB/day — multiple continuous cameras will fill the drive fast and exercise the retention sweep.
+                </div>
+              </div>
             </div>
             <div class="row2" style="margin-top:14px;">
               <button class="btn btn-primary" id="saveCameraBtn" type="button">Save camera</button>

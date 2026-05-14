@@ -54,7 +54,34 @@ def post_record_stop(body: StopBody) -> Dict[str, Any]:
 
 @router.get("/api/record/active")
 def get_active(camera: Optional[str] = None) -> Dict[str, Any]:
-    return {"items": list_active(camera=camera)}
+    """Currently-open recordings, with metadata parsed + kind/started_at
+    surfaced so the timeline can render in-progress strips alongside
+    finalised `/api/clips`.
+    """
+    rows = list_active(camera=camera)
+    items: List[Dict[str, Any]] = []
+    for r in rows:
+        meta: Dict[str, Any] = {}
+        raw_meta = r.get("metadata_json")
+        if raw_meta:
+            try:
+                meta = json.loads(raw_meta)
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+        kind = str(meta.get("_kind") or "triggered")
+        trigger_start = int(r.get("trigger_start_ts") or 0)
+        pre_buffer = int(r.get("pre_buffer_seconds") or 0)
+        items.append({
+            "event_id": r.get("event_id"),
+            "camera": r.get("camera"),
+            "kind": kind,
+            "started_at": trigger_start - pre_buffer,
+            "trigger_start_ts": trigger_start,
+            "pre_buffer_seconds": pre_buffer,
+            "max_duration_seconds": int(r.get("max_duration_seconds") or 0),
+            "metadata": meta,
+        })
+    return {"items": items}
 
 
 # ---------------------------------------------------------------------------
@@ -97,8 +124,14 @@ def list_clips(
     if camera:
         conds.append("camera = ?")
         args.append(camera)
+    # Range filter uses interval-overlap semantics: include any clip whose
+    # [started_at, ended_at] intersects [from, to]. The naive
+    # `started_at >= from AND started_at <= to` filter excluded long-running
+    # clips (e.g. 30-min continuous chunks) when the viewport landed inside
+    # them — the chunk's started_at was before `from` even though the clip
+    # covered the viewport, and the timeline lane went blank on zoom-in.
     if from_ is not None:
-        conds.append("started_at >= ?")
+        conds.append("ended_at >= ?")
         args.append(int(from_))
     if to is not None:
         conds.append("started_at <= ?")

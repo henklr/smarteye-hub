@@ -19,7 +19,6 @@ services:
       # Safety cap on per-recording max duration. The Record node sets its
       # own value; this is the absolute ceiling. Code default is 1800 (30 min).
       - RECORDING_TRIGGER_MAX_DURATION_SECONDS=1800
-      - RECORDING_CONTINUOUS_CAMERAS=
       - RECORDING_CONTINUOUS_CHUNK_SECONDS=3600
       - NVME_BASE=/mnt/nvme/smarteye
     ports:
