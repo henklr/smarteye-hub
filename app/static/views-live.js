@@ -1145,8 +1145,35 @@ async function connectEntry(device, entry) {
       cur.retryCount = 0;
       clearRetryTimer(cur);
       cur.retryScheduled = false;
-      setEntryState(device.id, STREAM_STATE.LIVE);
-      saveGridState();
+      // WebRTC "connected" only means the transport is up — the camera
+      // hasn't necessarily delivered the first keyframe yet, so the video
+      // element will still be black for a beat. Keep the spinner up until
+      // the <video> actually starts decoding frames (its `playing` event
+      // fires), or fall back after 8 s in case the event never lands.
+      setTileOverlay(cur, "Waiting for video…", true);
+      const goLive = () => {
+        const latest = getEntry(device.id);
+        if (!latest || latest.cancelled) return;
+        if (latest.state === STREAM_STATE.LIVE) return;
+        cleanupGoLive();
+        setEntryState(device.id, STREAM_STATE.LIVE);
+        saveGridState();
+      };
+      const cleanupGoLive = () => {
+        try { cur.videoEl?.removeEventListener("playing", goLive); } catch {}
+        if (cur.firstFrameTimer) {
+          clearTimeout(cur.firstFrameTimer);
+          cur.firstFrameTimer = null;
+        }
+      };
+      // If frames are already flowing (rare but possible if the listener
+      // attaches after the event), skip the wait.
+      if (cur.videoEl && !cur.videoEl.paused && cur.videoEl.readyState >= 2) {
+        goLive();
+        return;
+      }
+      cur.videoEl?.addEventListener("playing", goLive, { once: true });
+      cur.firstFrameTimer = setTimeout(goLive, 8000);
       return;
     }
 
@@ -1606,6 +1633,7 @@ async function startDevice(device, { restore = false } = {}) {
     connecting: false,
     ptzInstalled: false,
     disconnectTimer: null,
+    firstFrameTimer: null,
   };
 
   streams.set(device.id, entry);
@@ -1638,6 +1666,10 @@ async function stopDevice(deviceId, { force = false } = {}) {
   entry.cancelled = true;
   clearRetryTimer(entry);
   clearDisconnectTimer(entry);
+  if (entry.firstFrameTimer) {
+    clearTimeout(entry.firstFrameTimer);
+    entry.firstFrameTimer = null;
+  }
   entry.retryScheduled = false;
 
   try {
@@ -2283,6 +2315,10 @@ function disposeLiveEntry(deviceId, entry) {
   entry.cancelled = true;
   clearRetryTimer(entry);
   clearDisconnectTimer(entry);
+  if (entry.firstFrameTimer) {
+    clearTimeout(entry.firstFrameTimer);
+    entry.firstFrameTimer = null;
+  }
   entry.retryScheduled = false;
   entry.connecting = false;
   try { entry.cleanupPtzListeners?.(); } catch {}
