@@ -254,6 +254,12 @@ _storage_recovery_stop = threading.Event()
 _storage_recovery_thread: Optional[threading.Thread] = None
 _STORAGE_RECOVERY_POLL_SECONDS = 30
 
+# Sentinel file that suppresses the storage-recovery thread (and the format
+# endpoint's "stop both engines" path) from restarting the recording engine
+# during a Format & mount cycle. Both uvicorn workers see the same file
+# because /app/data is a shared bind mount.
+_FORMAT_IN_PROGRESS_PATH = Path("/app/data/.format_in_progress")
+
 _path_monitor_lock = threading.RLock()
 _path_monitor_state: Dict[str, Dict[str, Any]] = {}
 
@@ -720,9 +726,53 @@ def _list_timezones() -> list:
     return sorted(zones)
 
 
+def _system_load_payload() -> dict:
+    """Combine recording-engine status with live CPU + memory readings so the
+    Settings → Performance section + the recording-engine status badge can
+    both feed off /api/system/load.
+
+    /proc/loadavg and /proc/meminfo work because the container has
+    `pid: host` — /proc IS the host's. Returns sensible defaults / omits
+    keys when a metric can't be read (e.g. read-only fs, host-side perms).
+    """
+    info = dict(system_load_snapshot() or {})
+    try:
+        load = os.getloadavg()  # tuple of three floats
+        cpu_count = os.cpu_count() or 1
+        info["cpu_count"] = cpu_count
+        info["load"] = {"1m": load[0], "5m": load[1], "15m": load[2]}
+        # Saturation ratio of the 1-minute load avg against core count.
+        # >1.0 means the system is overloaded; we clamp at 1.0 so the bar
+        # renders as 100% rather than overflowing.
+        info["load_pct_1m"] = min(1.0, load[0] / cpu_count)
+    except (OSError, AttributeError):
+        pass
+    try:
+        mem_total_kb = mem_avail_kb = 0
+        with open("/proc/meminfo", "r") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    mem_total_kb = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    mem_avail_kb = int(line.split()[1])
+                if mem_total_kb and mem_avail_kb:
+                    break
+        if mem_total_kb > 0:
+            used_kb = max(0, mem_total_kb - mem_avail_kb)
+            info["memory"] = {
+                "total_kb": mem_total_kb,
+                "available_kb": mem_avail_kb,
+                "used_kb": used_kb,
+                "used_pct": used_kb / mem_total_kb,
+            }
+    except (OSError, ValueError):
+        pass
+    return info
+
+
 @app.get("/api/system/load")
 def get_system_load():
-    return system_load_snapshot()
+    return _system_load_payload()
 
 
 @app.get("/api/system/datetime")
@@ -1041,6 +1091,13 @@ def _storage_recovery_loop() -> None:
     is idempotent — it returns immediately if the supervisor already exists.
     """
     while not _storage_recovery_stop.wait(_STORAGE_RECOVERY_POLL_SECONDS):
+        # Skip the auto-start path while a Format & mount is in progress.
+        # Without this guard, the recovery thread can restart the recording
+        # engine between when the format handler stops it and when mkfs
+        # runs, leaving the segmenter lock file holding `/dev/nvme0n1p1`
+        # busy and mkfs failing with EBUSY.
+        if _FORMAT_IN_PROGRESS_PATH.exists():
+            continue
         try:
             if is_storage_mounted():
                 start_recording_engine()
@@ -1091,6 +1148,43 @@ def storage_format(request: Request, body: dict = None):
     import time as _time
     import signal as _signal
 
+    # Set the sentinel BEFORE stopping anything so the storage-recovery
+    # thread (both this worker's and the sibling's) sees it on its next
+    # poll and doesn't re-start the engine mid-format.
+    try:
+        _FORMAT_IN_PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _FORMAT_IN_PROGRESS_PATH.touch()
+    except OSError as exc:
+        _log_system.warning("Could not write format sentinel: %s", exc)
+
+    def _signal_sibling_uvicorns() -> None:
+        """SIGUSR1 every uvicorn worker that isn't us.
+
+        Their handler (installed in `_on_startup`) calls
+        `stop_recording_engine()`, releasing SQLite WAL handles and the
+        segmenter lock so mkfs isn't blocked by `fuser=... uvicorn`.
+        """
+        try:
+            proc = subprocess.run(
+                ["pgrep", "-f", "uvicorn main:app"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            _log_system.exception("Format: pgrep failed")
+            return
+        my_pid = os.getpid()
+        for tok in (proc.stdout or "").split():
+            try:
+                pid = int(tok.strip())
+            except ValueError:
+                continue
+            if pid and pid != my_pid:
+                try:
+                    os.kill(pid, _signal.SIGUSR1)
+                    _log_system.info("Format: signalled sibling uvicorn pid=%d", pid)
+                except (ProcessLookupError, PermissionError):
+                    pass
+
     # Stop any app-side writers that might be touching the mount. This
     # process's engine first, then the sibling uvicorn (HTTP vs HTTPS)
     # via SIGUSR1 — without that the sibling's SQLite connection + WAL
@@ -1099,25 +1193,7 @@ def storage_format(request: Request, body: dict = None):
         stop_recording_engine()
     except Exception as exc:
         _log_system.warning("Could not stop recording engine before format: %s", exc)
-    try:
-        proc = subprocess.run(
-            ["pgrep", "-f", "uvicorn main:app"],
-            capture_output=True, text=True, timeout=5,
-        )
-        my_pid = os.getpid()
-        for line in (proc.stdout or "").split():
-            try:
-                pid = int(line.strip())
-            except ValueError:
-                continue
-            if pid and pid != my_pid:
-                try:
-                    os.kill(pid, _signal.SIGUSR1)
-                    _log_system.info("Format: signalled sibling uvicorn pid=%d to stop engine", pid)
-                except (ProcessLookupError, PermissionError):
-                    pass
-    except Exception:
-        _log_system.exception("Format: failed to signal sibling uvicorn")
+    _signal_sibling_uvicorns()
     # Give the sibling a beat to close DB connections + release the lock.
     _time.sleep(1.5)
 
@@ -1255,53 +1331,84 @@ def storage_format(request: Request, body: dict = None):
     # not an actual kernel-level holder (mount or open O_EXCL). udev's blkid
     # probe + the sibling uvicorn's ffmpeg children can both hold the device,
     # so we kill ffmpeg holders and retry with a fresh settle/unmount cycle.
+    # Defensive: re-stop both engines right before mkfs in case the recovery
+    # thread or some other code path snuck a restart in between. (The
+    # sentinel suppresses *new* recovery starts, but a recovery tick already
+    # mid-call when the sentinel was written would have finished its start.)
+    try:
+        stop_recording_engine()
+    except Exception:
+        pass
+    _signal_sibling_uvicorns()
+    _time.sleep(0.5)
     _kill_recording_holders()
 
     mkfs_ok = False
     mkfs_err = ""
     last_diag = ""
-    for attempt in range(4):
-        if attempt > 0:
-            _kill_recording_holders()
-            _host_cmd(["udevadm", "settle", "--timeout=5"], timeout=10)
-            if _device_is_mounted(part_path):
-                _unmount(part_path)
-            _host_cmd(["sync"], timeout=10)
-            _host_cmd(["blockdev", "--flushbufs", part_path], timeout=10)
-            _time.sleep(1.5)
-        proc = _host_cmd(["mkfs.ext4", "-F", "-F", part_path], timeout=180)
-        if proc.returncode == 0:
-            mkfs_ok = True
-            break
-        mkfs_err = proc.stderr.strip()
-        _log_system.warning("mkfs.ext4 attempt %d failed: %s", attempt + 1, mkfs_err)
-        last_diag = _diag_holders(f"mkfs attempt {attempt + 1} failed")
-
-    if not mkfs_ok:
-        _log_system.error("mkfs.ext4 failed after retries: %s; holders: %s", mkfs_err, last_diag)
-        detail = f"[mkfs] Formatting failed: {mkfs_err}"
-        if last_diag:
-            detail += f" | holders: {last_diag}"
-        raise HTTPException(status_code=500, detail=detail)
-
-    # Create mount point and mount.
-    _host_cmd(["mkdir", "-p", mount_path])
-    proc = _host_cmd(["mount", part_path, mount_path])
-    if proc.returncode != 0:
-        raise HTTPException(status_code=500, detail=f"[mount] Mount failed: {proc.stderr.strip()}")
-
-    # Re-add the fstab entry (we stripped any stale one upfront).
-    fstab_line = f"{part_path}  {mount_path}  ext4  defaults,nofail  0  2"
-    _host_cmd(["sh", "-c", f"echo '{fstab_line}' >> /etc/fstab"])
-
-    # Restart the recording engine so it picks up the fresh mount.
     try:
-        start_recording_engine()
-    except Exception as exc:
-        _log_system.warning("Could not restart recording engine after format: %s", exc)
+        for attempt in range(4):
+            if attempt > 0:
+                # Each retry also re-stops + re-kills in case anything
+                # raced back to life since the previous attempt.
+                try:
+                    stop_recording_engine()
+                except Exception:
+                    pass
+                _kill_recording_holders()
+                _host_cmd(["udevadm", "settle", "--timeout=5"], timeout=10)
+                if _device_is_mounted(part_path):
+                    _unmount(part_path)
+                _host_cmd(["sync"], timeout=10)
+                _host_cmd(["blockdev", "--flushbufs", part_path], timeout=10)
+                _time.sleep(1.5)
+            proc = _host_cmd(["mkfs.ext4", "-F", "-F", part_path], timeout=180)
+            if proc.returncode == 0:
+                mkfs_ok = True
+                break
+            mkfs_err = proc.stderr.strip()
+            _log_system.warning("mkfs.ext4 attempt %d failed: %s", attempt + 1, mkfs_err)
+            last_diag = _diag_holders(f"mkfs attempt {attempt + 1} failed")
 
-    _log_system.info("NVMe %s formatted and mounted at %s", device, mount_path)
-    return {"ok": True, "device": device, "partition": f"{device}p1", "mount_path": mount_path}
+        if not mkfs_ok:
+            _log_system.error("mkfs.ext4 failed after retries: %s; holders: %s", mkfs_err, last_diag)
+            detail = f"[mkfs] Formatting failed: {mkfs_err}"
+            if last_diag:
+                detail += f" | holders: {last_diag}"
+            raise HTTPException(status_code=500, detail=detail)
+
+        # Create mount point and mount.
+        _host_cmd(["mkdir", "-p", mount_path])
+        proc = _host_cmd(["mount", part_path, mount_path])
+        if proc.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"[mount] Mount failed: {proc.stderr.strip()}")
+
+        # Re-add the fstab entry (we stripped any stale one upfront).
+        fstab_line = f"{part_path}  {mount_path}  ext4  defaults,nofail  0  2"
+        _host_cmd(["sh", "-c", f"echo '{fstab_line}' >> /etc/fstab"])
+
+        # Drop the sentinel BEFORE restarting the engine so the recovery
+        # thread doesn't keep skipping engine starts. start_recording_engine
+        # itself is idempotent so calling it directly is fine too.
+        try:
+            _FORMAT_IN_PROGRESS_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
+        # Restart the recording engine so it picks up the fresh mount.
+        try:
+            start_recording_engine()
+        except Exception as exc:
+            _log_system.warning("Could not restart recording engine after format: %s", exc)
+
+        _log_system.info("NVMe %s formatted and mounted at %s", device, mount_path)
+        return {"ok": True, "device": device, "partition": f"{device}p1", "mount_path": mount_path}
+    finally:
+        # If we bailed out via raise above, the sentinel didn't get cleared.
+        # Make sure it's gone so the recovery thread can resume.
+        try:
+            _FORMAT_IN_PROGRESS_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 @app.post("/api/storage/mount")

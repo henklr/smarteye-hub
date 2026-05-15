@@ -25,6 +25,7 @@ from .config import (
     MAX_PREBUFFER_SECONDS,
     SEGMENT_SECONDS,
 )
+from .db import db_connect
 from .device_config import continuous_cameras_from_devices
 from .flow_config import cameras_in_flows
 from .paths import parse_segment_epoch
@@ -96,6 +97,28 @@ class Janitor:
                 cutoffs[cam] = min(cutoffs[cam], continuous_cutoff)
             else:
                 cutoffs[cam] = continuous_cutoff
+
+        # Any in-progress recording (continuous OR triggered) needs every
+        # segment from `started_at - pre_buffer` onward to assemble cleanly.
+        # Without this, the pre-buffer-based cutoff prunes mid-recording and
+        # the resulting clip ends up only ~keep-window seconds long, even
+        # though the recording "ran" much longer.
+        try:
+            with db_connect() as conn:
+                actives = conn.execute(
+                    "SELECT camera, trigger_start_ts, pre_buffer_seconds "
+                    "FROM active_recordings"
+                ).fetchall()
+        except Exception:
+            log.exception("janitor: failed to read active_recordings")
+            actives = []
+        for r in actives:
+            cam = r["camera"]
+            need_from = int(r["trigger_start_ts"]) - int(r["pre_buffer_seconds"])
+            if cam in cutoffs:
+                cutoffs[cam] = min(cutoffs[cam], need_from)
+            else:
+                cutoffs[cam] = need_from
 
         deleted = 0
         kept = 0

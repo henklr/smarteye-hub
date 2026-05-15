@@ -481,11 +481,30 @@ body.pbTileMaximized .pbTimelineCard .pbTransport {
   background: var(--coverage-color, rgba(48, 110, 175, 0.85));
 }
 
-/* In-progress continuous recording: visually identical to finalised
-   continuous chunks. The "NOW" line already indicates that the strip is
-   live up to the current moment; no special highlight needed. */
+/* In-progress continuous recording: hashed diagonal stripes signal "this
+   region exists but isn't a playable clip yet — the segment is still being
+   written to buffer, will be finalized when the chunk rolls over". The
+   stripes use the same translucent grey as finalized continuous so the
+   strip still reads as one continuous recording strip, just with a
+   distinctly "pending" texture. */
 .playbackPage .pbCoverageBar.is-in-progress {
   pointer-events: none;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(160, 160, 170, 0.32),
+    rgba(160, 160, 170, 0.32) 4px,
+    rgba(160, 160, 170, 0.06) 4px,
+    rgba(160, 160, 170, 0.06) 8px
+  );
+}
+[data-theme="light"] .playbackPage .pbCoverageBar.is-in-progress {
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(120, 120, 130, 0.32),
+    rgba(120, 120, 130, 0.32) 4px,
+    rgba(120, 120, 130, 0.08) 4px,
+    rgba(120, 120, 130, 0.08) 8px
+  );
 }
 
 /* ── Cursor + now line ──────────────────────────────────────────────── */
