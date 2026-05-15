@@ -18,6 +18,7 @@ A retention sweep runs periodically. Two modes, switched by the
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -94,20 +95,49 @@ class Watchdog:
     def _stop_expired(self, now: int) -> None:
         with db_connect() as conn:
             rows = conn.execute(
-                "SELECT event_id, camera, trigger_start_ts, max_duration_seconds "
+                "SELECT event_id, camera, trigger_start_ts, max_duration_seconds, metadata_json "
                 "FROM active_recordings"
             ).fetchall()
+        continuous_cams = continuous_cameras_from_devices()
         for r in rows:
             elapsed = now - int(r["trigger_start_ts"])
-            if elapsed >= int(r["max_duration_seconds"]):
-                log.info(
-                    "watchdog: auto-stop event_id=%s camera=%s elapsed=%ds",
-                    r["event_id"], r["camera"], elapsed,
-                )
+            if elapsed < int(r["max_duration_seconds"]):
+                continue
+            log.info(
+                "watchdog: auto-stop event_id=%s camera=%s elapsed=%ds",
+                r["event_id"], r["camera"], elapsed,
+            )
+            # If this is a continuous chunk for a still-flagged camera,
+            # pre-start the next chunk BEFORE stopping the current one.
+            # `stop_recording` runs `assemble_clip` synchronously (ffmpeg
+            # concat over ~5 min of segments takes 20-60 s); without
+            # pre-starting, the next chunk's trigger_start_ts lands at
+            # `now + assembly_seconds`, leaving a visible gap on the
+            # timeline. With pre-start the chunks overlap by exactly the
+            # assembly duration and the strip stays unbroken.
+            kind = None
+            try:
+                meta = json.loads(r["metadata_json"] or "{}")
+                kind = str(meta.get("_kind") or "")
+            except (json.JSONDecodeError, TypeError):
+                pass
+            if kind == "continuous" and r["camera"] in continuous_cams:
                 try:
-                    stop_recording(event_id=r["event_id"])
+                    start_recording(
+                        camera=r["camera"],
+                        pre_buffer_seconds=0,
+                        max_duration_seconds=CONTINUOUS_CHUNK_SECONDS,
+                        metadata={"_kind": "continuous"},
+                    )
                 except Exception:
-                    log.exception("watchdog: auto-stop failed for %s", r["event_id"])
+                    log.exception(
+                        "watchdog: pre-start next continuous chunk failed for %s",
+                        r["camera"],
+                    )
+            try:
+                stop_recording(event_id=r["event_id"])
+            except Exception:
+                log.exception("watchdog: auto-stop failed for %s", r["event_id"])
 
     def _ensure_continuous(self, now: int) -> None:
         cams = sorted(continuous_cameras_from_devices())

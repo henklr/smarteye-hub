@@ -44,7 +44,16 @@ def start_recording(
     eid = event_id or uuid.uuid4().hex
     trigger_start = _now()
     pre = max(0, int(pre_buffer_seconds))
-    max_dur = _clamp_max_duration(max_duration_seconds)
+    # Continuous chunks are system-managed and have their own duration knob
+    # (CONTINUOUS_CHUNK_SECONDS). They must bypass the user-facing trigger
+    # cap — otherwise a small cap silently fragments continuous coverage
+    # into many tiny chunks (chunk_seconds < cap → clamp(chunk)=chunk_seconds;
+    # chunk_seconds > cap → silently truncated to cap, which is wrong).
+    is_continuous = bool(metadata and metadata.get("_kind") == "continuous")
+    if is_continuous and max_duration_seconds and max_duration_seconds > 0:
+        max_dur = int(max_duration_seconds)
+    else:
+        max_dur = _clamp_max_duration(max_duration_seconds)
     meta_json = json.dumps(metadata) if metadata else None
     with db_connect() as conn:
         conn.execute(
@@ -165,23 +174,30 @@ def _finalise_stopped_recording(
 
 
 def stop_recording_by_camera(camera: str) -> Optional[Dict[str, Any]]:
-    """Atomically claim the most-recent open recording for `camera` and finish it.
+    """Atomically claim the most-recent open *user-triggered* recording for
+    `camera` and finish it.
 
-    This used to do SELECT then DELETE in two statements, which let two
-    concurrent flow runs both target the same event_id and only one of them
-    actually claim a row — the other's start_recording row was then orphaned
-    until the watchdog auto-stopped it at max_duration (causing the
-    "mysterious 30-minute clip" the user was seeing under rapid-fire flow
-    triggers). The DELETE…WHERE event_id = (SELECT…LIMIT 1) RETURNING
-    pattern lets each caller claim a *distinct* row — SQLite serialises
-    write transactions, so concurrent callers each pick a different
-    most-recent open recording.
+    Excludes continuous chunks: a flow's Stop recording should never end the
+    always-on 24/7 chunk that the watchdog owns. Without this filter, the
+    pre-started next continuous chunk (created by `_stop_expired` to avoid
+    inter-chunk gaps) is the "most recent" entry and gets killed by every
+    Stop recording call, which spawns another within seconds and produces
+    a choppy, broken-up Continuous strip on the timeline.
+
+    Concurrency: this used to be SELECT-then-DELETE in two statements,
+    which let two concurrent flow runs target the same event_id. The
+    DELETE…WHERE event_id = (SELECT…LIMIT 1) RETURNING pattern lets each
+    caller claim a *distinct* row — SQLite serialises write transactions,
+    so concurrent callers each pick a different most-recent open
+    recording.
     """
     with db_connect() as conn:
         cur = conn.execute(
             "DELETE FROM active_recordings WHERE event_id = ("
-            "  SELECT event_id FROM active_recordings WHERE camera = ?"
-            "  ORDER BY created_at DESC LIMIT 1"
+            "  SELECT event_id FROM active_recordings"
+            "   WHERE camera = ?"
+            "     AND COALESCE(json_extract(metadata_json, '$._kind'), '') <> 'continuous'"
+            "   ORDER BY created_at DESC LIMIT 1"
             ") RETURNING event_id, camera, trigger_start_ts, pre_buffer_seconds, metadata_json",
             (camera,),
         )

@@ -27,7 +27,10 @@ from .config import (
     SUPERVISOR_POLL_SECONDS,
     is_storage_mounted,
 )
-from .device_config import continuous_cameras_from_devices
+from .device_config import (
+    continuous_cameras_from_devices,
+    device_recording_urls,
+)
 from .flow_config import cameras_in_flows
 from .janitor import Janitor
 from .segmenter import Segmenter
@@ -134,11 +137,17 @@ class Supervisor:
 
     async def _reconcile(self, desired: Set[str]) -> None:
         current = set(self._segmenters)
+        urls = device_recording_urls()  # {cam: recording_rtsp_url}
         for cam in desired - current:
             log.info("supervisor: starting segmenter for %s", cam)
-            seg = Segmenter(cam)
+            seg = Segmenter(cam, rtsp_url=urls.get(cam))
             self._segmenters[cam] = seg
             seg.start()
+        # Push URL changes to existing segmenters so a fresh recording-profile
+        # selection in device settings takes effect within ~one supervisor tick
+        # without restarting the engine.
+        for cam in current & desired:
+            self._segmenters[cam].update_rtsp_url(urls.get(cam))
         gone = current - desired
         if gone:
             stops = []
@@ -156,27 +165,36 @@ class Supervisor:
         # Cameras flagged for 24/7 continuous recording in device settings.
         # These need a segmenter even when no flow records them.
         continuous_cams = continuous_cameras_from_devices()
+        # Cameras with a resolved direct-from-camera recording URL. We can
+        # record these without MediaMTX being involved — the segmenter
+        # pulls straight from the camera using `recording_rtsp_url`.
+        direct_urls = set(device_recording_urls().keys())
 
         url = f"{MEDIAMTX_API_URL}/v3/paths/list"
         auth = base64.b64encode(
             f"{MEDIAMTX_API_USER}:{MEDIAMTX_API_PASS}".encode("utf-8")
         ).decode("ascii")
         req = urllib.request.Request(url, headers={"Authorization": f"Basic {auth}"})
+        ready_cams: Set[str] = set()
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            for item in data.get("items", []):
+                name = item.get("name") or ""
+                if _CAM_RE.match(name) and item.get("ready"):
+                    ready_cams.add(name)
         except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
             log.warning("supervisor: mediamtx paths query failed: %s", e)
-            return set()
-        ready_cams: Set[str] = set()
-        for item in data.get("items", []):
-            name = item.get("name") or ""
-            if _CAM_RE.match(name) and item.get("ready"):
-                ready_cams.add(name)
-        # Spawn a segmenter when MediaMTX has the path ready *and* either a
-        # flow needs it or the device is flagged continuous. Anything else
-        # is intentionally skipped — no segmenter, no buffer, no clips.
-        return ready_cams & (flow_cams | continuous_cams)
+            # Fall through: a camera with a direct URL can still record
+            # even if MediaMTX is unreachable.
+
+        # A camera is recordable if EITHER MediaMTX has its live path ready
+        # (legacy/preload path) OR we have a direct recording URL for it.
+        # The old code required MediaMTX-ready, which silently dropped any
+        # continuous-flagged camera whose live stream wasn't currently
+        # being pulled by a viewer.
+        available = ready_cams | direct_urls
+        return available & (flow_cams | continuous_cams)
 
     def status(self) -> dict:
         return {

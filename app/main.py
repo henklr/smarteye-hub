@@ -254,6 +254,12 @@ _storage_recovery_stop = threading.Event()
 _storage_recovery_thread: Optional[threading.Thread] = None
 _STORAGE_RECOVERY_POLL_SECONDS = 30
 
+# Sentinel file that suppresses the storage-recovery thread (and the format
+# endpoint's "stop both engines" path) from restarting the recording engine
+# during a Format & mount cycle. Both uvicorn workers see the same file
+# because /app/data is a shared bind mount.
+_FORMAT_IN_PROGRESS_PATH = Path("/app/data/.format_in_progress")
+
 _path_monitor_lock = threading.RLock()
 _path_monitor_state: Dict[str, Dict[str, Any]] = {}
 
@@ -720,9 +726,53 @@ def _list_timezones() -> list:
     return sorted(zones)
 
 
+def _system_load_payload() -> dict:
+    """Combine recording-engine status with live CPU + memory readings so the
+    Settings → Performance section + the recording-engine status badge can
+    both feed off /api/system/load.
+
+    /proc/loadavg and /proc/meminfo work because the container has
+    `pid: host` — /proc IS the host's. Returns sensible defaults / omits
+    keys when a metric can't be read (e.g. read-only fs, host-side perms).
+    """
+    info = dict(system_load_snapshot() or {})
+    try:
+        load = os.getloadavg()  # tuple of three floats
+        cpu_count = os.cpu_count() or 1
+        info["cpu_count"] = cpu_count
+        info["load"] = {"1m": load[0], "5m": load[1], "15m": load[2]}
+        # Saturation ratio of the 1-minute load avg against core count.
+        # >1.0 means the system is overloaded; we clamp at 1.0 so the bar
+        # renders as 100% rather than overflowing.
+        info["load_pct_1m"] = min(1.0, load[0] / cpu_count)
+    except (OSError, AttributeError):
+        pass
+    try:
+        mem_total_kb = mem_avail_kb = 0
+        with open("/proc/meminfo", "r") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    mem_total_kb = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    mem_avail_kb = int(line.split()[1])
+                if mem_total_kb and mem_avail_kb:
+                    break
+        if mem_total_kb > 0:
+            used_kb = max(0, mem_total_kb - mem_avail_kb)
+            info["memory"] = {
+                "total_kb": mem_total_kb,
+                "available_kb": mem_avail_kb,
+                "used_kb": used_kb,
+                "used_pct": used_kb / mem_total_kb,
+            }
+    except (OSError, ValueError):
+        pass
+    return info
+
+
 @app.get("/api/system/load")
 def get_system_load():
-    return system_load_snapshot()
+    return _system_load_payload()
 
 
 @app.get("/api/system/datetime")
@@ -1041,6 +1091,13 @@ def _storage_recovery_loop() -> None:
     is idempotent — it returns immediately if the supervisor already exists.
     """
     while not _storage_recovery_stop.wait(_STORAGE_RECOVERY_POLL_SECONDS):
+        # Skip the auto-start path while a Format & mount is in progress.
+        # Without this guard, the recovery thread can restart the recording
+        # engine between when the format handler stops it and when mkfs
+        # runs, leaving the segmenter lock file holding `/dev/nvme0n1p1`
+        # busy and mkfs failing with EBUSY.
+        if _FORMAT_IN_PROGRESS_PATH.exists():
+            continue
         try:
             if is_storage_mounted():
                 start_recording_engine()
@@ -1089,12 +1146,56 @@ def storage_format(request: Request, body: dict = None):
     _log_system.warning("Formatting %s and mounting to %s", dev_path, mount_path)
 
     import time as _time
+    import signal as _signal
 
-    # Stop any app-side writers that might be touching the mount.
+    # Set the sentinel BEFORE stopping anything so the storage-recovery
+    # thread (both this worker's and the sibling's) sees it on its next
+    # poll and doesn't re-start the engine mid-format.
+    try:
+        _FORMAT_IN_PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _FORMAT_IN_PROGRESS_PATH.touch()
+    except OSError as exc:
+        _log_system.warning("Could not write format sentinel: %s", exc)
+
+    def _signal_sibling_uvicorns() -> None:
+        """SIGUSR1 every uvicorn worker that isn't us.
+
+        Their handler (installed in `_on_startup`) calls
+        `stop_recording_engine()`, releasing SQLite WAL handles and the
+        segmenter lock so mkfs isn't blocked by `fuser=... uvicorn`.
+        """
+        try:
+            proc = subprocess.run(
+                ["pgrep", "-f", "uvicorn main:app"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            _log_system.exception("Format: pgrep failed")
+            return
+        my_pid = os.getpid()
+        for tok in (proc.stdout or "").split():
+            try:
+                pid = int(tok.strip())
+            except ValueError:
+                continue
+            if pid and pid != my_pid:
+                try:
+                    os.kill(pid, _signal.SIGUSR1)
+                    _log_system.info("Format: signalled sibling uvicorn pid=%d", pid)
+                except (ProcessLookupError, PermissionError):
+                    pass
+
+    # Stop any app-side writers that might be touching the mount. This
+    # process's engine first, then the sibling uvicorn (HTTP vs HTTPS)
+    # via SIGUSR1 — without that the sibling's SQLite connection + WAL
+    # files keep `/dev/nvme0n1p1` busy and mkfs fails with EBUSY.
     try:
         stop_recording_engine()
     except Exception as exc:
         _log_system.warning("Could not stop recording engine before format: %s", exc)
+    _signal_sibling_uvicorns()
+    # Give the sibling a beat to close DB connections + release the lock.
+    _time.sleep(1.5)
 
     def _path_is_mounted(path: str) -> bool:
         proc = _host_cmd(["findmnt", "-n", path])
@@ -1230,53 +1331,84 @@ def storage_format(request: Request, body: dict = None):
     # not an actual kernel-level holder (mount or open O_EXCL). udev's blkid
     # probe + the sibling uvicorn's ffmpeg children can both hold the device,
     # so we kill ffmpeg holders and retry with a fresh settle/unmount cycle.
+    # Defensive: re-stop both engines right before mkfs in case the recovery
+    # thread or some other code path snuck a restart in between. (The
+    # sentinel suppresses *new* recovery starts, but a recovery tick already
+    # mid-call when the sentinel was written would have finished its start.)
+    try:
+        stop_recording_engine()
+    except Exception:
+        pass
+    _signal_sibling_uvicorns()
+    _time.sleep(0.5)
     _kill_recording_holders()
 
     mkfs_ok = False
     mkfs_err = ""
     last_diag = ""
-    for attempt in range(4):
-        if attempt > 0:
-            _kill_recording_holders()
-            _host_cmd(["udevadm", "settle", "--timeout=5"], timeout=10)
-            if _device_is_mounted(part_path):
-                _unmount(part_path)
-            _host_cmd(["sync"], timeout=10)
-            _host_cmd(["blockdev", "--flushbufs", part_path], timeout=10)
-            _time.sleep(1.5)
-        proc = _host_cmd(["mkfs.ext4", "-F", "-F", part_path], timeout=180)
-        if proc.returncode == 0:
-            mkfs_ok = True
-            break
-        mkfs_err = proc.stderr.strip()
-        _log_system.warning("mkfs.ext4 attempt %d failed: %s", attempt + 1, mkfs_err)
-        last_diag = _diag_holders(f"mkfs attempt {attempt + 1} failed")
-
-    if not mkfs_ok:
-        _log_system.error("mkfs.ext4 failed after retries: %s; holders: %s", mkfs_err, last_diag)
-        detail = f"[mkfs] Formatting failed: {mkfs_err}"
-        if last_diag:
-            detail += f" | holders: {last_diag}"
-        raise HTTPException(status_code=500, detail=detail)
-
-    # Create mount point and mount.
-    _host_cmd(["mkdir", "-p", mount_path])
-    proc = _host_cmd(["mount", part_path, mount_path])
-    if proc.returncode != 0:
-        raise HTTPException(status_code=500, detail=f"[mount] Mount failed: {proc.stderr.strip()}")
-
-    # Re-add the fstab entry (we stripped any stale one upfront).
-    fstab_line = f"{part_path}  {mount_path}  ext4  defaults,nofail  0  2"
-    _host_cmd(["sh", "-c", f"echo '{fstab_line}' >> /etc/fstab"])
-
-    # Restart the recording engine so it picks up the fresh mount.
     try:
-        start_recording_engine()
-    except Exception as exc:
-        _log_system.warning("Could not restart recording engine after format: %s", exc)
+        for attempt in range(4):
+            if attempt > 0:
+                # Each retry also re-stops + re-kills in case anything
+                # raced back to life since the previous attempt.
+                try:
+                    stop_recording_engine()
+                except Exception:
+                    pass
+                _kill_recording_holders()
+                _host_cmd(["udevadm", "settle", "--timeout=5"], timeout=10)
+                if _device_is_mounted(part_path):
+                    _unmount(part_path)
+                _host_cmd(["sync"], timeout=10)
+                _host_cmd(["blockdev", "--flushbufs", part_path], timeout=10)
+                _time.sleep(1.5)
+            proc = _host_cmd(["mkfs.ext4", "-F", "-F", part_path], timeout=180)
+            if proc.returncode == 0:
+                mkfs_ok = True
+                break
+            mkfs_err = proc.stderr.strip()
+            _log_system.warning("mkfs.ext4 attempt %d failed: %s", attempt + 1, mkfs_err)
+            last_diag = _diag_holders(f"mkfs attempt {attempt + 1} failed")
 
-    _log_system.info("NVMe %s formatted and mounted at %s", device, mount_path)
-    return {"ok": True, "device": device, "partition": f"{device}p1", "mount_path": mount_path}
+        if not mkfs_ok:
+            _log_system.error("mkfs.ext4 failed after retries: %s; holders: %s", mkfs_err, last_diag)
+            detail = f"[mkfs] Formatting failed: {mkfs_err}"
+            if last_diag:
+                detail += f" | holders: {last_diag}"
+            raise HTTPException(status_code=500, detail=detail)
+
+        # Create mount point and mount.
+        _host_cmd(["mkdir", "-p", mount_path])
+        proc = _host_cmd(["mount", part_path, mount_path])
+        if proc.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"[mount] Mount failed: {proc.stderr.strip()}")
+
+        # Re-add the fstab entry (we stripped any stale one upfront).
+        fstab_line = f"{part_path}  {mount_path}  ext4  defaults,nofail  0  2"
+        _host_cmd(["sh", "-c", f"echo '{fstab_line}' >> /etc/fstab"])
+
+        # Drop the sentinel BEFORE restarting the engine so the recovery
+        # thread doesn't keep skipping engine starts. start_recording_engine
+        # itself is idempotent so calling it directly is fine too.
+        try:
+            _FORMAT_IN_PROGRESS_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
+        # Restart the recording engine so it picks up the fresh mount.
+        try:
+            start_recording_engine()
+        except Exception as exc:
+            _log_system.warning("Could not restart recording engine after format: %s", exc)
+
+        _log_system.info("NVMe %s formatted and mounted at %s", device, mount_path)
+        return {"ok": True, "device": device, "partition": f"{device}p1", "mount_path": mount_path}
+    finally:
+        # If we bailed out via raise above, the sentinel didn't get cleared.
+        # Make sure it's gone so the recovery thread can resume.
+        try:
+            _FORMAT_IN_PROGRESS_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 @app.post("/api/storage/mount")
@@ -1351,7 +1483,10 @@ class DeviceIn(BaseModel):
     ip: str = Field(..., min_length=1)
     onvif_port: int = 80
     username: str = Field(..., min_length=1)
-    password: str = Field(..., min_length=1)
+    # Optional on the model so the PUT endpoint can accept "keep existing
+    # password" (empty/missing) without forcing the user to re-type it on
+    # every edit. POST validates non-empty explicitly.
+    password: Optional[str] = None
     profile_token: Optional[str] = None
     profile_label: Optional[str] = None
     profile_encoding: Optional[str] = None
@@ -1672,26 +1807,58 @@ def _update_device(device_id: str, dev_in: DeviceIn) -> Device:
     devs = _load_devices()
     for i, d in enumerate(devs):
         if d.id == device_id:
-            devs[i] = Device(id=device_id, **_dump(dev_in))
+            # Preserve the existing password if the update payload omitted
+            # one (or sent empty). The form lets the user save edits to
+            # other fields without re-entering credentials.
+            update_data = _dump(dev_in)
+            if not (update_data.get("password") or "").strip():
+                update_data["password"] = d.password
+            old = d
+            new_dev = Device(id=device_id, **update_data)
+            devs[i] = new_dev
             _save_devices(devs)
-            _log_devices.info("Device updated: %s (%s)", devs[i].name, device_id)
+            _log_devices.info("Device updated: %s (%s)", new_dev.name, device_id)
             _invalidate_ptz_cache(device_id)
-            req = EventsStartRequest(
-                device_id=device_id,
-                ip=dev_in.ip,
-                onvif_port=dev_in.onvif_port,
-                username=dev_in.username,
-                password=dev_in.password,
+            # Only restart the event worker if the camera's network identity
+            # actually changed. Otherwise the existing worker is fine and
+            # avoiding a restart keeps the save snappy.
+            creds_changed = (
+                old.ip != new_dev.ip
+                or old.onvif_port != new_dev.onvif_port
+                or old.username != new_dev.username
+                or old.password != new_dev.password
             )
-            _start_event_worker(device_id, req)
+            if creds_changed:
+                req = EventsStartRequest(
+                    device_id=device_id,
+                    ip=new_dev.ip,
+                    onvif_port=new_dev.onvif_port,
+                    username=new_dev.username,
+                    password=new_dev.password,
+                )
+                _start_event_worker(device_id, req)
 
-            if devs[i].profile_token:
+            # ONVIF GetStreamUri + MediaMTX path patch take ~1 s round-trip.
+            # Skip them when no stream-relevant field changed — toggling
+            # `continuous_recording` or editing the display name shouldn't
+            # cost a camera round-trip. But ALWAYS refresh when the device
+            # is missing its `recording_rtsp_url` — without that URL the
+            # segmenter has no source to record from and the camera silently
+            # stays off the timeline.
+            stream_changed = (
+                creds_changed
+                or old.profile_token != new_dev.profile_token
+                or old.recording_profile_token != new_dev.recording_profile_token
+                or bool(old.preload_stream) != bool(new_dev.preload_stream)
+            )
+            needs_url_backfill = not (new_dev.recording_rtsp_url or "").strip()
+            if new_dev.profile_token and (stream_changed or needs_url_backfill):
                 try:
                     _refresh_device_stream(device_id)
                 except Exception:
                     pass
 
-            return devs[i]
+            return new_dev
     raise HTTPException(status_code=404, detail="Device not found")
 
 
@@ -3099,13 +3266,18 @@ def _device_stream_status_from_snapshot(device: Device, snapshot: dict) -> dict:
 
 
 def _preload_stream_for_device(device: Device) -> None:
-    if not device.profile_token or not device.preload_stream:
+    if not device.profile_token:
         return
     req = _device_req(device)
     source_uri = _get_stream_uri(req, device.profile_token)
     source_rtsp = _rtsp_with_auth(source_uri, device.username, device.password)
-    _ensure_mediamtx_path(device.id, source_rtsp, preload=True)
-    # Resolve and persist the direct camera RTSP URL for the recorder.
+    # The MediaMTX path is only needed when the user wants the live stream
+    # warmed up for viewers; the recorder doesn't depend on it.
+    if device.preload_stream:
+        _ensure_mediamtx_path(device.id, source_rtsp, preload=True)
+    # Always resolve and persist the direct camera RTSP URL — the recording
+    # segmenter pulls from this URL (bypassing MediaMTX), so without it
+    # continuous/triggered recording can't start.
     rec_token = getattr(device, "recording_profile_token", None) or device.profile_token
     rec_rtsp: Optional[str] = source_rtsp
     if rec_token != device.profile_token:
@@ -3789,6 +3961,10 @@ def list_devices():
 
 @app.post("/api/devices")
 def create_device(dev: DeviceIn):
+    # `password` is Optional[str] on DeviceIn so PUT can accept "keep
+    # existing" — POST still requires it.
+    if not (dev.password or "").strip():
+        raise HTTPException(status_code=400, detail="Password is required")
     devs = _load_devices()
     new = Device(id=uuid.uuid4().hex[:12], **_dump(dev))
     devs.append(new)
@@ -4094,10 +4270,38 @@ async def voice_to_speaker(speaker_id: str, request: Request):
     return result
 
 
+class ProfilesRequest(BaseModel):
+    ip: str
+    onvif_port: int = 80
+    username: str
+    # Optional so the edit form can fetch profiles without forcing the user
+    # to re-type the password. When blank AND `device_id` is provided we
+    # fall back to the stored password for that device.
+    password: Optional[str] = None
+    device_id: Optional[str] = None
+
+
 @app.post("/api/profiles")
-async def profiles(req: OnvifBase):
+async def profiles(req: ProfilesRequest):
+    pwd = (req.password or "").strip()
+    if not pwd and req.device_id:
+        try:
+            stored = _get_device(req.device_id.strip())
+            pwd = stored.password
+        except HTTPException:
+            pwd = ""
+    if not pwd:
+        raise HTTPException(
+            status_code=400,
+            detail="Password is required (or supply device_id with a saved password)",
+        )
+    effective = OnvifBase(
+        ip=req.ip, onvif_port=req.onvif_port,
+        username=req.username, password=pwd,
+    )
+
     def _work():
-        cam = _cam(req)
+        cam = _cam(effective)
         media = cam.create_media_service()
         profiles = media.GetProfiles() or []
         out = [_profile_summary(p) for p in profiles]
@@ -5137,6 +5341,24 @@ def api_device_snapshot(device_id: str):
 @app.on_event("startup")
 def _on_startup():
     _log_system.info("SmartEye Hub starting up")
+    # SIGUSR1 → stop this process's recording engine. The /api/storage/format
+    # handler sends it to the *sibling* uvicorn so both workers release their
+    # SQLite handles + segmenter lock before mkfs; without that, mkfs fails
+    # with EBUSY because the sibling still has /dev/nvme0n1p1 open through
+    # the WAL files. The storage-recovery thread will restart the engine
+    # post-mount, so we don't need a matching "resume" signal.
+    import signal as _signal
+    def _on_sigusr1(_signum, _frame):
+        _log_system.info("SIGUSR1 received — stopping recording engine for storage maintenance")
+        try:
+            stop_recording_engine()
+        except Exception:
+            _log_system.exception("SIGUSR1 stop_recording_engine failed")
+    try:
+        _signal.signal(_signal.SIGUSR1, _on_sigusr1)
+    except (ValueError, OSError) as e:
+        _log_system.warning("Could not install SIGUSR1 handler: %s", e)
+
     try:
         _restore_timezone()
         _log_system.info("Restored timezone: %s", _current_timezone())

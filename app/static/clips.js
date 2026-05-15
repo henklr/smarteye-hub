@@ -36,6 +36,7 @@
     activeByCamera: {},           // camera → [active_recording…] (in-progress)
     activeRefreshTimer: 0,
     hiddenTags: new Set(),        // tag strings filtered out of the timeline
+    maximizedTile: null,          // tile element when in fullscreen-style maximize
     tiles: {},                    // camera → { el, video, currentClipId, currentClip, overlay }
     cursorMs: Date.now(),
     zoomMs: 3_600_000,
@@ -512,7 +513,6 @@
         <video preload="metadata" playsinline muted></video>
       </div>
       <div class="tileHud">
-        <div class="tileNo"></div>
         <div class="tileName"></div>
         <div class="tileMeta" hidden><span class="tileMetaSwatch"></span><span class="tileMetaLabel"></span></div>
       </div>
@@ -520,15 +520,21 @@
     `;
     const video = el.querySelector("video");
     const overlay = el.querySelector(".tileOverlay");
-    const tileNo = el.querySelector(".tileNo");
     const tileName = el.querySelector(".tileName");
     const tileMeta = el.querySelector(".tileMeta");
     const tileMetaSwatch = el.querySelector(".tileMetaSwatch");
     const tileMetaLabel = el.querySelector(".tileMetaLabel");
 
-    const name = cameraDisplayName(camera);
-    tileNo.textContent = name;
-    tileName.textContent = name;
+    tileName.textContent = cameraDisplayName(camera);
+
+    // Double-click toggles a fullscreen-style maximize. Reuses the same
+    // `.tileMaximized` / `body.tileMaximizedMode` classes Live uses, plus
+    // playback-specific CSS that floats the timeline card over the bottom
+    // of the maximized video.
+    el.addEventListener("dblclick", (e) => {
+      if (e.target.closest("button, input, select, textarea, a")) return;
+      togglePlaybackTileMaximized(el);
+    });
 
     // When the first frame's metadata loads, sync the tile's aspect ratio to
     // the actual video so the justified layout knows true proportions.
@@ -546,6 +552,30 @@
     return { camera, el, video, overlay, tileMeta, tileMetaSwatch, tileMetaLabel, currentClipId: null, currentClip: null };
   }
 
+  function togglePlaybackTileMaximized(tile) {
+    if (!tile || !els.videoGrid) return;
+    const allTiles = Array.from(els.videoGrid.querySelectorAll(".tile"));
+    if (state.maximizedTile === tile) {
+      tile.classList.remove("tileMaximized");
+      document.body.classList.remove("tileMaximizedMode", "pbTileMaximized");
+      for (const t of allTiles) t.classList.remove("tileHiddenForMax");
+      state.maximizedTile = null;
+      return;
+    }
+    if (state.maximizedTile) state.maximizedTile.classList.remove("tileMaximized");
+    document.body.classList.add("tileMaximizedMode", "pbTileMaximized");
+    for (const t of allTiles) t.classList.toggle("tileHiddenForMax", t !== tile);
+    tile.classList.add("tileMaximized");
+    state.maximizedTile = tile;
+  }
+
+  // Escape clears the maximize. Bound once at module init.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && state.maximizedTile) {
+      togglePlaybackTileMaximized(state.maximizedTile);
+    }
+  });
+
   function renderGrid() {
     const existing = new Set(Object.keys(state.tiles));
     const wanted = new Set(state.selectedCameras);
@@ -554,6 +584,10 @@
       if (!wanted.has(cam)) {
         const t = state.tiles[cam];
         if (t) {
+          if (state.maximizedTile === t.el) {
+            document.body.classList.remove("tileMaximizedMode", "pbTileMaximized");
+            state.maximizedTile = null;
+          }
           try { t.video.pause(); t.video.removeAttribute("src"); t.video.load(); } catch (_) {}
           t.el.remove();
         }
@@ -712,6 +746,20 @@
         tile.video.removeAttribute("src");
         tile.video.load();
       } catch (_) {}
+      // Pick the friendliest placeholder copy we can. When the cursor is
+      // near NOW and the camera has an in-progress continuous chunk, "No
+      // recording" is misleading — the segment for this exact moment just
+      // hasn't been finalized to disk yet. Show "Recording in progress"
+      // until the chunk closes (~30 min) and the clip becomes playable.
+      const overlayText = tile.overlay.querySelector("div");
+      if (overlayText) {
+        const activeContinuous = (state.activeByCamera[camera] || [])
+          .some((a) => a.kind === "continuous");
+        const nearNow = Math.abs(Date.now() - state.cursorMs) < 5 * 60_000;
+        overlayText.textContent = (activeContinuous && nearNow)
+          ? "Recording in progress…"
+          : "No recording";
+      }
       tile.overlay.style.display = "flex";
       tile.tileMeta.hidden = true;
       return;
