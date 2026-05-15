@@ -712,21 +712,40 @@ function stopPc(pc, videoEl) {
 function waitIceGatheringComplete(pc, timeoutMs = 2000) {
   return new Promise((resolve) => {
     if (pc.iceGatheringState === "complete") return resolve();
-
-    const t = setTimeout(() => {
+    // We wait for the FIRST candidate (host candidate, which appears
+    // within tens of ms on a LAN) and then send the offer immediately
+    // — MediaMTX accepts non-trickle WHEP with just host candidates on
+    // the same subnet. Waiting for "complete" used to add up to 2 s
+    // per tile because STUN/srflx gathering can drag, even though
+    // those candidates aren't needed for a local MediaMTX.
+    let firstCandidateSeen = false;
+    const finish = () => {
       pc.removeEventListener("icegatheringstatechange", onChange);
+      pc.removeEventListener("icecandidate", onCandidate);
+      clearTimeout(hardTimer);
+      clearTimeout(graceTimer);
       resolve();
-    }, timeoutMs);
-
-    function onChange() {
-      if (pc.iceGatheringState === "complete") {
-        clearTimeout(t);
-        pc.removeEventListener("icegatheringstatechange", onChange);
-        resolve();
+    };
+    // Hard cap matches the original timeout behaviour as a backstop.
+    const hardTimer = setTimeout(finish, timeoutMs);
+    // After the first candidate, give a short grace window for any
+    // additional host candidates on multi-interface hosts, then send.
+    let graceTimer = 0;
+    function onCandidate(ev) {
+      if (firstCandidateSeen) return;
+      // The null candidate signals end-of-gathering.
+      if (!ev.candidate) {
+        finish();
+        return;
       }
+      firstCandidateSeen = true;
+      graceTimer = setTimeout(finish, 80);
     }
-
+    function onChange() {
+      if (pc.iceGatheringState === "complete") finish();
+    }
     pc.addEventListener("icegatheringstatechange", onChange);
+    pc.addEventListener("icecandidate", onCandidate);
   });
 }
 
@@ -752,7 +771,10 @@ async function startWhep(deviceId, videoEl, onState, opts = {}) {
   const offer = await pc.createOffer();
   if (signal?.aborted) throwAbortError();
   await pc.setLocalDescription(offer);
-  await waitIceGatheringComplete(pc, 2000);
+  // Trickle ICE-ish: we cap at 600 ms instead of the original 2 s. The
+  // first host candidate is enough for a same-subnet MediaMTX; longer
+  // STUN gathering buys us nothing here and just delays the offer.
+  await waitIceGatheringComplete(pc, 600);
   if (signal?.aborted) throwAbortError();
 
   let lastError = "Unknown WHEP error";
