@@ -151,6 +151,33 @@ body.playbackPage { overflow: hidden; }
   background: rgba(255, 255, 255, 0.15);
 }
 
+/* ── Per-camera HD/SD quality toggle (sidebar row button) ──────────── */
+
+.playbackPage .pbQualityToggle {
+  /* Click-target reset on a button used as a chip. */
+  appearance: none;
+  border: 0;
+  font: inherit;
+  /* Pin to the right of the row, just before the status dot. */
+  margin-left: auto;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  background: rgba(34, 197, 94, 0.18);
+  color: var(--clr-ok, #22c55e);
+  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.35);
+}
+.playbackPage .pbQualityToggle:hover { filter: brightness(1.15); }
+.playbackPage .pbQualityToggle.is-low {
+  background: rgba(239, 165, 65, 0.18);
+  color: rgb(239, 165, 65);
+  box-shadow: inset 0 0 0 1px rgba(239, 165, 65, 0.35);
+}
+
 /* ── Buffering spinner on a playback tile ──────────────────────────── */
 
 .playbackPage .pbVideoGrid .tileBufferSpinner {

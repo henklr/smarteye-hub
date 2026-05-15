@@ -167,16 +167,44 @@
               </div>
               <button class="btn" id="cameraFetchProfilesBtn" type="button" data-full>Fetch profiles</button>
               <div data-full>
-                <label for="cameraProfile">Live stream profile</label>
+                <label for="cameraProfile">SD profile</label>
                 <select id="cameraProfile" disabled>
                   <option>Fetch profiles first…</option>
                 </select>
+                <div class="listSub" style="margin-top:4px;">
+                  The camera's substream — lower resolution, low bandwidth. Used for live thumbnails and SD playback.
+                </div>
               </div>
               <div data-full>
-                <label for="cameraRecordingProfile">Recording profile</label>
+                <label for="cameraRecordingProfile">HD profile</label>
                 <select id="cameraRecordingProfile" disabled>
                   <option>Fetch profiles first…</option>
                 </select>
+                <div class="listSub" style="margin-top:4px;">
+                  The camera's main stream — full resolution. Used for HD live viewing and HD playback.
+                </div>
+              </div>
+              <div data-full>
+                <label for="cameraLiveVariants">Show on Live</label>
+                <select id="cameraLiveVariants">
+                  <option value="sd">SD only</option>
+                  <option value="hd">HD only</option>
+                  <option value="hd,sd">HD and SD</option>
+                </select>
+                <div class="listSub" style="margin-top:4px;">
+                  Which streams the Live page can display. With both enabled, each tile gets an HD/SD toggle.
+                </div>
+              </div>
+              <div data-full>
+                <label for="cameraRecordVariants">Record</label>
+                <select id="cameraRecordVariants">
+                  <option value="hd">HD only</option>
+                  <option value="sd">SD only</option>
+                  <option value="hd,sd">HD and SD</option>
+                </select>
+                <div class="listSub" style="margin-top:4px;">
+                  Which streams the recording engine captures. Recording both gives instant HD/SD playback toggle without any CPU-burning transcode.
+                </div>
               </div>
               <div data-full>
                 <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;">

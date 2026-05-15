@@ -958,6 +958,8 @@ const cameraUsernameEl          = document.getElementById("cameraUsername");
 const cameraPasswordEl          = document.getElementById("cameraPassword");
 const cameraProfileSel          = document.getElementById("cameraProfile");
 const cameraRecordingProfileSel = document.getElementById("cameraRecordingProfile");
+const cameraLiveVariantsSel     = document.getElementById("cameraLiveVariants");
+const cameraRecordVariantsSel   = document.getElementById("cameraRecordVariants");
 const cameraContinuousEl        = document.getElementById("cameraContinuousRecording");
 const cameraFetchProfilesBtn    = document.getElementById("cameraFetchProfilesBtn");
 const addCameraBtn              = document.getElementById("addCameraBtn");
@@ -971,6 +973,21 @@ let _camerasCache = [];
 
 function setCameraStatus(text) {
   if (cameraStatusEl) cameraStatusEl.textContent = text || "";
+}
+
+// The Live / Record selectors are <select> elements with comma-separated
+// option values ("hd", "sd", "hd,sd"). Server-side those become lists.
+function _variantSelectValue(stored, fallbackOption) {
+  if (!Array.isArray(stored) || !stored.length) return fallbackOption;
+  const has = (v) => stored.includes(v);
+  if (has("hd") && has("sd")) return "hd,sd";
+  if (has("hd")) return "hd";
+  if (has("sd")) return "sd";
+  return fallbackOption;
+}
+
+function _variantSelectToList(value) {
+  return String(value || "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
 function _profileLabel(p) {
@@ -1057,6 +1074,8 @@ function showCameraForm(camera) {
   if (cameraUsernameEl)    cameraUsernameEl.value    = camera?.username    || "";
   if (cameraPasswordEl)    cameraPasswordEl.value    = "";
   if (cameraContinuousEl)  cameraContinuousEl.checked = !!(camera?.continuous_recording);
+  if (cameraLiveVariantsSel)   cameraLiveVariantsSel.value   = _variantSelectValue(camera?.live_variants,   "sd");
+  if (cameraRecordVariantsSel) cameraRecordVariantsSel.value = _variantSelectValue(camera?.record_variants, "hd");
   // Pre-seed the profile selects with the already-saved tokens so the
   // user can see what is currently set without clicking Fetch profiles.
   _seedProfileSelect(cameraProfileSel, camera?.profile_token, camera?.profile_label);
@@ -1184,10 +1203,13 @@ saveCameraBtn?.addEventListener("click", async () => {
       : null;
 
     const continuous_recording = !!(cameraContinuousEl?.checked);
+    const live_variants = _variantSelectToList(cameraLiveVariantsSel?.value || "sd");
+    const record_variants = _variantSelectToList(cameraRecordVariantsSel?.value || "hd");
     const payload = {
       name, ...creds, profile_token, profile_label,
       recording_profile_token, recording_profile_label,
       continuous_recording,
+      live_variants, record_variants,
     };
 
     setCameraStatus("Saving…");

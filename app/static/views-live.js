@@ -7,6 +7,50 @@ const sidebarStopAll = document.getElementById("sidebarStopAll");
 const LS_GRID_KEY = "live.gridState";
 const LS_DEVICE_ORDER_KEY = "live.deviceOrder";
 const LS_AUDIO_KEY = "live.audioState";
+// Per-device live-stream quality (hd|sd) picked by the user from the
+// sidebar badge. Persisted so the choice survives page reloads.
+const LS_QUALITY_KEY = "live.qualityState";
+
+function loadTileQuality(deviceId) {
+  try {
+    const raw = localStorage.getItem(LS_QUALITY_KEY);
+    if (!raw) return "sd";
+    const obj = JSON.parse(raw);
+    return obj?.[deviceId] === "hd" ? "hd" : "sd";
+  } catch {
+    return "sd";
+  }
+}
+
+function saveTileQuality(deviceId, quality) {
+  try {
+    const raw = localStorage.getItem(LS_QUALITY_KEY);
+    const obj = raw ? JSON.parse(raw) : {};
+    if (quality === "hd") {
+      obj[deviceId] = "hd";
+    } else {
+      // SD is the default — drop the key to keep storage tidy.
+      delete obj[deviceId];
+    }
+    localStorage.setItem(LS_QUALITY_KEY, JSON.stringify(obj));
+  } catch {}
+}
+
+function deviceLiveVariants(device) {
+  const raw = device?.live_variants;
+  if (!Array.isArray(raw)) return ["sd"];
+  const valid = raw.filter((v) => v === "hd" || v === "sd");
+  return valid.length ? valid : ["sd"];
+}
+
+function effectiveLiveQuality(device) {
+  // If the device is opted into only one live variant, that's what we
+  // serve — the user's per-tile pick only matters when BOTH are enabled.
+  const variants = deviceLiveVariants(device);
+  const pref = loadTileQuality(device.id);
+  if (!variants.includes(pref)) return variants[0];
+  return pref;
+}
 
 function loadTileMuted(deviceId) {
   try {
@@ -87,8 +131,13 @@ function abortableDelay(ms, signal = liveAbortSignal()) {
 }
 
 function getWhepUrl(deviceId) {
-  // Proxy WHEP through our server to avoid mixed-content issues on HTTPS
-  return `/api/whep/cam-${encodeURIComponent(deviceId)}/whep`;
+  // Proxy WHEP through our server to avoid mixed-content issues on HTTPS.
+  // SD lives at `cam-<id>` (matches the existing MediaMTX path); HD lives
+  // at the sibling `cam-<id>-hd` path provisioned by main.py when the
+  // device is opted into HD live viewing.
+  const device = devices.find((d) => d.id === deviceId);
+  const suffix = device && effectiveLiveQuality(device) === "hd" ? "-hd" : "";
+  return `/api/whep/cam-${encodeURIComponent(deviceId)}${suffix}/whep`;
 }
 
 async function api(url, opts = {}) {
@@ -605,9 +654,24 @@ function renderSidebar() {
     const onlineStatus = getDeviceOnlineStatus(d.id);
     const camDotClass = (onlineStatus === 'live' || onlineStatus === 'idle') ? 'dot-online' : onlineStatus === 'down' ? 'dot-offline' : 'dot-unknown';
 
+    // HD/SD chip — only meaningful when the device is opted into both
+    // variants for live viewing. Anything else (one variant or none)
+    // hides the toggle since there's nothing to switch.
+    const variants = deviceLiveVariants(d);
+    let qualityChip = '';
+    if (variants.includes('hd') && variants.includes('sd')) {
+      const q = effectiveLiveQuality(d);
+      const cls = q === 'sd' ? 'liveQualityToggle is-sd' : 'liveQualityToggle';
+      const title = q === 'sd'
+        ? 'Playing the substream (SD). Click to switch this camera to HD.'
+        : 'Playing the main stream (HD). Click to switch this camera to SD.';
+      qualityChip = `<button class="${cls}" type="button" draggable="false" data-id="${escapeHtml(d.id)}" data-quality-toggle="1" title="${escapeHtml(title)}">${q === 'sd' ? 'SD' : 'HD'}</button>`;
+    }
+
     return `<div class="liveSidebarRow ${active ? 'active' : ''} ${stateClass}" data-id="${escapeHtml(d.id)}" draggable="true" data-live-active="${active ? '1' : '0'}" data-live-state="${stateClass}">
       <button class="liveSidebarDragHandle" type="button" draggable="false" aria-label="Reorder" title="Drag to reorder">⋮⋮</button>
       <span class="liveSidebarName">${escapeHtml(d.name || d.ip || d.id)}</span>
+      ${qualityChip}
       <span class="statusDot ${camDotClass}"></span>
     </div>`;
   }).join('');
@@ -785,7 +849,9 @@ function shapeAxis(v, deadzone = 0.14, expo = 1.35) {
 
 function setTileOverlay(entry, text, visible = true) {
   if (!entry?.overlayEl) return;
-  entry.overlayEl.textContent = text || "";
+  const labelEl = entry.overlayEl.querySelector(".tileOverlayLabel");
+  if (labelEl) labelEl.textContent = text || "";
+  else entry.overlayEl.textContent = text || "";
   entry.overlayEl.style.display = visible ? "flex" : "none";
 }
 
@@ -927,7 +993,10 @@ function makeTile(device) {
         </div>
       </div>
 
-      <div class="tileOverlay">Starting…</div>
+      <div class="tileOverlay">
+        <div class="tileOverlaySpinner" aria-hidden="true"></div>
+        <span class="tileOverlayLabel">Starting…</span>
+      </div>
     </div>
   `;
 
@@ -1668,6 +1737,29 @@ sidebarStopAll?.addEventListener("click", async () => {
 liveSidebarList?.addEventListener("click", async (ev) => {
   if (Date.now() < suppressSidebarClickUntil) return;
   if (ev.target.closest(".liveSidebarDragHandle")) return;
+
+  // HD/SD chip: swap the per-device quality preference and, if the stream
+  // is currently up, restart it on the new MediaMTX path so the change is
+  // visible immediately.
+  const qBtn = ev.target.closest(".liveQualityToggle[data-quality-toggle]");
+  if (qBtn) {
+    ev.stopPropagation();
+    if (window.views?.mode && window.views.mode !== "live") return;
+    const id = qBtn.getAttribute("data-id");
+    const d = devices.find((x) => x.id === id);
+    if (!d) return;
+    const current = effectiveLiveQuality(d);
+    const next = current === "hd" ? "sd" : "hd";
+    saveTileQuality(d.id, next);
+    renderSidebar();
+    if (isStreaming(d.id)) {
+      try {
+        await stopDevice(d.id);
+        await startDevice(d);
+      } catch {}
+    }
+    return;
+  }
 
   const row = ev.target.closest(".liveSidebarRow[data-id]");
   if (!row) return;
