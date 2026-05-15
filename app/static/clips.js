@@ -37,6 +37,7 @@
     activeRefreshTimer: 0,
     hiddenTags: new Set(),        // tag strings filtered out of the timeline
     maximizedTile: null,          // tile element when in fullscreen-style maximize
+    lowQuality: false,            // when true, tile videos request the 480p variant
     tiles: {},                    // camera → { el, video, currentClipId, currentClip, overlay }
     cursorMs: Date.now(),
     zoomMs: 3_600_000,
@@ -88,6 +89,7 @@
     els.stepFwdBtn = $("pbStepFwdBtn");
     els.transportTime = $("pbTransportTime");
     els.speedSelect = $("pbSpeedSelect");
+    els.lowQualityToggle = $("pbLowQualityToggle");
     els.tagList = $("pbTagList");
     els.tagShowAllBtn = $("pbTagShowAllBtn");
     els.tagHideAllBtn = $("pbTagHideAllBtn");
@@ -188,6 +190,7 @@
         cursorMs: state.cursorMs,
         speed: state.speed,
         hiddenTags: Array.from(state.hiddenTags),
+        lowQuality: !!state.lowQuality,
       }));
     } catch (_) {}
   }
@@ -200,6 +203,7 @@
       if (typeof s.cursorMs === "number") state.cursorMs = s.cursorMs;
       if (typeof s.speed === "number" && s.speed > 0) state.speed = s.speed;
       if (Array.isArray(s.hiddenTags)) state.hiddenTags = new Set(s.hiddenTags);
+      if (typeof s.lowQuality === "boolean") state.lowQuality = s.lowQuality;
     } catch (_) {}
   }
 
@@ -511,6 +515,7 @@
     el.innerHTML = `
       <div class="tilePlayer">
         <video preload="metadata" playsinline muted></video>
+        <div class="tileBufferSpinner" aria-hidden="true"></div>
       </div>
       <div class="tileHud">
         <div class="tileName"></div>
@@ -526,6 +531,40 @@
     const tileMetaLabel = el.querySelector(".tileMetaLabel");
 
     tileName.textContent = cameraDisplayName(camera);
+
+    // Buffer-state tracking for the rate-matched play loop. Without this,
+    // state.cursorMs advances on wall-clock × state.speed regardless of
+    // whether the video element is actually playing frames. On slow links
+    // (or above-16x speeds where the decoder can't keep up) the cursor
+    // races off into the future while video is frozen, the re-seek loop
+    // keeps triggering more fetching, and you never catch up. With it,
+    // the cursor pauses while ANY active tile is buffering/stalled.
+    //
+    // The same flag drives a spinning-wheel overlay so the user knows the
+    // tile is waiting on data — we debounce the spinner by ~250 ms so a
+    // brief sub-second hiccup doesn't flash a spinner across the screen.
+    const stallState = { stalled: false, spinnerTimer: 0 };
+    const markStalled = () => {
+      stallState.stalled = true;
+      if (stallState.spinnerTimer) return;
+      stallState.spinnerTimer = setTimeout(() => {
+        stallState.spinnerTimer = 0;
+        if (stallState.stalled) el.classList.add("is-buffering");
+      }, 250);
+    };
+    const markPlaying = () => {
+      stallState.stalled = false;
+      if (stallState.spinnerTimer) {
+        clearTimeout(stallState.spinnerTimer);
+        stallState.spinnerTimer = 0;
+      }
+      el.classList.remove("is-buffering");
+    };
+    video.addEventListener("waiting", markStalled);
+    video.addEventListener("stalled", markStalled);
+    video.addEventListener("playing", markPlaying);
+    video.addEventListener("canplay", markPlaying);
+    video.addEventListener("pause", markPlaying);  // ignored if we paused intentionally
 
     // Double-click toggles a fullscreen-style maximize. Reuses the same
     // `.tileMaximized` / `body.tileMaximizedMode` classes Live uses, plus
@@ -549,7 +588,7 @@
       }
     });
 
-    return { camera, el, video, overlay, tileMeta, tileMetaSwatch, tileMetaLabel, currentClipId: null, currentClip: null };
+    return { camera, el, video, overlay, tileMeta, tileMetaSwatch, tileMetaLabel, stallState, currentClipId: null, currentClip: null };
   }
 
   function togglePlaybackTileMaximized(tile) {
@@ -785,7 +824,8 @@
     if (clip.id !== tile.currentClipId) {
       tile.currentClipId = clip.id;
       tile.currentClip = clip;
-      tile.video.src = `/api/clips/${encodeURIComponent(clip.id)}/video`;
+      const qParam = state.lowQuality ? "?q=low" : "";
+      tile.video.src = `/api/clips/${encodeURIComponent(clip.id)}/video${qParam}`;
       const onLoaded = () => {
         tile.video.removeEventListener("loadedmetadata", onLoaded);
         const offset = state.cursorMs / 1000 - clip.started_at;
@@ -1171,7 +1211,23 @@
     state.playLastT = performance.now();
     const tick = (t) => {
       if (!state.isPlaying) { state.playRaf = 0; return; }
-      const dt = (t - state.playLastT) * state.speed;
+
+      // Rate-match: if any active tile's video is buffering or its
+      // decoder hasn't caught up (readyState < HAVE_FUTURE_DATA), hold
+      // the cursor instead of advancing on wall-clock × speed. Makes
+      // remote/slow-connection playback honest (cursor moves only when
+      // frames are actually playing) and stops the cursor running away
+      // at 32x/64x when the browser can't decode that fast.
+      let anyBuffering = false;
+      for (const cam of state.selectedCameras) {
+        const tile = state.tiles[cam];
+        if (!tile || !tile.currentClip) continue;
+        const buffering = tile.stallState && tile.stallState.stalled;
+        const notReady = tile.video.readyState < 3; // HAVE_FUTURE_DATA
+        if (buffering || notReady) { anyBuffering = true; break; }
+      }
+
+      const dt = anyBuffering ? 0 : (t - state.playLastT) * state.speed;
       state.playLastT = t;
       state.cursorMs += dt;
       // Auto-pan viewport when cursor approaches the right edge.
@@ -1481,6 +1537,25 @@
         saveState();
       }
     });
+
+    if (els.lowQualityToggle) {
+      els.lowQualityToggle.checked = !!state.lowQuality;
+      els.lowQualityToggle.addEventListener("change", () => {
+        state.lowQuality = !!els.lowQualityToggle.checked;
+        saveState();
+        // Force every tile to re-fetch with the new quality. Drop the
+        // current clip reference so syncTile re-sets `video.src` with
+        // (or without) the `?q=low` suffix.
+        for (const cam of state.selectedCameras) {
+          const t = state.tiles[cam];
+          if (!t) continue;
+          t.currentClipId = null;
+          t.currentClip = null;
+          try { t.video.removeAttribute("src"); t.video.load(); } catch (_) {}
+        }
+        syncAllTiles();
+      });
+    }
 
     // Coverage bar click → jump to start.
     els.lanes.addEventListener("click", (e) => {
