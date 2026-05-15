@@ -3098,14 +3098,24 @@ def _reconcile_camera_mtx_paths(
     """
     live_variants = list(getattr(device, "live_variants", None) or [])
     record_variants = list(getattr(device, "record_variants", None) or [])
+    preload = bool(getattr(device, "preload_stream", True))
 
     def reconcile(variant: str, source: Optional[str], path_name: str) -> None:
         wants_record = variant in record_variants
         wants_live = variant in live_variants
         if (wants_record or wants_live) and source:
-            on_demand = (not wants_record) and wants_live
+            # Always-on when:
+            #   - the variant is recorded (recording engine is a permanent
+            #     reader so on-demand would close + reopen pointlessly), OR
+            #   - the variant is live and the user opted into `preload_stream`
+            #     (= "keep the live stream warm so clicks feel instant").
+            # On-demand otherwise (live-only and preload off) — MediaMTX
+            # opens the source on first viewer and closes ~10s after last.
+            keep_warm = wants_record or (wants_live and preload)
             try:
-                _ensure_mediamtx_variant_path(path_name, source, on_demand=on_demand)
+                _ensure_mediamtx_variant_path(
+                    path_name, source, on_demand=not keep_warm,
+                )
             except Exception:
                 _log_devices.exception(
                     "mediamtx path %s: ensure failed for %s", path_name, device.id,
