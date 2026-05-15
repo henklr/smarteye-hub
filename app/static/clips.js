@@ -37,7 +37,9 @@
     activeRefreshTimer: 0,
     hiddenTags: new Set(),        // tag strings filtered out of the timeline
     maximizedTile: null,          // tile element when in fullscreen-style maximize
-    lowQuality: false,            // when true, tile videos request the 480p variant
+    // Per-camera manual quality override. Cameras present in this set
+    // request the 480p variant via `?q=low`. Default = empty = HD for all.
+    lowQualityCameras: new Set(),
     tiles: {},                    // camera → { el, video, currentClipId, currentClip, overlay }
     cursorMs: Date.now(),
     zoomMs: 3_600_000,
@@ -89,7 +91,6 @@
     els.stepFwdBtn = $("pbStepFwdBtn");
     els.transportTime = $("pbTransportTime");
     els.speedSelect = $("pbSpeedSelect");
-    els.lowQualityToggle = $("pbLowQualityToggle");
     els.tagList = $("pbTagList");
     els.tagShowAllBtn = $("pbTagShowAllBtn");
     els.tagHideAllBtn = $("pbTagHideAllBtn");
@@ -190,7 +191,7 @@
         cursorMs: state.cursorMs,
         speed: state.speed,
         hiddenTags: Array.from(state.hiddenTags),
-        lowQuality: !!state.lowQuality,
+        lowQualityCameras: Array.from(state.lowQualityCameras),
       }));
     } catch (_) {}
   }
@@ -203,7 +204,7 @@
       if (typeof s.cursorMs === "number") state.cursorMs = s.cursorMs;
       if (typeof s.speed === "number" && s.speed > 0) state.speed = s.speed;
       if (Array.isArray(s.hiddenTags)) state.hiddenTags = new Set(s.hiddenTags);
-      if (typeof s.lowQuality === "boolean") state.lowQuality = s.lowQuality;
+      if (Array.isArray(s.lowQualityCameras)) state.lowQualityCameras = new Set(s.lowQualityCameras);
     } catch (_) {}
   }
 
@@ -366,9 +367,16 @@
       const camera = `cam-${d.id}`;
       const hasClips = !!state.cameras.find((c) => c.camera === camera);
       const isActive = state.selectedCameras.includes(camera);
+      const low = state.lowQualityCameras.has(camera);
+      const qLabel = low ? "SD" : "HD";
+      const qCls = low ? "pbQualityToggle is-low" : "pbQualityToggle";
+      const qTitle = low
+        ? "Playing the 480p variant for this camera — click to switch back to original quality."
+        : "Playing the original-quality stream — click to switch this camera to a 480p variant.";
       return `<div class="liveSidebarRow ${isActive ? "active" : ""} ${hasClips ? "has-clips" : ""}" data-camera="${escapeHtml(camera)}">
         <button class="liveSidebarDragHandle" type="button" tabindex="-1" aria-hidden="true">⋮⋮</button>
         <span class="liveSidebarName">${escapeHtml(d.name || d.id)}</span>
+        <button class="${qCls}" type="button" data-camera="${escapeHtml(camera)}" title="${escapeHtml(qTitle)}">${qLabel}</button>
         <span class="statusDot"></span>
       </div>`;
     }).join("");
@@ -483,6 +491,27 @@
     if (i >= 0) state.selectedCameras.splice(i, 1);
     else state.selectedCameras.push(camera);
     onSelectionChanged();
+  }
+
+  function toggleCameraQuality(camera) {
+    if (state.lowQualityCameras.has(camera)) {
+      state.lowQualityCameras.delete(camera);
+    } else {
+      state.lowQualityCameras.add(camera);
+    }
+    saveState();
+    // Re-render the sidebar row so the badge text/colour updates.
+    renderSidebar();
+    refreshSidebarStatus();
+    // Force this tile to drop its current clip and re-fetch at the new
+    // quality. No reason to wait for the next clip boundary.
+    const t = state.tiles[camera];
+    if (t) {
+      t.currentClipId = null;
+      t.currentClip = null;
+      try { t.video.removeAttribute("src"); t.video.load(); } catch (_) {}
+      syncTile(camera);
+    }
   }
   function selectAllCameras() {
     state.selectedCameras = state.devices.map((d) => `cam-${d.id}`);
@@ -824,7 +853,11 @@
     if (clip.id !== tile.currentClipId) {
       tile.currentClipId = clip.id;
       tile.currentClip = clip;
-      const qParam = state.lowQuality ? "?q=low" : "";
+      // SD playback comes straight from the camera substream recording
+      // (`<event>.sd.mp4` sibling). The backend serves the sibling when
+      // present and falls back to the primary file otherwise — so we just
+      // ask for `?q=sd` and let the backend decide.
+      const qParam = state.lowQualityCameras.has(camera) ? "?q=sd" : "";
       tile.video.src = `/api/clips/${encodeURIComponent(clip.id)}/video${qParam}`;
       const onLoaded = () => {
         tile.video.removeEventListener("loadedmetadata", onLoaded);
@@ -1482,6 +1515,12 @@
 
   function bind() {
     els.cameraList.addEventListener("click", (e) => {
+      const qBtn = e.target.closest(".pbQualityToggle");
+      if (qBtn) {
+        e.stopPropagation();
+        toggleCameraQuality(qBtn.dataset.camera);
+        return;
+      }
       const row = e.target.closest(".liveSidebarRow");
       if (!row) return;
       toggleCamera(row.dataset.camera);
@@ -1538,24 +1577,6 @@
       }
     });
 
-    if (els.lowQualityToggle) {
-      els.lowQualityToggle.checked = !!state.lowQuality;
-      els.lowQualityToggle.addEventListener("change", () => {
-        state.lowQuality = !!els.lowQualityToggle.checked;
-        saveState();
-        // Force every tile to re-fetch with the new quality. Drop the
-        // current clip reference so syncTile re-sets `video.src` with
-        // (or without) the `?q=low` suffix.
-        for (const cam of state.selectedCameras) {
-          const t = state.tiles[cam];
-          if (!t) continue;
-          t.currentClipId = null;
-          t.currentClip = null;
-          try { t.video.removeAttribute("src"); t.video.load(); } catch (_) {}
-        }
-        syncAllTiles();
-      });
-    }
 
     // Coverage bar click → jump to start.
     els.lanes.addEventListener("click", (e) => {

@@ -28,7 +28,7 @@ from .config import (
 from .db import db_connect
 from .device_config import continuous_cameras_from_devices
 from .flow_config import cameras_in_flows
-from .paths import parse_segment_epoch
+from .paths import ALL_VARIANTS, parse_segment_epoch
 
 log = logging.getLogger("recording.janitor")
 
@@ -129,50 +129,60 @@ class Janitor:
             if not cam_dir.is_dir():
                 continue
             cam = cam_dir.name
+            # Per-variant subdirs (hd/, sd/). Old single-pipeline layouts
+            # held .mp4 segments directly under <cam>/, so we also walk
+            # any stragglers there to keep one-shot leftover cleanup.
+            variant_dirs = [cam_dir / v for v in ALL_VARIANTS]
+            variant_dirs = [p for p in variant_dirs if p.is_dir()] or [cam_dir]
             if cam not in cutoffs:
                 # Camera no longer referenced by any enabled flow → wipe all
                 # buffer segments. The segmenter has already been stopped by
                 # the supervisor's reconcile loop.
-                try:
-                    for entry in cam_dir.iterdir():
-                        if entry.is_file():
-                            try:
-                                os.unlink(entry)
-                                deleted += 1
-                            except FileNotFoundError:
-                                pass
-                            except OSError as e:
-                                log.warning("janitor: unlink %s failed: %s", entry, e)
-                    # Try to remove the now-empty directory too.
+                for vdir in variant_dirs:
                     try:
-                        cam_dir.rmdir()
-                        dropped_cams += 1
-                    except OSError:
+                        for entry in vdir.iterdir():
+                            if entry.is_file():
+                                try:
+                                    os.unlink(entry)
+                                    deleted += 1
+                                except FileNotFoundError:
+                                    pass
+                                except OSError as e:
+                                    log.warning("janitor: unlink %s failed: %s", entry, e)
+                        try:
+                            vdir.rmdir()
+                        except OSError:
+                            pass
+                    except FileNotFoundError:
                         pass
-                except FileNotFoundError:
+                try:
+                    cam_dir.rmdir()
+                    dropped_cams += 1
+                except OSError:
                     pass
                 continue
 
             cutoff = cutoffs[cam]
-            try:
-                entries = list(cam_dir.iterdir())
-            except FileNotFoundError:
-                continue
-            for entry in entries:
-                if not entry.is_file():
+            for vdir in variant_dirs:
+                try:
+                    entries = list(vdir.iterdir())
+                except FileNotFoundError:
                     continue
-                start_epoch = parse_segment_epoch(entry.name)
-                if start_epoch is None:
-                    continue
-                end_epoch = start_epoch + SEGMENT_SECONDS
-                if end_epoch < cutoff:
-                    try:
-                        os.unlink(entry)
-                        deleted += 1
-                    except FileNotFoundError:
-                        pass
-                    except OSError as e:
-                        log.warning("janitor: unlink %s failed: %s", entry, e)
-                else:
-                    kept += 1
+                for entry in entries:
+                    if not entry.is_file():
+                        continue
+                    start_epoch = parse_segment_epoch(entry.name)
+                    if start_epoch is None:
+                        continue
+                    end_epoch = start_epoch + SEGMENT_SECONDS
+                    if end_epoch < cutoff:
+                        try:
+                            os.unlink(entry)
+                            deleted += 1
+                        except FileNotFoundError:
+                            pass
+                        except OSError as e:
+                            log.warning("janitor: unlink %s failed: %s", entry, e)
+                    else:
+                        kept += 1
         return deleted, kept, dropped_cams

@@ -235,16 +235,18 @@ def _unlink_clip_files(file_path: Optional[str], thumbnail_path: Optional[str]) 
             pass
         except OSError as e:
             log.warning("retention: unlink %s failed: %s", p, e)
-    # Also remove the cached low-quality variant (built lazily by
-    # /api/clips/{id}/video?q=low) if present, so retention sweeps don't
-    # leave orphaned `.low.mp4` files behind.
+    # Also remove sibling variants next to the primary clip:
+    #   <event>.sd.mp4   — current SD sibling (camera substream recording)
+    #   <event>.low.mp4  — legacy transcoded variant from older builds
+    # so retention sweeps don't leave orphaned files behind.
     if file_path:
         from pathlib import Path as _Path
         orig = _Path(file_path)
-        low = orig.with_name(orig.stem + ".low.mp4")
-        try:
-            low.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as e:
-            log.warning("retention: unlink low variant %s failed: %s", low, e)
+        for suffix in (".sd.mp4", ".low.mp4"):
+            sibling = orig.with_name(orig.stem + suffix)
+            try:
+                sibling.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                log.warning("retention: unlink sibling %s failed: %s", sibling, e)

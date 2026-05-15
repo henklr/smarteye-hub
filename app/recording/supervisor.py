@@ -29,10 +29,12 @@ from .config import (
 )
 from .device_config import (
     continuous_cameras_from_devices,
-    device_recording_urls,
+    device_record_variants,
+    device_variant_urls,
 )
 from .flow_config import cameras_in_flows
 from .janitor import Janitor
+from .paths import VARIANT_HD
 from .segmenter import Segmenter
 from .watchdog import Watchdog
 
@@ -43,7 +45,9 @@ _CAM_RE = re.compile(r"^cam-.+$")
 
 class Supervisor:
     def __init__(self) -> None:
-        self._segmenters: dict[str, Segmenter] = {}
+        # Keyed by (camera, variant) so HD and SD segmenters for the same
+        # camera live side-by-side without colliding.
+        self._segmenters: dict[tuple[str, str], Segmenter] = {}
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         self._lock_file: Optional[TextIO] = None
@@ -136,24 +140,39 @@ class Supervisor:
                 pass
 
     async def _reconcile(self, desired: Set[str]) -> None:
+        """Bring the (camera, variant) segmenter set in line with config.
+
+        `desired` is the set of cameras the engine should be recording at
+        all. For each one we look up which variants the user opted into
+        recording. The resulting (camera, variant) keys are the actual
+        segmenter slots — any current slot not in that set gets stopped,
+        any new slot gets spawned.
+        """
+        urls = device_variant_urls()  # {(cam, variant): rtsp_url}
+        record_variants = device_record_variants()  # {cam: [variant…]}
+        desired_pairs: Set[tuple[str, str]] = set()
+        for cam in desired:
+            for variant in record_variants.get(cam, [VARIANT_HD]):
+                desired_pairs.add((cam, variant))
         current = set(self._segmenters)
-        urls = device_recording_urls()  # {cam: recording_rtsp_url}
-        for cam in desired - current:
-            log.info("supervisor: starting segmenter for %s", cam)
-            seg = Segmenter(cam, rtsp_url=urls.get(cam))
-            self._segmenters[cam] = seg
+
+        for key in desired_pairs - current:
+            cam, variant = key
+            log.info("supervisor: starting segmenter for %s/%s", cam, variant)
+            seg = Segmenter(cam, rtsp_url=urls.get(key), variant=variant)
+            self._segmenters[key] = seg
             seg.start()
-        # Push URL changes to existing segmenters so a fresh recording-profile
-        # selection in device settings takes effect within ~one supervisor tick
-        # without restarting the engine.
-        for cam in current & desired:
-            self._segmenters[cam].update_rtsp_url(urls.get(cam))
-        gone = current - desired
+        # Push URL changes to existing segmenters so a fresh profile pick
+        # takes effect within ~one tick without restarting the engine.
+        for key in current & desired_pairs:
+            self._segmenters[key].update_rtsp_url(urls.get(key))
+        gone = current - desired_pairs
         if gone:
             stops = []
-            for cam in gone:
-                log.info("supervisor: stopping segmenter for %s", cam)
-                seg = self._segmenters.pop(cam)
+            for key in gone:
+                cam, variant = key
+                log.info("supervisor: stopping segmenter for %s/%s", cam, variant)
+                seg = self._segmenters.pop(key)
                 stops.append(seg.stop())
             await asyncio.gather(*stops, return_exceptions=True)
 
@@ -165,10 +184,11 @@ class Supervisor:
         # Cameras flagged for 24/7 continuous recording in device settings.
         # These need a segmenter even when no flow records them.
         continuous_cams = continuous_cameras_from_devices()
-        # Cameras with a resolved direct-from-camera recording URL. We can
-        # record these without MediaMTX being involved — the segmenter
-        # pulls straight from the camera using `recording_rtsp_url`.
-        direct_urls = set(device_recording_urls().keys())
+        # Cameras with at least one resolved direct-from-camera RTSP URL
+        # (HD or SD). We can record these without MediaMTX being involved
+        # — each variant's segmenter pulls straight from the camera using
+        # the URL set by main.py at device-edit time.
+        direct_urls = {cam for (cam, _variant) in device_variant_urls().keys()}
 
         url = f"{MEDIAMTX_API_URL}/v3/paths/list"
         auth = base64.b64encode(
@@ -197,8 +217,9 @@ class Supervisor:
         return available & (flow_cams | continuous_cams)
 
     def status(self) -> dict:
+        keys = [f"{cam}/{variant}" for (cam, variant) in self._segmenters.keys()]
         return {
             "is_leader": self.is_leader,
-            "cameras": sorted(self._segmenters.keys()),
-            "restarts": {c: s.restarts for c, s in self._segmenters.items()},
+            "cameras": sorted(keys),
+            "restarts": {f"{c}/{v}": s.restarts for (c, v), s in self._segmenters.items()},
         }

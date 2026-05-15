@@ -1487,9 +1487,15 @@ class DeviceIn(BaseModel):
     # password" (empty/missing) without forcing the user to re-type it on
     # every edit. POST validates non-empty explicitly.
     password: Optional[str] = None
+    # "SD profile" in the UI — the substream the camera serves at lower
+    # resolution/bitrate. Feeds MediaMTX and the SD segmenter pipeline.
     profile_token: Optional[str] = None
     profile_label: Optional[str] = None
     profile_encoding: Optional[str] = None
+    live_rtsp_url: Optional[str] = None
+    # "HD profile" in the UI — the main/full-resolution stream. Feeds the
+    # HD segmenter pipeline and (when enabled) a second MediaMTX path
+    # so live viewers can pick HD too.
     recording_profile_token: Optional[str] = None
     recording_profile_label: Optional[str] = None
     recording_rtsp_url: Optional[str] = None
@@ -1499,6 +1505,13 @@ class DeviceIn(BaseModel):
     # and the watchdog produces continuous hourly chunks alongside any
     # triggered recordings. Off by default.
     continuous_recording: bool = False
+    # Which streams are exposed for live viewing. Subset of ["hd", "sd"].
+    # MediaMTX paths are provisioned per entry: cam-<id>-sd, cam-<id>-hd.
+    live_variants: List[str] = Field(default_factory=lambda: ["sd"])
+    # Which streams the recording engine captures. Subset of ["hd", "sd"].
+    # Each entry spins up its own ffmpeg segmenter; clips get a `.sd.mp4`
+    # sibling next to the primary `.mp4` when both are enabled.
+    record_variants: List[str] = Field(default_factory=lambda: ["hd"])
 
 
 class Device(DeviceIn):
@@ -1842,16 +1855,19 @@ def _update_device(device_id: str, dev_in: DeviceIn) -> Device:
             # Skip them when no stream-relevant field changed — toggling
             # `continuous_recording` or editing the display name shouldn't
             # cost a camera round-trip. But ALWAYS refresh when the device
-            # is missing its `recording_rtsp_url` — without that URL the
-            # segmenter has no source to record from and the camera silently
-            # stays off the timeline.
+            # is missing a resolved RTSP URL for either variant — without
+            # those URLs the segmenters have no source to record from and
+            # the camera silently stays off the timeline.
             stream_changed = (
                 creds_changed
                 or old.profile_token != new_dev.profile_token
                 or old.recording_profile_token != new_dev.recording_profile_token
                 or bool(old.preload_stream) != bool(new_dev.preload_stream)
             )
-            needs_url_backfill = not (new_dev.recording_rtsp_url or "").strip()
+            needs_url_backfill = (
+                not (new_dev.recording_rtsp_url or "").strip()
+                or not (getattr(new_dev, "live_rtsp_url", None) or "").strip()
+            )
             if new_dev.profile_token and (stream_changed or needs_url_backfill):
                 try:
                     _refresh_device_stream(device_id)
@@ -2853,6 +2869,16 @@ def _path_for(device_id: str) -> str:
     return f"cam-{device_id}"
 
 
+def _hd_path_for(device_id: str) -> str:
+    """Sibling MediaMTX path serving the HD profile for live viewing.
+
+    The base `cam-<id>` path stays as the SD substream (matches existing
+    WHEP consumers); we add `cam-<id>-hd` only when the user opted into
+    HD live for this camera. Live JS picks one or the other per tile.
+    """
+    return f"cam-{device_id}-hd"
+
+
 def _rec_path_for(device_id: str) -> str:
     return f"cam-rec-{device_id}"
 
@@ -2957,42 +2983,78 @@ def _mediamtx_api_request(method: str, path: str, body: Optional[dict] = None) -
 
 
 def _ensure_mediamtx_path(device_id: str, source_rtsp: str, preload: bool = False) -> dict:
-    name = _path_for(device_id)
+    """Provision the SD path `cam-<id>` pointing at the camera substream.
 
-    # sourceOnDemand is forced off for every cam-* path: the new recording
-    # engine pulls 24/7 from MediaMTX, so the source must stay alive even
-    # when no live viewer is attached. The `preload` arg is retained for
-    # callsite compatibility but no longer affects this decision.
-    payload = {
-        "source": source_rtsp,
-        "sourceOnDemand": False,
-    }
+    If SD is in the device's `record_variants` the path is forced
+    always-on regardless of `preload` — the recording engine subscribes
+    as a permanent MediaMTX reader, so on-demand would close+reopen the
+    source every time live readers come and go.
 
-    snapshot = _mediamtx_paths_snapshot()
-    items = list(snapshot.get("items") or [])
-    existing = next((x for x in items if x.get("name") == name), None)
-
-    if existing:
-        current_source = existing.get("source")
-        current_on_demand = existing.get("sourceOnDemand")
-
-        if current_source == source_rtsp and current_on_demand is False:
-            return {"ok": True, "exists": True, "name": name}
-
-        try:
-            return _mediamtx_api_request("PATCH", f"/v3/config/paths/edit/{name}", payload)
-        except Exception:
-            try:
-                _mediamtx_delete_path(device_id)
-            except Exception:
-                pass
-            return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
-
-    return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
+    Otherwise `preload=True` keeps it warm (instant live), `preload=False`
+    makes it on-demand (opens on first reader, closes ~10 s after last).
+    """
+    on_demand = not bool(preload)
+    try:
+        record_variants = list(getattr(_get_device(device_id), "record_variants", None) or [])
+    except Exception:
+        record_variants = []
+    if "sd" in record_variants:
+        on_demand = False
+    return _ensure_mediamtx_variant_path(
+        _path_for(device_id), source_rtsp, on_demand=on_demand,
+    )
 
 
 def _mediamtx_delete_path(device_id: str) -> dict:
     name = _path_for(device_id)
+    try:
+        return _mediamtx_api_request("DELETE", f"/v3/config/paths/delete/{name}")
+    except Exception as e:
+        msg = str(e)
+        if "404" in msg or "not found" in msg.lower():
+            return {"ok": True, "missing": True}
+        raise
+
+
+def _ensure_mediamtx_variant_path(
+    name: str,
+    source_rtsp: str,
+    *,
+    on_demand: bool,
+) -> dict:
+    """Generic path provisioner. Used for both `cam-<id>` and `cam-<id>-hd`.
+
+    `on_demand=False` keeps MediaMTX subscribed to the camera continuously
+    (right choice when the recording engine is the always-on consumer);
+    `on_demand=True` opens the camera connection only while a reader is
+    attached and closes ~10 s after the last one drops.
+    """
+    payload = {"source": source_rtsp, "sourceOnDemand": on_demand}
+    if on_demand:
+        payload["sourceOnDemandStartTimeout"] = "10s"
+        payload["sourceOnDemandCloseAfter"] = "10s"
+    snapshot = _mediamtx_paths_snapshot()
+    items = list(snapshot.get("items") or [])
+    existing = next((x for x in items if x.get("name") == name), None)
+    if existing:
+        if (
+            existing.get("source") == source_rtsp
+            and bool(existing.get("sourceOnDemand")) == on_demand
+        ):
+            return {"ok": True, "exists": True, "name": name}
+        try:
+            return _mediamtx_api_request("PATCH", f"/v3/config/paths/edit/{name}", payload)
+        except Exception:
+            try:
+                _mediamtx_api_request("DELETE", f"/v3/config/paths/delete/{name}")
+            except Exception:
+                pass
+            return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
+    return _mediamtx_api_request("POST", f"/v3/config/paths/add/{name}", payload)
+
+
+def _mediamtx_delete_hd_path(device_id: str) -> dict:
+    name = _hd_path_for(device_id)
     try:
         return _mediamtx_api_request("DELETE", f"/v3/config/paths/delete/{name}")
     except Exception as e:
@@ -3013,6 +3075,51 @@ def _mediamtx_delete_rec_path(device_id: str) -> dict:
         raise
 
 
+def _reconcile_camera_mtx_paths(
+    device: Device,
+    *,
+    sd_rtsp: Optional[str],
+    hd_rtsp: Optional[str],
+) -> None:
+    """Reconcile both `cam-<id>` (SD) and `cam-<id>-hd` (HD) MediaMTX paths.
+
+    A path is provisioned if EITHER the variant is recorded OR live for
+    the device — `record_variants` ∪ `live_variants`. `sourceOnDemand` is
+    False when the variant is recorded (the recording engine subscribes as
+    a permanent MediaMTX reader, so the camera connection stays open
+    regardless of live viewers), True when only live-enabled (saves
+    bandwidth when nobody is watching). Variants in neither set get their
+    path deleted.
+
+    The key win: ONE MediaMTX path per (camera, variant) feeds BOTH the
+    recording segmenter and any live viewers. Cameras that only allow one
+    HD connection at a time no longer get a recording connection AND a
+    competing live connection — there's only ever the MediaMTX one.
+    """
+    live_variants = list(getattr(device, "live_variants", None) or [])
+    record_variants = list(getattr(device, "record_variants", None) or [])
+
+    def reconcile(variant: str, source: Optional[str], path_name: str) -> None:
+        wants_record = variant in record_variants
+        wants_live = variant in live_variants
+        if (wants_record or wants_live) and source:
+            on_demand = (not wants_record) and wants_live
+            try:
+                _ensure_mediamtx_variant_path(path_name, source, on_demand=on_demand)
+            except Exception:
+                _log_devices.exception(
+                    "mediamtx path %s: ensure failed for %s", path_name, device.id,
+                )
+        else:
+            try:
+                _mediamtx_api_request("DELETE", f"/v3/config/paths/delete/{path_name}")
+            except Exception:
+                pass
+
+    reconcile("sd", sd_rtsp, _path_for(device.id))
+    reconcile("hd", hd_rtsp, _hd_path_for(device.id))
+
+
 def _mediamtx_paths_snapshot() -> dict:
     try:
         return _mediamtx_api_request("GET", "/v3/paths/list")
@@ -3029,20 +3136,21 @@ def _refresh_device_stream(device_id: str) -> dict:
         except Exception:
             pass
         try:
+            _mediamtx_delete_hd_path(device_id)
+        except Exception:
+            pass
+        try:
             _mediamtx_delete_rec_path(device_id)
         except Exception:
             pass
-        _persist_device_recording_url(device_id, None)
+        _persist_device_urls(device_id, sd_url=None, hd_url=None)
         return {"ok": True, "device_id": device_id, "removed": True, "reason": "no_profile"}
 
     req = _device_req(d)
     source_uri = _get_stream_uri(req, d.profile_token)
     source_rtsp = _rtsp_with_auth(source_uri, d.username, d.password)
-    result = _ensure_mediamtx_path(device_id, source_rtsp, preload=bool(d.preload_stream))
 
-    # Resolve the recording-side RTSP URL. The recorder pulls this URL
-    # directly from the camera (bypassing MediaMTX) to avoid the RTP
-    # demux/remux overhead of routing every byte through MediaMTX.
+    # Resolve the HD-side RTSP URL.
     rec_token = getattr(d, "recording_profile_token", None) or d.profile_token
     rec_rtsp: Optional[str] = source_rtsp
     if rec_token != d.profile_token:
@@ -3052,7 +3160,16 @@ def _refresh_device_stream(device_id: str) -> dict:
         except Exception:
             rec_rtsp = source_rtsp
 
-    _persist_device_recording_url(device_id, rec_rtsp)
+    # Persist direct-from-camera URLs. These are the SOURCES MediaMTX uses
+    # for its paths; the recording engine and live viewers both subscribe
+    # to MediaMTX, not to the camera direct (see device_config.py).
+    _persist_device_urls(device_id, sd_url=source_rtsp, hd_url=rec_rtsp)
+
+    # Reconcile both MediaMTX paths in one pass. The function consults the
+    # device's freshly-saved live_variants/record_variants to decide which
+    # paths to provision and whether each should be on-demand or always-on.
+    fresh = _get_device(device_id)
+    _reconcile_camera_mtx_paths(fresh, sd_rtsp=source_rtsp, hd_rtsp=rec_rtsp)
 
     # Drop any stale cam-rec-* MediaMTX path; recorder no longer needs it.
     try:
@@ -3060,22 +3177,42 @@ def _refresh_device_stream(device_id: str) -> dict:
     except Exception:
         pass
 
-    return result
+    return {"ok": True, "device_id": device_id, "reconciled": True}
 
 
-def _persist_device_recording_url(device_id: str, url: Optional[str]) -> None:
+def _persist_device_urls(
+    device_id: str,
+    *,
+    sd_url: Optional[str],
+    hd_url: Optional[str],
+) -> None:
+    """Persist resolved per-variant RTSP URLs on the device row.
+
+    Either argument can be None to clear that variant. Only writes when
+    something actually changed (avoids needless disk churn on the
+    no-op path).
+    """
     devs = _load_devices()
     changed = False
     out: List[Device] = []
     for d in devs:
-        if d.id == device_id and (d.recording_rtsp_url or "") != (url or ""):
-            updated = d.model_copy(update={"recording_rtsp_url": url or None})
-            out.append(updated)
+        if d.id != device_id:
+            out.append(d)
+            continue
+        updates: Dict[str, Any] = {}
+        if (d.recording_rtsp_url or "") != (hd_url or ""):
+            updates["recording_rtsp_url"] = hd_url or None
+        if (getattr(d, "live_rtsp_url", None) or "") != (sd_url or ""):
+            updates["live_rtsp_url"] = sd_url or None
+        if updates:
+            out.append(d.model_copy(update=updates))
             changed = True
         else:
             out.append(d)
     if changed:
         _save_devices(out)
+
+
 
 
 def _path_bytes_from_snapshot_row(row: Optional[dict]) -> int:
@@ -3271,13 +3408,6 @@ def _preload_stream_for_device(device: Device) -> None:
     req = _device_req(device)
     source_uri = _get_stream_uri(req, device.profile_token)
     source_rtsp = _rtsp_with_auth(source_uri, device.username, device.password)
-    # The MediaMTX path is only needed when the user wants the live stream
-    # warmed up for viewers; the recorder doesn't depend on it.
-    if device.preload_stream:
-        _ensure_mediamtx_path(device.id, source_rtsp, preload=True)
-    # Always resolve and persist the direct camera RTSP URL — the recording
-    # segmenter pulls from this URL (bypassing MediaMTX), so without it
-    # continuous/triggered recording can't start.
     rec_token = getattr(device, "recording_profile_token", None) or device.profile_token
     rec_rtsp: Optional[str] = source_rtsp
     if rec_token != device.profile_token:
@@ -3286,7 +3416,15 @@ def _preload_stream_for_device(device: Device) -> None:
             rec_rtsp = _rtsp_with_auth(rec_uri, device.username, device.password)
         except Exception:
             rec_rtsp = source_rtsp
-    _persist_device_recording_url(device.id, rec_rtsp)
+    _persist_device_urls(device.id, sd_url=source_rtsp, hd_url=rec_rtsp)
+    # Provision/drop MediaMTX paths according to the device's variant opt-ins.
+    # `_reconcile_camera_mtx_paths` is the single source of truth for path
+    # state; it makes recorded variants always-on and live-only variants
+    # on-demand.
+    try:
+        _reconcile_camera_mtx_paths(device, sd_rtsp=source_rtsp, hd_rtsp=rec_rtsp)
+    except Exception:
+        _log_devices.exception("mediamtx paths: reconcile failed for %s", device.id)
     try:
         _mediamtx_delete_rec_path(device.id)
     except Exception:
@@ -4024,6 +4162,11 @@ def delete_device(device_id: str):
 
     try:
         _mediamtx_delete_path(device_id)
+    except Exception:
+        pass
+
+    try:
+        _mediamtx_delete_hd_path(device_id)
     except Exception:
         pass
 

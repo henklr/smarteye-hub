@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .config import SEGMENT_SECONDS
-from .paths import buffer_dir, parse_segment_epoch, thumbnail_path_for_clip
+from .paths import VARIANT_HD, buffer_dir, parse_segment_epoch, thumbnail_path_for_clip
 
 log = logging.getLogger("recording.assembler")
 
@@ -27,14 +27,16 @@ class AssembledClip:
     gaps: List[Tuple[int, int]]  # list of (gap_start_epoch, gap_end_epoch) between consecutive segments
 
 
-def _list_range_segments(camera: str, start_ts: int, end_ts: int) -> List[Tuple[int, Path]]:
+def _list_range_segments(
+    camera: str, start_ts: int, end_ts: int, variant: str = VARIANT_HD,
+) -> List[Tuple[int, Path]]:
     """Return [(epoch, path), ...] sorted by epoch, for segments that overlap the range.
 
     A segment whose START epoch is in [start_ts - SEGMENT_SECONDS, end_ts] is
     considered relevant; we include the segment that *starts before* start_ts
     so the resulting clip covers the requested t=0 frame.
     """
-    bdir = buffer_dir(camera)
+    bdir = buffer_dir(camera, variant)
     if not bdir.exists():
         return []
     lower = start_ts - SEGMENT_SECONDS
@@ -73,16 +75,21 @@ def assemble_clip(
     start_ts: int,
     end_ts: int,
     output_path: Path,
+    variant: str = VARIANT_HD,
+    make_thumbnail: bool = True,
 ) -> AssembledClip:
     """Assemble [start_ts, end_ts] from buffer segments into a single MP4.
 
     Pure stream-copy via ffmpeg concat demuxer. Any missing segments produce
     logged gaps but never trigger re-encoding. If no segments are available,
     raises FileNotFoundError.
+
+    `variant` picks the buffer subdir (hd vs sd). `make_thumbnail` is False
+    for the secondary SD sibling — only the primary clip needs a thumbnail.
     """
-    segs = _list_range_segments(camera, start_ts, end_ts)
+    segs = _list_range_segments(camera, start_ts, end_ts, variant=variant)
     if not segs:
-        raise FileNotFoundError(f"no buffer segments for {camera} in [{start_ts}, {end_ts}]")
+        raise FileNotFoundError(f"no {variant} buffer segments for {camera} in [{start_ts}, {end_ts}]")
 
     gaps = _find_gaps(segs)
     if gaps:
@@ -132,7 +139,7 @@ def assemble_clip(
     file_size = output_path.stat().st_size
     duration = max(1, end_ts - start_ts)
 
-    thumb_path = _make_thumbnail(output_path)
+    thumb_path = _make_thumbnail(output_path) if make_thumbnail else None
 
     return AssembledClip(
         file_path=output_path,

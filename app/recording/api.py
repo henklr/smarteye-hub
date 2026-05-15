@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -13,6 +12,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from .db import db_connect
+from .paths import sd_sibling_path
 from .range import range_file_response
 from .triggers import list_active, start_recording, stop_recording
 
@@ -97,6 +97,19 @@ def _clip_row_to_dict(row) -> Dict[str, Any]:
             meta = json.loads(row["metadata_json"])
         except (json.JSONDecodeError, TypeError):
             meta = {}
+    # File-existence checks are cheap; this lets the frontend decide
+    # whether `?q=sd` on this clip will actually deliver SD (sibling
+    # present from the SD segmenter pipeline) or fall back to the primary
+    # file. Cameras configured to record only SD have the SD recording
+    # AS the primary file, so we report sd_ready=True for those too.
+    sd_ready = False
+    fp = row["file_path"]
+    if fp:
+        try:
+            p = Path(fp)
+            sd_ready = sd_sibling_path(p).exists() or p.name.endswith(".sd.mp4")
+        except Exception:
+            sd_ready = False
     return {
         "id": row["id"],
         "camera": row["camera"],
@@ -108,6 +121,9 @@ def _clip_row_to_dict(row) -> Dict[str, Any]:
         "created_at": int(row["created_at"]),
         "metadata": meta,
         "has_thumbnail": bool(row["thumbnail_path"]),
+        "sd_ready": sd_ready,
+        # Back-compat alias; older clients still read this.
+        "low_ready": sd_ready,
     }
 
 
@@ -194,43 +210,17 @@ def get_clip(clip_id: str) -> Dict[str, Any]:
     return d
 
 
-def _low_variant_path(original: Path) -> Path:
-    # Sit next to the original so it's wiped by the same delete-clip path.
-    # Suffix is `.low.mp4` so a glob can find/clean them if needed.
-    return original.with_name(original.stem + ".low.mp4")
+def _sd_sibling_ready(primary: Path) -> bool:
+    """True iff a recorded `<event>.sd.mp4` sibling exists for this clip.
 
-
-def _ensure_low_variant(original_path: Path) -> Path:
-    """Return the path to a 480p / ultrafast / crf-28 variant of the clip.
-
-    Transcodes on first request and caches on disk. Subsequent requests
-    serve the cached file via the same range_file_response path. CPU is
-    only spent for clips someone actually views remotely; nothing happens
-    in the background.
+    The sibling is produced by the SD segmenter pipeline at clip-assembly
+    time. Existence is the readiness signal — there's no async work in
+    flight to wait on, the file is either there or it isn't.
     """
-    low = _low_variant_path(original_path)
-    if low.exists() and low.stat().st_mtime >= original_path.stat().st_mtime:
-        return low
-    tmp = low.with_suffix(".tmp.mp4")
-    # ultrafast keeps the Pi from saturating its cores; -crf 28 + 480p
-    # turns a ~200 MB 5-min clip into roughly 8-20 MB which streams over
-    # a few-hundred-kbit/s uplink.
-    cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(original_path),
-        "-vf", "scale=-2:480",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
-        "-an",
-        "-movflags", "+faststart",
-        str(tmp),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-    if result.returncode != 0 or not tmp.exists():
-        try: tmp.unlink()
-        except FileNotFoundError: pass
-        raise RuntimeError(f"transcode failed rc={result.returncode}: {result.stderr.strip()}")
-    tmp.replace(low)
-    return low
+    try:
+        return sd_sibling_path(primary).exists()
+    except FileNotFoundError:
+        return False
 
 
 @router.get("/api/clips/{clip_id}/video")
@@ -242,22 +232,49 @@ def get_clip_video(
     d = _fetch_clip(clip_id)
     if d is None:
         raise HTTPException(status_code=404, detail="clip not found")
-    src = Path(d["_file_path"])
-    # Optional low-bitrate variant for slow-connection remote viewers.
-    # Cached on disk on first request; subsequent requests are fast.
-    if q == "low":
-        try:
-            src = _ensure_low_variant(src)
-        except Exception:
-            log.exception("low-quality variant build failed for clip %s", clip_id)
-            # Fall back to the original; better than 500.
-            src = Path(d["_file_path"])
-    return range_file_response(
+    primary = Path(d["_file_path"])
+    src = primary
+    served_variant = "hd"
+    # `q=sd` (or the legacy `q=low`) asks for the substream recording —
+    # if a sibling was assembled at recording time, serve it directly.
+    # Otherwise fall back to the primary file (which IS HD for cameras
+    # where only HD was recorded, or IS the SD recording itself for
+    # cameras where only SD was recorded).
+    if q in ("sd", "low"):
+        sd = sd_sibling_path(primary)
+        if sd.exists():
+            src = sd
+            served_variant = "sd"
+        # else: src stays as primary; no fallback transcode happens.
+    resp = range_file_response(
         request,
         src,
         media_type="video/mp4",
-        filename=f"{clip_id}{'.low' if q == 'low' else ''}.mp4",
+        filename=f"{clip_id}{'.sd' if served_variant == 'sd' else ''}.mp4",
     )
+    try:
+        resp.headers["X-Variant"] = served_variant
+        resp.headers["Access-Control-Expose-Headers"] = "X-Variant"
+    except Exception:
+        pass
+    return resp
+
+
+@router.get("/api/clips/{clip_id}/variant-status")
+def get_clip_variant_status(clip_id: str) -> Dict[str, Any]:
+    """Report which variants are available for this clip.
+
+    Used by the playback page to decide whether the SD toggle on a camera
+    can be honoured for this specific clip. With recorded-substream SD
+    there's no queue/transcode — the sibling either exists or it doesn't.
+    `low_ready` is kept as an alias for older clients.
+    """
+    d = _fetch_clip(clip_id)
+    if d is None:
+        raise HTTPException(status_code=404, detail="clip not found")
+    primary = Path(d["_file_path"])
+    sd_ready = _sd_sibling_ready(primary)
+    return {"sd_ready": sd_ready, "low_ready": sd_ready, "queued": False}
 
 
 @router.get("/api/clips/{clip_id}/thumbnail")
@@ -274,8 +291,8 @@ def get_clip_thumbnail(clip_id: str, request: Request) -> Response:
 
 
 def _delete_clip_files(file_path: Optional[str], thumb_path: Optional[str]) -> None:
-    """Delete the original clip, its thumbnail, and the cached low-quality
-    variant (built on demand by /api/clips/{id}/video?q=low) if present.
+    """Delete the primary clip, its thumbnail, and the SD sibling (plus
+    any legacy `.low.mp4` variant lingering from older builds).
     """
     for p in (file_path, thumb_path):
         if not p:
@@ -287,13 +304,14 @@ def _delete_clip_files(file_path: Optional[str], thumb_path: Optional[str]) -> N
         except OSError as e:
             log.warning("clip cleanup: unlink %s failed: %s", p, e)
     if file_path:
-        low = _low_variant_path(Path(file_path))
-        try:
-            low.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as e:
-            log.warning("clip cleanup: unlink low variant %s failed: %s", low, e)
+        primary = Path(file_path)
+        for sibling in (sd_sibling_path(primary), primary.with_name(primary.stem + ".low.mp4")):
+            try:
+                sibling.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                log.warning("clip cleanup: unlink sibling %s failed: %s", sibling, e)
 
 
 @router.delete("/api/clips/{clip_id}")

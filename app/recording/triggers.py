@@ -11,7 +11,8 @@ from typing import Any, Dict, Optional
 from .assembler import assemble_clip
 from .config import trigger_max_duration_setting
 from .db import db_connect
-from .paths import clip_path
+from .device_config import device_record_variants
+from .paths import VARIANT_HD, VARIANT_SD, clip_path, sd_sibling_path
 
 log = logging.getLogger("recording.triggers")
 
@@ -124,19 +125,53 @@ def _finalise_stopped_recording(
     now_dt = _dt.datetime.fromtimestamp(start_ts)
     out_path = clip_path(camera, now_dt.year, now_dt.month, now_dt.day, event_id)
 
+    # Decide which variant becomes the primary `.mp4` and whether a
+    # `.sd.mp4` sibling should be assembled too. When both variants are
+    # recorded the primary is HD (file_path column references the HD file);
+    # when only one variant is recorded that variant is primary regardless.
+    variants = device_record_variants().get(camera) or [VARIANT_HD]
+    primary_variant = VARIANT_HD if VARIANT_HD in variants else VARIANT_SD
+
     try:
         clip = assemble_clip(
             camera=camera,
             start_ts=start_ts,
             end_ts=end_ts,
             output_path=out_path,
+            variant=primary_variant,
         )
     except Exception:
         log.exception(
-            "trigger.stop: assemble failed event_id=%s camera=%s",
-            event_id, camera,
+            "trigger.stop: assemble primary (%s) failed event_id=%s camera=%s",
+            primary_variant, event_id, camera,
         )
         raise
+
+    # Assemble the SD sibling only when *both* variants were recorded —
+    # otherwise the primary already IS the SD variant (or HD only).
+    sd_sibling: Optional[Any] = None
+    if VARIANT_HD in variants and VARIANT_SD in variants:
+        sd_path = sd_sibling_path(out_path)
+        try:
+            sd_sibling = assemble_clip(
+                camera=camera,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                output_path=sd_path,
+                variant=VARIANT_SD,
+                make_thumbnail=False,
+            )
+        except FileNotFoundError:
+            log.warning(
+                "trigger.stop: no SD segments for event_id=%s camera=%s — "
+                "SD sibling skipped",
+                event_id, camera,
+            )
+        except Exception:
+            log.exception(
+                "trigger.stop: assemble SD sibling failed event_id=%s camera=%s",
+                event_id, camera,
+            )
 
     thumb_str = str(clip.thumbnail_path) if clip.thumbnail_path else None
     meta_json = json.dumps(meta) if meta else None
@@ -153,10 +188,13 @@ def _finalise_stopped_recording(
         )
 
     log.info(
-        "trigger.stop: event_id=%s camera=%s duration=%ds size=%db segs=%d gaps=%d",
-        event_id, camera, clip.duration_seconds, clip.file_size_bytes,
+        "trigger.stop: event_id=%s camera=%s primary=%s duration=%ds size=%db "
+        "segs=%d gaps=%d sd_sibling=%s",
+        event_id, camera, primary_variant, clip.duration_seconds, clip.file_size_bytes,
         clip.segments_used, len(clip.gaps),
+        (sd_sibling.file_path.name if sd_sibling else "no"),
     )
+
     return {
         "id": event_id,
         "camera": camera,
