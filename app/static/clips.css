@@ -151,6 +151,37 @@ body.playbackPage { overflow: hidden; }
   background: rgba(255, 255, 255, 0.15);
 }
 
+/* ── Buffering spinner on a playback tile ──────────────────────────── */
+
+.playbackPage .pbVideoGrid .tileBufferSpinner {
+  position: absolute;
+  inset: 0;
+  display: none;
+  pointer-events: none;
+  align-items: center;
+  justify-content: center;
+  /* Live above the video and the camera-name HUD, but below the
+     no-recording overlay (which has its own dim backdrop). */
+  z-index: 4;
+}
+.playbackPage .pbVideoGrid .tile.is-buffering .tileBufferSpinner {
+  display: flex;
+}
+.playbackPage .pbVideoGrid .tileBufferSpinner::after {
+  content: "";
+  width: 36px;
+  height: 36px;
+  border: 3px solid rgba(255, 255, 255, 0.25);
+  border-top-color: rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  animation: tileBufferSpin 0.8s linear infinite;
+  /* Soft dark halo so the spinner reads on bright frames too. */
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25), 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+@keyframes tileBufferSpin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── Maximized tile (playback) ─────────────────────────────────────── */
 
 /* When the user double-clicks a playback tile, body picks up the
