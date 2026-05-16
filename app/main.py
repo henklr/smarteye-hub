@@ -3198,6 +3198,23 @@ def _test_hd_concurrency(rtsp_url: str, timeout_s: float = 8.0) -> tuple[bool, s
     return False, " / ".join(failures) or "two concurrent HD probes failed"
 
 
+def _live_variants_for_device(device) -> List[str]:
+    """Derive which variants the live page should offer for this camera.
+
+    Mirrors `recording.device_config._live_variants_for` but takes a
+    pydantic Device object — used from the FastAPI handlers and from
+    `_reconcile_camera_mtx_paths` which run pre-engine-import.
+      • SD profile picked (profile_token) → SD on live
+      • HD profile picked (recording_profile_token) → HD on live
+    """
+    out: List[str] = []
+    if (getattr(device, "profile_token", None) or "").strip():
+        out.append("sd")
+    if (getattr(device, "recording_profile_token", None) or "").strip():
+        out.append("hd")
+    return out
+
+
 def _enforce_hd_concurrency(device: Device) -> None:
     """Raise 400 if the device wants HD live + HD recording but the
     camera can only host one HD connection at a time.
@@ -3212,7 +3229,7 @@ def _enforce_hd_concurrency(device: Device) -> None:
         record_variants = list(_drv().get(f"cam-{device.id}", []) or [])
     except Exception:
         record_variants = []
-    live_variants = list(getattr(device, "live_variants", None) or [])
+    live_variants = _live_variants_for_device(device)
     if "hd" not in record_variants or "hd" not in live_variants:
         return
     hd_url = (getattr(device, "recording_rtsp_url", None) or "").strip()
@@ -3259,7 +3276,7 @@ def _reconcile_camera_mtx_paths(
     HD connection at a time no longer get a recording connection AND a
     competing live connection — there's only ever the MediaMTX one.
     """
-    live_variants = list(getattr(device, "live_variants", None) or [])
+    live_variants = _live_variants_for_device(device)
     record_variants = list(getattr(device, "record_variants", None) or [])
     preload = bool(getattr(device, "preload_stream", True))
 
