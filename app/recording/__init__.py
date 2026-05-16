@@ -170,6 +170,7 @@ def create_recording_marker(
     flow_id: Any = None,
     flow_name: Any = None,
     node_id: Any = None,
+    record_variants_override: Any = None,
     **extra: Any,
 ) -> Dict[str, Any]:
     meta = _marker_metadata_from_kwargs(
@@ -179,6 +180,14 @@ def create_recording_marker(
             "flow_id": flow_id, "flow_name": flow_name, "node_id": node_id,
         }
     )
+    # The per-node variant override travels with the recording's metadata
+    # and is consumed by `_finalise_stopped_recording` to pick which
+    # variants to assemble. Stored under a leading-underscore key so it
+    # isn't surfaced in the regular metadata payload to clients.
+    if isinstance(record_variants_override, list):
+        valid = [v for v in record_variants_override if v in ("hd", "sd")]
+        if valid:
+            meta["_record_variants"] = valid
     camera = _camera_name(device_id)
     # 0 / negative → fall back to the engine's safety cap; any positive value
     # is honoured, still clamped by the cap inside start_recording.

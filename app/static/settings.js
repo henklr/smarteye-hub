@@ -959,7 +959,7 @@ const cameraPasswordEl          = document.getElementById("cameraPassword");
 const cameraProfileSel          = document.getElementById("cameraProfile");
 const cameraRecordingProfileSel = document.getElementById("cameraRecordingProfile");
 const cameraLiveVariantsSel     = document.getElementById("cameraLiveVariants");
-const cameraRecordVariantsSel   = document.getElementById("cameraRecordVariants");
+// Single "Continuous recording" dropdown (was: separate Record + on/off + Continuous quality).
 const cameraContinuousEl        = document.getElementById("cameraContinuousRecording");
 const cameraFetchProfilesBtn    = document.getElementById("cameraFetchProfilesBtn");
 const addCameraBtn              = document.getElementById("addCameraBtn");
@@ -1073,9 +1073,26 @@ function showCameraForm(camera) {
   if (cameraOnvifPortEl)   cameraOnvifPortEl.value   = camera?.onvif_port  || "80";
   if (cameraUsernameEl)    cameraUsernameEl.value    = camera?.username    || "";
   if (cameraPasswordEl)    cameraPasswordEl.value    = "";
-  if (cameraContinuousEl)  cameraContinuousEl.checked = !!(camera?.continuous_recording);
-  if (cameraLiveVariantsSel)   cameraLiveVariantsSel.value   = _variantSelectValue(camera?.live_variants,   "sd");
-  if (cameraRecordVariantsSel) cameraRecordVariantsSel.value = _variantSelectValue(camera?.record_variants, "hd");
+  if (cameraLiveVariantsSel)   cameraLiveVariantsSel.value   = _variantSelectValue(camera?.live_variants, "sd");
+  // Continuous dropdown: Off / SD / HD. Legacy entries with both variants
+  // listed silently normalise to HD (higher quality wins — playback always
+  // plays the highest available variant, so recording both was a waste).
+  if (cameraContinuousEl) {
+    const cv = Array.isArray(camera?.continuous_variants) ? camera.continuous_variants : [];
+    const hasHd = cv.includes("hd");
+    const hasSd = cv.includes("sd");
+    if (hasHd) {
+      cameraContinuousEl.value = "hd";
+    } else if (hasSd) {
+      cameraContinuousEl.value = "sd";
+    } else if (camera?.continuous_recording) {
+      // Legacy boolean-only entry: prefer HD from old record_variants.
+      const legacy = Array.isArray(camera?.record_variants) ? camera.record_variants : [];
+      cameraContinuousEl.value = legacy.includes("hd") ? "hd" : (legacy.includes("sd") ? "sd" : "hd");
+    } else {
+      cameraContinuousEl.value = "";
+    }
+  }
   // Pre-seed the profile selects with the already-saved tokens so the
   // user can see what is currently set without clicking Fetch profiles.
   _seedProfileSelect(cameraProfileSel, camera?.profile_token, camera?.profile_label);
@@ -1202,14 +1219,15 @@ saveCameraBtn?.addEventListener("click", async () => {
       ? (selectedRec ? _profileLabel(selectedRec) : (cameraRecordingProfileSel?.selectedOptions?.[0]?.textContent || recording_profile_token))
       : null;
 
-    const continuous_recording = !!(cameraContinuousEl?.checked);
     const live_variants = _variantSelectToList(cameraLiveVariantsSel?.value || "sd");
-    const record_variants = _variantSelectToList(cameraRecordVariantsSel?.value || "hd");
+    // Single dropdown: empty = Off, otherwise a comma-separated variant list.
+    const continuous_variants = _variantSelectToList(cameraContinuousEl?.value || "");
+    const continuous_recording = continuous_variants.length > 0;
     const payload = {
       name, ...creds, profile_token, profile_label,
       recording_profile_token, recording_profile_label,
       continuous_recording,
-      live_variants, record_variants,
+      live_variants, continuous_variants,
     };
 
     setCameraStatus("Saving…");

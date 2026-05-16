@@ -109,12 +109,16 @@ def _clip_row_to_dict(row) -> Dict[str, Any]:
     # timeline-only annotations.
     fp = row["file_path"]
     is_marker = not (fp or "").strip()
+    hd_ready = False
     sd_ready = False
     if fp and not is_marker:
         try:
             p = Path(fp)
-            sd_ready = sd_sibling_path(p).exists() or p.name.endswith(".sd.mp4")
+            primary_is_sd = p.name.endswith(".sd.mp4")
+            hd_ready = not primary_is_sd  # primary file is the HD recording
+            sd_ready = sd_sibling_path(p).exists() or primary_is_sd
         except Exception:
+            hd_ready = False
             sd_ready = False
     return {
         "id": row["id"],
@@ -127,6 +131,7 @@ def _clip_row_to_dict(row) -> Dict[str, Any]:
         "created_at": int(row["created_at"]),
         "metadata": meta,
         "has_thumbnail": bool(row["thumbnail_path"]),
+        "hd_ready": hd_ready,
         "sd_ready": sd_ready,
         # Back-compat alias; older clients still read this.
         "low_ready": sd_ready,
@@ -224,13 +229,16 @@ def get_clip(clip_id: str) -> Dict[str, Any]:
 
 
 def _sd_sibling_ready(primary: Path) -> bool:
-    """True iff a recorded `<event>.sd.mp4` sibling exists for this clip.
+    """True iff SD playback is available for this clip.
 
-    The sibling is produced by the SD segmenter pipeline at clip-assembly
-    time. Existence is the readiness signal — there's no async work in
-    flight to wait on, the file is either there or it isn't.
+    Two paths can serve SD:
+      • the primary file IS the SD recording (filename ends `.sd.mp4`),
+        e.g. for a continuous chunk recorded SD-only, or
+      • a separate `<event>.sd.mp4` sibling exists next to an HD primary.
     """
     try:
+        if primary.name.endswith(".sd.mp4"):
+            return primary.exists()
         return sd_sibling_path(primary).exists()
     except FileNotFoundError:
         return False
@@ -247,18 +255,27 @@ def get_clip_video(
         raise HTTPException(status_code=404, detail="clip not found")
     primary = Path(d["_file_path"])
     src = primary
-    served_variant = "hd"
-    # `q=sd` (or the legacy `q=low`) asks for the substream recording —
-    # if a sibling was assembled at recording time, serve it directly.
-    # Otherwise fall back to the primary file (which IS HD for cameras
-    # where only HD was recorded, or IS the SD recording itself for
-    # cameras where only SD was recorded).
+    primary_is_sd = primary.name.endswith(".sd.mp4")
+    # Track what's actually being served so the response header is honest
+    # even when we transparently fall back.
+    served_variant = "sd" if primary_is_sd else "hd"
     if q in ("sd", "low"):
-        sd = sd_sibling_path(primary)
-        if sd.exists():
-            src = sd
+        if primary_is_sd:
+            # Primary IS the SD recording (camera only records SD, or this
+            # is a continuous SD-only chunk). Serve it as-is.
             served_variant = "sd"
-        # else: src stays as primary; no fallback transcode happens.
+        else:
+            # HD primary — look for a .sd.mp4 sibling.
+            sd = sd_sibling_path(primary)
+            if sd.exists():
+                src = sd
+                served_variant = "sd"
+            # else: src stays as the HD primary — the only thing we have.
+    elif q == "hd" and primary_is_sd:
+        # User explicitly asked for HD but the primary is SD. There's
+        # nothing else to serve; the response stays SD but the header
+        # signals the truth so the client can react if needed.
+        served_variant = "sd"
     resp = range_file_response(
         request,
         src,

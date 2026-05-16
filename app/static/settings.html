@@ -196,24 +196,15 @@
                 </div>
               </div>
               <div data-full>
-                <label for="cameraRecordVariants">Record</label>
-                <select id="cameraRecordVariants">
-                  <option value="hd">HD only</option>
-                  <option value="sd">SD only</option>
-                  <option value="hd,sd">HD and SD</option>
+                <label for="cameraContinuousRecording">Continuous recording</label>
+                <select id="cameraContinuousRecording">
+                  <option value="">Off</option>
+                  <option value="sd">SD</option>
+                  <option value="hd">HD</option>
                 </select>
                 <div class="listSub" style="margin-top:4px;">
-                  Which streams the recording engine captures. Recording both gives instant HD/SD playback toggle without any CPU-burning transcode.
-                </div>
-              </div>
-              <div data-full>
-                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;">
-                  <input id="cameraContinuousRecording" type="checkbox" style="width:auto;margin:0;" />
-                  <span>Continuous recording (24/7)</span>
-                </label>
-                <div class="listSub" style="margin-top:4px;">
-                  Keeps a segmenter running 24/7 and stores hourly chunks. Trigger-based recordings still work on top.
-                  <strong>Heads up:</strong> a typical IP-camera stream is ~40&nbsp;GB/day — multiple continuous cameras will fill the drive fast and exercise the retention sweep.
+                  Always-on 24/7 recording at the selected quality. Trigger-based flow recordings work on top of this and can pick their own quality independently. Each clip is single-variant — playback plays whatever quality the recording was, no waste.
+                  <strong>Heads up:</strong> HD is ~40&nbsp;GB/day per camera, SD is ~4&nbsp;GB/day. SD for storage-efficient baseline + HD on motion via Record nodes is a common pattern.
                 </div>
               </div>
             </div>

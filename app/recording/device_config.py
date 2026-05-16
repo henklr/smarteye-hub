@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
+from .flow_config import variants_in_flows
 from .paths import ALL_VARIANTS, VARIANT_HD, VARIANT_SD
 
 log = logging.getLogger("recording.device_config")
@@ -85,14 +86,20 @@ def _live_variants_for(dev: dict) -> List[str]:
 def continuous_cameras_from_devices() -> Set[str]:
     """Return the set of `cam-<id>` paths flagged for continuous recording.
 
-    Returns an empty set when devices.json is missing/malformed — same fail-safe
-    posture as flow_config: no segmenters spawn for unknown cameras.
+    "Flagged" = non-empty `continuous_variants` OR legacy `continuous_recording=True`.
+    The new combined dropdown writes both fields together; older devices.json
+    entries may only have the boolean and we honour that as before. Returns
+    an empty set when devices.json is missing/malformed.
     """
     out: Set[str] = set()
     for dev in _load_devices_list():
         if not isinstance(dev, dict):
             continue
-        if not dev.get("continuous_recording"):
+        has_variants = bool(
+            isinstance(dev.get("continuous_variants"), list)
+            and dev.get("continuous_variants")
+        )
+        if not (has_variants or dev.get("continuous_recording")):
             continue
         cam = _normalise_camera(str(dev.get("id") or ""))
         if cam:
@@ -101,7 +108,20 @@ def continuous_cameras_from_devices() -> Set[str]:
 
 
 def device_record_variants() -> Dict[str, List[str]]:
-    """Return `{cam_path: [variants…]}` describing which streams to record."""
+    """Return `{cam_path: [variants…]}` describing which streams to record.
+
+    Auto-derived from the union of:
+      • the device's `continuous_variants` (what continuous chunks should
+        be saved as — empty means continuous is off for this camera), and
+      • the Quality choices from every enabled flow Record node targeting
+        the camera (read live from flows.json).
+
+    A camera referenced by neither gets an empty list — no segmenter
+    spawned, no camera RTSP pull. As soon as continuous is enabled OR a
+    flow node targets the camera, the supervisor reconciles within ~1
+    tick and the relevant segmenter starts.
+    """
+    flow_variants = variants_in_flows()
     out: Dict[str, List[str]] = {}
     for dev in _load_devices_list():
         if not isinstance(dev, dict):
@@ -109,7 +129,31 @@ def device_record_variants() -> Dict[str, List[str]]:
         cam = _normalise_camera(str(dev.get("id") or ""))
         if not cam:
             continue
-        out[cam] = _record_variants_for(dev)
+        wanted: Set[str] = set()
+        # Continuous-side contribution.
+        raw_cont = dev.get("continuous_variants")
+        if isinstance(raw_cont, list) and raw_cont:
+            for v in raw_cont:
+                if v in ALL_VARIANTS:
+                    wanted.add(v)
+        elif dev.get("continuous_recording"):
+            # Legacy entry: continuous toggled on but no explicit variant
+            # list. Honour the previous record_variants setting if present
+            # so a pre-deploy 'continuous=on, record=HD' device keeps
+            # recording HD. Falls back to HD when nothing's there.
+            legacy = dev.get("record_variants")
+            if isinstance(legacy, list):
+                for v in legacy:
+                    if v in ALL_VARIANTS:
+                        wanted.add(v)
+            if not wanted:
+                wanted.add(VARIANT_HD)
+        # Flow-side contribution.
+        for v in flow_variants.get(cam, []) or []:
+            if v in ALL_VARIANTS:
+                wanted.add(v)
+        # Preserve a stable HD-before-SD ordering.
+        out[cam] = [v for v in (VARIANT_HD, VARIANT_SD) if v in wanted]
     return out
 
 
@@ -123,6 +167,35 @@ def device_live_variants() -> Dict[str, List[str]]:
         if not cam:
             continue
         out[cam] = _live_variants_for(dev)
+    return out
+
+
+def device_continuous_variants() -> Dict[str, List[str]]:
+    """Return `{cam_path: [variants…]}` for continuous-chunk output.
+
+    Empty list means "follow `record_variants`" — the watchdog passes
+    nothing in the metadata and the assembler uses the device defaults.
+    """
+    out: Dict[str, List[str]] = {}
+    for dev in _load_devices_list():
+        if not isinstance(dev, dict):
+            continue
+        cam = _normalise_camera(str(dev.get("id") or ""))
+        if not cam:
+            continue
+        raw = dev.get("continuous_variants")
+        if isinstance(raw, list):
+            cleaned = [v for v in raw if v in ALL_VARIANTS]
+            seen: Set[str] = set()
+            deduped: List[str] = []
+            for v in cleaned:
+                if v in seen:
+                    continue
+                seen.add(v)
+                deduped.append(v)
+            out[cam] = deduped
+        else:
+            out[cam] = []
     return out
 
 

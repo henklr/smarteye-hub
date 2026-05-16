@@ -12,7 +12,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Set
 
 log = logging.getLogger("recording.flow_config")
 
@@ -80,3 +80,60 @@ def cameras_in_flows() -> Dict[str, int]:
                 else:
                     out[cam] = before
     return out
+
+
+def variants_in_flows() -> Dict[str, List[str]]:
+    """Return `{camera_path: [variants…]}` aggregating Quality choices from
+    every enabled Record node that targets the camera.
+
+    The recording engine unions this with the device's continuous variants
+    to compute the effective set of streams to pull from the camera. A
+    camera referenced by no flow node gets an empty list (no contribution).
+    """
+    try:
+        with open(_FLOWS_JSON, "r") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning("flow_config: failed to read %s: %s", _FLOWS_JSON, e)
+        return {}
+
+    if isinstance(data, list):
+        flows = data
+    else:
+        flows = data.get("items") or data.get("flows") or []
+
+    out: Dict[str, Set[str]] = {}
+    for flow in flows:
+        if not isinstance(flow, dict):
+            continue
+        if flow.get("enabled", True) is False:
+            continue
+        for node in flow.get("nodes", []) or []:
+            if not isinstance(node, dict):
+                continue
+            if node.get("type") != "action.record":
+                continue
+            cfg = node.get("config") or {}
+            raw = str(cfg.get("record_variants") or "").strip().lower()
+            # Empty Quality used to mean "follow device"; with auto-derive
+            # there is no device-level Record knob to follow, so we default
+            # to HD when the node didn't specify a quality explicitly.
+            if raw:
+                wanted = [v.strip() for v in raw.split(",") if v.strip() in ("hd", "sd")]
+            else:
+                wanted = ["hd"]
+            if not wanted:
+                wanted = ["hd"]
+            device_ids = cfg.get("device_ids")
+            if not isinstance(device_ids, list):
+                legacy = str(cfg.get("device_id") or "").strip()
+                device_ids = [legacy] if legacy else []
+            for did in device_ids:
+                cam = _normalise_camera(str(did))
+                if not cam:
+                    continue
+                out.setdefault(cam, set()).update(wanted)
+    # Preserve a stable order: HD first when present, then SD.
+    return {cam: [v for v in ("hd", "sd") if v in vset] for cam, vset in out.items()}

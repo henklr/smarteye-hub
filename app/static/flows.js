@@ -7020,6 +7020,22 @@ function renderNodeInspector(node) {
               })()}
             </div>
             <div class="full">
+              <label>Quality</label>
+              ${(() => {
+                // Legacy "hd,sd" silently normalises to "hd" — playback
+                // always plays the highest available variant, so recording
+                // both was wasteful.
+                let current = String(cfg.record_variants || "hd").trim().toLowerCase();
+                if (current === "hd,sd" || current === "sd,hd") current = "hd";
+                const opts = [
+                  { value: "hd", label: "HD" },
+                  { value: "sd", label: "SD" },
+                ];
+                return `<select id="cfg_record_variants">${opts.map((o) => `<option value="${escapeHtml(o.value)}"${o.value === current ? " selected" : ""}>${escapeHtml(o.label)}</option>`).join("")}</select>
+              <div class="inspectorHint mt-4">The recording engine auto-pulls whatever quality is selected here. HD evidence clips on motion + an SD baseline on continuous is a common pattern.</div>`;
+              })()}
+            </div>
+            <div class="full">
               <label>Tag color</label>
               <div class="recordingPresetColorRow recordingTagColorPreview is-readonly">
                 <span class="recordingTagColorSwatch is-large" style="background:${escapeHtml(tagColor)};"></span>
@@ -7662,6 +7678,7 @@ function applyNodeInspector(node) {
       set("preset_name");
       set("before_seconds");
       set("max_duration_seconds");
+      set("record_variants");
       {
         const selects = document.querySelectorAll(".recordDeviceSelect");
         if (selects.length) {

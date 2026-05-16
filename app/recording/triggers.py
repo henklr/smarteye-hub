@@ -73,25 +73,58 @@ def start_recording(
         max_dur = _clamp_max_duration(max_duration_seconds)
 
     if not is_continuous:
+        # What variants will the assembler use for this trigger? Default
+        # "hd" — matches the Record-node default; flow nodes can pass an
+        # explicit list via metadata to override.
+        trigger_variants = set()
+        meta_override = (metadata or {}).get("_record_variants")
+        if isinstance(meta_override, list):
+            for v in meta_override:
+                if v in (VARIANT_HD, VARIANT_SD):
+                    trigger_variants.add(v)
+        if not trigger_variants:
+            trigger_variants.add(VARIANT_HD)
+
         with db_connect() as conn:
-            continuous_active = conn.execute(
-                "SELECT 1 FROM active_recordings WHERE camera = ?"
+            continuous_row = conn.execute(
+                "SELECT metadata_json FROM active_recordings WHERE camera = ?"
                 " AND COALESCE(json_extract(metadata_json, '$._kind'), '') = 'continuous'"
                 " LIMIT 1",
                 (camera,),
-            ).fetchone() is not None
-            sibling = None
-            if not continuous_active:
-                sibling = conn.execute(
-                    "SELECT event_id, trigger_start_ts, pre_buffer_seconds, max_duration_seconds, metadata_json"
-                    " FROM active_recordings WHERE camera = ?"
-                    " AND COALESCE(json_extract(metadata_json, '$._kind'), '') <> 'continuous'"
-                    " ORDER BY trigger_start_ts DESC LIMIT 1",
-                    (camera,),
-                ).fetchone()
+            ).fetchone()
+            sibling = conn.execute(
+                "SELECT event_id, trigger_start_ts, pre_buffer_seconds, max_duration_seconds, metadata_json"
+                " FROM active_recordings WHERE camera = ?"
+                " AND COALESCE(json_extract(metadata_json, '$._kind'), '') <> 'continuous'"
+                " ORDER BY trigger_start_ts DESC LIMIT 1",
+                (camera,),
+            ).fetchone()
 
-        # Rule 2: coalesce into an existing non-continuous recording.
-        if sibling is not None:
+        # Decide whether the continuous chunk fully covers this trigger.
+        # Only true when continuous's variant set is a superset of what
+        # the trigger wants. SD continuous + HD trigger does NOT cover —
+        # we must write a real HD clip alongside the SD continuous chunk.
+        continuous_covers = False
+        if continuous_row is not None:
+            try:
+                cont_meta = json.loads(continuous_row["metadata_json"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                cont_meta = {}
+            cont_variants = cont_meta.get("_record_variants")
+            cont_set = set()
+            if isinstance(cont_variants, list):
+                cont_set = {v for v in cont_variants if v in (VARIANT_HD, VARIANT_SD)}
+            if not cont_set:
+                # Legacy continuous chunk with no explicit variants — it
+                # used to default to HD primary + SD sibling when both
+                # were recorded. Conservative: treat as covering both.
+                cont_set = {VARIANT_HD, VARIANT_SD}
+            continuous_covers = trigger_variants.issubset(cont_set)
+
+        # Rule 2: coalesce into an existing non-continuous recording on
+        # the same camera. Only when continuous doesn't cover us — if it
+        # does, the marker path below is cheaper than extending a clip.
+        if sibling is not None and not continuous_covers:
             old_start = int(sibling["trigger_start_ts"])
             old_pre = int(sibling["pre_buffer_seconds"])
             new_end = trigger_start + max_dur
@@ -118,8 +151,9 @@ def start_recording(
                 "max_duration_seconds": new_max_dur,
             }
 
-        # Rule 1: continuous chunk owns this time window — record a marker.
-        if continuous_active:
+        # Rule 1: continuous chunk owns this time window AND its variants
+        # cover what the trigger wants — record a marker (no clip file).
+        if continuous_covers:
             metadata = dict(metadata or {})
             metadata["_marker_only"] = True
 
@@ -231,14 +265,39 @@ def _finalise_stopped_recording(
         }
 
     now_dt = _dt.datetime.fromtimestamp(start_ts)
-    out_path = clip_path(camera, now_dt.year, now_dt.month, now_dt.day, event_id)
+    primary_out_path = clip_path(camera, now_dt.year, now_dt.month, now_dt.day, event_id)
 
     # Decide which variant becomes the primary `.mp4` and whether a
     # `.sd.mp4` sibling should be assembled too. When both variants are
     # recorded the primary is HD (file_path column references the HD file);
     # when only one variant is recorded that variant is primary regardless.
-    variants = device_record_variants().get(camera) or [VARIANT_HD]
+    device_variants = list(device_record_variants().get(camera) or [VARIANT_HD])
+    # Per-Record-node override (set by flows.py from the inspector). The
+    # override can only NARROW what the device is recording — we can't
+    # produce SD if the SD segmenter isn't running. If the override has
+    # no overlap with device_variants we fall back to the device default
+    # and log a warning.
+    override = meta.pop("_record_variants", None)
+    variants = device_variants
+    if isinstance(override, list) and override:
+        desired = [v for v in override if v in (VARIANT_HD, VARIANT_SD)]
+        intersection = [v for v in desired if v in device_variants]
+        if intersection:
+            variants = intersection
+        else:
+            log.warning(
+                "trigger.stop: record_variants override %s has no overlap "
+                "with device variants %s for camera=%s — using device default",
+                override, device_variants, camera,
+            )
     primary_variant = VARIANT_HD if VARIANT_HD in variants else VARIANT_SD
+
+    # Encode the primary's variant into the filename so the playback
+    # side knows what's HD vs SD without a separate column. HD primary
+    # uses `<event>.mp4`; SD primary uses `<event>.sd.mp4`. When both
+    # variants are recorded we still use the `.mp4` / `.sd.mp4` pair —
+    # primary file lives at .mp4 (HD), sibling at .sd.mp4 (SD).
+    out_path = primary_out_path if primary_variant == VARIANT_HD else sd_sibling_path(primary_out_path)
 
     try:
         clip = assemble_clip(
@@ -259,7 +318,7 @@ def _finalise_stopped_recording(
     # otherwise the primary already IS the SD variant (or HD only).
     sd_sibling: Optional[Any] = None
     if VARIANT_HD in variants and VARIANT_SD in variants:
-        sd_path = sd_sibling_path(out_path)
+        sd_path = sd_sibling_path(primary_out_path)
         try:
             sd_sibling = assemble_clip(
                 camera=camera,
