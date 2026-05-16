@@ -958,7 +958,10 @@ const cameraUsernameEl          = document.getElementById("cameraUsername");
 const cameraPasswordEl          = document.getElementById("cameraPassword");
 const cameraProfileSel          = document.getElementById("cameraProfile");
 const cameraRecordingProfileSel = document.getElementById("cameraRecordingProfile");
-const cameraLiveVariantsSel     = document.getElementById("cameraLiveVariants");
+// "Show on Live" is now auto-derived from which profiles are picked
+// (SD profile → SD on live; HD profile → HD on live; both → tile gets
+// a clickable HD/SD chip). No dropdown needed.
+
 // Single "Continuous recording" dropdown (was: separate Record + on/off + Continuous quality).
 const cameraContinuousEl        = document.getElementById("cameraContinuousRecording");
 const cameraFetchProfilesBtn    = document.getElementById("cameraFetchProfilesBtn");
@@ -1073,7 +1076,6 @@ function showCameraForm(camera) {
   if (cameraOnvifPortEl)   cameraOnvifPortEl.value   = camera?.onvif_port  || "80";
   if (cameraUsernameEl)    cameraUsernameEl.value    = camera?.username    || "";
   if (cameraPasswordEl)    cameraPasswordEl.value    = "";
-  if (cameraLiveVariantsSel)   cameraLiveVariantsSel.value   = _variantSelectValue(camera?.live_variants, "sd");
   // Continuous dropdown: Off / SD / HD. Legacy entries with both variants
   // listed silently normalise to HD (higher quality wins — playback always
   // plays the highest available variant, so recording both was a waste).
@@ -1219,15 +1221,17 @@ saveCameraBtn?.addEventListener("click", async () => {
       ? (selectedRec ? _profileLabel(selectedRec) : (cameraRecordingProfileSel?.selectedOptions?.[0]?.textContent || recording_profile_token))
       : null;
 
-    const live_variants = _variantSelectToList(cameraLiveVariantsSel?.value || "sd");
     // Single dropdown: empty = Off, otherwise a comma-separated variant list.
     const continuous_variants = _variantSelectToList(cameraContinuousEl?.value || "");
     const continuous_recording = continuous_variants.length > 0;
+    // `live_variants` is no longer user-facing — the backend auto-derives
+    // it from which profiles are picked (profile_token → SD on live,
+    // recording_profile_token → HD on live). We don't send it.
     const payload = {
       name, ...creds, profile_token, profile_label,
       recording_profile_token, recording_profile_label,
       continuous_recording,
-      live_variants, continuous_variants,
+      continuous_variants,
     };
 
     setCameraStatus("Saving…");

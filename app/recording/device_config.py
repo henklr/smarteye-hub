@@ -67,20 +67,21 @@ def _record_variants_for(dev: dict) -> List[str]:
 
 
 def _live_variants_for(dev: dict) -> List[str]:
-    """Variants the user opted into for live viewing."""
-    raw = dev.get("live_variants")
-    if isinstance(raw, list):
-        out = [v for v in raw if v in ALL_VARIANTS]
-        seen: Set[str] = set()
-        deduped: List[str] = []
-        for v in out:
-            if v in seen:
-                continue
-            seen.add(v)
-            deduped.append(v)
-        return deduped
-    # Default: SD only (matches the existing one-MediaMTX-path-per-camera setup).
-    return [VARIANT_SD]
+    """Variants offered for live viewing.
+
+    Auto-derived from which profiles are picked on the device:
+      • `profile_token` set (SD profile) → SD is available on live
+      • `recording_profile_token` set (HD profile) → HD is available on live
+    The standalone `live_variants` field is no longer the source of
+    truth — if both profiles are configured the live tile gets the
+    HD/SD chip; if only one, only that variant is shown.
+    """
+    out: List[str] = []
+    if str(dev.get("profile_token") or "").strip():
+        out.append(VARIANT_SD)
+    if str(dev.get("recording_profile_token") or "").strip():
+        out.append(VARIANT_HD)
+    return out
 
 
 def continuous_cameras_from_devices() -> Set[str]:

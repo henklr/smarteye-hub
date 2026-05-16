@@ -37,10 +37,13 @@ function saveTileQuality(deviceId, quality) {
 }
 
 function deviceLiveVariants(device) {
-  const raw = device?.live_variants;
-  if (!Array.isArray(raw)) return ["sd"];
-  const valid = raw.filter((v) => v === "hd" || v === "sd");
-  return valid.length ? valid : ["sd"];
+  // Auto-derived: a variant is offered on Live whenever the camera has
+  // a profile picked for it. SD profile picked → SD on live; HD profile
+  // picked → HD on live; both → tile shows the HD/SD chip.
+  const out = [];
+  if ((device?.profile_token || "").trim()) out.push("sd");
+  if ((device?.recording_profile_token || "").trim()) out.push("hd");
+  return out;
 }
 
 function effectiveLiveQuality(device) {
