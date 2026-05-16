@@ -1327,14 +1327,35 @@ def storage_format(request: Request, body: dict = None):
         _host_cmd(["pkill", "-KILL", "-f", "ffmpeg.* -f segment"], timeout=5)
         _host_cmd(["sync"], timeout=10)
 
+    def _wait_for_partition_free(target: str, timeout_s: float = 12.0) -> bool:
+        """Poll `fuser` until nothing has `target` open, or until timeout.
+
+        WAL-mode SQLite keeps a writable FD on the DB file (which lives on
+        the mount) for the duration of any in-flight request. The sibling
+        uvicorn's `stop_recording_engine()` (via SIGUSR1) clears the
+        engine's own connections, but a brief read API call that started
+        just before the signal can keep the partition busy for hundreds
+        of ms. Waiting for fuser to come back empty avoids the EBUSY race.
+        Returns True if the partition is free, False if we gave up.
+        """
+        deadline = _time.monotonic() + timeout_s
+        while _time.monotonic() < deadline:
+            proc = _host_cmd(
+                ["sh", "-c", f"fuser {target} 2>/dev/null || true"],
+                timeout=5,
+            )
+            holders = (proc.stdout or "").strip()
+            if not holders:
+                return True
+            _time.sleep(0.4)
+        return False
+
     # mkfs.ext4 with double-force survives the "apparently in use" warning, but
     # not an actual kernel-level holder (mount or open O_EXCL). udev's blkid
-    # probe + the sibling uvicorn's ffmpeg children can both hold the device,
-    # so we kill ffmpeg holders and retry with a fresh settle/unmount cycle.
-    # Defensive: re-stop both engines right before mkfs in case the recovery
-    # thread or some other code path snuck a restart in between. (The
-    # sentinel suppresses *new* recovery starts, but a recovery tick already
-    # mid-call when the sentinel was written would have finished its start.)
+    # probe + the sibling uvicorn's ffmpeg children + WAL-mode SQLite FDs from
+    # in-flight API requests can all hold the device, so we re-stop both
+    # engines, re-prod the sibling via SIGUSR1, kill ffmpegs, and actively
+    # wait for `fuser` to come back empty before each attempt.
     try:
         stop_recording_engine()
     except Exception:
@@ -1349,12 +1370,16 @@ def storage_format(request: Request, body: dict = None):
     try:
         for attempt in range(4):
             if attempt > 0:
-                # Each retry also re-stops + re-kills in case anything
-                # raced back to life since the previous attempt.
+                # Each retry also re-stops + re-kills + re-signals the
+                # sibling in case anything raced back to life since the
+                # previous attempt. Re-SIGUSR1 forces the sibling to drop
+                # its SQLite WAL handles again in case a request snuck
+                # in between calls.
                 try:
                     stop_recording_engine()
                 except Exception:
                     pass
+                _signal_sibling_uvicorns()
                 _kill_recording_holders()
                 _host_cmd(["udevadm", "settle", "--timeout=5"], timeout=10)
                 if _device_is_mounted(part_path):
@@ -1362,6 +1387,15 @@ def storage_format(request: Request, body: dict = None):
                 _host_cmd(["sync"], timeout=10)
                 _host_cmd(["blockdev", "--flushbufs", part_path], timeout=10)
                 _time.sleep(1.5)
+            # Active wait for the partition to be free of holders. If it
+            # never goes free we still try mkfs (it might just be a stale
+            # udev probe), but most of the time this catches the WAL FD
+            # window and skips the EBUSY entirely.
+            if not _wait_for_partition_free(part_path, timeout_s=8.0):
+                _log_system.warning(
+                    "storage format: partition %s still busy after wait; "
+                    "trying mkfs anyway", part_path,
+                )
             proc = _host_cmd(["mkfs.ext4", "-F", "-F", part_path], timeout=180)
             if proc.returncode == 0:
                 mkfs_ok = True
@@ -3075,6 +3109,80 @@ def _mediamtx_delete_rec_path(device_id: str) -> dict:
         raise
 
 
+def _test_hd_concurrency(rtsp_url: str, timeout_s: float = 8.0) -> tuple[bool, str]:
+    """Verify the camera serves two simultaneous HD RTSP subscribers.
+
+    Cameras vary wildly in how many concurrent main-stream connections
+    they accept — many entry-level units cap at one, which silently
+    breaks "record HD AND watch HD live" usage. We test by spawning
+    two parallel 1.5 s stream-copy ffmpeg probes; if both succeed the
+    camera can host the recording engine and a live viewer at the same
+    time. Either probe failing means the user has to pick one or the
+    other.
+    """
+    import concurrent.futures
+
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-rtsp_transport", "tcp",
+        "-stimeout", "5000000",
+        "-i", rtsp_url,
+        "-t", "1.5", "-c", "copy",
+        "-f", "null", "-",
+    ]
+
+    def run() -> tuple[int, str]:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+            return r.returncode, (r.stderr or "")
+        except subprocess.TimeoutExpired:
+            return 124, "ffmpeg probe timed out"
+        except Exception as e:
+            return 1, str(e)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        futs = [ex.submit(run), ex.submit(run)]
+        results = [f.result() for f in futs]
+    failures = [s.strip().splitlines()[-1][:180] for rc, s in results if rc != 0]
+    if not failures:
+        return True, ""
+    return False, " / ".join(failures) or "two concurrent HD probes failed"
+
+
+def _enforce_hd_concurrency(device: Device) -> None:
+    """Raise 400 if the device wants HD live + HD recording but the
+    camera can only host one HD connection at a time.
+
+    Called from the create/update handlers AFTER URLs have been
+    resolved. Skipped when either side doesn't ask for HD.
+    """
+    record_variants = list(getattr(device, "record_variants", None) or [])
+    live_variants = list(getattr(device, "live_variants", None) or [])
+    if "hd" not in record_variants or "hd" not in live_variants:
+        return
+    hd_url = (getattr(device, "recording_rtsp_url", None) or "").strip()
+    if not hd_url:
+        # No HD URL resolved yet — nothing to test. Let the runtime
+        # hint handle it if recording later fails.
+        return
+    ok, reason = _test_hd_concurrency(hd_url)
+    if ok:
+        return
+    _log_devices.info(
+        "hd concurrency precheck failed for %s: %s", device.id, reason,
+    )
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "This camera couldn't open two simultaneous HD connections, "
+            "so HD live would stall while HD recording is in progress. "
+            "Set Show on Live or Record to use SD for one of the two — "
+            "or pick a single variant in both. "
+            f"(probe: {reason})"
+        ),
+    )
+
+
 def _reconcile_camera_mtx_paths(
     device: Device,
     *,
@@ -4135,6 +4243,29 @@ def create_device(dev: DeviceIn):
         except Exception:
             pass
 
+    # Concurrency precheck: if the user wants BOTH HD recording AND HD
+    # live, make sure the camera actually supports it. Failing here
+    # rolls the new device back out of devices.json so the user can
+    # retry with adjusted settings.
+    try:
+        fresh = _get_device(new.id)
+        _enforce_hd_concurrency(fresh)
+    except HTTPException:
+        try:
+            _stop_event_worker(new.id)
+        except Exception:
+            pass
+        try:
+            _mediamtx_delete_path(new.id)
+        except Exception:
+            pass
+        try:
+            _mediamtx_delete_hd_path(new.id)
+        except Exception:
+            pass
+        _save_devices([d for d in _load_devices() if d.id != new.id])
+        raise
+
     request_recorders_refresh()
 
     return {"ok": True, "device": _dump(new)}
@@ -4146,7 +4277,26 @@ def update_device(device_id: str, dev_in: DeviceIn):
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing device_id")
 
+    # Snapshot pre-update state so we can roll the device back to its
+    # previous settings if the concurrency precheck rejects the new ones.
+    pre_devs = _load_devices()
+    pre_dev = next((d for d in pre_devs if d.id == device_id), None)
+
     dev = _update_device(device_id, dev_in)
+
+    try:
+        _enforce_hd_concurrency(dev)
+    except HTTPException:
+        # Roll back to the previous settings and re-resolve URLs so
+        # MediaMTX matches devices.json again.
+        if pre_dev is not None:
+            _save_devices(pre_devs)
+            try:
+                _refresh_device_stream(device_id)
+            except Exception:
+                pass
+        raise
+
     request_recorders_refresh()
     return {"ok": True, "device": _dump(dev)}
 

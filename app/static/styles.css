@@ -1519,6 +1519,21 @@ code {
   color: rgb(239, 165, 65);
   box-shadow: inset 0 0 0 1px rgba(239, 165, 65, 0.35);
 }
+/* Locked indicator: camera is opted into only one variant. Stripped
+   of all "chip" styling so it reads as a plain label, not a control. */
+.liveQualityToggle.is-locked,
+.liveQualityToggle.is-locked.is-sd {
+  background: transparent;
+  box-shadow: none;
+  cursor: default;
+  pointer-events: none;
+  padding: 0;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted, rgba(255, 255, 255, 0.45));
+  opacity: 0.9;
+}
+.liveQualityToggle.is-locked:hover { filter: none; }
 
 .liveSidebarName {
   flex: 1;
