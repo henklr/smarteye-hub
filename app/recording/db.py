@@ -1,11 +1,28 @@
 """SQLite schema and connection for the recording engine."""
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator
 
 from .config import DB_PATH
+
+
+class FormatInProgressError(RuntimeError):
+    """Raised when something tries to open the recording DB while a
+    Format & mount cycle has the partition reserved.
+
+    The recording DB lives on the NVMe mount we're about to wipe.
+    Allowing a connection to open during format would create a WAL
+    write FD that pins `/dev/nvme0n1p1` and makes mkfs fail with EBUSY.
+    """
+
+
+# Sentinel file path — same as `_FORMAT_IN_PROGRESS_PATH` in main.py.
+# Lives on /app/data (the host bind), visible to BOTH uvicorn workers.
+_FORMAT_SENTINEL_PATH = Path(os.getenv("DATA_DIR", "/app/data")) / ".format_in_progress"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS active_recordings (
@@ -47,6 +64,20 @@ def init_db() -> None:
 
 @contextmanager
 def db_connect() -> Iterator[sqlite3.Connection]:
+    # Refuse to open a new connection while a Format & mount cycle is
+    # in progress. The DB + its WAL/SHM files live on the partition
+    # mkfs is about to wipe, and even a brief read holds writable FDs
+    # that show up in `fuser` and break the format with EBUSY. Affects
+    # every caller — HTTP request handlers, flow execution, ONVIF
+    # event workers, etc. — gating at the connection door catches them
+    # all without needing route-level middleware everywhere.
+    try:
+        if _FORMAT_SENTINEL_PATH.exists():
+            raise FormatInProgressError(
+                "recording DB is unavailable: storage maintenance in progress"
+            )
+    except FileNotFoundError:
+        pass
     conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
