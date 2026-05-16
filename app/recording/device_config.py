@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
-from .config import MEDIAMTX_RTSP_HOST, MEDIAMTX_RTSP_PORT
 from .paths import ALL_VARIANTS, VARIANT_HD, VARIANT_SD
 
 log = logging.getLogger("recording.device_config")
@@ -128,19 +127,21 @@ def device_live_variants() -> Dict[str, List[str]]:
 
 
 def device_variant_urls() -> Dict[Tuple[str, str], str]:
-    """Return `{(cam_path, variant): rtsp_url}` for every (camera, variant)
-    pair the recording engine should record.
+    """Return `{(cam_path, variant): rtsp_url}` for each recordable variant.
 
-    Each URL points at MediaMTX (not the camera directly). This is the
-    deliberate choice that lets ONE camera RTSP connection serve both the
-    recording segmenter AND any live viewers — many IP cameras only allow
-    one concurrent HD connection, and pulling direct from the recorder
-    while a live viewer also tried to open HD made handshakes timeout.
+    The recording segmenter pulls DIRECT from the camera (not through
+    MediaMTX). We tried routing through MediaMTX to consolidate to one
+    camera connection per variant, but it broke recording integrity:
+    MediaMTX forwards mid-GOP frames to a subscribing reader, so the
+    segmenter started writing pre-IDR data and every assembled clip had
+    H.264 bytestream-corruption errors that made browsers refuse to play.
 
-    MediaMTX itself is configured by main.py with the direct-from-camera
-    RTSP URL as the path's `source`, and the recording engine just
-    subscribes to MediaMTX. As long as at least one of (recording, live)
-    is active, MediaMTX keeps the single camera link open and fans it out.
+    Cameras themselves push a clean IDR on a fresh RTSP subscriber, which
+    is what we need. The downside is that MediaMTX (for live viewers)
+    also opens its own connection — so cameras with a 1-concurrent-HD
+    limit will see HD live stall until they release the recording slot.
+    Most IP cameras accept ≥2 concurrent connections; the trade-off is
+    worth it for reliable recordings.
     """
     out: Dict[Tuple[str, str], str] = {}
     for dev in _load_devices_list():
@@ -152,13 +153,9 @@ def device_variant_urls() -> Dict[Tuple[str, str], str]:
         hd_direct = str(dev.get("recording_rtsp_url") or "").strip()
         sd_direct = str(dev.get("live_rtsp_url") or "").strip()
         if hd_direct:
-            out[(cam, VARIANT_HD)] = (
-                f"rtsp://{MEDIAMTX_RTSP_HOST}:{MEDIAMTX_RTSP_PORT}/{cam}-hd"
-            )
+            out[(cam, VARIANT_HD)] = hd_direct
         if sd_direct:
-            out[(cam, VARIANT_SD)] = (
-                f"rtsp://{MEDIAMTX_RTSP_HOST}:{MEDIAMTX_RTSP_PORT}/{cam}"
-            )
+            out[(cam, VARIANT_SD)] = sd_direct
     return out
 
 

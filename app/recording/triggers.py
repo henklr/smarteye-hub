@@ -41,7 +41,23 @@ def start_recording(
     max_duration_seconds: Optional[int] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Register an active recording. Does not touch ffmpeg."""
+    """Register an active recording. Does not touch ffmpeg.
+
+    Two storage-saving rules for *non-continuous* triggers:
+
+    1. If a continuous chunk is currently recording this camera, the
+       chunk's clip file already contains this exact time window. We
+       still create a row so the timeline shows a pill for the trigger,
+       but we flag it `_marker_only` so the assembler skips writing a
+       second on-disk copy of the same bytes.
+
+    2. Otherwise, if another non-continuous trigger is already open for
+       this camera, the new trigger piggybacks on it — we extend the
+       existing recording's `max_duration_seconds` to cover the new
+       window and return the existing event_id. A chatty motion flow
+       therefore produces one continuous clip per burst instead of N
+       overlapping ones.
+    """
     eid = event_id or uuid.uuid4().hex
     trigger_start = _now()
     pre = max(0, int(pre_buffer_seconds))
@@ -55,6 +71,58 @@ def start_recording(
         max_dur = int(max_duration_seconds)
     else:
         max_dur = _clamp_max_duration(max_duration_seconds)
+
+    if not is_continuous:
+        with db_connect() as conn:
+            continuous_active = conn.execute(
+                "SELECT 1 FROM active_recordings WHERE camera = ?"
+                " AND COALESCE(json_extract(metadata_json, '$._kind'), '') = 'continuous'"
+                " LIMIT 1",
+                (camera,),
+            ).fetchone() is not None
+            sibling = None
+            if not continuous_active:
+                sibling = conn.execute(
+                    "SELECT event_id, trigger_start_ts, pre_buffer_seconds, max_duration_seconds, metadata_json"
+                    " FROM active_recordings WHERE camera = ?"
+                    " AND COALESCE(json_extract(metadata_json, '$._kind'), '') <> 'continuous'"
+                    " ORDER BY trigger_start_ts DESC LIMIT 1",
+                    (camera,),
+                ).fetchone()
+
+        # Rule 2: coalesce into an existing non-continuous recording.
+        if sibling is not None:
+            old_start = int(sibling["trigger_start_ts"])
+            old_pre = int(sibling["pre_buffer_seconds"])
+            new_end = trigger_start + max_dur
+            old_end = old_start + int(sibling["max_duration_seconds"])
+            effective_end = max(new_end, old_end)
+            new_max_dur = _clamp_max_duration(effective_end - old_start)
+            with db_connect() as conn:
+                conn.execute(
+                    "UPDATE active_recordings SET max_duration_seconds = ?"
+                    " WHERE event_id = ?",
+                    (new_max_dur, sibling["event_id"]),
+                )
+            log.info(
+                "trigger.start: coalesced into existing event_id=%s "
+                "camera=%s new_max=%ds (was %ds)",
+                sibling["event_id"], camera, new_max_dur,
+                int(sibling["max_duration_seconds"]),
+            )
+            return {
+                "event_id": sibling["event_id"],
+                "camera": camera,
+                "trigger_start_ts": old_start,
+                "pre_buffer_seconds": old_pre,
+                "max_duration_seconds": new_max_dur,
+            }
+
+        # Rule 1: continuous chunk owns this time window — record a marker.
+        if continuous_active:
+            metadata = dict(metadata or {})
+            metadata["_marker_only"] = True
+
     meta_json = json.dumps(metadata) if metadata else None
     with db_connect() as conn:
         conn.execute(
@@ -64,8 +132,9 @@ def start_recording(
             (eid, camera, trigger_start, pre, max_dur, meta_json, trigger_start),
         )
     log.info(
-        "trigger.start: event_id=%s camera=%s pre=%ds max=%ds",
+        "trigger.start: event_id=%s camera=%s pre=%ds max=%ds marker=%s",
         eid, camera, pre, max_dur,
+        bool(metadata and metadata.get("_marker_only")),
     )
     return {
         "event_id": eid,
@@ -121,6 +190,45 @@ def _finalise_stopped_recording(
         meta.update(metadata)
 
     kind = str(meta.pop("_kind", "triggered"))
+    marker_only = bool(meta.pop("_marker_only", False))
+
+    # Marker-only triggers: a continuous chunk was already recording
+    # this exact time window, so the bytes are already on disk under
+    # the continuous clip. Skip assembly entirely and insert a marker
+    # row with an empty file_path. The timeline lane still shows the
+    # tag pill; the playback engine ignores the row for video lookup
+    # and the user's tile plays the continuous chunk instead.
+    if marker_only:
+        meta_json = json.dumps(meta) if meta else None
+        duration = max(1, end_ts - start_ts)
+        with db_connect() as conn:
+            conn.execute(
+                "INSERT INTO clips (id, camera, started_at, ended_at, duration_seconds, "
+                "file_path, thumbnail_path, file_size_bytes, metadata_json, kind, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    event_id, camera, start_ts, end_ts, duration,
+                    "", None, 0, meta_json, kind, _now(),
+                ),
+            )
+        log.info(
+            "trigger.stop: marker-only event_id=%s camera=%s "
+            "(continuous chunk covers this window — no clip file written)",
+            event_id, camera,
+        )
+        return {
+            "id": event_id,
+            "camera": camera,
+            "started_at": start_ts,
+            "ended_at": end_ts,
+            "duration_seconds": duration,
+            "file_path": "",
+            "thumbnail_path": None,
+            "file_size_bytes": 0,
+            "metadata": meta,
+            "kind": kind,
+            "is_marker": True,
+        }
 
     now_dt = _dt.datetime.fromtimestamp(start_ts)
     out_path = clip_path(camera, now_dt.year, now_dt.month, now_dt.day, event_id)

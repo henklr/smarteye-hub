@@ -139,16 +139,23 @@
     return !state.hiddenTags.has(clipFilterKey(clip));
   }
 
+  // Markers are clips with no backing file — the bytes for that window
+  // already live inside a continuous chunk. They show up as pills on the
+  // timeline lane but never claim ownership of tile playback; the tile
+  // resolves to the continuous chunk underneath instead.
+  function isPlayableClip(c) {
+    return !c?.is_marker && isClipVisible(c);
+  }
   function clipForCameraAt(camera, ts) {
     const list = state.clipsByCamera[camera] || [];
     return list.find((c) =>
-      c.started_at <= ts && ts <= c.ended_at && isClipVisible(c)) || null;
+      c.started_at <= ts && ts <= c.ended_at && isPlayableClip(c)) || null;
   }
   function nextClipForCameraAfter(camera, ts) {
     const list = state.clipsByCamera[camera] || [];
     let best = null;
     for (const c of list) {
-      if (!isClipVisible(c)) continue;
+      if (!isPlayableClip(c)) continue;
       if (c.started_at > ts && (!best || c.started_at < best.started_at)) best = c;
     }
     return best;
@@ -157,7 +164,7 @@
     const list = state.clipsByCamera[camera] || [];
     let best = null;
     for (const c of list) {
-      if (!isClipVisible(c)) continue;
+      if (!isPlayableClip(c)) continue;
       if (c.ended_at < ts && (!best || c.ended_at > best.ended_at)) best = c;
     }
     return best;
@@ -367,16 +374,36 @@
       const camera = `cam-${d.id}`;
       const hasClips = !!state.cameras.find((c) => c.camera === camera);
       const isActive = state.selectedCameras.includes(camera);
-      const low = state.lowQualityCameras.has(camera);
-      const qLabel = low ? "SD" : "HD";
-      const qCls = low ? "pbQualityToggle is-low" : "pbQualityToggle";
-      const qTitle = low
-        ? "Playing the 480p variant for this camera — click to switch back to original quality."
-        : "Playing the original-quality stream — click to switch this camera to a 480p variant.";
+      // What's actually on disk for this camera dictates which variant
+      // playback can serve. We only show a toggle when BOTH are recorded
+      // — otherwise there's nothing to switch to, so we render the
+      // single-variant label as plain info (matches the live sidebar).
+      const recordVariants = Array.isArray(d.record_variants)
+        ? d.record_variants.filter((v) => v === "hd" || v === "sd")
+        : [];
+      const hasHd = recordVariants.includes("hd") || recordVariants.length === 0;
+      const hasSd = recordVariants.includes("sd");
+      const hasBoth = hasHd && hasSd;
+      let chip = "";
+      if (hasBoth) {
+        const low = state.lowQualityCameras.has(camera);
+        const qLabel = low ? "SD" : "HD";
+        const qCls = low ? "pbQualityToggle is-low" : "pbQualityToggle";
+        const qTitle = low
+          ? "Playing the SD recording for this camera — click to switch back to HD."
+          : "Playing the HD recording — click to switch this camera to SD.";
+        chip = `<button class="${qCls}" type="button" data-camera="${escapeHtml(camera)}" title="${escapeHtml(qTitle)}">${qLabel}</button>`;
+      } else if (hasHd || hasSd) {
+        const variant = hasHd ? "HD" : "SD";
+        const title = hasHd
+          ? "Only HD is recorded for this camera. Change Settings → Record to record SD too."
+          : "Only SD is recorded for this camera. Change Settings → Record to record HD too.";
+        chip = `<span class="pbQualityToggle is-locked${hasHd ? "" : " is-low"}" title="${escapeHtml(title)}">${variant}</span>`;
+      }
       return `<div class="liveSidebarRow ${isActive ? "active" : ""} ${hasClips ? "has-clips" : ""}" data-camera="${escapeHtml(camera)}">
         <button class="liveSidebarDragHandle" type="button" tabindex="-1" aria-hidden="true">⋮⋮</button>
         <span class="liveSidebarName">${escapeHtml(d.name || d.id)}</span>
-        <button class="${qCls}" type="button" data-camera="${escapeHtml(camera)}" title="${escapeHtml(qTitle)}">${qLabel}</button>
+        ${chip}
         <span class="statusDot"></span>
       </div>`;
     }).join("");
@@ -548,16 +575,12 @@
       </div>
       <div class="tileHud">
         <div class="tileName"></div>
-        <div class="tileMeta" hidden><span class="tileMetaSwatch"></span><span class="tileMetaLabel"></span></div>
       </div>
       <div class="tileOverlay" data-state="nodata"><div>No recording</div></div>
     `;
     const video = el.querySelector("video");
     const overlay = el.querySelector(".tileOverlay");
     const tileName = el.querySelector(".tileName");
-    const tileMeta = el.querySelector(".tileMeta");
-    const tileMetaSwatch = el.querySelector(".tileMetaSwatch");
-    const tileMetaLabel = el.querySelector(".tileMetaLabel");
 
     tileName.textContent = cameraDisplayName(camera);
 
@@ -617,7 +640,7 @@
       }
     });
 
-    return { camera, el, video, overlay, tileMeta, tileMetaSwatch, tileMetaLabel, stallState, currentClipId: null, currentClip: null };
+    return { camera, el, video, overlay, stallState, currentClipId: null, currentClip: null };
   }
 
   function togglePlaybackTileMaximized(tile) {
@@ -829,26 +852,10 @@
           : "No recording";
       }
       tile.overlay.style.display = "flex";
-      tile.tileMeta.hidden = true;
       return;
     }
 
     tile.overlay.style.display = "none";
-
-    // Update meta badge to reflect this clip's flow tag/color, if any.
-    const tag = clipMetaTag(clip);
-    const color = clipMetaColor(clip);
-    if (tag) {
-      tile.tileMetaLabel.textContent = tag;
-      tile.tileMetaSwatch.style.background = color || "var(--accent)";
-      tile.tileMeta.hidden = false;
-    } else if (clip.kind === "continuous") {
-      tile.tileMetaLabel.textContent = "continuous";
-      tile.tileMetaSwatch.style.background = "rgba(160,160,170,0.7)";
-      tile.tileMeta.hidden = false;
-    } else {
-      tile.tileMeta.hidden = true;
-    }
 
     if (clip.id !== tile.currentClipId) {
       tile.currentClipId = clip.id;
@@ -856,8 +863,13 @@
       // SD playback comes straight from the camera substream recording
       // (`<event>.sd.mp4` sibling). The backend serves the sibling when
       // present and falls back to the primary file otherwise — so we just
-      // ask for `?q=sd` and let the backend decide.
-      const qParam = state.lowQualityCameras.has(camera) ? "?q=sd" : "";
+      // ask for `?q=sd` and let the backend decide. But if the camera
+      // isn't recording SD at all, ignore a stale lowQualityCameras
+      // entry — there's no SD sibling to fall back to.
+      const dev = state.devices.find((dd) => `cam-${dd.id}` === camera);
+      const recVars = Array.isArray(dev?.record_variants) ? dev.record_variants : [];
+      const sdRecorded = recVars.includes("sd");
+      const qParam = (sdRecorded && state.lowQualityCameras.has(camera)) ? "?q=sd" : "";
       tile.video.src = `/api/clips/${encodeURIComponent(clip.id)}/video${qParam}`;
       const onLoaded = () => {
         tile.video.removeEventListener("loadedmetadata", onLoaded);

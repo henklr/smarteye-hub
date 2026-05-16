@@ -559,6 +559,12 @@ function setEntryState(deviceId, state, errorMessage = "") {
   entry.state = state;
   entry.errorMessage = errorMessage || "";
 
+  // Clear any pending long-stall hint timer — state just changed.
+  if (entry.longStallTimer) {
+    clearTimeout(entry.longStallTimer);
+    entry.longStallTimer = null;
+  }
+
   if (state === STREAM_STATE.LIVE) {
     setTileOverlay(entry, "", false);
   } else if (state === STREAM_STATE.STARTING) {
@@ -566,6 +572,28 @@ function setEntryState(deviceId, state, errorMessage = "") {
       ? `Retrying${entry.retryCount > 1 ? ` (${entry.retryCount})` : ""}…`
       : (entry.restore ? "Restoring…" : "Starting…");
     setTileOverlay(entry, label, true);
+    // If we're still stuck in STARTING after 12 s on HD with HD also
+    // being recorded for this camera, the most likely cause is a
+    // single-HD-connection camera that's already holding its slot for
+    // the recording engine. Swap the overlay to a concrete hint so the
+    // user knows to switch to SD or change the device settings.
+    entry.longStallTimer = setTimeout(() => {
+      const cur = getEntry(deviceId);
+      if (!cur || cur.state !== STREAM_STATE.STARTING) return;
+      const device = devices.find((d) => d.id === deviceId);
+      if (!device) return;
+      const wantsHd = effectiveLiveQuality(device) === "hd";
+      const recordsHd = Array.isArray(device.record_variants)
+        ? device.record_variants.includes("hd")
+        : false;
+      if (wantsHd && recordsHd) {
+        setTileOverlay(
+          cur,
+          "HD live can't connect. This camera may only support one HD stream while recording — switch this tile to SD, or change Settings → Record.",
+          true,
+        );
+      }
+    }, 12000);
   } else if (state === STREAM_STATE.ERROR) {
     setTileOverlay(entry, entry.errorMessage || "Stream failed", true);
   }
@@ -654,18 +682,31 @@ function renderSidebar() {
     const onlineStatus = getDeviceOnlineStatus(d.id);
     const camDotClass = (onlineStatus === 'live' || onlineStatus === 'idle') ? 'dot-online' : onlineStatus === 'down' ? 'dot-offline' : 'dot-unknown';
 
-    // HD/SD chip — only meaningful when the device is opted into both
-    // variants for live viewing. Anything else (one variant or none)
-    // hides the toggle since there's nothing to switch.
+    // HD/SD chip. Three modes:
+    //   - both variants → clickable toggle that swaps between HD and SD
+    //   - one variant → non-interactive label showing which one is in use
+    //   - zero variants → no chip
+    // The "one variant" case still surfaces the badge so the user can
+    // tell at a glance which quality this camera is locked to.
     const variants = deviceLiveVariants(d);
     let qualityChip = '';
-    if (variants.includes('hd') && variants.includes('sd')) {
-      const q = effectiveLiveQuality(d);
-      const cls = q === 'sd' ? 'liveQualityToggle is-sd' : 'liveQualityToggle';
-      const title = q === 'sd'
-        ? 'Playing the substream (SD). Click to switch this camera to HD.'
-        : 'Playing the main stream (HD). Click to switch this camera to SD.';
-      qualityChip = `<button class="${cls}" type="button" draggable="false" data-id="${escapeHtml(d.id)}" data-quality-toggle="1" title="${escapeHtml(title)}">${q === 'sd' ? 'SD' : 'HD'}</button>`;
+    if (variants.length) {
+      const hasBoth = variants.includes('hd') && variants.includes('sd');
+      if (hasBoth) {
+        const q = effectiveLiveQuality(d);
+        const cls = q === 'sd' ? 'liveQualityToggle is-sd' : 'liveQualityToggle';
+        const title = q === 'sd'
+          ? 'Playing the substream (SD). Click to switch this camera to HD.'
+          : 'Playing the main stream (HD). Click to switch this camera to SD.';
+        qualityChip = `<button class="${cls}" type="button" draggable="false" data-id="${escapeHtml(d.id)}" data-quality-toggle="1" title="${escapeHtml(title)}">${q === 'sd' ? 'SD' : 'HD'}</button>`;
+      } else {
+        const q = variants[0];
+        const cls = q === 'sd' ? 'liveQualityToggle is-sd is-locked' : 'liveQualityToggle is-locked';
+        const title = q === 'sd'
+          ? 'This camera is configured for SD live only. Enable HD in Settings → Show on Live to switch.'
+          : 'This camera is configured for HD live only. Enable SD in Settings → Show on Live to switch.';
+        qualityChip = `<span class="${cls}" title="${escapeHtml(title)}">${q === 'sd' ? 'SD' : 'HD'}</span>`;
+      }
     }
 
     return `<div class="liveSidebarRow ${active ? 'active' : ''} ${stateClass}" data-id="${escapeHtml(d.id)}" draggable="true" data-live-active="${active ? '1' : '0'}" data-live-state="${stateClass}">
@@ -1656,6 +1697,7 @@ async function startDevice(device, { restore = false } = {}) {
     ptzInstalled: false,
     disconnectTimer: null,
     firstFrameTimer: null,
+    longStallTimer: null,
   };
 
   streams.set(device.id, entry);
@@ -1691,6 +1733,10 @@ async function stopDevice(deviceId, { force = false } = {}) {
   if (entry.firstFrameTimer) {
     clearTimeout(entry.firstFrameTimer);
     entry.firstFrameTimer = null;
+  }
+  if (entry.longStallTimer) {
+    clearTimeout(entry.longStallTimer);
+    entry.longStallTimer = null;
   }
   entry.retryScheduled = false;
 
@@ -2340,6 +2386,10 @@ function disposeLiveEntry(deviceId, entry) {
   if (entry.firstFrameTimer) {
     clearTimeout(entry.firstFrameTimer);
     entry.firstFrameTimer = null;
+  }
+  if (entry.longStallTimer) {
+    clearTimeout(entry.longStallTimer);
+    entry.longStallTimer = null;
   }
   entry.retryScheduled = false;
   entry.connecting = false;

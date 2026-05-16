@@ -102,9 +102,15 @@ def _clip_row_to_dict(row) -> Dict[str, Any]:
     # present from the SD segmenter pipeline) or fall back to the primary
     # file. Cameras configured to record only SD have the SD recording
     # AS the primary file, so we report sd_ready=True for those too.
-    sd_ready = False
+    #
+    # Empty file_path = "marker" clip: a triggered recording whose time
+    # window was already covered by a continuous chunk, so no separate
+    # file was written. The playback engine treats these as
+    # timeline-only annotations.
     fp = row["file_path"]
-    if fp:
+    is_marker = not (fp or "").strip()
+    sd_ready = False
+    if fp and not is_marker:
         try:
             p = Path(fp)
             sd_ready = sd_sibling_path(p).exists() or p.name.endswith(".sd.mp4")
@@ -124,6 +130,7 @@ def _clip_row_to_dict(row) -> Dict[str, Any]:
         "sd_ready": sd_ready,
         # Back-compat alias; older clients still read this.
         "low_ready": sd_ready,
+        "is_marker": is_marker,
     }
 
 
@@ -178,11 +185,17 @@ def list_clips(
 def list_clip_cameras() -> Dict[str, Any]:
     """Distinct camera list (handy for UI grouping). Declared above the
     `/{clip_id}` route so FastAPI's first-match ordering matches this first.
+
+    Marker clips (empty file_path — triggered events whose footage lives
+    inside a continuous chunk that hasn't finalised yet) are excluded
+    from the count, so the playback sidebar's "has clips" dot only goes
+    green when the camera actually has a playable file on disk.
     """
     with db_connect() as conn:
         rows = conn.execute(
             "SELECT camera, COUNT(*) AS n, MAX(started_at) AS last_at "
-            "FROM clips GROUP BY camera ORDER BY camera"
+            "FROM clips WHERE COALESCE(file_path, '') <> '' "
+            "GROUP BY camera ORDER BY camera"
         ).fetchall()
     return {"items": [dict(r) for r in rows]}
 
