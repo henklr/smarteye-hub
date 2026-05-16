@@ -7,33 +7,23 @@ const sidebarStopAll = document.getElementById("sidebarStopAll");
 const LS_GRID_KEY = "live.gridState";
 const LS_DEVICE_ORDER_KEY = "live.deviceOrder";
 const LS_AUDIO_KEY = "live.audioState";
-// Per-device live-stream quality (hd|sd) picked by the user from the
-// sidebar badge. Persisted so the choice survives page reloads.
-const LS_QUALITY_KEY = "live.qualityState";
+// Per-device live-stream quality (hd|sd) — session-scoped so every page
+// load starts fresh on SD. Bumping HD was sticky-per-camera in
+// localStorage; that gave a slow first-paint surprise when users
+// reopened the page on cameras they'd previously clicked HD on. SD is
+// the cheap default; HD is a deliberate one-click ad-hoc upgrade.
+const _tileQualityBySession = new Map();
 
 function loadTileQuality(deviceId) {
-  try {
-    const raw = localStorage.getItem(LS_QUALITY_KEY);
-    if (!raw) return "sd";
-    const obj = JSON.parse(raw);
-    return obj?.[deviceId] === "hd" ? "hd" : "sd";
-  } catch {
-    return "sd";
-  }
+  return _tileQualityBySession.get(deviceId) === "hd" ? "hd" : "sd";
 }
 
 function saveTileQuality(deviceId, quality) {
-  try {
-    const raw = localStorage.getItem(LS_QUALITY_KEY);
-    const obj = raw ? JSON.parse(raw) : {};
-    if (quality === "hd") {
-      obj[deviceId] = "hd";
-    } else {
-      // SD is the default — drop the key to keep storage tidy.
-      delete obj[deviceId];
-    }
-    localStorage.setItem(LS_QUALITY_KEY, JSON.stringify(obj));
-  } catch {}
+  if (quality === "hd") {
+    _tileQualityBySession.set(deviceId, "hd");
+  } else {
+    _tileQualityBySession.delete(deviceId);
+  }
 }
 
 function deviceLiveVariants(device) {
@@ -1719,7 +1709,7 @@ async function startDevice(device, { restore = false } = {}) {
   return entry.startingPromise;
 }
 
-async function stopDevice(deviceId, { force = false } = {}) {
+async function stopDevice(deviceId, { force = false, keepQuality = false } = {}) {
   const entry = getEntry(deviceId);
   if (!entry) return;
 
@@ -1731,6 +1721,12 @@ async function stopDevice(deviceId, { force = false } = {}) {
   }
 
   entry.cancelled = true;
+  // Reset this camera's quality back to SD so the next start of the
+  // tile picks the cheap default again. HD is always an explicit
+  // per-session opt-in click; stopping wipes that opt-in. The
+  // `keepQuality` flag lets the HD/SD-toggle path stop-then-restart
+  // without losing the just-clicked new preference.
+  if (!keepQuality) saveTileQuality(deviceId, "sd");
   clearRetryTimer(entry);
   clearDisconnectTimer(entry);
   if (entry.firstFrameTimer) {
@@ -1857,7 +1853,8 @@ liveSidebarList?.addEventListener("click", async (ev) => {
     renderSidebar();
     if (isStreaming(d.id)) {
       try {
-        await stopDevice(d.id);
+        // keepQuality: don't let the stop wipe the preference we just set.
+        await stopDevice(d.id, { keepQuality: true });
         await startDevice(d);
       } catch {}
     }
