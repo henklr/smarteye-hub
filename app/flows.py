@@ -597,6 +597,11 @@ NODE_LIBRARY: List[Dict[str, Any]] = [
             "max_duration_seconds": 60,
             "color": "#c6a14b",
             "name": "",
+            # Per-node quality. Always explicit now — "hd" / "sd" / "hd,sd".
+            # The recording engine auto-spawns the corresponding segmenter
+            # on demand, so picking HD here pulls HD from the camera even
+            # if the device's continuous setting is SD-only.
+            "record_variants": "hd",
         },
     },
     {
@@ -3670,6 +3675,21 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
         flow_name = str((context.get("flow") or {}).get("name") or "").strip() or None
         node_id = str(node.get("id") or "").strip() or None
 
+        # Per-node variant override. Stored as a comma-separated string
+        # ("hd", "sd", "hd,sd") or empty to mean "follow device settings".
+        record_variants_override: Optional[List[str]] = None
+        raw_variants = str(cfg.get("record_variants") or "").strip().lower()
+        if raw_variants:
+            parsed = [v.strip() for v in raw_variants.split(",") if v.strip() in ("hd", "sd")]
+            if parsed:
+                # Deduplicate while preserving order.
+                seen: set = set()
+                record_variants_override = []
+                for v in parsed:
+                    if v not in seen:
+                        seen.add(v)
+                        record_variants_override.append(v)
+
         created: List[Dict[str, Any]] = []
         errors: List[str] = []
         for did in device_ids:
@@ -3685,6 +3705,7 @@ def _execute_node(node: Dict[str, Any], incoming_handle: str, context: Dict[str,
                     flow_id=flow_id,
                     flow_name=flow_name,
                     node_id=node_id,
+                    record_variants_override=record_variants_override,
                 )
                 created.append(event)
             except Exception as exc:

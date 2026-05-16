@@ -194,6 +194,31 @@ body.playbackPage { overflow: hidden; }
 }
 .playbackPage .pbQualityToggle.is-locked:hover { filter: none; }
 
+/* Fallback state: the user's preference can't be honoured for the
+   current clip, so playback is using the other variant. Badge text +
+   colour reflect the PREFERENCE (the lever you control); a small
+   colour-coded dot next to it shows what's ACTUALLY playing. */
+.playbackPage .pbQualityToggle.is-fallback {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.playbackPage .pbQualityToggle.is-fallback .qualityPlayingDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+/* Dot colour follows what's PLAYING. */
+.playbackPage .pbQualityToggle.is-fallback.playing-sd .qualityPlayingDot {
+  background: rgb(239, 165, 65);
+  box-shadow: 0 0 0 1px rgba(239, 165, 65, 0.45);
+}
+.playbackPage .pbQualityToggle.is-fallback.playing-hd .qualityPlayingDot {
+  background: var(--clr-ok, #22c55e);
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.45);
+}
+
 /* ── Buffering spinner on a playback tile ──────────────────────────── */
 
 .playbackPage .pbVideoGrid .tileBufferSpinner {

@@ -90,6 +90,43 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class FormatGateMiddleware(BaseHTTPMiddleware):
+    """Block recording-DB-touching routes while a Format & mount is in
+    progress on either uvicorn worker.
+
+    The recording engine's SQLite file lives on the NVMe partition we're
+    about to `mkfs`. WAL mode keeps the DB + WAL + SHM files open for
+    write whenever any request handler is mid-query, so a normal
+    /api/clips poll from a still-open playback tab can pin the partition
+    holders list long enough that mkfs fails with EBUSY.
+
+    The /api/storage/format handler creates a shared sentinel file
+    (visible to both workers via the /app/data bind mount). This
+    middleware short-circuits requests on those routes with a 503 +
+    Retry-After while the sentinel exists — letting any already-in-flight
+    request finish naturally while preventing new ones from opening
+    fresh WAL handles.
+    """
+
+    BLOCKED_PREFIXES = ("/api/clips", "/api/record")
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if any(path.startswith(p) for p in self.BLOCKED_PREFIXES):
+            try:
+                in_progress = _FORMAT_IN_PROGRESS_PATH.exists()
+            except OSError:
+                in_progress = False
+            if in_progress:
+                return Response(
+                    content='{"detail":"storage maintenance in progress, retry shortly"}',
+                    status_code=503,
+                    media_type="application/json",
+                    headers={"Retry-After": "10"},
+                )
+        return await call_next(request)
+
+
 class NoCacheStaticMiddleware(BaseHTTPMiddleware):
     """No-cache for /static/ assets AND for dynamic HTML page responses.
 
@@ -112,6 +149,9 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
 app.add_middleware(NoCacheStaticMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(AuthMiddleware)
+# Registered last so it runs FIRST per Starlette's reverse order — we
+# want the 503 before auth even has a chance to query anything.
+app.add_middleware(FormatGateMiddleware)
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -1546,6 +1586,15 @@ class DeviceIn(BaseModel):
     # Each entry spins up its own ffmpeg segmenter; clips get a `.sd.mp4`
     # sibling next to the primary `.mp4` when both are enabled.
     record_variants: List[str] = Field(default_factory=lambda: ["hd"])
+    # Which variant(s) the continuous chunks should be saved as. Empty
+    # means "follow record_variants" (current behaviour: HD primary + SD
+    # sibling when both are captured). Setting this lets the user record
+    # both variants to the buffer but save continuous chunks as just one
+    # — typically SD for storage-efficient baseline coverage, with
+    # triggered recordings free to use HD for evidence. Subset of
+    # ["hd", "sd"]; ignored if record_variants doesn't capture the chosen
+    # variant.
+    continuous_variants: List[str] = Field(default_factory=list)
 
 
 class Device(DeviceIn):
@@ -3153,10 +3202,16 @@ def _enforce_hd_concurrency(device: Device) -> None:
     """Raise 400 if the device wants HD live + HD recording but the
     camera can only host one HD connection at a time.
 
-    Called from the create/update handlers AFTER URLs have been
-    resolved. Skipped when either side doesn't ask for HD.
+    `record_variants` is now auto-derived: union of the device's continuous
+    selection + every enabled flow Record node's Quality that targets this
+    camera. We read it via the recording engine's device_config so the
+    derivation logic stays in one place.
     """
-    record_variants = list(getattr(device, "record_variants", None) or [])
+    from recording.device_config import device_record_variants as _drv
+    try:
+        record_variants = list(_drv().get(f"cam-{device.id}", []) or [])
+    except Exception:
+        record_variants = []
     live_variants = list(getattr(device, "live_variants", None) or [])
     if "hd" not in record_variants or "hd" not in live_variants:
         return
@@ -3176,8 +3231,8 @@ def _enforce_hd_concurrency(device: Device) -> None:
         detail=(
             "This camera couldn't open two simultaneous HD connections, "
             "so HD live would stall while HD recording is in progress. "
-            "Set Show on Live or Record to use SD for one of the two — "
-            "or pick a single variant in both. "
+            "Switch this device's Continuous recording or Show on Live "
+            "off of HD — or update flow Record nodes targeting it. "
             f"(probe: {reason})"
         ),
     )

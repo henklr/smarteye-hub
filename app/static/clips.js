@@ -37,9 +37,6 @@
     activeRefreshTimer: 0,
     hiddenTags: new Set(),        // tag strings filtered out of the timeline
     maximizedTile: null,          // tile element when in fullscreen-style maximize
-    // Per-camera manual quality override. Cameras present in this set
-    // request the 480p variant via `?q=low`. Default = empty = HD for all.
-    lowQualityCameras: new Set(),
     tiles: {},                    // camera → { el, video, currentClipId, currentClip, overlay }
     cursorMs: Date.now(),
     zoomMs: 3_600_000,
@@ -198,7 +195,6 @@
         cursorMs: state.cursorMs,
         speed: state.speed,
         hiddenTags: Array.from(state.hiddenTags),
-        lowQualityCameras: Array.from(state.lowQualityCameras),
       }));
     } catch (_) {}
   }
@@ -211,7 +207,6 @@
       if (typeof s.cursorMs === "number") state.cursorMs = s.cursorMs;
       if (typeof s.speed === "number" && s.speed > 0) state.speed = s.speed;
       if (Array.isArray(s.hiddenTags)) state.hiddenTags = new Set(s.hiddenTags);
-      if (Array.isArray(s.lowQualityCameras)) state.lowQualityCameras = new Set(s.lowQualityCameras);
     } catch (_) {}
   }
 
@@ -374,32 +369,24 @@
       const camera = `cam-${d.id}`;
       const hasClips = !!state.cameras.find((c) => c.camera === camera);
       const isActive = state.selectedCameras.includes(camera);
-      // What's actually on disk for this camera dictates which variant
-      // playback can serve. We only show a toggle when BOTH are recorded
-      // — otherwise there's nothing to switch to, so we render the
-      // single-variant label as plain info (matches the live sidebar).
-      const recordVariants = Array.isArray(d.record_variants)
-        ? d.record_variants.filter((v) => v === "hd" || v === "sd")
-        : [];
-      const hasHd = recordVariants.includes("hd") || recordVariants.length === 0;
-      const hasSd = recordVariants.includes("sd");
-      const hasBoth = hasHd && hasSd;
-      let chip = "";
-      if (hasBoth) {
-        const low = state.lowQualityCameras.has(camera);
-        const qLabel = low ? "SD" : "HD";
-        const qCls = low ? "pbQualityToggle is-low" : "pbQualityToggle";
-        const qTitle = low
-          ? "Playing the SD recording for this camera — click to switch back to HD."
-          : "Playing the HD recording — click to switch this camera to SD.";
-        chip = `<button class="${qCls}" type="button" data-camera="${escapeHtml(camera)}" title="${escapeHtml(qTitle)}">${qLabel}</button>`;
-      } else if (hasHd || hasSd) {
-        const variant = hasHd ? "HD" : "SD";
-        const title = hasHd
-          ? "Only HD is recorded for this camera. Change Settings → Record to record SD too."
-          : "Only SD is recorded for this camera. Change Settings → Record to record HD too.";
-        chip = `<span class="pbQualityToggle is-locked${hasHd ? "" : " is-low"}" title="${escapeHtml(title)}">${variant}</span>`;
+
+      // Read-only badge: reflects the variant of the currently-playing
+      // clip on this tile (HD or SD). No user choice — playback always
+      // serves whatever quality the clip was recorded as. Hidden when
+      // no tile is rendered or no clip is active.
+      let playing = null;
+      const tile = state.tiles[camera];
+      const c = tile?.currentClip;
+      if (c) {
+        if (c.hd_ready) playing = "HD";
+        else if (c.sd_ready) playing = "SD";
       }
+      let chip = "";
+      if (playing) {
+        const cls = playing === "SD" ? "pbQualityToggle is-locked is-low" : "pbQualityToggle is-locked";
+        chip = `<span class="${cls}" title="${escapeHtml(`Playing ${playing} (the quality this clip was recorded at)`)}">${playing}</span>`;
+      }
+
       return `<div class="liveSidebarRow ${isActive ? "active" : ""} ${hasClips ? "has-clips" : ""}" data-camera="${escapeHtml(camera)}">
         <button class="liveSidebarDragHandle" type="button" tabindex="-1" aria-hidden="true">⋮⋮</button>
         <span class="liveSidebarName">${escapeHtml(d.name || d.id)}</span>
@@ -520,26 +507,6 @@
     onSelectionChanged();
   }
 
-  function toggleCameraQuality(camera) {
-    if (state.lowQualityCameras.has(camera)) {
-      state.lowQualityCameras.delete(camera);
-    } else {
-      state.lowQualityCameras.add(camera);
-    }
-    saveState();
-    // Re-render the sidebar row so the badge text/colour updates.
-    renderSidebar();
-    refreshSidebarStatus();
-    // Force this tile to drop its current clip and re-fetch at the new
-    // quality. No reason to wait for the next clip boundary.
-    const t = state.tiles[camera];
-    if (t) {
-      t.currentClipId = null;
-      t.currentClip = null;
-      try { t.video.removeAttribute("src"); t.video.load(); } catch (_) {}
-      syncTile(camera);
-    }
-  }
   function selectAllCameras() {
     state.selectedCameras = state.devices.map((d) => `cam-${d.id}`);
     onSelectionChanged();
@@ -550,8 +517,14 @@
   }
 
   async function onSelectionChanged() {
-    refreshSidebarStatus();
+    // renderGrid() drops the deselected camera's tile from state.tiles;
+    // renderSidebar() reads state.tiles to compute the per-row HD/SD
+    // badge, so it MUST run after renderGrid — otherwise the just-
+    // deselected row still sees its old tile.currentClip and the badge
+    // doesn't clear until the next deselect refresh.
     renderGrid();
+    refreshSidebarStatus();
+    renderSidebar();
     renderLanes();
     saveState();
     await loadClipsForViewport();
@@ -830,6 +803,7 @@
     tile.el.classList.toggle("is-current", !!clip);
 
     if (!clip) {
+      const hadClip = tile.currentClipId !== null;
       tile.currentClipId = null;
       tile.currentClip = null;
       try {
@@ -852,6 +826,11 @@
           : "No recording";
       }
       tile.overlay.style.display = "flex";
+      // Refresh the sidebar so the HD/SD badge clears when the cursor
+      // crosses into a gap. Only when we actually transitioned from a
+      // clip to nothing — avoids unnecessary re-renders on every tick
+      // while parked in a gap.
+      if (hadClip) renderSidebar();
       return;
     }
 
@@ -860,17 +839,13 @@
     if (clip.id !== tile.currentClipId) {
       tile.currentClipId = clip.id;
       tile.currentClip = clip;
-      // SD playback comes straight from the camera substream recording
-      // (`<event>.sd.mp4` sibling). The backend serves the sibling when
-      // present and falls back to the primary file otherwise — so we just
-      // ask for `?q=sd` and let the backend decide. But if the camera
-      // isn't recording SD at all, ignore a stale lowQualityCameras
-      // entry — there's no SD sibling to fall back to.
-      const dev = state.devices.find((dd) => `cam-${dd.id}` === camera);
-      const recVars = Array.isArray(dev?.record_variants) ? dev.record_variants : [];
-      const sdRecorded = recVars.includes("sd");
-      const qParam = (sdRecorded && state.lowQualityCameras.has(camera)) ? "?q=sd" : "";
-      tile.video.src = `/api/clips/${encodeURIComponent(clip.id)}/video${qParam}`;
+      // Always play the clip's primary file — each clip is single-variant
+      // (the engine never records both variants for the same event), so
+      // the primary IS whichever quality was captured. Highest available
+      // wins automatically.
+      tile.video.src = `/api/clips/${encodeURIComponent(clip.id)}/video`;
+      // Sidebar badge reflects the playing variant; refresh on clip change.
+      renderSidebar();
       const onLoaded = () => {
         tile.video.removeEventListener("loadedmetadata", onLoaded);
         const offset = state.cursorMs / 1000 - clip.started_at;
@@ -1527,12 +1502,6 @@
 
   function bind() {
     els.cameraList.addEventListener("click", (e) => {
-      const qBtn = e.target.closest(".pbQualityToggle");
-      if (qBtn) {
-        e.stopPropagation();
-        toggleCameraQuality(qBtn.dataset.camera);
-        return;
-      }
       const row = e.target.closest(".liveSidebarRow");
       if (!row) return;
       toggleCamera(row.dataset.camera);

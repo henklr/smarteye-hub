@@ -37,7 +37,10 @@ from .config import (
     retention_days_setting,
 )
 from .db import db_connect
-from .device_config import continuous_cameras_from_devices
+from .device_config import (
+    continuous_cameras_from_devices,
+    device_continuous_variants,
+)
 from .triggers import start_recording, stop_recording
 
 log = logging.getLogger("recording.watchdog")
@@ -132,7 +135,7 @@ class Watchdog:
                         camera=r["camera"],
                         pre_buffer_seconds=0,
                         max_duration_seconds=CONTINUOUS_CHUNK_SECONDS,
-                        metadata={"_kind": "continuous"},
+                        metadata=self._continuous_metadata(r["camera"]),
                     )
                 except Exception:
                     log.exception(
@@ -143,6 +146,23 @@ class Watchdog:
                 stop_recording(event_id=r["event_id"])
             except Exception:
                 log.exception("watchdog: auto-stop failed for %s", r["event_id"])
+
+    def _continuous_metadata(self, camera: str) -> dict:
+        """Metadata for a continuous chunk, including the per-device
+        continuous-variant override (if set).
+
+        When the device's `continuous_variants` is empty, we omit the
+        `_record_variants` key entirely so the assembler falls back to
+        `record_variants` defaults — same as the historical behaviour.
+        """
+        meta: dict = {"_kind": "continuous"}
+        try:
+            variants = device_continuous_variants().get(camera) or []
+        except Exception:
+            variants = []
+        if variants:
+            meta["_record_variants"] = list(variants)
+        return meta
 
     def _ensure_continuous(self, now: int) -> None:
         cams = sorted(continuous_cameras_from_devices())
@@ -164,7 +184,7 @@ class Watchdog:
                     camera=cam,
                     pre_buffer_seconds=0,
                     max_duration_seconds=CONTINUOUS_CHUNK_SECONDS,
-                    metadata={"_kind": "continuous"},
+                    metadata=self._continuous_metadata(cam),
                 )
             except Exception:
                 log.exception("watchdog: failed to start continuous chunk for %s", cam)
