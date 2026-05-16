@@ -6,14 +6,17 @@ open active recording, start a new chunk; when chunks hit
 CONTINUOUS_CHUNK_SECONDS, the watchdog auto-stops them (which produces a
 clip, then a fresh chunk is started on the next tick).
 
-A retention sweep runs periodically. Two modes, switched by the
-`retention_days` setting (read each tick from settings.json):
+A retention sweep runs periodically with two layers, both active:
 
-- `retention_days > 0`: delete clips whose `ended_at` is older than the
-  cutoff. Applies to every clip kind.
-- `retention_days == 0` (default): disk-fullness sweep. When free space
-  drops below DISK_FULL_TRIGGER_FREE_PCT, delete the oldest clips until
-  we're back above DISK_FULL_TARGET_FREE_PCT.
+- Time-based ceiling (`retention_days > 0`): each tick deletes clips
+  whose `ended_at` is older than the cutoff. Skipped when the setting
+  is 0 (default = no time cap).
+- Disk-fullness safety net (always on): if free space drops below
+  DISK_FULL_TRIGGER_FREE_PCT, delete the oldest clips until we're
+  back above DISK_FULL_TARGET_FREE_PCT. This runs regardless of the
+  time-based setting so the disk can't fill and break recording even
+  when intake outpaces the day-cutoff (e.g. 6 HD cameras + 30-day
+  retention on a half-full disk).
 """
 from __future__ import annotations
 
@@ -67,9 +70,11 @@ class Watchdog:
 
     async def _run(self) -> None:
         log.info(
-            "watchdog: starting (chunk=%ds retention=%dd, 0=disk-full; "
+            "watchdog: starting (chunk=%ds retention=%dd, 0=no time cap; "
+            "disk-fullness safety net always on at %.0f%%/%.0f%%; "
             "continuous cameras read live from devices.json)",
             CONTINUOUS_CHUNK_SECONDS, retention_days_setting(),
+            DISK_FULL_TRIGGER_FREE_PCT * 100, DISK_FULL_TARGET_FREE_PCT * 100,
         )
         while not self._stop.is_set():
             try:
@@ -165,15 +170,22 @@ class Watchdog:
                 log.exception("watchdog: failed to start continuous chunk for %s", cam)
 
     def _sweep_retention(self, now: int) -> None:
-        """Either time-based or disk-fullness-based clip pruning."""
+        """Two-layer retention: time-based ceiling + disk-fullness safety net.
+
+        Both run every tick (cheap when free space is comfortable —
+        `_prune_disk_full` returns immediately once `shutil.disk_usage`
+        shows we're above the trigger threshold). The time-based pass
+        is skipped when the setting is 0; the disk-fullness pass is
+        always on so a misconfigured retention period can't fill the
+        disk and silently break recording.
+        """
         if not is_storage_mounted():
             # Nothing to prune if the disk vanished; supervisor handles that path.
             return
         days = retention_days_setting()
         if days > 0:
             self._prune_time_based(now, days)
-        else:
-            self._prune_disk_full()
+        self._prune_disk_full()
 
     def _prune_time_based(self, now: int, days: int) -> None:
         cutoff = now - (days * 86400)
