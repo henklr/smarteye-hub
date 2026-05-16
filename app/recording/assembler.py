@@ -107,11 +107,23 @@ def assemble_clip(
             fh.write(f"file '{str(seg).replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'\n")
 
     try:
+        # `-avoid_negative_ts make_zero` and `-fflags +genpts` clean up
+        # the duplicate-DTS hiccups that the concat demuxer produces at
+        # segment boundaries. The buffer segments are written with
+        # `-reset_timestamps 1`, so each one starts at PTS=0; the
+        # concat demuxer chains them by offsetting subsequent segments
+        # by the previous one's duration, which occasionally produces
+        # two frames on the same DTS at the boundary. ffmpeg's null
+        # muxer just logs a warning, but Chrome's H.264 decoder stalls
+        # for ~1 s when it hits that mid-stream — felt as a "playback
+        # pause" at a specific timestamp on the browser side.
         cmd = [
             "ffmpeg",
             "-hide_banner",
             "-loglevel", "warning",
             "-y",
+            "-fflags", "+genpts",
+            "-avoid_negative_ts", "make_zero",
             "-f", "concat",
             "-safe", "0",
             "-i", str(list_path),
