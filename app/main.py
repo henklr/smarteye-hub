@@ -3287,11 +3287,13 @@ def _reconcile_camera_mtx_paths(
             # Always-on when:
             #   - the variant is recorded (recording engine is a permanent
             #     reader so on-demand would close + reopen pointlessly), OR
-            #   - the variant is live and the user opted into `preload_stream`
-            #     (= "keep the live stream warm so clicks feel instant").
-            # On-demand otherwise (live-only and preload off) — MediaMTX
-            # opens the source on first viewer and closes ~10s after last.
-            keep_warm = wants_record or (wants_live and preload)
+            #   - the variant is SD live and the user opted into `preload_stream`
+            #     (= "keep SD warm so dashboard tiles feel instant").
+            # HD live is always on-demand: the dashboard never requests HD,
+            # and the hub's own UI tolerates the ~1-2s spin-up. Keeping 6+
+            # HD ffmpeg pipelines hot on a small Pi starves the SD encoders
+            # the dashboard actually uses.
+            keep_warm = wants_record or (wants_live and preload and variant == "sd")
             try:
                 _ensure_mediamtx_variant_path(
                     path_name, source, on_demand=not keep_warm,
