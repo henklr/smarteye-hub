@@ -6,6 +6,20 @@ rtsp: yes
 rtspAddress: :8554
 rtspTransports: [tcp]
 
+# Low-latency HLS so the dashboard's live grid starts within ~1s.
+# Defaults are MPEG-TS / 4s segments — far too slow for live tiles.
+# fmp4 + lowLatency emits 200ms partial segments and supports
+# blocking playlist reload, so hls.js can pick up the freshest part
+# without waiting for a full segment to close.
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+hlsAlwaysRemux: yes
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsAllowOrigins: ['*']
+
 webrtc: yes
 webrtcAddress: :8889
 webrtcEncryption: false
